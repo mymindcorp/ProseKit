@@ -1,3 +1,4 @@
+import Foundation
 import DocumentModel
 import DocumentTransform
 import EditorStateKit
@@ -46,8 +47,10 @@ public final class Editor {
 
     // MARK: - Dispatch
 
-    /// Apply a transaction and notify observers.
+    /// Apply a transaction and notify observers. Stamps the transaction's time
+    /// so undo history groups rapid edits but separates distinct user actions.
     public func dispatch(_ tr: Transaction) {
+        if tr.time == 0 { tr.time = Date().timeIntervalSince1970 * 1000 }
         state = state.apply(tr)
         onChange?(state)
     }
@@ -156,6 +159,7 @@ public final class Editor {
         let tr = state.tr
         try? tr.replaceWith(0, state.doc.content.size, doc.content)
         tr.setSelection(Selection.atStart(tr.doc))
+        tr.setMeta("addToHistory", false) // initial/replaced content isn't undoable
         dispatch(tr)
     }
 }

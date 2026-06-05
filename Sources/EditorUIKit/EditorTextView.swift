@@ -568,8 +568,28 @@ open class EditorTextView: UIView, UIKeyInput {
         super.pressesEnded(presses, with: event)
     }
 
+    /// A key press, decoupled from `UIKey` so the key handler can be unit-tested
+    /// (UIKey has no public initializer).
+    struct KeyEvent {
+        var keyCode: UIKeyboardHIDUsage
+        var modifiers: UIKeyModifierFlags
+        var characters: String
+        init(_ keyCode: UIKeyboardHIDUsage, modifiers: UIKeyModifierFlags = [], characters: String = "") {
+            self.keyCode = keyCode
+            self.modifiers = modifiers
+            self.characters = characters
+        }
+    }
+
     private func handle(key: UIKey) -> Bool {
-        let mods = key.modifierFlags
+        handle(KeyEvent(key.keyCode, modifiers: key.modifierFlags, characters: key.charactersIgnoringModifiers))
+    }
+
+    /// Handle a key event, returning whether it was consumed. The single entry
+    /// point for hardware-key behavior, driven by `pressesBegan` in production
+    /// and directly by tests.
+    func handle(_ key: KeyEvent) -> Bool {
+        let mods = key.modifiers
         let extend = mods.contains(.shift)
         // Cmd = to line/doc edge, Option = by word, otherwise by character.
         let granularity: TextGranularity = mods.contains(.command)
@@ -597,12 +617,40 @@ open class EditorTextView: UIView, UIKeyInput {
         case .keyboardDeleteForward:
             deleteInDirection(.forward, by: mods.contains(.alternate) ? .word : .character); return true
         case .keyboardReturnOrEnter:
-            runKey("Enter"); return true
+            // Respect modifiers (Shift-Enter = hard break, Mod-Enter = exit code).
+            let enter = modifierPrefix(mods) + "Enter"
+            if runKey(enter) { return true }
+            return runKey("Enter")
+        case .keyboardTab:
+            // The Tab key produces "\t"; map it to the named "Tab" binding.
+            return runKey(mods.contains(.shift) ? "Shift-Tab" : "Tab")
         default:
             let stroke = keyStroke(from: key)
             if !stroke.isEmpty { return runKey(stroke) }
             return false
         }
+    }
+
+    private func modifierPrefix(_ mods: UIKeyModifierFlags) -> String {
+        var parts: [String] = []
+        if mods.contains(.command) { parts.append("Mod") }
+        if mods.contains(.control) { parts.append("Ctrl") }
+        if mods.contains(.alternate) { parts.append("Alt") }
+        if mods.contains(.shift) { parts.append("Shift") }
+        return parts.isEmpty ? "" : parts.joined(separator: "-") + "-"
+    }
+
+    /// Build a key-binding string ("Mod-Shift-b") from a key event.
+    private func keyStroke(from key: KeyEvent) -> String {
+        var parts: [String] = []
+        let mods = key.modifiers
+        if mods.contains(.command) { parts.append("Mod") }
+        if mods.contains(.control) { parts.append("Ctrl") }
+        if mods.contains(.alternate) { parts.append("Alt") }
+        if mods.contains(.shift) { parts.append("Shift") }
+        guard !key.characters.isEmpty else { return "" }
+        parts.append(key.characters.lowercased())
+        return parts.joined(separator: "-")
     }
 
     /// Delete in a direction by a granularity. A plain character delete first
@@ -635,19 +683,6 @@ open class EditorTextView: UIView, UIKeyInput {
         if let tr = try? editor.state.tr.delete(min(head, target), max(head, target)) {
             editor.dispatch(tr.scrollIntoView())
         }
-    }
-
-    private func keyStroke(from key: UIKey) -> String {
-        var parts: [String] = []
-        let mods = key.modifierFlags
-        if mods.contains(.command) { parts.append("Mod") }
-        if mods.contains(.control) { parts.append("Ctrl") }
-        if mods.contains(.alternate) { parts.append("Alt") }
-        if mods.contains(.shift) { parts.append("Shift") }
-        let chars = key.charactersIgnoringModifiers
-        guard !chars.isEmpty else { return "" }
-        parts.append(chars.lowercased())
-        return parts.joined(separator: "-")
     }
 
     @discardableResult

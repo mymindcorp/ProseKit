@@ -86,6 +86,26 @@ public final class BlockquoteExtension: NodeExtension {
     }
 }
 
+public final class CodeBlockExtension: NodeExtension {
+    public let name = "codeBlock"
+    public init() {}
+    public var nodeSpec: NodeSpec { NodeSpec(content: "text*", marks: "", group: "block", code: true, defining: true) }
+    public var html: HTMLSpec { HTMLSpec(tag: "pre") }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.nodeType, let para = ctx.schema.nodes["paragraph"] else { return [:] }
+        return ["toggleCodeBlock": toggleBlockType(type, para)]
+    }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.nodeType, let para = ctx.schema.nodes["paragraph"] else { return [:] }
+        return ["Mod-Alt-c": toggleBlockType(type, para)]
+    }
+    public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
+        guard let type = ctx.nodeType else { return [] }
+        // Typing the third backtick at the start of a block turns it into a code block.
+        return [textblockTypeInputRule("^```$", type)]
+    }
+}
+
 public final class HorizontalRuleExtension: NodeExtension {
     public let name = "horizontalRule"
     public init() {}
@@ -286,6 +306,7 @@ public func starterKit() -> [Extension] {
         TextExtension(),
         HeadingExtension(),
         BlockquoteExtension(),
+        CodeBlockExtension(),
         HorizontalRuleExtension(),
         HardBreakExtension(),
         BulletListExtension(),

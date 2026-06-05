@@ -99,6 +99,19 @@ func registerMarkdownShortcutTests() {
         try expect(!hasMark(editor, "bold")) // not closed yet
     }
 
+    test("md shortcut: ``` → code block") {
+        let editor = try shortcut("``", "`")
+        try expect(editor.isActive(node: "codeBlock"))
+    }
+
+    test("md shortcut: '[ ] ' → task list") {
+        let editor = try Editor(extensions: fullKit())
+        try type(editor, "[ ]")
+        _ = textInput(editor, at: editor.doc.content.size - 1, " ")
+        try expect(editor.isActive(node: "taskList"))
+        try expect(editor.isActive(node: "taskItem"))
+    }
+
     // MARK: Wiki link
 
     test("md shortcut: [[Page]] becomes a wiki-link node") {

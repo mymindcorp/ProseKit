@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(swift build*)",
+      "Bash(swift run*)",
+      "Bash(swift test*)",
+      "Bash(swift package*)",
+      "Bash(xcodebuild*)",
+      "Bash(xcrun*)",
+      "Bash(DEVELOPER_DIR=* swift*)",
+      "Bash(DEVELOPER_DIR=* xcodebuild*)",
+      "Bash(DEVELOPER_DIR=* xcrun*)"
+    ]
+  }
+}

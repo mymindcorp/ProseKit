@@ -2,6 +2,7 @@ import DocumentModel
 import DocumentTransform
 import EditorStateKit
 import EditorCommands
+import EditorInputRules
 
 // Task lists, matching Tiptap's TaskList / TaskItem (node names `taskList` and
 // `taskItem`, with a boolean `checked` attribute on each item).
@@ -18,6 +19,11 @@ public final class TaskListExtension: NodeExtension {
     public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
         guard let type = ctx.nodeType, let item = ctx.schema.nodes["taskItem"] else { return [:] }
         return ["Mod-Shift-9": toggleList(type, item)]
+    }
+    public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
+        guard let type = ctx.nodeType else { return [] }
+        // "[ ] " or "[x] " at the start of a block makes a task list.
+        return [wrappingInputRule("^\\s*\\[[ xX]?\\]\\s$", type)]
     }
 }
 
