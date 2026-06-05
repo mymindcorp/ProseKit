@@ -97,12 +97,54 @@ public final class CodeBlockExtension: NodeExtension {
     }
     public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
         guard let type = ctx.nodeType, let para = ctx.schema.nodes["paragraph"] else { return [:] }
-        return ["Mod-Alt-c": toggleBlockType(type, para)]
+        return [
+            "Mod-Alt-c": toggleBlockType(type, para),
+            // Indent/outdent inside a code block; falls through (returns false)
+            // elsewhere so list/table Tab handling still applies.
+            "Tab": indentCodeBlock(type),
+            "Shift-Tab": outdentCodeBlock(type),
+        ]
     }
     public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
         guard let type = ctx.nodeType else { return [] }
         // Typing the third backtick at the start of a block turns it into a code block.
         return [textblockTypeInputRule("^```$", type)]
+    }
+}
+
+private let codeBlockIndent = "  " // two spaces
+
+/// Insert indentation at the cursor when it sits in a code block.
+private func indentCodeBlock(_ type: NodeType) -> Command {
+    { state, dispatch, _ in
+        let sel = state.selection
+        guard sel.empty, sel.resolvedFrom.parent.type === type else { return false }
+        if let dispatch, let tr = try? state.tr.insertText(codeBlockIndent, sel.from, sel.to) {
+            dispatch(tr.scrollIntoView())
+        }
+        return true
+    }
+}
+
+/// Remove up to one indent level from the start of the current line in a code block.
+private func outdentCodeBlock(_ type: NodeType) -> Command {
+    { state, dispatch, _ in
+        let sel = state.selection
+        let from = sel.resolvedFrom
+        guard sel.empty, from.parent.type === type else { return false }
+        let blockStart = from.start()
+        let before = state.doc.textBetween(blockStart, sel.from)
+        let lineStartOffset = before.lastIndex(of: "\n").map { before.distance(from: before.startIndex, to: before.index(after: $0)) } ?? 0
+        let lineStart = blockStart + lineStartOffset
+        let probe = state.doc.textBetween(lineStart, min(lineStart + codeBlockIndent.count, from.end()))
+        var remove = 0
+        for ch in probe { if ch == " " { remove += 1 } else { break } }
+        if remove == 0, probe.first == "\t" { remove = 1 }
+        guard remove > 0 else { return false }
+        if let dispatch, let tr = try? state.tr.delete(lineStart, lineStart + remove) {
+            dispatch(tr.scrollIntoView())
+        }
+        return true
     }
 }
 

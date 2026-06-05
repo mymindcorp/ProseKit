@@ -386,6 +386,60 @@ final class KeyboardBehaviorTests: XCTestCase {
         XCTAssertEqual(view.editor.doc.child(1).type.name, "paragraph")
     }
 
+    func testBackspaceAtStartOfFirstListItemLiftsOut() throws {
+        let view = try makeView(["a"])
+        XCTAssertTrue(view.editor.run("toggleBulletList"))
+        var start = 0
+        view.editor.doc.descendants { n, p, _, _ in if n.isText, n.text == "a" { start = p }; return true }
+        cursor(view, start) // start of "a"
+        key(view, .keyboardDeleteOrBackspace)
+        XCTAssertEqual(count(view, "bulletList"), 0, "Backspace at the start of the only item should lift it out of the list")
+        XCTAssertEqual(text(view), "a")
+    }
+
+    func testBackspaceAtStartOfSecondListItemMerges() throws {
+        let view = try makeView(["a"])
+        XCTAssertTrue(view.editor.run("toggleBulletList"))
+        var end = 0
+        view.editor.doc.descendants { n, p, _, _ in if n.isText, n.text == "a" { end = p + n.nodeSize }; return true }
+        cursor(view, end)
+        key(view, .keyboardReturnOrEnter) // second item
+        view.insertText("b")
+        var bStart = 0
+        view.editor.doc.descendants { n, p, _, _ in if n.isText, n.text == "b" { bStart = p }; return true }
+        cursor(view, bStart)
+        key(view, .keyboardDeleteOrBackspace)
+        XCTAssertEqual(text(view), "ab", "Backspace at the start of a later item should merge with the previous item")
+        XCTAssertEqual(count(view, "listItem"), 1)
+    }
+
+    func testTabIndentsInCodeBlock() throws {
+        let editor = try Editor(extensions: fullKit())
+        let cb = try! editor.schema.node("codeBlock", [:], content: Fragment.from([editor.schema.text("x")]))
+        editor.setContent(try! editor.schema.node("doc", [:], content: Fragment.from([cb])))
+        let view = EditorTextView(editor: editor)
+        cursor(view, 1) // start of code content
+        key(view, .keyboardTab, [], "\t")
+        XCTAssertEqual(text(view), "  x")
+        // Shift-Tab removes the indentation again.
+        key(view, .keyboardTab, .shift, "\t")
+        XCTAssertEqual(text(view), "x")
+    }
+
+    func testTabStillSinksListItemNotInCodeBlock() throws {
+        // Ensure the code-block Tab binding falls through outside code blocks.
+        let view = try makeView(["one"])
+        XCTAssertTrue(view.editor.run("toggleBulletList"))
+        var textEnd = 0
+        view.editor.doc.descendants { n, p, _, _ in if n.isText { textEnd = p + n.nodeSize }; return true }
+        cursor(view, textEnd)
+        key(view, .keyboardReturnOrEnter)
+        view.insertText("two")
+        let before = count(view, "bulletList")
+        key(view, .keyboardTab, [], "\t")
+        XCTAssertGreaterThan(count(view, "bulletList"), before)
+    }
+
     // MARK: - Tab in lists
 
     func testTabSinksListItem() throws {
