@@ -211,25 +211,30 @@ final class DocumentLayout {
         let rows = node.childCount
         let cols = node.firstChild?.childCount ?? 1
         let colW = width / CGFloat(max(cols, 1))
+        let padding: CGFloat = 6
+        var pos = docPos + 1 // inside the table, before the first row
         for r in 0..<rows {
             let row = node.child(r)
-            var rowHeight: CGFloat = 0
-            var cellLayouts: [(CGRect, CGFloat)] = []
+            var cellPos = pos + 1 // inside the row, before the first cell
+            var rowHeight: CGFloat = 28
+            // Lay each cell's content out as real text blocks so the cell is
+            // clickable, caret-able, and editable (top-aligned within the cell).
             for c in 0..<row.childCount {
                 let cell = row.child(c)
                 let cellX = x + CGFloat(c) * colW
-                let text = cell.textContent
-                let attr = NSAttributedString(string: text, attributes: [.font: theme.bodyFont, .foregroundColor: theme.textColor])
-                let h = max(28, ceil(attr.boundingRect(with: CGSize(width: colW - 12, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin], context: nil).height) + 12)
-                cellLayouts.append((CGRect(x: cellX, y: y0, width: colW, height: h), 0))
-                rowHeight = max(rowHeight, h)
-                decorations.append(.text(text, CGPoint(x: cellX + 6, y: y0 + 6), [.font: theme.bodyFont, .foregroundColor: theme.textColor]))
+                let bottom = layoutFragment(cell.content, docPos: cellPos + 1,
+                                            x: cellX + padding, width: colW - 2 * padding,
+                                            y: y0 + padding, isFirst: true)
+                rowHeight = max(rowHeight, bottom - y0 + padding)
+                cellPos += cell.nodeSize
             }
+            // Cell borders, drawn under the text.
             for c in 0..<row.childCount {
                 let cellX = x + CGFloat(c) * colW
                 decorations.append(.stroke(CGRect(x: cellX, y: y0, width: colW, height: rowHeight), theme.quoteBarColor, 1))
             }
             y0 += rowHeight
+            pos += row.nodeSize
         }
         return y0 + 6
     }
@@ -415,9 +420,16 @@ final class DocumentLayout {
     /// The document position nearest to a point in view coordinates.
     func position(at point: CGPoint) -> Int? {
         guard !blocks.isEmpty else { return nil }
-        // Find the block whose vertical span contains the point (or nearest).
-        let block = blocks.first { point.y >= $0.frame.minY && point.y <= $0.frame.maxY }
-            ?? blocks.min(by: { abs($0.frame.midY - point.y) < abs($1.frame.midY - point.y) })!
+        // Blocks whose vertical span contains the point. Several can match when
+        // they sit side by side (table cells in a row), so disambiguate by x.
+        let onRow = blocks.filter { point.y >= $0.frame.minY && point.y <= $0.frame.maxY }
+        let block: TextBlock
+        if !onRow.isEmpty {
+            block = onRow.first { point.x >= $0.frame.minX && point.x <= $0.frame.maxX }
+                ?? onRow.min(by: { abs($0.frame.midX - point.x) < abs($1.frame.midX - point.x) })!
+        } else {
+            block = blocks.min(by: { abs($0.frame.midY - point.y) < abs($1.frame.midY - point.y) })!
+        }
         // Find the line.
         let line = block.lines.first { point.y >= $0.baselineOrigin.y - $0.ascent && point.y <= $0.baselineOrigin.y - $0.ascent + $0.height }
             ?? block.lines.min(by: { abs($0.baselineOrigin.y - point.y) < abs($1.baselineOrigin.y - point.y) })
