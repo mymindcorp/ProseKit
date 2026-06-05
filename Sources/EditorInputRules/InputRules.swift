@@ -117,7 +117,6 @@ public func textblockTypeInputRule(_ pattern: String, _ nodeType: NodeType, _ ge
 public func markInputRule(_ pattern: String, _ markType: MarkType, _ getAttrs: (([String?]) -> Attrs)? = nil) -> InputRule {
     InputRule(pattern) { state, match, start, end in
         let fullMatch = match[0] ?? ""
-        FileHandle.standardError.write("  markInputRule match=\(match) fullMatch=\(fullMatch.debugDescription)\n".data(using: .utf8)!)
         // The inner text is the last participating capture group.
         guard let inner = match.dropFirst().compactMap({ $0 }).last, !inner.isEmpty,
               let innerRange = fullMatch.range(of: inner) else { return nil }

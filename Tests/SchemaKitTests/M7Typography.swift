@@ -32,31 +32,6 @@ func registerTypographyTests() {
         try expectEqual(editor2.doc.textContent, "x\u{2026}")
     }
 
-    test("markdown shortcut: **bold** marks the inner text and strips the asterisks") {
-        let editor = try Editor(extensions: starterKit())
-        try type(editor, "**bold*")           // one closing star already typed
-        try expect(textInput(editor, at: editor.doc.content.size - 1, "*"))  // type the final star
-        try expectEqual(editor.doc.textContent, "bold")
-        try expect(editor.isActive(mark: "bold"))
-    }
-
-    test("markdown shortcut: *italic* does not fire inside **bold**") {
-        // Typing the first closing star of bold must not trigger italic.
-        let editor = try Editor(extensions: starterKit())
-        try type(editor, "**bold")
-        // typing one '*' (now "**bold*") should NOT produce an italic mark
-        _ = textInput(editor, at: editor.doc.content.size - 1, "*")
-        try expect(!editor.isActive(mark: "italic"))
-    }
-
-    test("markdown shortcut: `code` strips the backticks") {
-        let editor = try Editor(extensions: starterKit())
-        try type(editor, "`x")
-        try expect(textInput(editor, at: editor.doc.content.size - 1, "`"))
-        try expectEqual(editor.doc.textContent, "x")
-        try expect(editor.isActive(mark: "code"))
-    }
-
     test("typography: apostrophe inside a word is a closing quote") {
         let editor = try Editor(extensions: starterKit())
         try type(editor, "don")
