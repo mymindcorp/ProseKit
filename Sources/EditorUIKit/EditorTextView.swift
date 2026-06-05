@@ -363,9 +363,15 @@ open class EditorTextView: UIView, UIKeyInput {
 
     /// Select the whole textblock (paragraph/heading/…) at the given position.
     private func selectParagraph(at pos: Int) {
-        let resolved = editor.doc.resolve(pos)
-        guard resolved.parent.isTextblock else { return }
-        setTextSelection(anchor: resolved.start(), head: resolved.end())
+        guard let r = paragraphRange(at: pos) else { return }
+        setTextSelection(anchor: r.0, head: r.1)
+    }
+
+    /// The textblock content range containing `pos`.
+    private func paragraphRange(at pos: Int) -> (Int, Int)? {
+        let resolved = editor.doc.resolve(min(max(pos, 0), editor.doc.content.size))
+        guard resolved.parent.isTextblock else { return nil }
+        return (resolved.start(), resolved.end())
     }
 
 
@@ -378,16 +384,59 @@ open class EditorTextView: UIView, UIKeyInput {
         driveDragSelection(state: gesture.state, point: gesture.location(in: self))
     }
 
+    enum DragGranularity { case character, word, paragraph }
+    private var dragGranularity: DragGranularity = .character
+    private var dragAnchorRange: (Int, Int)?
+
     private func driveDragSelection(state: UIGestureRecognizer.State, point: CGPoint) {
         switch state {
         case .began:
-            if !isFirstResponder { becomeFirstResponder() }
-            dragAnchor = ensureLayout().position(at: point)
-            if let anchor = dragAnchor {
-                editor.dispatch(editor.state.tr.setSelection(Selection.near(editor.doc.resolve(min(anchor, editor.doc.content.size)))))
-            }
+            // A drag that begins right after a click at the same spot inherits
+            // that click's granularity: click-drag = character, double-click-drag
+            // = word, triple-click-drag = paragraph (native text behavior).
+            let recent = CACurrentMediaTime() - lastClickTime <= multiClickInterval
+                && hypot(point.x - lastClickPoint.x, point.y - lastClickPoint.y) <= multiClickSlop
+            beginDrag(at: point, granularity: recent ? (clickCount >= 2 ? .paragraph : .word) : .character)
         case .changed:
-            guard let anchor = dragAnchor, let head = ensureLayout().position(at: point) else { return }
+            updateDrag(to: point)
+        case .ended, .cancelled, .failed:
+            endDrag()
+        default:
+            break
+        }
+    }
+
+    // Column-resize state, captured at the start of a border drag.
+    private var resize: (tablePos: Int, leftColumn: Int, widths: [CGFloat], originX: CGFloat)?
+
+    func beginDrag(at point: CGPoint, granularity: DragGranularity) {
+        if !isFirstResponder { becomeFirstResponder() }
+        // A drag that starts on a column border resizes columns instead of selecting.
+        if let hit = columnBorderHit(at: point) {
+            resize = (hit.table.tablePos, hit.leftColumn, hit.table.widths, hit.table.originX)
+            return
+        }
+        guard let pos = ensureLayout().position(at: point) else { dragAnchor = nil; return }
+        dragAnchor = pos
+        dragGranularity = granularity
+        switch granularity {
+        case .character:
+            dragAnchorRange = nil
+            editor.dispatch(editor.state.tr.setSelection(Selection.near(editor.doc.resolve(min(pos, editor.doc.content.size)))))
+        case .word:
+            dragAnchorRange = wordRange(at: pos)
+            if let r = dragAnchorRange { setTextSelection(anchor: r.0, head: r.1) }
+        case .paragraph:
+            dragAnchorRange = paragraphRange(at: pos)
+            if let r = dragAnchorRange { setTextSelection(anchor: r.0, head: r.1) }
+        }
+    }
+
+    func updateDrag(to point: CGPoint) {
+        if let r = resize { performColumnResize(r, to: point); return }
+        guard let anchor = dragAnchor, let head = ensureLayout().position(at: point) else { return }
+        switch dragGranularity {
+        case .character:
             // Dragging across cells of the same table makes a cell selection.
             if let anchorCell = cellPosition(containing: anchor),
                let headCell = cellPosition(containing: head), anchorCell != headCell {
@@ -396,11 +445,67 @@ open class EditorTextView: UIView, UIKeyInput {
             } else {
                 setTextSelection(anchor: anchor, head: head)
             }
-        case .ended, .cancelled, .failed:
-            dragAnchor = nil
-        default:
-            break
+        case .word, .paragraph:
+            guard let base = dragAnchorRange else { setTextSelection(anchor: anchor, head: head); return }
+            let cur = dragGranularity == .word ? wordRange(at: head) : paragraphRange(at: head)
+            let lo = min(base.0, cur?.0 ?? head)
+            let hi = max(base.1, cur?.1 ?? head)
+            // The head trails the drag direction so it keeps growing by unit.
+            if head >= base.1 { setTextSelection(anchor: lo, head: hi) }
+            else { setTextSelection(anchor: hi, head: lo) }
         }
+    }
+
+    func endDrag() {
+        dragAnchor = nil
+        dragAnchorRange = nil
+        resize = nil
+    }
+
+    /// The internal column border (and its table) within ~6pt of `point`, if any.
+    func columnBorderHit(at point: CGPoint) -> (table: DocumentLayout.TableInfo, leftColumn: Int)? {
+        let tolerance: CGFloat = 6
+        for table in ensureLayout().tables where point.y >= table.top && point.y <= table.bottom {
+            // Internal borders only (resizing the outer edges would change the
+            // table's total width).
+            for c in 0..<max(0, table.widths.count - 1) where abs(point.x - table.borderX(after: c)) <= tolerance {
+                return (table, c)
+            }
+        }
+        return nil
+    }
+
+    private func performColumnResize(_ r: (tablePos: Int, leftColumn: Int, widths: [CGFloat], originX: CGFloat), to point: CGPoint) {
+        let minWidth: CGFloat = 24
+        let left = r.leftColumn, right = r.leftColumn + 1
+        guard right < r.widths.count else { return }
+        let originalBorderX = r.originX + r.widths[0...left].reduce(0, +)
+        let delta = point.x - originalBorderX
+        let pairSum = r.widths[left] + r.widths[right]
+        let newLeft = min(max(r.widths[left] + delta, minWidth), pairSum - minWidth)
+        var widths = r.widths
+        widths[left] = newLeft
+        widths[right] = pairSum - newLeft
+        setColumnWidths(tablePos: r.tablePos, widths: widths)
+    }
+
+    /// Write `colwidth` onto every cell in each column of the table at `tablePos`.
+    private func setColumnWidths(tablePos: Int, widths: [CGFloat]) {
+        guard let table = editor.doc.nodeAt(tablePos) else { return }
+        var tr = editor.state.tr
+        var rowPos = tablePos + 1
+        for r in 0..<table.childCount {
+            let row = table.child(r)
+            var cellPos = rowPos + 1
+            for c in 0..<row.childCount {
+                if c < widths.count {
+                    tr = (try? tr.setNodeAttribute(cellPos, "colwidth", .double(Double(widths[c])))) ?? tr
+                }
+                cellPos += row.child(c).nodeSize
+            }
+            rowPos += row.nodeSize
+        }
+        editor.dispatch(tr)
     }
 
     /// Set a text selection between two document positions, snapping to valid
@@ -414,10 +519,15 @@ open class EditorTextView: UIView, UIKeyInput {
 
     /// Select the word at the given document position.
     private func selectWord(at pos: Int) {
-        let resolved = editor.doc.resolve(pos)
+        guard let r = wordRange(at: pos) else { return }
+        setTextSelection(anchor: r.0, head: r.1)
+    }
+
+    /// The word range containing `pos` (a single character when not on a word).
+    private func wordRange(at pos: Int) -> (Int, Int)? {
+        let resolved = editor.doc.resolve(min(max(pos, 0), editor.doc.content.size))
         guard resolved.parent.isTextblock else {
-            setTextSelection(anchor: pos, head: min(pos + 1, editor.doc.content.size))
-            return
+            return (pos, min(pos + 1, editor.doc.content.size))
         }
         let contentStart = resolved.start()
         let chars = inlineCharacters(of: resolved.parent)
@@ -430,7 +540,7 @@ open class EditorTextView: UIView, UIKeyInput {
         if lo == hi { // not on a word — select a single character if possible
             if hi < chars.count { hi += 1 } else if lo > 0 { lo -= 1 }
         }
-        setTextSelection(anchor: contentStart + lo, head: contentStart + hi)
+        return (contentStart + lo, contentStart + hi)
     }
 
     /// The inline characters of a textblock, one entry per document position

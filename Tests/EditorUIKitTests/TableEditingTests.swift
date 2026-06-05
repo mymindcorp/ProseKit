@@ -72,6 +72,53 @@ final class TableEditingTests: XCTestCase {
         XCTAssertEqual(texts, ["A", "B", "CX", "D"])
     }
 
+    func testColumnsUseColwidthProportionally() throws {
+        let editor = try tableEditor()
+        // Give column 0 weight 3, column 1 weight 1 on the first (header) row.
+        let s = editor.schema
+        func headerCell(_ text: String, _ w: Double) -> Node {
+            try! s.node("tableHeader", ["colwidth": .double(w)], content: Fragment.from([
+                try! s.node("paragraph", [:], content: Fragment.from([s.text(text)])),
+            ]))
+        }
+        func cell(_ text: String) -> Node {
+            try! s.node("tableCell", [:], content: Fragment.from([
+                try! s.node("paragraph", [:], content: Fragment.from([s.text(text)])),
+            ]))
+        }
+        let table = try! s.node("table", [:], content: Fragment.from([
+            try! s.node("tableRow", [:], content: Fragment.from([headerCell("A", 3), headerCell("B", 1)])),
+            try! s.node("tableRow", [:], content: Fragment.from([cell("C"), cell("D")])),
+        ]))
+        editor.setContent(try! s.node("doc", [:], content: Fragment.from([table])))
+        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme())
+        let info = try XCTUnwrap(layout.tables.first)
+        XCTAssertEqual(info.widths.count, 2)
+        // 3:1 ratio, normalized to whatever content width the table spans.
+        XCTAssertEqual(info.widths[0] / info.widths[1], 3, accuracy: 0.05)
+        XCTAssertGreaterThan(info.widths.reduce(0, +), 0)
+    }
+
+    func testDraggingAColumnBorderResizesColumns() throws {
+        let editor = try tableEditor()
+        let view = makeView(editor)
+        let info = try XCTUnwrap(DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme()).tables.first)
+        let totalBefore = info.widths.reduce(0, +)
+        // Border between the two equal columns. Drag it well to the left.
+        let borderX = info.borderX(after: 0)
+        let y = (info.top + info.bottom) / 2
+        view.beginDrag(at: CGPoint(x: borderX, y: y), granularity: .character)
+        view.updateDrag(to: CGPoint(x: borderX - 60, y: y))
+        view.endDrag()
+        // Re-read the layout: column 0 should now be narrower than column 1.
+        let after = DocumentLayout(doc: view.editor.doc, width: 320, theme: TextTheme())
+        let widths = try XCTUnwrap(after.tables.first).widths
+        XCTAssertLessThan(widths[0], widths[1], "dragging the border left should shrink column 0")
+        XCTAssertEqual(widths.reduce(0, +), totalBefore, accuracy: 1, "total width is preserved")
+        // The drag resized columns rather than moving the selection.
+        XCTAssertTrue(view.editor.state.selection.empty)
+    }
+
     func testCellsAreLaidOutAsDistinctBlocks() throws {
         let editor = try tableEditor()
         let layout = DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme())

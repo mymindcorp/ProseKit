@@ -81,6 +81,17 @@ final class DocumentLayout {
     /// Tappable task-item checkboxes: their hit rect, the task item's document
     /// position, and current checked state.
     private(set) var checkboxes: [(rect: CGRect, pos: Int, checked: Bool)] = []
+    /// Laid-out tables, for column-border hit-testing and resize.
+    struct TableInfo {
+        let tablePos: Int
+        let originX: CGFloat
+        let widths: [CGFloat]
+        let top: CGFloat
+        let bottom: CGFloat
+        /// X of the border to the right of column `c` (0-based).
+        func borderX(after c: Int) -> CGFloat { originX + widths[0...c].reduce(0, +) }
+    }
+    private(set) var tables: [TableInfo] = []
     /// Image sources referenced by the document that the provider didn't have
     /// cached — the view loads these and rebuilds.
     private(set) var pendingImageSources: [String] = []
@@ -210,7 +221,10 @@ final class DocumentLayout {
         var y0 = y
         let rows = node.childCount
         let cols = node.firstChild?.childCount ?? 1
-        let colW = width / CGFloat(max(cols, 1))
+        let widths = columnWidths(for: node, cols: cols, available: width)
+        // Left edge of each column, then the table's right edge.
+        var edges: [CGFloat] = [x]
+        for w in widths { edges.append(edges.last! + w) }
         let padding: CGFloat = 6
         var pos = docPos + 1 // inside the table, before the first row
         for r in 0..<rows {
@@ -221,22 +235,43 @@ final class DocumentLayout {
             // clickable, caret-able, and editable (top-aligned within the cell).
             for c in 0..<row.childCount {
                 let cell = row.child(c)
-                let cellX = x + CGFloat(c) * colW
+                let cellX = edges[min(c, edges.count - 1)]
+                let cellW = c < widths.count ? widths[c] : (width / CGFloat(max(cols, 1)))
                 let bottom = layoutFragment(cell.content, docPos: cellPos + 1,
-                                            x: cellX + padding, width: colW - 2 * padding,
+                                            x: cellX + padding, width: cellW - 2 * padding,
                                             y: y0 + padding, isFirst: true)
                 rowHeight = max(rowHeight, bottom - y0 + padding)
                 cellPos += cell.nodeSize
             }
             // Cell borders, drawn under the text.
             for c in 0..<row.childCount {
-                let cellX = x + CGFloat(c) * colW
-                decorations.append(.stroke(CGRect(x: cellX, y: y0, width: colW, height: rowHeight), theme.quoteBarColor, 1))
+                let cellX = edges[min(c, edges.count - 1)]
+                let cellW = c < widths.count ? widths[c] : (width / CGFloat(max(cols, 1)))
+                decorations.append(.stroke(CGRect(x: cellX, y: y0, width: cellW, height: rowHeight), theme.quoteBarColor, 1))
             }
             y0 += rowHeight
             pos += row.nodeSize
         }
+        // Record the table geometry so the view can hit-test column borders.
+        tables.append(TableInfo(tablePos: docPos, originX: x, widths: widths, top: y, bottom: y0))
         return y0 + 6
+    }
+
+    /// Column widths for a table: the first row's `colwidth` attributes
+    /// normalized to the available width, or an equal split when unset.
+    private func columnWidths(for node: Node, cols: Int, available: CGFloat) -> [CGFloat] {
+        let firstRow = node.firstChild
+        let raw: [CGFloat?] = (0..<cols).map { c in
+            guard let row = firstRow, c < row.childCount,
+                  let w = row.child(c).attrs["colwidth"]?.doubleValue, w > 0 else { return nil }
+            return CGFloat(w)
+        }
+        if raw.contains(where: { $0 == nil }) {
+            return Array(repeating: available / CGFloat(max(cols, 1)), count: cols)
+        }
+        let sum = raw.compactMap { $0 }.reduce(0, +)
+        guard sum > 0 else { return Array(repeating: available / CGFloat(max(cols, 1)), count: cols) }
+        return raw.map { ($0! / sum) * available }
     }
 
     private func layoutTextBlock(_ node: Node, docPos: Int, x: CGFloat, width: CGFloat, y: CGFloat) -> CGFloat {
