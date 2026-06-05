@@ -1,0 +1,347 @@
+import Foundation
+import DocumentModel
+
+/// Maps node/mark type names to HTML tags for serialization & parsing. Defaults
+/// cover the StarterKit + tables/image/wiki-link names.
+public struct HTMLConfig: Sendable {
+    /// node name → tag (heading/codeBlock handled specially)
+    public var nodeTags: [String: String]
+    /// mark name → tag
+    public var markTags: [String: String]
+    /// tag → node name (parse direction)
+    public var tagToNode: [String: String]
+    /// tag → mark name (parse direction)
+    public var tagToMark: [String: String]
+
+    public static let `default`: HTMLConfig = {
+        let nodeTags: [String: String] = [
+            "paragraph": "p", "blockquote": "blockquote",
+            "bulletList": "ul", "orderedList": "ol", "listItem": "li",
+            "horizontalRule": "hr", "hardBreak": "br", "image": "img",
+            "table": "table", "tableRow": "tr", "tableCell": "td", "tableHeader": "th",
+            "taskList": "ul", "taskItem": "li",
+            "wikiLink": "a",
+        ]
+        let markTags: [String: String] = [
+            "bold": "strong", "italic": "em", "strike": "s", "code": "code", "link": "a",
+        ]
+        var tagToNode: [String: String] = [:]
+        // taskList/taskItem also use ul/li but need a data-type to round-trip,
+        // so they don't claim the reverse mapping (ul→bulletList, li→listItem).
+        let noReverse: Set<String> = ["wikiLink", "taskList", "taskItem"]
+        for (n, t) in nodeTags where !noReverse.contains(n) { tagToNode[t] = n }
+        for h in 1...6 { tagToNode["h\(h)"] = "heading" }
+        tagToNode["pre"] = "codeBlock"
+        let tagToMark: [String: String] = [
+            "strong": "bold", "b": "bold", "em": "italic", "i": "italic",
+            "s": "strike", "del": "strike", "strike": "strike", "code": "code", "a": "link",
+        ]
+        return HTMLConfig(nodeTags: nodeTags, markTags: markTags, tagToNode: tagToNode, tagToMark: tagToMark)
+    }()
+}
+
+// MARK: - Serialize
+
+public enum HTMLSerializer {
+    public static func serialize(_ doc: Node, config: HTMLConfig = .default) -> String {
+        serializeFragment(doc.content, config)
+    }
+
+    /// Serialize a bare fragment (e.g. a copied selection's content) to HTML.
+    public static func serialize(fragment: Fragment, config: HTMLConfig = .default) -> String {
+        serializeFragment(fragment, config)
+    }
+
+    static func serializeFragment(_ fragment: Fragment, _ config: HTMLConfig) -> String {
+        var out = ""
+        // Group inline runs vs block nodes naturally by recursion.
+        for i in 0..<fragment.childCount {
+            out += serializeNode(fragment.child(i), config)
+        }
+        return out
+    }
+
+    static func serializeNode(_ node: Node, _ config: HTMLConfig) -> String {
+        if node.isText {
+            return applyMarks(escape(node.text ?? ""), node.marks, config)
+        }
+        switch node.type.name {
+        case "heading":
+            let level = node.attrs["level"]?.intValue ?? 1
+            return "<h\(level)>\(serializeFragment(node.content, config))</h\(level)>"
+        case "codeBlock":
+            return "<pre><code>\(escape(node.textContent))</code></pre>"
+        case "horizontalRule":
+            return "<hr>"
+        case "hardBreak":
+            return "<br>"
+        case "image":
+            var attrs = " src=\"\(escape(node.attrs["src"]?.stringValue ?? ""))\""
+            if let alt = node.attrs["alt"]?.stringValue { attrs += " alt=\"\(escape(alt))\"" }
+            if let title = node.attrs["title"]?.stringValue { attrs += " title=\"\(escape(title))\"" }
+            return "<img\(attrs)>"
+        case "wikiLink":
+            let target = node.attrs["target"]?.stringValue ?? ""
+            let label = node.attrs["label"]?.stringValue ?? target
+            return "<a href=\"\(escape(target))\" data-wikilink=\"\(escape(target))\">\(escape(label))</a>"
+        default:
+            let tag = config.nodeTags[node.type.name] ?? "div"
+            return "<\(tag)>\(serializeFragment(node.content, config))</\(tag)>"
+        }
+    }
+
+    static func applyMarks(_ text: String, _ marks: [Mark], _ config: HTMLConfig) -> String {
+        var result = text
+        for mark in marks.reversed() {
+            if mark.type.name == "link" {
+                let href = mark.attrs["href"]?.stringValue ?? ""
+                result = "<a href=\"\(escape(href))\">\(result)</a>"
+            } else if let tag = config.markTags[mark.type.name] {
+                result = "<\(tag)>\(result)</\(tag)>"
+            }
+        }
+        return result
+    }
+
+    static func escape(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+}
+
+// MARK: - Parse
+
+/// A tiny HTML tokenizer + parser sufficient for clipboard interchange of the
+/// document shapes this editor produces.
+public enum HTMLParser {
+    enum Token {
+        case open(tag: String, attrs: [String: String], selfClosing: Bool)
+        case close(tag: String)
+        case text(String)
+    }
+
+    public static func parse(_ html: String, schema: Schema, config: HTMLConfig = .default) throws -> Node {
+        let tokens = tokenize(html)
+        var blocks: [Node] = []
+        var index = 0
+        while index < tokens.count {
+            if let (node, next) = parseBlock(tokens, index, schema, config) {
+                if let node { blocks.append(node) }
+                index = next
+            } else {
+                index += 1
+            }
+        }
+        if blocks.isEmpty, let p = schema.nodes["paragraph"]?.createAndFill() {
+            blocks = [p]
+        }
+        return try schema.node("doc", [:], content: Fragment.from(blocks))
+    }
+
+    // Parse a single block-level element starting at `start`.
+    private static func parseBlock(_ tokens: [Token], _ start: Int, _ schema: Schema, _ config: HTMLConfig) -> (Node?, Int)? {
+        guard case let .open(tag, attrs, selfClosing) = tokens[start] else {
+            // stray text at block level → wrap in a paragraph
+            if case let .text(t) = tokens[start], !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let para = try? schema.node("paragraph", [:], content: Fragment.from([schema.text(decodeEntities(t))])) {
+                return (para, start + 1)
+            }
+            return (nil, start + 1)
+        }
+        if tag == "hr" || (selfClosing && tag == "hr") {
+            return (try? schema.node("horizontalRule"), start + 1)
+        }
+        if tag == "img" {
+            return (makeImage(attrs, schema), start + 1)
+        }
+        let nodeName = config.tagToNode[tag]
+        // Find matching close tag.
+        let end = matchingClose(tokens, start, tag)
+        switch nodeName {
+        case "heading":
+            let level = Int(tag.dropFirst()) ?? 1
+            let inline = parseInline(Array(tokens[(start + 1)..<end]), schema, config)
+            return (try? schema.node("heading", ["level": .int(level)], content: Fragment.from(inline)), end + 1)
+        case "codeBlock":
+            let text = innerText(tokens, start + 1, end)
+            let content = text.isEmpty ? Fragment.empty : Fragment.from([schema.text(text)])
+            return (try? schema.node("codeBlock", [:], content: content), end + 1)
+        case "paragraph":
+            let inline = parseInline(Array(tokens[(start + 1)..<end]), schema, config)
+            return (try? schema.node("paragraph", [:], content: Fragment.from(inline.isEmpty ? [] : inline)), end + 1)
+        case "blockquote", "bulletList", "orderedList", "listItem", "table", "tableRow", "tableCell", "tableHeader":
+            let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
+            let name = nodeName!
+            if let type = schema.nodes[name] {
+                if let n = try? type.create([:], content: Fragment.from(children)) { return (n, end + 1) }
+                if let filled = type.createAndFill([:], content: Fragment.from(children)) { return (filled, end + 1) }
+            }
+            return (nil, end + 1)
+        default:
+            // Unknown block: try its children as blocks.
+            let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
+            if children.count == 1 { return (children[0], end + 1) }
+            return (nil, end + 1)
+        }
+    }
+
+    private static func parseBlocks(_ tokens: [Token], _ schema: Schema, _ config: HTMLConfig) -> [Node] {
+        var result: [Node] = []
+        var i = 0
+        while i < tokens.count {
+            if let (node, next) = parseBlock(tokens, i, schema, config) {
+                if let node { result.append(node) }
+                i = next
+            } else { i += 1 }
+        }
+        return result
+    }
+
+    // Parse inline content (text + marks + inline atoms) within a block.
+    private static func parseInline(_ tokens: [Token], _ schema: Schema, _ config: HTMLConfig) -> [Node] {
+        var result: [Node] = []
+        var markStack: [Mark] = []
+        var i = 0
+        while i < tokens.count {
+            switch tokens[i] {
+            case let .text(t):
+                let text = decodeEntities(t)
+                if !text.isEmpty { result.append(schema.text(text, markStack)) }
+                i += 1
+            case let .open(tag, attrs, selfClosing):
+                if tag == "br", let br = try? schema.node("hardBreak") { result.append(br); i += 1; continue }
+                if tag == "img" { if let img = makeImage(attrs, schema) { result.append(img) }; i += 1; continue }
+                if tag == "a", attrs["data-wikilink"] != nil || schema.nodes["wikiLink"] != nil, attrs["data-wikilink"] != nil {
+                    let target = attrs["data-wikilink"] ?? attrs["href"] ?? ""
+                    let close = matchingClose(tokens, i, tag)
+                    let label = innerText(tokens, i + 1, close)
+                    if let wl = try? schema.nodes["wikiLink"]?.create(["target": .string(target), "label": .string(label)]) {
+                        result.append(wl); i = close + 1; continue
+                    }
+                }
+                if let markName = config.tagToMark[tag], let markType = schema.marks[markName] {
+                    var attrsDict: Attrs = [:]
+                    if markName == "link" { attrsDict["href"] = .string(attrs["href"] ?? "") }
+                    markStack.append(markType.create(attrsDict))
+                }
+                if selfClosing, let markName = config.tagToMark[tag], schema.marks[markName] != nil {
+                    markStack.removeLast()
+                }
+                i += 1
+            case let .close(tag):
+                if config.tagToMark[tag] != nil, !markStack.isEmpty { markStack.removeLast() }
+                i += 1
+            }
+        }
+        return result
+    }
+
+    private static func makeImage(_ attrs: [String: String], _ schema: Schema) -> Node? {
+        guard let type = schema.nodes["image"], let src = attrs["src"] else { return nil }
+        var a: Attrs = ["src": .string(src)]
+        if let alt = attrs["alt"] { a["alt"] = .string(alt) }
+        if let title = attrs["title"] { a["title"] = .string(title) }
+        return try? type.create(a)
+    }
+
+    private static func innerText(_ tokens: [Token], _ start: Int, _ end: Int) -> String {
+        var text = ""
+        var i = start
+        while i < end {
+            if case let .text(t) = tokens[i] { text += decodeEntities(t) }
+            i += 1
+        }
+        return text
+    }
+
+    private static func matchingClose(_ tokens: [Token], _ openIndex: Int, _ tag: String) -> Int {
+        guard case let .open(_, _, selfClosing) = tokens[openIndex], !selfClosing else { return openIndex }
+        var depth = 0
+        var i = openIndex
+        while i < tokens.count {
+            switch tokens[i] {
+            case let .open(t, _, sc) where t == tag && !sc: depth += 1
+            case let .close(t) where t == tag:
+                depth -= 1
+                if depth == 0 { return i }
+            default: break
+            }
+            i += 1
+        }
+        return tokens.count - 1
+    }
+
+    // MARK: Tokenizer
+
+    static func tokenize(_ html: String) -> [Token] {
+        var tokens: [Token] = []
+        let chars = Array(html)
+        var i = 0
+        while i < chars.count {
+            if chars[i] == "<" {
+                // find end of tag
+                var j = i + 1
+                while j < chars.count && chars[j] != ">" { j += 1 }
+                let raw = String(chars[(i + 1)..<min(j, chars.count)])
+                if raw.hasPrefix("/") {
+                    tokens.append(.close(tag: raw.dropFirst().trimmingCharacters(in: .whitespaces).lowercased()))
+                } else {
+                    let (tag, attrs, selfClosing) = parseTag(raw)
+                    tokens.append(.open(tag: tag, attrs: attrs, selfClosing: selfClosing || voidTags.contains(tag)))
+                }
+                i = j + 1
+            } else {
+                var j = i
+                while j < chars.count && chars[j] != "<" { j += 1 }
+                let text = String(chars[i..<j])
+                tokens.append(.text(text))
+                i = j
+            }
+        }
+        return tokens
+    }
+
+    private static let voidTags: Set<String> = ["br", "hr", "img"]
+
+    private static func parseTag(_ raw: String) -> (String, [String: String], Bool) {
+        var s = raw.trimmingCharacters(in: .whitespaces)
+        let selfClosing = s.hasSuffix("/")
+        if selfClosing { s.removeLast() }
+        let scanner = Array(s)
+        var idx = 0
+        func skipSpace() { while idx < scanner.count && scanner[idx] == " " { idx += 1 } }
+        // tag name
+        var name = ""
+        while idx < scanner.count && scanner[idx] != " " { name.append(scanner[idx]); idx += 1 }
+        var attrs: [String: String] = [:]
+        while idx < scanner.count {
+            skipSpace()
+            var key = ""
+            while idx < scanner.count && scanner[idx] != "=" && scanner[idx] != " " { key.append(scanner[idx]); idx += 1 }
+            if idx < scanner.count && scanner[idx] == "=" {
+                idx += 1
+                if idx < scanner.count && (scanner[idx] == "\"" || scanner[idx] == "'") {
+                    let quote = scanner[idx]; idx += 1
+                    var value = ""
+                    while idx < scanner.count && scanner[idx] != quote { value.append(scanner[idx]); idx += 1 }
+                    idx += 1
+                    if !key.isEmpty { attrs[key.lowercased()] = decodeEntities(value) }
+                }
+            } else if !key.isEmpty {
+                attrs[key.lowercased()] = ""
+            }
+            if idx < scanner.count && scanner[idx] == " " { continue }
+            if key.isEmpty { idx += 1 }
+        }
+        return (name.lowercased(), attrs, selfClosing)
+    }
+
+    static func decodeEntities(_ s: String) -> String {
+        s.replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&amp;", with: "&")
+    }
+}

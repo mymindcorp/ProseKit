@@ -1,0 +1,323 @@
+import Foundation
+import DocumentModel
+
+// MARK: - Serialize
+
+public enum MarkdownSerializer {
+    public static func serialize(_ doc: Node) -> String {
+        var blocks: [String] = []
+        for i in 0..<doc.childCount {
+            blocks.append(serializeBlock(doc.child(i), indent: ""))
+        }
+        return blocks.joined(separator: "\n\n")
+    }
+
+    static func serializeBlock(_ node: Node, indent: String) -> String {
+        switch node.type.name {
+        case "paragraph":
+            return serializeInline(node.content)
+        case "heading":
+            let level = node.attrs["level"]?.intValue ?? 1
+            return String(repeating: "#", count: level) + " " + serializeInline(node.content)
+        case "blockquote":
+            let inner = (0..<node.childCount).map { serializeBlock(node.child($0), indent: indent) }.joined(separator: "\n\n")
+            return inner.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
+        case "codeBlock":
+            return "```\n\(node.textContent)\n```"
+        case "horizontalRule":
+            return "---"
+        case "bulletList":
+            return (0..<node.childCount).map { "- " + listItemText(node.child($0)) }.joined(separator: "\n")
+        case "orderedList":
+            let start = node.attrs["order"]?.intValue ?? 1
+            return (0..<node.childCount).map { "\(start + $0). " + listItemText(node.child($0)) }.joined(separator: "\n")
+        default:
+            return serializeInline(node.content)
+        }
+    }
+
+    static func listItemText(_ item: Node) -> String {
+        (0..<item.childCount).map { serializeBlock(item.child($0), indent: "  ") }.joined(separator: "\n  ")
+    }
+
+    static func serializeInline(_ fragment: Fragment) -> String {
+        var out = ""
+        for i in 0..<fragment.childCount {
+            let node = fragment.child(i)
+            if node.isText {
+                out += applyMarks(node.text ?? "", node.marks)
+            } else if node.type.name == "hardBreak" {
+                out += "\\\n"
+            } else if node.type.name == "image" {
+                let src = node.attrs["src"]?.stringValue ?? ""
+                let alt = node.attrs["alt"]?.stringValue ?? ""
+                out += "![\(alt)](\(src))"
+            } else if node.type.name == "wikiLink" {
+                let target = node.attrs["target"]?.stringValue ?? ""
+                if let label = node.attrs["label"]?.stringValue { out += "[[\(target)|\(label)]]" }
+                else { out += "[[\(target)]]" }
+            }
+        }
+        return out
+    }
+
+    static func applyMarks(_ text: String, _ marks: [Mark]) -> String {
+        var result = text
+        // link is outermost; code innermost-ish
+        if marks.contains(where: { $0.type.name == "code" }) { result = "`\(result)`" }
+        if marks.contains(where: { $0.type.name == "strike" }) { result = "~~\(result)~~" }
+        if marks.contains(where: { $0.type.name == "bold" }) { result = "**\(result)**" }
+        if marks.contains(where: { $0.type.name == "italic" }) { result = "*\(result)*" }
+        if let link = marks.first(where: { $0.type.name == "link" }) {
+            result = "[\(result)](\(link.attrs["href"]?.stringValue ?? ""))"
+        }
+        return result
+    }
+}
+
+// MARK: - Parse
+
+public enum MarkdownParser {
+    public static func parse(_ markdown: String, schema: Schema) throws -> Node {
+        let lines = markdown.components(separatedBy: "\n")
+        var blocks: [Node] = []
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { i += 1; continue }
+
+            // Code fence
+            if trimmed.hasPrefix("```") {
+                var code: [String] = []
+                i += 1
+                while i < lines.count && !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                    code.append(lines[i]); i += 1
+                }
+                i += 1
+                let text = code.joined(separator: "\n")
+                let content = text.isEmpty ? Fragment.empty : Fragment.from([schema.text(text)])
+                if let cb = try? schema.node("codeBlock", [:], content: content) { blocks.append(cb) }
+                continue
+            }
+            // Horizontal rule
+            if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+                if let hr = try? schema.node("horizontalRule") { blocks.append(hr) }
+                i += 1; continue
+            }
+            // Heading
+            if let m = headingMatch(trimmed) {
+                let inline = parseInline(m.text, schema)
+                if let h = try? schema.node("heading", ["level": .int(m.level)], content: Fragment.from(inline)) {
+                    blocks.append(h)
+                }
+                i += 1; continue
+            }
+            // Blockquote
+            if trimmed.hasPrefix(">") {
+                var quote: [String] = []
+                while i < lines.count && lines[i].trimmingCharacters(in: .whitespaces).hasPrefix(">") {
+                    var l = lines[i].trimmingCharacters(in: .whitespaces)
+                    l.removeFirst()
+                    if l.hasPrefix(" ") { l.removeFirst() }
+                    quote.append(l)
+                    i += 1
+                }
+                let inner = try parse(quote.joined(separator: "\n"), schema: schema)
+                if let bq = try? schema.node("blockquote", [:], content: inner.content) { blocks.append(bq) }
+                continue
+            }
+            // Lists
+            if let bullet = bulletMatch(trimmed) {
+                let (items, next) = collectList(lines, i, ordered: false)
+                if let list = makeList(items, ordered: false, schema: schema) { blocks.append(list) }
+                i = next
+                _ = bullet
+                continue
+            }
+            if let ordered = orderedMatch(trimmed) {
+                let (items, next) = collectList(lines, i, ordered: true)
+                if let list = makeList(items, ordered: true, schema: schema, start: ordered) { blocks.append(list) }
+                i = next
+                continue
+            }
+            // Paragraph (gather consecutive non-blank, non-special lines)
+            var para: [String] = [trimmed]
+            i += 1
+            while i < lines.count {
+                let t = lines[i].trimmingCharacters(in: .whitespaces)
+                if t.isEmpty || t.hasPrefix("#") || t.hasPrefix(">") || t.hasPrefix("```")
+                    || bulletMatch(t) != nil || orderedMatch(t) != nil { break }
+                para.append(t); i += 1
+            }
+            let inline = parseInline(para.joined(separator: " "), schema)
+            if let p = try? schema.node("paragraph", [:], content: Fragment.from(inline)) { blocks.append(p) }
+        }
+        if blocks.isEmpty, let p = schema.nodes["paragraph"]?.createAndFill() { blocks = [p] }
+        return try schema.node("doc", [:], content: Fragment.from(blocks))
+    }
+
+    private static func headingMatch(_ line: String) -> (level: Int, text: String)? {
+        var level = 0
+        for c in line { if c == "#" { level += 1 } else { break } }
+        guard level >= 1, level <= 6, line.count > level, Array(line)[level] == " " else { return nil }
+        let text = String(line.dropFirst(level + 1))
+        return (level, text)
+    }
+
+    private static func bulletMatch(_ line: String) -> String? {
+        for prefix in ["- ", "* ", "+ "] where line.hasPrefix(prefix) {
+            return String(line.dropFirst(2))
+        }
+        return nil
+    }
+
+    private static func orderedMatch(_ line: String) -> Int? {
+        var digits = ""
+        for c in line { if c.isNumber { digits.append(c) } else { break } }
+        guard !digits.isEmpty, line.dropFirst(digits.count).hasPrefix(". ") else { return nil }
+        return Int(digits)
+    }
+
+    private static func collectList(_ lines: [String], _ start: Int, ordered: Bool) -> (items: [String], next: Int) {
+        var items: [String] = []
+        var i = start
+        while i < lines.count {
+            let t = lines[i].trimmingCharacters(in: .whitespaces)
+            if ordered, let _ = orderedMatch(t) {
+                items.append(String(t.drop(while: { $0.isNumber }).dropFirst(2)))
+                i += 1
+            } else if !ordered, let text = bulletMatch(t) {
+                items.append(text); i += 1
+            } else { break }
+        }
+        return (items, i)
+    }
+
+    private static func makeList(_ items: [String], ordered: Bool, schema: Schema, start: Int = 1) -> Node? {
+        guard let itemType = schema.nodes["listItem"] else { return nil }
+        var itemNodes: [Node] = []
+        for text in items {
+            let inline = parseInline(text, schema)
+            guard let p = try? schema.node("paragraph", [:], content: Fragment.from(inline)) else { continue }
+            guard let item = try? itemType.create([:], content: Fragment.from([p])) else { continue }
+            itemNodes.append(item)
+        }
+        let listName = ordered ? "orderedList" : "bulletList"
+        let attrs: Attrs = ordered ? ["order": .int(start)] : [:]
+        return try? schema.node(listName, attrs, content: Fragment.from(itemNodes))
+    }
+
+    // Inline parser: handles **bold**, *italic*/_italic_, `code`, ~~strike~~,
+    // [text](url), ![alt](src), and [[wiki|link]].
+    static func parseInline(_ text: String, _ schema: Schema) -> [Node] {
+        var nodes: [Node] = []
+        let chars = Array(text)
+        var i = 0
+        var buffer = ""
+        func flush(_ marks: [Mark] = []) {
+            if !buffer.isEmpty { nodes.append(schema.text(buffer, marks)); buffer = "" }
+        }
+        func mark(_ name: String, _ attrs: Attrs = [:]) -> [Mark] {
+            schema.marks[name].map { [$0.create(attrs)] } ?? []
+        }
+        while i < chars.count {
+            let c = chars[i]
+            // Wiki link [[...]]
+            if c == "[" && i + 1 < chars.count && chars[i + 1] == "[" {
+                if let close = findSeq(chars, i + 2, "]]") {
+                    flush()
+                    let inner = String(chars[(i + 2)..<close])
+                    let parts = inner.split(separator: "|", maxSplits: 1).map(String.init)
+                    var attrs: Attrs = ["target": .string(parts[0])]
+                    if parts.count > 1 { attrs["label"] = .string(parts[1]) }
+                    if let wl = try? schema.nodes["wikiLink"]?.create(attrs) { nodes.append(wl) }
+                    i = close + 2
+                    continue
+                }
+            }
+            // Image ![alt](src)
+            if c == "!" && i + 1 < chars.count && chars[i + 1] == "[" {
+                if let (alt, url, next) = parseLinkLike(chars, i + 1) {
+                    flush()
+                    if let type = schema.nodes["image"], let img = try? type.create(["src": .string(url), "alt": .string(alt)]) {
+                        nodes.append(img)
+                    }
+                    i = next; continue
+                }
+            }
+            // Link [text](url)
+            if c == "[" {
+                if let (label, url, next) = parseLinkLike(chars, i) {
+                    flush()
+                    nodes.append(schema.text(label, mark("link", ["href": .string(url)])))
+                    i = next; continue
+                }
+            }
+            // Bold ** **
+            if c == "*" && i + 1 < chars.count && chars[i + 1] == "*" {
+                if let close = findSeq(chars, i + 2, "**") {
+                    flush()
+                    nodes.append(schema.text(String(chars[(i + 2)..<close]), mark("bold")))
+                    i = close + 2; continue
+                }
+            }
+            // Italic * * or _ _
+            if c == "*" || c == "_" {
+                let delim = String(c)
+                if let close = findChar(chars, i + 1, c) {
+                    flush()
+                    nodes.append(schema.text(String(chars[(i + 1)..<close]), mark("italic")))
+                    i = close + 1; continue
+                    _ = delim
+                }
+            }
+            // Strike ~~ ~~
+            if c == "~" && i + 1 < chars.count && chars[i + 1] == "~" {
+                if let close = findSeq(chars, i + 2, "~~") {
+                    flush()
+                    nodes.append(schema.text(String(chars[(i + 2)..<close]), mark("strike")))
+                    i = close + 2; continue
+                }
+            }
+            // Code ` `
+            if c == "`" {
+                if let close = findChar(chars, i + 1, "`") {
+                    flush()
+                    nodes.append(schema.text(String(chars[(i + 1)..<close]), mark("code")))
+                    i = close + 1; continue
+                }
+            }
+            buffer.append(c)
+            i += 1
+        }
+        flush()
+        return nodes
+    }
+
+    private static func parseLinkLike(_ chars: [Character], _ start: Int) -> (text: String, url: String, next: Int)? {
+        guard chars[start] == "[" else { return nil }
+        guard let closeBracket = findChar(chars, start + 1, "]") else { return nil }
+        guard closeBracket + 1 < chars.count, chars[closeBracket + 1] == "(" else { return nil }
+        guard let closeParen = findChar(chars, closeBracket + 2, ")") else { return nil }
+        let text = String(chars[(start + 1)..<closeBracket])
+        let url = String(chars[(closeBracket + 2)..<closeParen])
+        return (text, url, closeParen + 1)
+    }
+
+    private static func findChar(_ chars: [Character], _ from: Int, _ ch: Character) -> Int? {
+        var i = from
+        while i < chars.count { if chars[i] == ch { return i }; i += 1 }
+        return nil
+    }
+
+    private static func findSeq(_ chars: [Character], _ from: Int, _ seq: String) -> Int? {
+        let s = Array(seq)
+        var i = from
+        while i + s.count <= chars.count {
+            if Array(chars[i..<(i + s.count)]) == s { return i }
+            i += 1
+        }
+        return nil
+    }
+}

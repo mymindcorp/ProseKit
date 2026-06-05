@@ -1,0 +1,195 @@
+import DocumentModel
+import DocumentTransform
+import EditorStateKit
+import EditorCommands
+
+// A port of prosemirror-schema-list's list manipulation commands.
+
+/// Toggle the selection between being a list of the given type and not.
+public func toggleList(_ listType: NodeType, _ itemType: NodeType) -> Command {
+    { state, dispatch, host in
+        if isNodeActive(state, listType) {
+            return liftListItem(itemType)(state, dispatch, host)
+        }
+        return wrapInList(listType)(state, dispatch, host)
+    }
+}
+
+/// Wrap the selection in a list of the given type.
+public func wrapInList(_ listType: NodeType, _ attrs: Attrs = [:]) -> Command {
+    { state, dispatch, _ in
+        let sel = state.selection
+        let from = sel.resolvedFrom, to = sel.resolvedTo
+        guard var range = from.blockRange(to) else { return false }
+        var outerRange = range
+        var doJoin = false
+        if range.depth >= 2, from.node(range.depth - 1).type.compatibleContent(listType), range.startIndex == 0 {
+            if from.index(range.depth - 1) == 0 { return false }
+            let insert = state.doc.resolve(range.start - 2)
+            outerRange = NodeRange(insert, insert, range.depth)
+            if range.endIndex < range.parent.childCount {
+                range = NodeRange(from, state.doc.resolve(to.end(range.depth)), range.depth)
+            }
+            doJoin = true
+        }
+        guard let wrap = findWrappingForRange(outerRange, listType, attrs, range) else { return false }
+        if let dispatch {
+            dispatch(doWrapInList(state.tr, range, wrap, doJoin, listType).scrollIntoView())
+        }
+        return true
+    }
+}
+
+private func doWrapInList(_ tr: Transaction, _ range: NodeRange, _ wrappers: [NodeTypeWithAttrs], _ joinBefore: Bool, _ listType: NodeType) -> Transaction {
+    var content = Fragment.empty
+    var i = wrappers.count - 1
+    while i >= 0 {
+        content = Fragment.from((try? wrappers[i].type.create(wrappers[i].attrs, content: content)) ?? content.firstChild!)
+        i -= 1
+    }
+    try? tr.step(ReplaceAroundStep(range.start - (joinBefore ? 2 : 0), range.end, range.start, range.end,
+                                   Slice(content: content, openStart: 0, openEnd: 0), wrappers.count, structure: true))
+    var found = 0
+    for (idx, w) in wrappers.enumerated() where w.type === listType { found = idx + 1 }
+    let splitDepth = wrappers.count - found
+    var splitPos = range.start + wrappers.count - (joinBefore ? 2 : 0)
+    let parent = range.parent
+    var idx = range.startIndex
+    let end = range.endIndex
+    var first = true
+    while idx < end {
+        if !first && canSplit(tr.doc, splitPos, splitDepth) {
+            try? tr.split(splitPos, splitDepth)
+            splitPos += 2 * splitDepth
+        }
+        splitPos += parent.child(idx).nodeSize
+        idx += 1
+        first = false
+    }
+    return tr
+}
+
+/// Split a list item, creating a new item.
+public func splitListItem(_ itemType: NodeType, _ itemAttrs: Attrs? = nil) -> Command {
+    { state, dispatch, _ in
+        let sel = state.selection
+        if let ns = sel as? NodeSelection, ns.node.isBlock { return false }
+        let from = sel.resolvedFrom, to = sel.resolvedTo
+        if from.depth < 2 || !from.sameParent(to) { return false }
+        let grandParent = from.node(-1)
+        if grandParent.type !== itemType { return false }
+
+        if from.parent.content.size == 0 && from.node(-1).childCount == from.indexAfter(-1) {
+            // In an empty block at the end of the item — lift out instead.
+            if from.depth == 2 || from.node(-3).type !== itemType || from.index(-2) != from.node(-2).childCount - 1 {
+                return liftListItem(itemType)(state, dispatch, nil)
+            }
+            return false
+        }
+
+        let nextType: NodeType? = to.pos == from.end() ? grandParent.contentMatchAt(0).defaultType : nil
+        let tr = state.tr
+        try? tr.delete(from.pos, to.pos)
+        var types: [NodeTypeWithAttrs?]? = nil
+        if let nextType {
+            types = [itemAttrs != nil ? NodeTypeWithAttrs(itemType, itemAttrs!) : nil, NodeTypeWithAttrs(nextType)]
+        }
+        let splitPos = from.pos
+        if !canSplit(tr.doc, splitPos, 2, types) { return false }
+        if let dispatch {
+            try? tr.split(splitPos, 2, types)
+            dispatch(tr.scrollIntoView())
+        }
+        return true
+    }
+}
+
+/// Sink the selected list items one level deeper (indent).
+public func sinkListItem(_ itemType: NodeType) -> Command {
+    { state, dispatch, _ in
+        let sel = state.selection
+        let from = sel.resolvedFrom, to = sel.resolvedTo
+        guard let range = from.blockRange(to, pred: { $0.childCount != 0 && $0.firstChild?.type === itemType }) else { return false }
+        let startIndex = range.startIndex
+        if startIndex == 0 { return false }
+        let parent = range.parent
+        let nodeBefore = parent.child(startIndex - 1)
+        if nodeBefore.type !== itemType { return false }
+        if let dispatch {
+            let nestedBefore = nodeBefore.lastChild?.type === parent.type
+            let innerInner = nestedBefore ? Fragment.from(try! itemType.create()) : Fragment.empty
+            let inner = Fragment.from(try! parent.type.create([:], content: innerInner))
+            let slice = Slice(content: Fragment.from(try! itemType.create([:], content: inner)),
+                              openStart: nestedBefore ? 3 : 1, openEnd: 0)
+            let before = range.start, after = range.end
+            let tr = state.tr
+            try? tr.step(ReplaceAroundStep(before - (nestedBefore ? 3 : 1), after, before, after, slice, 1, structure: true))
+            dispatch(tr.scrollIntoView())
+        }
+        return true
+    }
+}
+
+/// Lift the selected list items out of their list (outdent).
+public func liftListItem(_ itemType: NodeType) -> Command {
+    { state, dispatch, _ in
+        let sel = state.selection
+        let from = sel.resolvedFrom, to = sel.resolvedTo
+        guard let range = from.blockRange(to, pred: { $0.childCount != 0 && $0.firstChild?.type === itemType }) else { return false }
+        if dispatch == nil { return true }
+        if from.node(range.depth - 1).type === itemType {
+            return liftToOuterList(state, dispatch!, itemType, range)
+        }
+        return liftOutOfList(state, dispatch!, range)
+    }
+}
+
+private func liftToOuterList(_ state: EditorState, _ dispatch: Dispatch, _ itemType: NodeType, _ range0: NodeRange) -> Bool {
+    var range = range0
+    let tr = state.tr
+    let end = range.end
+    let endOfList = range.to.end(range.depth)
+    if end < endOfList {
+        try? tr.step(ReplaceAroundStep(end - 1, endOfList, end, endOfList,
+            Slice(content: Fragment.from(try! itemType.create([:], content: range.parent.copy(content: .empty).content)), openStart: 1, openEnd: 0), 1, structure: true))
+        range = NodeRange(tr.doc.resolve(range.from.pos), tr.doc.resolve(endOfList), range.depth)
+    }
+    guard let target = liftTarget(range) else { return false }
+    try? tr.lift(range, target)
+    let after = tr.mapping.map(end, -1) - 1
+    if canJoin(tr.doc, after) { try? tr.join(after) }
+    dispatch(tr.scrollIntoView())
+    return true
+}
+
+private func liftOutOfList(_ state: EditorState, _ dispatch: Dispatch, _ range: NodeRange) -> Bool {
+    let tr = state.tr
+    let list = range.parent
+    var pos = range.end
+    var i = range.endIndex - 1
+    let e = range.startIndex
+    while i > e {
+        pos -= list.child(i).nodeSize
+        try? tr.delete(pos - 1, pos + 1)
+        i -= 1
+    }
+    let start = tr.doc.resolve(range.start)
+    guard let item = start.nodeAfter else { return false }
+    if tr.mapping.map(range.end) != range.start + item.nodeSize { return false }
+    let atStart = range.startIndex == 0
+    let atEnd = range.endIndex == list.childCount
+    let parent = start.node(-1)
+    let indexBefore = start.index(-1)
+    let replacement = item.content.append(atEnd ? .empty : Fragment.from(list))
+    if !parent.canReplace(indexBefore + (atStart ? 0 : 1), indexBefore + 1, replacement: replacement) {
+        return false
+    }
+    let startPos = start.pos
+    let endPos = startPos + item.nodeSize
+    let sliceContent = (atStart ? Fragment.empty : Fragment.from(list.copy(content: .empty)))
+        .append(atEnd ? .empty : Fragment.from(list.copy(content: .empty)))
+    try? tr.step(ReplaceAroundStep(startPos - (atStart ? 1 : 0), endPos + (atEnd ? 1 : 0), startPos + 1, endPos - 1,
+        Slice(content: sliceContent, openStart: atStart ? 0 : 1, openEnd: atEnd ? 0 : 1), atStart ? 0 : 1, structure: true))
+    dispatch(tr.scrollIntoView())
+    return true
+}

@@ -1,0 +1,306 @@
+import DocumentModel
+import EditorStateKit
+import EditorCommands
+import EditorInputRules
+
+// The basic StarterKit extensions, using Tiptap node/mark names.
+
+// MARK: - Core nodes
+
+public final class DocumentExtension: NodeExtension {
+    public let name = "doc"
+    public init() {}
+    public var nodeSpec: NodeSpec { NodeSpec(content: "block+") }
+}
+
+public final class TextExtension: NodeExtension {
+    public let name = "text"
+    public init() {}
+    public var nodeSpec: NodeSpec { NodeSpec(group: "inline") }
+}
+
+public final class ParagraphExtension: NodeExtension {
+    public let name = "paragraph"
+    public init() {}
+    public var nodeSpec: NodeSpec { NodeSpec(content: "inline*", group: "block") }
+    public var html: HTMLSpec { HTMLSpec(tag: "p") }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.nodeType else { return [:] }
+        return ["setParagraph": setBlockType(type)]
+    }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.nodeType else { return [:] }
+        return ["Mod-Alt-0": setBlockType(type)]
+    }
+}
+
+public final class HeadingExtension: NodeExtension {
+    public let name = "heading"
+    public let levels: [Int]
+    public init(levels: [Int] = [1, 2, 3, 4, 5, 6]) { self.levels = levels }
+    public var nodeSpec: NodeSpec {
+        NodeSpec(content: "inline*", group: "block", attrs: ["level": AttributeSpec(default: .int(1))], defining: true)
+    }
+    public var html: HTMLSpec { HTMLSpec(tag: "h", parseTags: ["h1", "h2", "h3", "h4", "h5", "h6"]) }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.nodeType, let para = ctx.schema.nodes["paragraph"] else { return [:] }
+        var cmds: [String: Command] = [:]
+        for level in levels {
+            cmds["toggleHeading\(level)"] = toggleBlockType(type, para, ["level": .int(level)])
+        }
+        return cmds
+    }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.nodeType, let para = ctx.schema.nodes["paragraph"] else { return [:] }
+        var ks: [String: Command] = [:]
+        for level in levels {
+            ks["Mod-Alt-\(level)"] = toggleBlockType(type, para, ["level": .int(level)])
+        }
+        return ks
+    }
+    public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
+        guard let type = ctx.nodeType else { return [] }
+        let maxLevel = levels.max() ?? 6
+        return [textblockTypeInputRule("^(#{1,\(maxLevel)})\\s$", type) { m in
+            ["level": .int((m[1] ?? "").count)]
+        }]
+    }
+}
+
+public final class BlockquoteExtension: NodeExtension {
+    public let name = "blockquote"
+    public init() {}
+    public var nodeSpec: NodeSpec { NodeSpec(content: "block+", group: "block", defining: true) }
+    public var html: HTMLSpec { HTMLSpec(tag: "blockquote") }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.nodeType else { return [:] }
+        return ["toggleBlockquote": toggleWrap(type)]
+    }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.nodeType else { return [:] }
+        return ["Mod-Shift-b": toggleWrap(type)]
+    }
+    public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
+        guard let type = ctx.nodeType else { return [] }
+        return [wrappingInputRule("^\\s*>\\s$", type)]
+    }
+}
+
+public final class HorizontalRuleExtension: NodeExtension {
+    public let name = "horizontalRule"
+    public init() {}
+    public var nodeSpec: NodeSpec { NodeSpec(group: "block") }
+    public var html: HTMLSpec { HTMLSpec(tag: "hr") }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.nodeType else { return [:] }
+        return ["setHorizontalRule": { state, dispatch, _ in
+            dispatch?(state.tr.replaceSelectionWith((try? type.create())!).scrollIntoView())
+            return true
+        }]
+    }
+}
+
+public final class HardBreakExtension: NodeExtension {
+    public let name = "hardBreak"
+    public init() {}
+    public var nodeSpec: NodeSpec { NodeSpec(group: "inline", inline: true, selectable: false) }
+    public var html: HTMLSpec { HTMLSpec(tag: "br") }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.nodeType else { return [:] }
+        return ["setHardBreak": setHardBreak(type)]
+    }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.nodeType else { return [:] }
+        return ["Shift-Enter": setHardBreak(type)]
+    }
+    private func setHardBreak(_ type: NodeType) -> Command {
+        { state, dispatch, _ in
+            dispatch?(state.tr.replaceSelectionWith((try? type.create())!, inheritMarks: false).scrollIntoView())
+            return true
+        }
+    }
+}
+
+// MARK: - Lists
+
+public final class ListItemExtension: NodeExtension {
+    public let name = "listItem"
+    public init() {}
+    public var nodeSpec: NodeSpec { NodeSpec(content: "paragraph block*", defining: true) }
+    public var html: HTMLSpec { HTMLSpec(tag: "li") }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let item = ctx.nodeType else { return [:] }
+        return [
+            "Enter": splitListItem(item),
+            "Tab": sinkListItem(item),
+            "Shift-Tab": liftListItem(item),
+        ]
+    }
+}
+
+public final class BulletListExtension: NodeExtension {
+    public let name = "bulletList"
+    public init() {}
+    public var nodeSpec: NodeSpec { NodeSpec(content: "listItem+", group: "block") }
+    public var html: HTMLSpec { HTMLSpec(tag: "ul") }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.nodeType, let item = ctx.schema.nodes["listItem"] else { return [:] }
+        return ["toggleBulletList": toggleList(type, item)]
+    }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.nodeType, let item = ctx.schema.nodes["listItem"] else { return [:] }
+        return ["Mod-Shift-8": toggleList(type, item)]
+    }
+    public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
+        guard let type = ctx.nodeType else { return [] }
+        return [wrappingInputRule("^\\s*([-+*])\\s$", type)]
+    }
+}
+
+public final class OrderedListExtension: NodeExtension {
+    public let name = "orderedList"
+    public init() {}
+    public var nodeSpec: NodeSpec { NodeSpec(content: "listItem+", group: "block", attrs: ["order": AttributeSpec(default: .int(1))]) }
+    public var html: HTMLSpec { HTMLSpec(tag: "ol") }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.nodeType, let item = ctx.schema.nodes["listItem"] else { return [:] }
+        return ["toggleOrderedList": toggleList(type, item)]
+    }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.nodeType, let item = ctx.schema.nodes["listItem"] else { return [:] }
+        return ["Mod-Shift-7": toggleList(type, item)]
+    }
+    public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
+        guard let type = ctx.nodeType else { return [] }
+        return [wrappingInputRule("^(\\d+)\\.\\s$", type)]
+    }
+}
+
+// MARK: - Marks
+
+public final class BoldExtension: MarkExtension {
+    public let name = "bold"
+    public init() {}
+    public var markSpec: MarkSpec { MarkSpec() }
+    public var html: HTMLSpec { HTMLSpec(tag: "strong", parseTags: ["b"]) }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["toggleBold": toggleMark(type)]
+    }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["Mod-b": toggleMark(type)]
+    }
+    public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
+        guard let type = ctx.markType else { return [] }
+        return [markInputRule("(?:^|\\s)(\\*\\*(?<text>[^*]+)\\*\\*)$", type), markInputRule("(?:^|\\s)(__([^_]+)__)$", type)]
+    }
+}
+
+public final class ItalicExtension: MarkExtension {
+    public let name = "italic"
+    public init() {}
+    public var markSpec: MarkSpec { MarkSpec() }
+    public var html: HTMLSpec { HTMLSpec(tag: "em", parseTags: ["i"]) }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["toggleItalic": toggleMark(type)]
+    }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["Mod-i": toggleMark(type)]
+    }
+    public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
+        guard let type = ctx.markType else { return [] }
+        return [markInputRule("(?:^|\\s)(\\*([^*]+)\\*)$", type), markInputRule("(?:^|\\s)(_([^_]+)_)$", type)]
+    }
+}
+
+public final class StrikeExtension: MarkExtension {
+    public let name = "strike"
+    public init() {}
+    public var markSpec: MarkSpec { MarkSpec() }
+    public var html: HTMLSpec { HTMLSpec(tag: "s", parseTags: ["del", "strike"]) }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["toggleStrike": toggleMark(type)]
+    }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["Mod-Shift-s": toggleMark(type)]
+    }
+    public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
+        guard let type = ctx.markType else { return [] }
+        return [markInputRule("(?:~~)([^~]+)(?:~~)$", type)]
+    }
+}
+
+public final class CodeExtension: MarkExtension {
+    public let name = "code"
+    public init() {}
+    public var markSpec: MarkSpec { MarkSpec(excludes: "_") }
+    public var html: HTMLSpec { HTMLSpec(tag: "code") }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["toggleCode": toggleMark(type)]
+    }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["Mod-e": toggleMark(type)]
+    }
+    public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
+        guard let type = ctx.markType else { return [] }
+        return [markInputRule("(?:`)([^`]+)(?:`)$", type)]
+    }
+}
+
+public final class LinkExtension: MarkExtension {
+    public let name = "link"
+    public init() {}
+    public var markSpec: MarkSpec {
+        MarkSpec(attrs: ["href": AttributeSpec(default: .null), "title": AttributeSpec(default: .null)], inclusive: false)
+    }
+    public var html: HTMLSpec { HTMLSpec(tag: "a") }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["unsetLink": { state, dispatch, _ in
+            let sel = state.selection
+            if sel.empty { return false }
+            if let dispatch {
+                let tr = state.tr
+                try? tr.removeMark(sel.from, sel.to, type)
+                dispatch(tr.scrollIntoView())
+            }
+            return true
+        }]
+    }
+}
+
+// MARK: - StarterKit
+
+/// A reasonable default set of basic extensions, mirroring Tiptap's StarterKit.
+public func starterKit() -> [Extension] {
+    [
+        DocumentExtension(),
+        ParagraphExtension(),
+        TextExtension(),
+        HeadingExtension(),
+        BlockquoteExtension(),
+        HorizontalRuleExtension(),
+        HardBreakExtension(),
+        BulletListExtension(),
+        OrderedListExtension(),
+        ListItemExtension(),
+        BoldExtension(),
+        ItalicExtension(),
+        StrikeExtension(),
+        CodeExtension(),
+        LinkExtension(),
+        TypographyExtension(),
+    ]
+}
+
+/// The starter kit plus tables, task lists, images, wiki-links, and search.
+public func fullKit() -> [Extension] {
+    starterKit() + tableExtensions() + taskListExtensions() + [ImageExtension(), WikiLinkExtension(), SearchExtension()]
+}
