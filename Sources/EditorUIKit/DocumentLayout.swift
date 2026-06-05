@@ -400,6 +400,18 @@ final class DocumentLayout {
         return target.block.docPos(forAttrIndex: attr)
     }
 
+    /// The document position at the start or end of the *visual* line that
+    /// contains `pos` (the wrapped line, not the whole textblock).
+    func lineBoundary(from pos: Int, toEnd: Bool) -> Int? {
+        guard let block = blocks.first(where: { pos >= $0.contentStart && pos <= $0.contentEnd }) else { return nil }
+        let attrIndex = block.attrIndex(forDocPos: pos)
+        guard let line = block.lines.first(where: {
+            NSLocationInRange(attrIndex, $0.stringRange) || attrIndex == $0.stringRange.location + $0.stringRange.length
+        }) else { return nil }
+        let targetAttr = toEnd ? line.stringRange.location + line.stringRange.length : line.stringRange.location
+        return block.docPos(forAttrIndex: targetAttr)
+    }
+
     /// The document position nearest to a point in view coordinates.
     func position(at point: CGPoint) -> Int? {
         guard !blocks.isEmpty else { return nil }

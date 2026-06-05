@@ -46,6 +46,24 @@ final class VerticalMovementTests: XCTestCase {
         XCTAssertEqual(editor.doc.resolve(up).parent.textContent, "alpha")
     }
 
+    func testVisualLineBoundaryWithinWrappedParagraph() throws {
+        let editor = try editor([String(repeating: "word ", count: 40)]) // wraps
+        let l = layout(editor, width: 160)
+        XCTAssertGreaterThan(l.blocks.first?.lines.count ?? 0, 1, "paragraph should wrap to multiple lines")
+        // A position on the second visual line.
+        let secondLine = try XCTUnwrap(l.blocks.first?.lines[1])
+        let midAttr = secondLine.stringRange.location + secondLine.stringRange.length / 2
+        let block = try XCTUnwrap(l.blocks.first)
+        let pos = block.docPos(forAttrIndex: midAttr)
+        let home = try XCTUnwrap(l.lineBoundary(from: pos, toEnd: false))
+        let end = try XCTUnwrap(l.lineBoundary(from: pos, toEnd: true))
+        // Home/End land on the visual line, not the whole textblock.
+        XCTAssertGreaterThan(home, block.contentStart, "Home should not jump to the block start")
+        XCTAssertLessThan(end, block.contentEnd, "End should not jump to the block end")
+        XCTAssertLessThan(home, pos)
+        XCTAssertGreaterThan(end, pos)
+    }
+
     func testNoMovementPastDocumentEdges() throws {
         let editor = try editor(["only"])
         let l = layout(editor)

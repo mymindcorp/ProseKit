@@ -35,17 +35,15 @@ open class EditorTextView: UIView, UIKeyInput {
         isUserInteractionEnabled = true
         contentMode = .redraw
         caretLayer.fillColor = theme.caretColor.cgColor
+        // The caret must jump instantly; suppress Core Animation's implicit
+        // ~0.25s animation on geometry changes (opacity still animates to blink).
+        caretLayer.actions = ["path": NSNull(), "position": NSNull(), "bounds": NSNull(), "fillColor": NSNull()]
         layer.addSublayer(caretLayer)
 
-        // A single tap fires immediately (no require-to-fail chain, which would
-        // delay it by the multi-tap timeouts). A double/triple tap also fires
-        // the single tap first — harmless, since it just places then refines the
-        // selection.
+        // One tap recognizer fires on every click immediately; the click count
+        // (caret → word → paragraph) is tracked by timing, the way native text
+        // views do — no require-to-fail chain, so single clicks never lag.
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
-        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
-        doubleTap.numberOfTapsRequired = 2
-        let tripleTap = UITapGestureRecognizer(target: self, action: #selector(handleTripleTap(_:)))
-        tripleTap.numberOfTapsRequired = 3
         // On touch, a long-press initiates a drag selection (so it doesn't
         // fight scrolling). With a mouse/trackpad, a click-drag selects right
         // away — a pan restricted to the indirect-pointer touch type, which
@@ -54,11 +52,12 @@ open class EditorTextView: UIView, UIKeyInput {
         longPress.minimumPressDuration = 0.3
         let mouseDrag = UIPanGestureRecognizer(target: self, action: #selector(handleMouseDrag(_:)))
         mouseDrag.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
-        addGestureRecognizer(tap)
-        addGestureRecognizer(doubleTap)
-        addGestureRecognizer(tripleTap)
-        addGestureRecognizer(longPress)
-        addGestureRecognizer(mouseDrag)
+        for recognizer in [tap, longPress, mouseDrag] as [UIGestureRecognizer] {
+            recognizer.delaysTouchesEnded = false
+            recognizer.delaysTouchesBegan = false
+            recognizer.cancelsTouchesInView = false
+            addGestureRecognizer(recognizer)
+        }
 
         editor.onChange = { [weak self] _ in self?.setNeedsRebuild() }
     }
@@ -307,32 +306,46 @@ open class EditorTextView: UIView, UIKeyInput {
 
     // MARK: - Gestures
 
+    // Click-counting state (caret → word → paragraph), tuned to feel native.
+    private var lastClickTime: CFTimeInterval = 0
+    private var lastClickPoint: CGPoint = .zero
+    private var clickCount = 0
+    private let multiClickInterval: CFTimeInterval = 0.45 // window for a multi-click
+    private let multiClickSlop: CGFloat = 12             // must stay roughly in place
+
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         if !isFirstResponder { becomeFirstResponder() }
         let point = gesture.location(in: self)
-        // A tap on a task-item checkbox toggles its checked state.
-        if let box = ensureLayout().checkbox(at: point) {
+        let now = CACurrentMediaTime()
+        if now - lastClickTime <= multiClickInterval, hypot(point.x - lastClickPoint.x, point.y - lastClickPoint.y) <= multiClickSlop {
+            clickCount += 1
+        } else {
+            clickCount = 1
+        }
+        lastClickTime = now
+        lastClickPoint = point
+
+        // A tap on a task-item checkbox toggles it (only as a fresh single click).
+        if clickCount == 1, let box = ensureLayout().checkbox(at: point) {
+            clickCount = 0 // don't let it seed a multi-click
             if let tr = try? editor.state.tr.setNodeAttribute(box.pos, "checked", .bool(!box.checked)) {
                 editor.dispatch(tr)
             }
             return
         }
-        if let pos = ensureLayout().position(at: point) {
-            let target = min(pos, editor.doc.content.size)
+        guard let pos = ensureLayout().position(at: point) else { return }
+        let target = min(pos, editor.doc.content.size)
+        switch (clickCount - 1) % 3 {
+        case 1: // double-click → word
+            selectWord(at: target)
+        case 2: // triple-click → paragraph
+            selectParagraph(at: target)
+        default: // single click → caret (or shift-extend)
             if shiftDown {
-                // Shift-click extends the selection from the current anchor.
                 setTextSelection(anchor: editor.state.selection.anchor, head: target)
             } else {
                 editor.dispatch(editor.state.tr.setSelection(Selection.near(editor.doc.resolve(target))))
             }
-        }
-    }
-
-    @objc private func handleTripleTap(_ gesture: UITapGestureRecognizer) {
-        if !isFirstResponder { becomeFirstResponder() }
-        let point = gesture.location(in: self)
-        if let pos = ensureLayout().position(at: point) {
-            selectParagraph(at: min(pos, editor.doc.content.size))
         }
     }
 
@@ -355,13 +368,6 @@ open class EditorTextView: UIView, UIKeyInput {
         setTextSelection(anchor: resolved.start(), head: resolved.end())
     }
 
-    @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
-        if !isFirstResponder { becomeFirstResponder() }
-        let point = gesture.location(in: self)
-        if let pos = ensureLayout().position(at: point) {
-            selectWord(at: min(pos, editor.doc.content.size))
-        }
-    }
 
     // Touch long-press and mouse/trackpad drag share one drag-selection model.
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
@@ -550,6 +556,54 @@ open class EditorTextView: UIView, UIKeyInput {
 
     // MARK: - Key handling
 
+    // Arrow keys (and Tab) are claimed via key commands with priority over
+    // system behavior, because an enclosing UIScrollView's keyboard-scrolling
+    // otherwise swallows Up/Down before `pressesBegan` ever sees them.
+    open override var keyCommands: [UIKeyCommand]? {
+        let arrows = [UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow,
+                      UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow]
+        let modifierSets: [UIKeyModifierFlags] = [[], .shift, .alternate, .command, [.shift, .alternate], [.shift, .command]]
+        var commands: [UIKeyCommand] = []
+        for input in arrows {
+            for mods in modifierSets {
+                let command = UIKeyCommand(input: input, modifierFlags: mods, action: #selector(handleNavigationCommand(_:)))
+                command.wantsPriorityOverSystemBehavior = true
+                commands.append(command)
+            }
+        }
+        // Home/End (line edges) and Tab also need priority over scroll-view
+        // keyboard handling. PageUp/PageDown are intentionally left to the
+        // scroll view, which scrolls by a page.
+        for input in [UIKeyCommand.inputHome, UIKeyCommand.inputEnd] {
+            for mods in [UIKeyModifierFlags(), .shift] {
+                let command = UIKeyCommand(input: input, modifierFlags: mods, action: #selector(handleNavigationCommand(_:)))
+                command.wantsPriorityOverSystemBehavior = true
+                commands.append(command)
+            }
+        }
+        for mods in [UIKeyModifierFlags(), .shift] {
+            let command = UIKeyCommand(input: "\t", modifierFlags: mods, action: #selector(handleNavigationCommand(_:)))
+            command.wantsPriorityOverSystemBehavior = true
+            commands.append(command)
+        }
+        return commands
+    }
+
+    @objc private func handleNavigationCommand(_ command: UIKeyCommand) {
+        let keyCode: UIKeyboardHIDUsage?
+        switch command.input {
+        case UIKeyCommand.inputUpArrow: keyCode = .keyboardUpArrow
+        case UIKeyCommand.inputDownArrow: keyCode = .keyboardDownArrow
+        case UIKeyCommand.inputLeftArrow: keyCode = .keyboardLeftArrow
+        case UIKeyCommand.inputRightArrow: keyCode = .keyboardRightArrow
+        case UIKeyCommand.inputHome: keyCode = .keyboardHome
+        case UIKeyCommand.inputEnd: keyCode = .keyboardEnd
+        case "\t": keyCode = .keyboardTab
+        default: keyCode = nil
+        }
+        if let keyCode { _ = handle(KeyEvent(keyCode, modifiers: command.modifierFlags)) }
+    }
+
     open override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var handledAny = false
         for press in presses {
@@ -624,6 +678,9 @@ open class EditorTextView: UIView, UIKeyInput {
         case .keyboardTab:
             // The Tab key produces "\t"; map it to the named "Tab" binding.
             return runKey(mods.contains(.shift) ? "Shift-Tab" : "Tab")
+        case .keyboardEscape:
+            // Escape has no characters, so map it to the named binding.
+            return runKey("Escape")
         default:
             let stroke = keyStroke(from: key)
             if !stroke.isEmpty { return runKey(stroke) }
@@ -718,7 +775,15 @@ open class EditorTextView: UIView, UIKeyInput {
             editor.dispatch(editor.state.tr.setSelection(Selection.near(editor.doc.resolve(edge), direction.sign)))
             return
         }
-        let target = TextNavigation.position(in: editor.doc, from: sel.head, moving: direction, by: granularity)
+        let target: Int
+        if granularity == .lineBoundary {
+            // Home/End/⌘←→ go to the visual (wrapped) line edge, falling back to
+            // the textblock edge when there's no laid-out line.
+            target = ensureLayout().lineBoundary(from: sel.head, toEnd: direction == .forward)
+                ?? TextNavigation.position(in: editor.doc, from: sel.head, moving: direction, by: .lineBoundary)
+        } else {
+            target = TextNavigation.position(in: editor.doc, from: sel.head, moving: direction, by: granularity)
+        }
         applyMove(to: target, extend: extend, bias: direction.sign)
     }
 
@@ -735,17 +800,28 @@ open class EditorTextView: UIView, UIKeyInput {
         }
     }
 
+    private var goalColumnX: CGFloat?
+    private var goalColumnHead: Int?
+
     private func moveCaretVertically(up: Bool, extend: Bool = false) {
         let sel = editor.state.selection
         let l = ensureLayout()
-        guard let caret = l.caretRect(at: sel.head),
-              let pos = l.verticalPosition(from: sel.head, up: up, preferredX: caret.midX) else { return }
+        guard let caret = l.caretRect(at: sel.head) else { return }
+        // Preserve the column across consecutive ↑/↓ presses. If the cursor
+        // moved by any other means since our last vertical move, restart it.
+        if goalColumnHead != sel.head { goalColumnX = caret.midX }
+        let preferredX = goalColumnX ?? caret.midX
+        guard let pos = l.verticalPosition(from: sel.head, up: up, preferredX: preferredX) else {
+            goalColumnHead = sel.head // at an edge: keep the goal for the next move
+            return
+        }
         let target = min(pos, editor.doc.content.size)
         if extend {
             setTextSelection(anchor: sel.anchor, head: target)
         } else {
             editor.dispatch(editor.state.tr.setSelection(Selection.near(editor.doc.resolve(target))))
         }
+        goalColumnHead = editor.state.selection.head
     }
 
     // MARK: - Accessibility

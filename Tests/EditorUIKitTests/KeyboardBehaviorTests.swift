@@ -159,6 +159,31 @@ final class KeyboardBehaviorTests: XCTestCase {
         XCTAssertFalse(view.editor.state.selection.empty)
     }
 
+    func testShiftRightSelectsOneGraphemeClusterAtATime() throws {
+        // The flag is a single grapheme made of two Unicode scalars (and four
+        // UTF-16 units) — a scalar/UTF-16 model would select half of it.
+        let view = try makeView(["a🇺🇸b"])
+        cursor(view, 1)
+        key(view, .keyboardRightArrow, .shift)
+        XCTAssertEqual(view.editor.state.selection.from, 1)
+        XCTAssertEqual(view.editor.state.selection.to, 2) // selected "a"
+        key(view, .keyboardRightArrow, .shift)
+        XCTAssertEqual(view.editor.state.selection.to, 3) // one more press = the whole flag
+        let selected = view.editor.doc.textBetween(view.editor.state.selection.from, view.editor.state.selection.to)
+        XCTAssertEqual(selected, "a🇺🇸")
+        key(view, .keyboardRightArrow, .shift)
+        XCTAssertEqual(view.editor.state.selection.to, 4) // then "b"
+    }
+
+    func testShiftLeftShrinksByOneGrapheme() throws {
+        let view = try makeView(["x🇺🇸y"])
+        select(view, 1, 4) // whole thing
+        key(view, .keyboardLeftArrow, .shift) // head was at 4, shrink to 3
+        XCTAssertEqual(view.editor.state.selection.head, 3)
+        let selected = view.editor.doc.textBetween(1, view.editor.state.selection.head)
+        XCTAssertEqual(selected, "x🇺🇸") // the flag is intact, not split
+    }
+
     func testArrowCollapsesSelectionToEdge() throws {
         let view = try makeView(["hello"])
         select(view, 2, 4)
@@ -172,6 +197,50 @@ final class KeyboardBehaviorTests: XCTestCase {
         cursor(view, 3)
         key(view, .keyboardDownArrow)
         XCTAssertEqual(view.editor.state.selection.resolvedHead.parent.textContent, "bravo")
+    }
+
+    func testShiftDownExtendsAcrossParagraphs() throws {
+        let view = try makeView(["alpha", "bravo"])
+        cursor(view, 3) // inside "alpha"
+        key(view, .keyboardDownArrow, .shift)
+        let sel = view.editor.state.selection
+        XCTAssertFalse(sel.empty)
+        XCTAssertEqual(sel.anchor, 3)                 // anchor stays put
+        XCTAssertEqual(sel.resolvedHead.parent.textContent, "bravo") // head moved down
+    }
+
+    func testShiftUpExtendsAcrossParagraphs() throws {
+        let view = try makeView(["alpha", "bravo"])
+        // start inside "bravo"
+        var bravo = 0
+        view.editor.doc.descendants { n, p, _, _ in if n.isText, n.text == "bravo" { bravo = p + 1 }; return true }
+        cursor(view, bravo)
+        key(view, .keyboardUpArrow, .shift)
+        let sel = view.editor.state.selection
+        XCTAssertFalse(sel.empty)
+        XCTAssertEqual(sel.resolvedHead.parent.textContent, "alpha")
+    }
+
+    func testShiftHomeEndExtendToLineEdges() throws {
+        let view = try makeView(["hello world"])
+        cursor(view, 6)
+        key(view, .keyboardEnd, .shift)
+        XCTAssertEqual(view.editor.state.selection.from, 6)
+        XCTAssertEqual(view.editor.state.selection.to, 12)
+        cursor(view, 6)
+        key(view, .keyboardHome, .shift)
+        XCTAssertEqual(view.editor.state.selection.from, 1)
+        XCTAssertEqual(view.editor.state.selection.to, 6)
+    }
+
+    func testShiftCommandDownExtendsToDocumentEnd() throws {
+        let view = try makeView(["alpha", "bravo", "charlie"])
+        cursor(view, 3)
+        key(view, .keyboardDownArrow, [.shift, .command])
+        let sel = view.editor.state.selection
+        XCTAssertFalse(sel.empty)
+        XCTAssertEqual(sel.anchor, 3)
+        XCTAssertEqual(sel.resolvedHead.parent.textContent, "charlie") // extended to last block
     }
 
     // MARK: - Mod shortcuts
@@ -205,6 +274,116 @@ final class KeyboardBehaviorTests: XCTestCase {
         XCTAssertEqual(text(view), "hello")
         key(view, .keyboardZ, [.command, .shift], "z")
         XCTAssertEqual(text(view), "hello!")
+    }
+
+    // MARK: - Previously-uncovered behaviors
+
+    func testGoalColumnPreservedAcrossRaggedLines() throws {
+        let view = try makeView(["longline", "x", "longline"])
+        cursor(view, 8) // column 7 within "longline"
+        key(view, .keyboardDownArrow) // lands in "x" (only 1 char)
+        key(view, .keyboardDownArrow) // should return to ~column 7 in line 3, not column 0
+        let head = view.editor.state.selection.resolvedHead
+        XCTAssertEqual(head.parent.textContent, "longline")
+        XCTAssertGreaterThan(head.parentOffset, 4, "goal column should be preserved through the short line")
+    }
+
+    func testWordForwardDelete() throws {
+        let view = try makeView(["foo bar"])
+        cursor(view, 1)
+        key(view, .keyboardDeleteForward, .alternate)
+        XCTAssertEqual(text(view), " bar")
+    }
+
+    func testCommandBackspaceDeletesToLineStart() throws {
+        let view = try makeView(["hello world"])
+        cursor(view, 12) // end
+        key(view, .keyboardDeleteOrBackspace, .command)
+        XCTAssertEqual(text(view), "")
+    }
+
+    func testBackspaceDeletesInlineAtom() throws {
+        let editor = try Editor(extensions: fullKit())
+        let img = try! editor.schema.nodes["image"]!.create(["src": .string("c.png")])
+        let para = try! editor.schema.node("paragraph", [:], content: Fragment.from([editor.schema.text("a"), img, editor.schema.text("b")]))
+        editor.setContent(try! editor.schema.node("doc", [:], content: Fragment.from([para])))
+        let view = EditorTextView(editor: editor)
+        XCTAssertEqual(count(view, "image"), 1)
+        cursor(view, 3) // right after the image (a=1..2, image=2..3)
+        key(view, .keyboardDeleteOrBackspace)
+        XCTAssertEqual(count(view, "image"), 0, "backspace should delete the inline image")
+        XCTAssertEqual(text(view), "ab")
+    }
+
+    func testEnterInEmptyListItemExitsList() throws {
+        let view = try makeView(["item"])
+        XCTAssertTrue(view.editor.run("toggleBulletList"))
+        var textEnd = 0
+        view.editor.doc.descendants { n, p, _, _ in if n.isText { textEnd = p + n.nodeSize }; return true }
+        cursor(view, textEnd)
+        key(view, .keyboardReturnOrEnter) // new empty item
+        key(view, .keyboardReturnOrEnter) // Enter in empty item should leave the list
+        // After exiting, there should be a paragraph that is NOT inside a list item.
+        var paragraphOutsideList = false
+        view.editor.doc.descendants { node, _, parent, _ in
+            if node.type.name == "paragraph", parent?.type.name == "doc" { paragraphOutsideList = true }
+            return true
+        }
+        XCTAssertTrue(paragraphOutsideList, "Enter in an empty list item should exit the list")
+    }
+
+    func testTypingOverSelectAllReplacesDocument() throws {
+        let view = try makeView(["alpha", "bravo"])
+        key(view, .keyboardA, .command, "a") // select all
+        XCTAssertTrue(view.editor.state.selection is AllSelection)
+        view.insertText("Z")
+        XCTAssertEqual(text(view), "Z")
+        XCTAssertEqual(view.editor.doc.childCount, 1)
+    }
+
+    func testEscapeSelectsParentNode() throws {
+        let editor = try Editor(extensions: fullKit())
+        let bq = try! editor.schema.node("blockquote", [:], content: Fragment.from([
+            try! editor.schema.node("paragraph", [:], content: Fragment.from([editor.schema.text("quoted")])),
+        ]))
+        editor.setContent(try! editor.schema.node("doc", [:], content: Fragment.from([bq])))
+        let view = EditorTextView(editor: editor)
+        cursor(view, 3) // inside "quoted"
+        key(view, .keyboardEscape)
+        XCTAssertTrue(view.editor.state.selection is NodeSelection, "Escape should select the enclosing node")
+    }
+
+    func testCommandDownMovesToDocumentEnd() throws {
+        let view = try makeView(["a", "b", "c"])
+        cursor(view, 1)
+        key(view, .keyboardDownArrow, .command)
+        // Document end is the end of the last textblock (not past its closing token).
+        let head = view.editor.state.selection.resolvedHead
+        XCTAssertEqual(head.parent.textContent, "c")
+        XCTAssertEqual(head.parentOffset, 1) // after "c"
+        XCTAssertTrue(view.editor.state.selection.empty)
+    }
+
+    func testRedoViaCommandY() throws {
+        let view = try makeView(["x"])
+        cursor(view, 2)
+        view.insertText("!")
+        key(view, .keyboardZ, .command, "z")
+        XCTAssertEqual(text(view), "x")
+        key(view, .keyboardY, .command, "y")
+        XCTAssertEqual(text(view), "x!")
+    }
+
+    func testModEnterExitsCodeBlock() throws {
+        let editor = try Editor(extensions: fullKit())
+        let cb = try! editor.schema.node("codeBlock", [:], content: Fragment.from([editor.schema.text("code")]))
+        editor.setContent(try! editor.schema.node("doc", [:], content: Fragment.from([cb])))
+        let view = EditorTextView(editor: editor)
+        cursor(view, 5) // end of "code"
+        key(view, .keyboardReturnOrEnter, .command) // Mod-Enter → exit code
+        // A paragraph should now follow the code block.
+        XCTAssertEqual(view.editor.doc.childCount, 2)
+        XCTAssertEqual(view.editor.doc.child(1).type.name, "paragraph")
     }
 
     // MARK: - Tab in lists
