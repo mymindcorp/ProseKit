@@ -17,6 +17,8 @@ public final class Editor {
     public weak var host: AnyObject?
 
     private var namedCommands: [String: Command] = [:]
+    /// Suggestion menus contributed by the extensions (slash, wiki, mentions…).
+    public private(set) var suggestionSources: [any SuggestionSource] = []
 
     public var schema: Schema { manager.schema }
 
@@ -43,6 +45,7 @@ public final class Editor {
         }
         self.state = EditorState.create(EditorStateConfig(schema: manager.schema, doc: content, plugins: plugins))
         self.namedCommands = manager.commands(editor: self)
+        self.suggestionSources = manager.suggestionSources(editor: self)
     }
 
     // MARK: - Dispatch

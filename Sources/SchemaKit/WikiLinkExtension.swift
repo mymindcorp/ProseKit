@@ -23,7 +23,12 @@ public let wikiLinkSuggestionKey = PluginKey<WikiLinkSuggestion?>("wikiLinkSugge
 /// to `[[target|label]]`.
 public final class WikiLinkExtension: NodeExtension {
     public let name = "wikiLink"
-    public init() {}
+    /// Provides `[[` autocomplete candidates for a typed query. When nil, no
+    /// suggestion popup is shown (the `[[…]]` input rule still works).
+    public let suggestions: ((String) -> [String])?
+    public init(suggestions: ((String) -> [String])? = nil) {
+        self.suggestions = suggestions
+    }
 
     public var nodeSpec: NodeSpec {
         NodeSpec(
@@ -76,6 +81,26 @@ public final class WikiLinkExtension: NodeExtension {
                 apply: { tr, _, _, newState in
                     computeSuggestion(newState) as Any
                 }))]
+    }
+
+    public func suggestionSources(_ ctx: ExtensionContext) -> [any SuggestionSource] {
+        guard let suggestions else { return [] }
+        return [WikiLinkSuggestionSource(provider: suggestions)]
+    }
+}
+
+/// Drives the `[[` popup from the tracked query + a configurable target list.
+final class WikiLinkSuggestionSource: SuggestionSource {
+    let provider: (String) -> [String]
+    init(provider: @escaping (String) -> [String]) { self.provider = provider }
+
+    func context(_ editor: Editor) -> SuggestionContext? {
+        editor.wikiLinkSuggestion.map { SuggestionContext(from: $0.from, to: $0.to, query: $0.query) }
+    }
+    func entries(_ query: String, _ editor: Editor) -> [SuggestionEntry] {
+        provider(query).map { target in
+            SuggestionEntry(title: target) { $0.acceptWikiLinkSuggestion(target: target) }
+        }
     }
 }
 

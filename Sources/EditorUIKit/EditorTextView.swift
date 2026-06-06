@@ -31,16 +31,13 @@ open class EditorTextView: UIView, UIKeyInput {
     private weak var checkboxRecognizer: UIGestureRecognizer?
     private weak var columnResizeRecognizer: UIGestureRecognizer?
 
-    // MARK: - Suggestion menus (slash commands + wiki links)
+    // MARK: - Suggestion menus
+    //
+    // Fully generic: any extension that provides a `SuggestionSource` (slash `/`,
+    // wiki `[[`, `@` mentions, …) gets a popup here. The view knows nothing about
+    // specific triggers — it just asks the editor's sources which is active.
 
-    /// The commands offered by the `/` slash menu (filtered to the schema).
-    public var slashCommands: [SlashCommandItem] = defaultSlashCommands()
-    /// Provider for `[[` wiki-link suggestions: given the typed query, return the
-    /// candidate page targets. When nil, no wiki-link popup is shown.
-    public var wikiLinkSuggestions: ((String) -> [String])?
-
-    private enum ActiveSuggestion { case slash([SlashCommandItem]); case wikiLink([String]) }
-    private var activeSuggestion: ActiveSuggestion?
+    private var activeEntries: [SuggestionEntry] = []
     private var suggestionPopup: SuggestionPopupView?
 
     public init(editor: Editor, theme: TextTheme = TextTheme(), frame: CGRect = .zero) {
@@ -507,27 +504,21 @@ open class EditorTextView: UIView, UIKeyInput {
 
     // MARK: - Suggestion popup
 
-    /// Recompute which suggestion (slash / wiki-link) is active and show/position
-    /// or hide the popup. Called on every change and on scroll.
+    /// Recompute which suggestion source is active and show/position or hide the
+    /// popup. Called on every change and on scroll.
     private func updateSuggestionPopup() {
-        if let menu = editor.slashMenu {
-            let items = slashCommands.filter { $0.matches(menu.query) }
-            if !items.isEmpty {
-                showSuggestion(.slash(items), titles: items.map(\.title), caretAt: menu.to)
-                return
-            }
-        }
-        if let provider = wikiLinkSuggestions, let suggestion = editor.wikiLinkSuggestion {
-            let targets = provider(suggestion.query)
-            if !targets.isEmpty {
-                showSuggestion(.wikiLink(targets), titles: targets, caretAt: suggestion.to)
+        for source in editor.suggestionSources {
+            guard let context = source.context(editor) else { continue }
+            let entries = source.entries(context.query, editor)
+            if !entries.isEmpty {
+                showSuggestion(entries, caretAt: context.to)
                 return
             }
         }
         hideSuggestion()
     }
 
-    private func showSuggestion(_ active: ActiveSuggestion, titles: [String], caretAt pos: Int) {
+    private func showSuggestion(_ entries: [SuggestionEntry], caretAt pos: Int) {
         let popup = suggestionPopup ?? {
             let p = SuggestionPopupView(theme: theme)
             p.onSelect = { [weak self] _ in self?.acceptSuggestion() }
@@ -535,8 +526,8 @@ open class EditorTextView: UIView, UIKeyInput {
             suggestionPopup = p
             return p
         }()
-        activeSuggestion = active
-        popup.setItems(titles)
+        activeEntries = entries
+        popup.setItems(entries.map(\.title))
         // Position just below the caret, in view (viewport) coordinates.
         let caret = (ensureLayout().caretRect(at: min(pos, editor.doc.content.size)) ?? .zero)
             .offsetBy(dx: 0, dy: -contentOffsetY)
@@ -549,7 +540,7 @@ open class EditorTextView: UIView, UIKeyInput {
     private func hideSuggestion() {
         suggestionPopup?.removeFromSuperview()
         suggestionPopup = nil
-        activeSuggestion = nil
+        activeEntries = []
     }
 
     /// The titles currently shown in the suggestion popup (nil when hidden).
@@ -558,11 +549,8 @@ open class EditorTextView: UIView, UIKeyInput {
 
     /// Apply the highlighted suggestion (Enter / Tab / tap).
     private func acceptSuggestion() {
-        guard let active = activeSuggestion, let index = suggestionPopup?.selected else { return }
-        switch active {
-        case let .slash(items): if items.indices.contains(index) { editor.applySlashCommand(items[index]) }
-        case let .wikiLink(targets): if targets.indices.contains(index) { editor.acceptWikiLinkSuggestion(target: targets[index]) }
-        }
+        guard let index = suggestionPopup?.selected, activeEntries.indices.contains(index) else { return }
+        activeEntries[index].apply(editor)
         hideSuggestion()
     }
 

@@ -42,6 +42,8 @@ public struct TextTheme: Sendable {
     public var quoteBarColor: UIColor = .separator
     public var caretColor: UIColor = .tintColor
     public var selectionColor: UIColor = UIColor.tintColor.withAlphaComponent(0.25)
+    /// Background of the suggestion popup (slash menu / wiki-link menu).
+    public var popupBackground: UIColor = .secondarySystemBackground
     public var pageInsets = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
     public var paragraphSpacing: CGFloat = 10
     public var lineSpacing: CGFloat = 3

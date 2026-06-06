@@ -75,6 +75,11 @@ public final class ExtensionManager {
         extensions.flatMap { $0.inputRules(context(for: $0, editor: editor)) }
     }
 
+    /// All suggestion sources contributed by the extensions.
+    public func suggestionSources(editor: Editor?) -> [any SuggestionSource] {
+        extensions.flatMap { $0.suggestionSources(context(for: $0, editor: editor)) }
+    }
+
     /// Build the full ordered plugin list: extension plugins, then the input-
     /// rules plugin, then the keymap (extension shortcuts falling back to the
     /// base keymap).

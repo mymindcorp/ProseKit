@@ -36,6 +36,9 @@ public protocol Extension: AnyObject {
     func inputRules(_ ctx: ExtensionContext) -> [InputRule]
     /// Raw ProseMirror plugins contributed by this extension.
     func plugins(_ ctx: ExtensionContext) -> [Plugin]
+    /// Suggestion menus (slash `/`, wiki `[[`, mentions `@`, …) this extension
+    /// drives. The renderer shows their popups generically.
+    func suggestionSources(_ ctx: ExtensionContext) -> [any SuggestionSource]
 }
 
 public extension Extension {
@@ -44,6 +47,7 @@ public extension Extension {
     func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] { [:] }
     func inputRules(_ ctx: ExtensionContext) -> [InputRule] { [] }
     func plugins(_ ctx: ExtensionContext) -> [Plugin] { [] }
+    func suggestionSources(_ ctx: ExtensionContext) -> [any SuggestionSource] { [] }
 }
 
 /// HTML round-trip hints for a node/mark, used by the serialization layer (M6).
