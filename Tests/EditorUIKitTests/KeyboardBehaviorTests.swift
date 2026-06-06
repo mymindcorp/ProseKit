@@ -386,6 +386,33 @@ final class KeyboardBehaviorTests: XCTestCase {
         XCTAssertEqual(view.editor.doc.child(1).type.name, "paragraph")
     }
 
+    func testShiftEnterExitsCodeBlock() throws {
+        let editor = try Editor(extensions: fullKit())
+        let cb = try! editor.schema.node("codeBlock", [:], content: Fragment.from([editor.schema.text("let x = 1")]))
+        editor.setContent(try! editor.schema.node("doc", [:], content: Fragment.from([cb])))
+        let view = EditorTextView(editor: editor)
+        cursor(view, 3) // mid-code
+        key(view, .keyboardReturnOrEnter, .shift) // Shift-Enter → exit to a new paragraph
+        XCTAssertEqual(view.editor.doc.childCount, 2)
+        XCTAssertEqual(view.editor.doc.child(0).type.name, "codeBlock")
+        XCTAssertEqual(view.editor.doc.child(1).type.name, "paragraph")
+        XCTAssertEqual(view.editor.state.selection.resolvedHead.parent.type.name, "paragraph", "caret moves into the new paragraph")
+    }
+
+    func testShiftEnterExitsBlockquote() throws {
+        let editor = try Editor(extensions: fullKit())
+        let quote = try! editor.schema.node("blockquote", [:], content: Fragment.from([
+            try! editor.schema.node("paragraph", [:], content: Fragment.from([editor.schema.text("quoted")])),
+        ]))
+        editor.setContent(try! editor.schema.node("doc", [:], content: Fragment.from([quote])))
+        let view = EditorTextView(editor: editor)
+        cursor(view, 3) // inside the quote
+        key(view, .keyboardReturnOrEnter, .shift)
+        XCTAssertEqual(view.editor.doc.childCount, 2)
+        XCTAssertEqual(view.editor.doc.child(0).type.name, "blockquote")
+        XCTAssertEqual(view.editor.doc.child(1).type.name, "paragraph")
+    }
+
     func testBackspaceAtStartOfFirstListItemLiftsOut() throws {
         let view = try makeView(["a"])
         XCTAssertTrue(view.editor.run("toggleBulletList"))

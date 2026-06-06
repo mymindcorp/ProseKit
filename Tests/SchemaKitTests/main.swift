@@ -143,6 +143,8 @@ registerTaskTests()
 registerTypographyTests()
 registerSearchTests()
 registerMarkdownShortcutTests()
+registerHighlightTests()
 registerEditorRevisionTests()
+registerSlashMenuTests()
 
 TestSuite.main("SchemaKitTests", collector.all)
