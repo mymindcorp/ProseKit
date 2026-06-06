@@ -194,39 +194,44 @@ extension EditorTextView: UITextInput {
     public func setBaseWritingDirection(_ writingDirection: NSWritingDirection, for range: UITextRange) {}
 
     // MARK: Geometry
+    //
+    // `UITextInteraction` and the system text loupe/handles work in the view's
+    // coordinate space, while the layout is in document coordinates. With
+    // virtualization the two differ by `contentOffsetY`, so rects are shifted up
+    // by it and incoming points (`docPoint`) shifted down by it.
 
     public func firstRect(for range: UITextRange) -> CGRect {
         guard let r = range as? DocTextRange else { return .zero }
         let rects = ensureLayout().selectionRects(from: clamp(r.from), to: clamp(r.to))
-        return rects.first ?? caretRect(for: DocTextPosition(r.from))
+        return (rects.first?.offsetBy(dx: 0, dy: -contentOffsetY)) ?? caretRect(for: DocTextPosition(r.from))
     }
 
     public func caretRect(for position: UITextPosition) -> CGRect {
         guard let p = position as? DocTextPosition else { return .zero }
-        return ensureLayout().caretRect(at: clamp(p.offset)) ?? .zero
+        return (ensureLayout().caretRect(at: clamp(p.offset)) ?? .zero).offsetBy(dx: 0, dy: -contentOffsetY)
     }
 
     public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
         guard let r = range as? DocTextRange else { return [] }
         let rects = ensureLayout().selectionRects(from: clamp(r.from), to: clamp(r.to))
         return rects.enumerated().map { index, rect in
-            DocSelectionRect(rect: rect, containsStart: index == 0, containsEnd: index == rects.count - 1)
+            DocSelectionRect(rect: rect.offsetBy(dx: 0, dy: -contentOffsetY), containsStart: index == 0, containsEnd: index == rects.count - 1)
         }
     }
 
     public func closestPosition(to point: CGPoint) -> UITextPosition? {
-        DocTextPosition(ensureLayout().position(at: point) ?? 0)
+        DocTextPosition(ensureLayout().position(at: docPoint(point)) ?? 0)
     }
 
     public func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? {
-        guard let r = range as? DocTextRange, let p = ensureLayout().position(at: point) else {
+        guard let r = range as? DocTextRange, let p = ensureLayout().position(at: docPoint(point)) else {
             return closestPosition(to: point)
         }
         return DocTextPosition(min(max(p, r.from), r.to))
     }
 
     public func characterRange(at point: CGPoint) -> UITextRange? {
-        guard let p = ensureLayout().position(at: point) else { return nil }
+        guard let p = ensureLayout().position(at: docPoint(point)) else { return nil }
         return DocTextRange(p, min(docSize, p + 1))
     }
 }

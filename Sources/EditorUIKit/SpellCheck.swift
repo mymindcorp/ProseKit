@@ -9,7 +9,10 @@ import EditorStateKit
 enum SpellCheck {
     /// Spelling decorations for the textblocks overlapping `range` (or the whole
     /// document when nil). Bounding to the visible range keeps the cost
-    /// independent of document size.
+    /// independent of document size. `@MainActor` because `UITextChecker` is
+    /// main-actor isolated — callers debounce + bound the range so the pass is
+    /// cheap enough to run on the main actor.
+    @MainActor
     static func decorations(for doc: Node, in range: ClosedRange<Int>? = nil, language: String = "en") -> [Decoration] {
         let checker = UITextChecker()
         var result: [Decoration] = []

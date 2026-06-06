@@ -26,6 +26,22 @@ open class EditorTextView: UIView, UIKeyInput {
     private var lastLayoutWidth: CGFloat = 0
     private var caretLayer = CAShapeLayer()
     private var blinkTimer: Timer?
+    /// Native selection UI (loupe, handles, edit menu, tap-to-place caret).
+    private var textInteraction: UITextInteraction?
+    private weak var checkboxRecognizer: UIGestureRecognizer?
+    private weak var columnResizeRecognizer: UIGestureRecognizer?
+
+    // MARK: - Suggestion menus (slash commands + wiki links)
+
+    /// The commands offered by the `/` slash menu (filtered to the schema).
+    public var slashCommands: [SlashCommandItem] = defaultSlashCommands()
+    /// Provider for `[[` wiki-link suggestions: given the typed query, return the
+    /// candidate page targets. When nil, no wiki-link popup is shown.
+    public var wikiLinkSuggestions: ((String) -> [String])?
+
+    private enum ActiveSuggestion { case slash([SlashCommandItem]); case wikiLink([String]) }
+    private var activeSuggestion: ActiveSuggestion?
+    private var suggestionPopup: SuggestionPopupView?
 
     public init(editor: Editor, theme: TextTheme = TextTheme(), frame: CGRect = .zero) {
         self.editor = editor
@@ -40,26 +56,30 @@ open class EditorTextView: UIView, UIKeyInput {
         caretLayer.actions = ["path": NSNull(), "position": NSNull(), "bounds": NSNull(), "fillColor": NSNull()]
         layer.addSublayer(caretLayer)
 
-        // One tap recognizer fires on every click immediately; the click count
-        // (caret → word → paragraph) is tracked by timing, the way native text
-        // views do — no require-to-fail chain, so single clicks never lag.
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
-        // On touch, a long-press initiates a drag selection (so it doesn't
-        // fight scrolling). With a mouse/trackpad, a click-drag selects right
-        // away — a pan restricted to the indirect-pointer touch type, which
-        // leaves finger-drag scrolling untouched.
-        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
-        longPress.minimumPressDuration = 0.3
-        let mouseDrag = UIPanGestureRecognizer(target: self, action: #selector(handleMouseDrag(_:)))
-        mouseDrag.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
-        for recognizer in [tap, longPress, mouseDrag] as [UIGestureRecognizer] {
-            recognizer.delaysTouchesEnded = false
-            recognizer.delaysTouchesBegan = false
+        // Native text interaction: caret placement, the loupe/magnifier,
+        // selection handles, and the edit menu — all driven by our UITextInput
+        // conformance.
+        let interaction = UITextInteraction(for: .editable)
+        interaction.textInput = self
+        addInteraction(interaction)
+        textInteraction = interaction
+
+        // Our own gestures handle only what UITextInteraction doesn't: toggling
+        // task-list checkboxes and dragging table column borders. Each is gated
+        // (via the gesture delegate) to begin only on its target, so ordinary
+        // taps and selection drags fall through to UITextInteraction.
+        let checkboxTap = UITapGestureRecognizer(target: self, action: #selector(handleCheckboxTap(_:)))
+        let columnResize = UIPanGestureRecognizer(target: self, action: #selector(handleMouseDrag(_:)))
+        checkboxRecognizer = checkboxTap
+        columnResizeRecognizer = columnResize
+        for recognizer in [checkboxTap, columnResize] as [UIGestureRecognizer] {
+            recognizer.delegate = self
             recognizer.cancelsTouchesInView = false
             addGestureRecognizer(recognizer)
         }
 
         editor.onChange = { [weak self] _ in self?.setNeedsRebuild() }
+        registerForDynamicTypeChanges()
     }
 
     /// The editor's document revision — bumped only when the document actually
@@ -72,7 +92,7 @@ open class EditorTextView: UIView, UIKeyInput {
     public var contentOffsetY: CGFloat = 0 {
         // Scrolling only repositions the caret layer; it must NOT reveal the
         // caret (that would scroll back to the cursor and fight the user).
-        didSet { if oldValue != contentOffsetY { setNeedsDisplay(); positionCaretLayer() } }
+        didSet { if oldValue != contentOffsetY { setNeedsDisplay(); positionCaretLayer(); updateSuggestionPopup() } }
     }
     /// The full document height; the host uses it as the scroll content height.
     public var documentHeight: CGFloat { ensureLayout().height }
@@ -105,6 +125,7 @@ open class EditorTextView: UIView, UIKeyInput {
         // Tell the system input system about changes it didn't initiate (caret
         // moves, key edits) so autocorrect / marked text stay in sync.
         if !applyingTextInput { textInputDelegate?.selectionDidChange(self) }
+        updateSuggestionPopup()
         // The layout is rebuilt lazily by `ensureLayout`, and only when the
         // document or width actually changes — selection/caret/scroll changes
         // reuse the existing layout (avoiding a full relayout per keystroke move).
@@ -212,10 +233,10 @@ open class EditorTextView: UIView, UIKeyInput {
         if lastLayoutWidth != bounds.width { setNeedsRebuild() }
     }
 
-    open override func traitCollectionDidChange(_ previous: UITraitCollection?) {
-        super.traitCollectionDidChange(previous)
-        if previous?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory {
-            invalidateLayout() // Dynamic Type changed — re-lay-out with new font sizes
+    /// Re-lay-out when Dynamic Type changes, via the modern trait-change API.
+    private func registerForDynamicTypeChanges() {
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (view: EditorTextView, _) in
+            view.invalidateLayout()
         }
     }
 
@@ -322,7 +343,6 @@ open class EditorTextView: UIView, UIKeyInput {
     private var spellCache: [Decoration] = []
     private var spellCheckedVersion = -1
     private var spellCheckedRange: ClosedRange<Int>?
-    private var spellInFlight = false
 
     /// Collect decorations contributed by the active plugins, plus spelling.
     private func gatherDecorations() -> [Decoration] {
@@ -336,10 +356,10 @@ open class EditorTextView: UIView, UIKeyInput {
         return result
     }
 
-    /// Spell-check decorations, computed off the main thread and **bounded to the
-    /// visible region (± a viewport margin)** so the cost is independent of
-    /// document size. `draw` never blocks — it shows the last result until the
-    /// async pass lands and triggers a redraw.
+    /// Spell-check decorations, **debounced** (only after scrolling/typing
+    /// settles) and **bounded to the visible region** (± a viewport margin), so a
+    /// pass is cheap enough to run on the main actor (`UITextChecker` is main-
+    /// actor isolated). `draw` shows the last result until the next pass lands.
     private var spellWorkItem: DispatchWorkItem?
 
     /// The visible document range to spell-check (± a viewport margin), or nil
@@ -371,24 +391,14 @@ open class EditorTextView: UIView, UIKeyInput {
         return spellCheckedVersion == docVersion ? spellCache : []
     }
 
-    /// Run a spell pass for the region visible *now*, if still needed.
+    /// Run a spell pass for the region visible *now*, if still needed. Runs on
+    /// the main actor (debounced + bounded, so it's quick).
     private func runSpellPassIfNeeded() {
-        guard spellCheckingEnabled, !spellInFlight, let want = spellTargetRange(), !spellCovered(want) else { return }
-        spellInFlight = true
-        let doc = editor.doc
-        let version = docVersion
-        Task.detached(priority: .utility) {
-            let decos = SpellCheck.decorations(for: doc, in: want)
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                self.spellInFlight = false
-                guard self.docVersion == version else { return } // document moved on
-                self.spellCache = decos
-                self.spellCheckedVersion = version
-                self.spellCheckedRange = want
-                self.setNeedsDisplay()
-            }
-        }
+        guard spellCheckingEnabled, let want = spellTargetRange(), !spellCovered(want) else { return }
+        spellCache = SpellCheck.decorations(for: editor.doc, in: want)
+        spellCheckedVersion = docVersion
+        spellCheckedRange = want
+        setNeedsDisplay()
     }
 
     /// Whether the document is a single empty textblock.
@@ -495,46 +505,76 @@ open class EditorTextView: UIView, UIKeyInput {
 
     // MARK: - Gestures
 
-    // Click-counting state (caret → word → paragraph), tuned to feel native.
-    private var lastClickTime: CFTimeInterval = 0
-    private var lastClickPoint: CGPoint = .zero
-    private var clickCount = 0
-    private let multiClickInterval: CFTimeInterval = 0.45 // window for a multi-click
-    private let multiClickSlop: CGFloat = 12             // must stay roughly in place
+    // MARK: - Suggestion popup
 
-    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+    /// Recompute which suggestion (slash / wiki-link) is active and show/position
+    /// or hide the popup. Called on every change and on scroll.
+    private func updateSuggestionPopup() {
+        if let menu = editor.slashMenu {
+            let items = slashCommands.filter { $0.matches(menu.query) }
+            if !items.isEmpty {
+                showSuggestion(.slash(items), titles: items.map(\.title), caretAt: menu.to)
+                return
+            }
+        }
+        if let provider = wikiLinkSuggestions, let suggestion = editor.wikiLinkSuggestion {
+            let targets = provider(suggestion.query)
+            if !targets.isEmpty {
+                showSuggestion(.wikiLink(targets), titles: targets, caretAt: suggestion.to)
+                return
+            }
+        }
+        hideSuggestion()
+    }
+
+    private func showSuggestion(_ active: ActiveSuggestion, titles: [String], caretAt pos: Int) {
+        let popup = suggestionPopup ?? {
+            let p = SuggestionPopupView(theme: theme)
+            p.onSelect = { [weak self] _ in self?.acceptSuggestion() }
+            addSubview(p)
+            suggestionPopup = p
+            return p
+        }()
+        activeSuggestion = active
+        popup.setItems(titles)
+        // Position just below the caret, in view (viewport) coordinates.
+        let caret = (ensureLayout().caretRect(at: min(pos, editor.doc.content.size)) ?? .zero)
+            .offsetBy(dx: 0, dy: -contentOffsetY)
+        let size = popup.systemLayoutSizeFitting(CGSize(width: 260, height: 0),
+                                                 withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
+        let x = min(max(caret.minX, 4), max(4, bounds.width - size.width - 4))
+        popup.frame = CGRect(x: x, y: caret.maxY + 4, width: size.width, height: size.height)
+    }
+
+    private func hideSuggestion() {
+        suggestionPopup?.removeFromSuperview()
+        suggestionPopup = nil
+        activeSuggestion = nil
+    }
+
+    /// The titles currently shown in the suggestion popup (nil when hidden).
+    /// For tests/inspection.
+    var suggestionTitles: [String]? { suggestionPopup?.items }
+
+    /// Apply the highlighted suggestion (Enter / Tab / tap).
+    private func acceptSuggestion() {
+        guard let active = activeSuggestion, let index = suggestionPopup?.selected else { return }
+        switch active {
+        case let .slash(items): if items.indices.contains(index) { editor.applySlashCommand(items[index]) }
+        case let .wikiLink(targets): if targets.indices.contains(index) { editor.acceptWikiLinkSuggestion(target: targets[index]) }
+        }
+        hideSuggestion()
+    }
+
+    /// Toggle a task-item checkbox. Gated by the gesture delegate to begin only
+    /// when the tap lands on a checkbox (otherwise UITextInteraction places the
+    /// caret).
+    @objc private func handleCheckboxTap(_ gesture: UITapGestureRecognizer) {
         if !isFirstResponder { becomeFirstResponder() }
         let point = docPoint(gesture.location(in: self))
-        let now = CACurrentMediaTime()
-        if now - lastClickTime <= multiClickInterval, hypot(point.x - lastClickPoint.x, point.y - lastClickPoint.y) <= multiClickSlop {
-            clickCount += 1
-        } else {
-            clickCount = 1
-        }
-        lastClickTime = now
-        lastClickPoint = point
-
-        // A tap on a task-item checkbox toggles it (only as a fresh single click).
-        if clickCount == 1, let box = ensureLayout().checkbox(at: point) {
-            clickCount = 0 // don't let it seed a multi-click
-            if let tr = try? editor.state.tr.setNodeAttribute(box.pos, "checked", .bool(!box.checked)) {
-                editor.dispatch(tr)
-            }
-            return
-        }
-        guard let pos = ensureLayout().position(at: point) else { return }
-        let target = min(pos, editor.doc.content.size)
-        switch (clickCount - 1) % 3 {
-        case 1: // double-click → word
-            selectWord(at: target)
-        case 2: // triple-click → paragraph
-            selectParagraph(at: target)
-        default: // single click → caret (or shift-extend)
-            if shiftDown {
-                setTextSelection(anchor: editor.state.selection.anchor, head: target)
-            } else {
-                editor.dispatch(editor.state.tr.setSelection(Selection.near(editor.doc.resolve(target))))
-            }
+        guard let box = ensureLayout().checkbox(at: point) else { return }
+        if let tr = try? editor.state.tr.setNodeAttribute(box.pos, "checked", .bool(!box.checked)) {
+            editor.dispatch(tr)
         }
     }
 
@@ -564,13 +604,20 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
 
-    // Touch long-press and mouse/trackpad drag share one drag-selection model.
-    @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
+    // The column-resize pan (gated to table borders) shares the drag model;
+    // it only ever takes the resize path since it begins on a border.
+    @objc private func handleMouseDrag(_ gesture: UIPanGestureRecognizer) {
         driveDragSelection(state: gesture.state, point: docPoint(gesture.location(in: self)))
     }
 
-    @objc private func handleMouseDrag(_ gesture: UIPanGestureRecognizer) {
-        driveDragSelection(state: gesture.state, point: docPoint(gesture.location(in: self)))
+    /// Our checkbox tap and column-resize pan begin only over their target, so
+    /// ordinary taps/selection drags fall through to UITextInteraction. (Must be
+    /// in the class body — it overrides `UIView`'s method.)
+    open override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+        let point = docPoint(gesture.location(in: self))
+        if gesture === checkboxRecognizer { return ensureLayout().checkbox(at: point) != nil }
+        if gesture === columnResizeRecognizer { return columnBorderHit(at: point) != nil }
+        return super.gestureRecognizerShouldBegin(gesture)
     }
 
     enum DragGranularity { case character, word, paragraph }
@@ -580,12 +627,11 @@ open class EditorTextView: UIView, UIKeyInput {
     private func driveDragSelection(state: UIGestureRecognizer.State, point: CGPoint) {
         switch state {
         case .began:
-            // A drag that begins right after a click at the same spot inherits
-            // that click's granularity: click-drag = character, double-click-drag
-            // = word, triple-click-drag = paragraph (native text behavior).
-            let recent = CACurrentMediaTime() - lastClickTime <= multiClickInterval
-                && hypot(point.x - lastClickPoint.x, point.y - lastClickPoint.y) <= multiClickSlop
-            beginDrag(at: point, granularity: recent ? (clickCount >= 2 ? .paragraph : .word) : .character)
+            // The only gesture routed here is the column-resize pan (gated to
+            // table borders), which takes the resize path regardless of
+            // granularity. Word/paragraph drag selection is exercised directly
+            // by tests via `beginDrag(at:granularity:)`.
+            beginDrag(at: point, granularity: .character)
         case .changed:
             updateDrag(to: point)
         case .ended, .cancelled, .failed:
@@ -957,6 +1003,16 @@ open class EditorTextView: UIView, UIKeyInput {
     /// point for hardware-key behavior, driven by `pressesBegan` in production
     /// and directly by tests.
     func handle(_ key: KeyEvent) -> Bool {
+        // While a suggestion popup is open, the arrow/enter/escape keys drive it.
+        if suggestionPopup != nil {
+            switch key.keyCode {
+            case .keyboardUpArrow: suggestionPopup?.moveSelection(by: -1); return true
+            case .keyboardDownArrow: suggestionPopup?.moveSelection(by: 1); return true
+            case .keyboardReturnOrEnter, .keyboardTab: acceptSuggestion(); return true
+            case .keyboardEscape: hideSuggestion(); return true
+            default: break
+            }
+        }
         let mods = key.modifiers
         let extend = mods.contains(.shift)
         // Cmd = to line/doc edge, Option = by word, otherwise by character.
@@ -1161,6 +1217,13 @@ open class EditorTextView: UIView, UIKeyInput {
 
     deinit {
         imageTasks.values.forEach { $0.cancel() }
+    }
+}
+
+extension EditorTextView: UIGestureRecognizerDelegate {
+    /// Coexist with UITextInteraction's own recognizers.
+    public func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        true
     }
 }
 
