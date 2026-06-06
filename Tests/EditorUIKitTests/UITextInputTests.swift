@@ -1,0 +1,150 @@
+#if canImport(UIKit)
+import XCTest
+import UIKit
+import DocumentModel
+import EditorStateKit
+import SchemaKit
+@testable import EditorUIKit
+
+/// Exercises the `UITextInput` conformance the way the system text-input engine
+/// does: reading text, replacing ranges, IME marked-text composition, and
+/// geometry/position arithmetic.
+@MainActor
+final class UITextInputTests: XCTestCase {
+    private func makeView(_ text: String = "hello world") throws -> EditorTextView {
+        let editor = try Editor(extensions: fullKit())
+        let para = try! editor.schema.node("paragraph", [:], content: Fragment.from(text.isEmpty ? [] : [editor.schema.text(text)]))
+        editor.setContent(try! editor.schema.node("doc", [:], content: Fragment.from([para])))
+        let view = EditorTextView(editor: editor)
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 480)
+        view.layoutIfNeeded()
+        return view
+    }
+    private func range(_ from: Int, _ to: Int) -> DocTextRange { DocTextRange(from, to) }
+
+    func testTextInRange() throws {
+        let view = try makeView("hello world")
+        XCTAssertEqual(view.text(in: range(1, 6)), "hello")
+        XCTAssertEqual(view.text(in: range(7, 12)), "world")
+    }
+
+    /// The invariant UIKit relies on: text length must equal the position offset
+    /// difference, even across block boundaries (otherwise inserts land on the
+    /// wrong line during fast typing).
+    func testTextLengthMatchesOffsetAcrossBlocks() throws {
+        let editor = try Editor(extensions: fullKit())
+        func para(_ s: String) -> Node {
+            try! editor.schema.node("paragraph", [:], content: Fragment.from([editor.schema.text(s)]))
+        }
+        editor.setContent(try! editor.schema.node("doc", [:], content: Fragment.from([para("alpha"), para("bravo"), para("charlie")])))
+        let view = EditorTextView(editor: editor)
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 480)
+        let size = editor.doc.content.size
+        // Whole document: char count == position span.
+        let whole = view.text(in: DocTextRange(0, size))
+        XCTAssertEqual(whole?.count, size)
+        XCTAssertEqual(view.offset(from: view.beginningOfDocument, to: view.endOfDocument), size)
+        // Every sub-range too.
+        for from in 0...size {
+            for to in from...size {
+                XCTAssertEqual(view.text(in: DocTextRange(from, to))?.count, to - from, "text length must equal offset for [\(from),\(to)]")
+            }
+        }
+        // Within a block, the projection is the real text.
+        let bravoStart = editor.doc.content.size // locate "bravo"
+        var pos = 0
+        editor.doc.descendants { n, p, _, _ in if n.isText, n.text == "bravo" { pos = p }; return true }
+        _ = bravoStart
+        XCTAssertEqual(view.text(in: DocTextRange(pos, pos + 5)), "bravo")
+    }
+
+    func testReplaceRangeEditsDocument() throws {
+        let view = try makeView("hello world")
+        view.replace(range(1, 6), withText: "HELLO")
+        XCTAssertEqual(view.editor.doc.textContent, "HELLO world")
+    }
+
+    func testSelectedTextRangeRoundTrips() throws {
+        let view = try makeView("hello world")
+        view.selectedTextRange = range(1, 6)
+        let sel = try XCTUnwrap(view.selectedTextRange as? DocTextRange)
+        XCTAssertEqual(sel.from, 1)
+        XCTAssertEqual(sel.to, 6)
+        XCTAssertEqual(view.editor.state.selection.from, 1)
+        XCTAssertEqual(view.editor.state.selection.to, 6)
+    }
+
+    func testMarkedTextCompositionThenCommit() throws {
+        let view = try makeView("")
+        // Compose "n" → "ni" → "ní" (as an IME would), then commit "你".
+        view.setMarkedText("n", selectedRange: NSRange(location: 1, length: 0))
+        XCTAssertNotNil(view.markedTextRange)
+        XCTAssertEqual(view.editor.doc.textContent, "n")
+        view.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0))
+        XCTAssertEqual(view.editor.doc.textContent, "ni")
+        let marked = try XCTUnwrap(view.markedTextRange as? DocTextRange)
+        XCTAssertEqual(view.text(in: marked), "ni")
+        // Commit.
+        view.insertText("你")
+        XCTAssertEqual(view.editor.doc.textContent, "你")
+        XCTAssertNil(view.markedTextRange, "committing clears the marked range")
+    }
+
+    func testUnmarkTextClearsComposition() throws {
+        let view = try makeView("")
+        view.setMarkedText("abc", selectedRange: NSRange(location: 3, length: 0))
+        XCTAssertNotNil(view.markedTextRange)
+        view.unmarkText()
+        XCTAssertNil(view.markedTextRange)
+        XCTAssertEqual(view.editor.doc.textContent, "abc", "unmark keeps the text, just ends composing")
+    }
+
+    func testPositionArithmetic() throws {
+        let view = try makeView("hello world")
+        let start = view.beginningOfDocument
+        let p5 = try XCTUnwrap(view.position(from: start, offset: 5))
+        XCTAssertEqual(view.offset(from: start, to: p5), 5)
+        XCTAssertEqual(view.compare(start, to: p5), .orderedAscending)
+        // Out of range returns nil.
+        XCTAssertNil(view.position(from: view.endOfDocument, offset: 1))
+    }
+
+    func testTypingDoesNotEchoSelectionNotifications() throws {
+        // Regression: a selectionDidChange fired during UIKit's own insertText
+        // makes UIKit re-sync mid-stream, which broke words during fast typing.
+        let view = try makeView("")
+        let delegate = CountingInputDelegate()
+        view.inputDelegate = delegate
+        for ch in "hello" { view.insertText(String(ch)) }
+        XCTAssertEqual(view.editor.doc.textContent, "hello")
+        XCTAssertEqual(delegate.selectionChanges, 0, "typing must not echo selectionDidChange")
+        XCTAssertEqual(delegate.textChanges, 0)
+        // A caret move the system didn't initiate SHOULD notify it.
+        view.editor.dispatch(view.editor.state.tr.setSelection(TextSelection.create(view.editor.doc, 1)))
+        XCTAssertGreaterThan(delegate.selectionChanges, 0, "a non-UIKit caret move should notify the input delegate")
+    }
+
+    func testGeometryIsNonZero() throws {
+        let view = try makeView("hello world")
+        let caret = view.caretRect(for: DocTextPosition(3))
+        XCTAssertGreaterThan(caret.height, 0)
+        let rects = view.selectionRects(for: range(1, 6))
+        XCTAssertFalse(rects.isEmpty)
+        XCTAssertTrue(rects.first?.containsStart ?? false)
+        // Hit-testing maps a point back to a position.
+        XCTAssertNotNil(view.closestPosition(to: CGPoint(x: caret.midX, y: caret.midY)))
+    }
+}
+
+@MainActor
+private final class CountingInputDelegate: NSObject, UITextInputDelegate {
+    var selectionChanges = 0
+    var textChanges = 0
+    func selectionWillChange(_ textInput: UITextInput?) {}
+    func selectionDidChange(_ textInput: UITextInput?) { selectionChanges += 1 }
+    func textWillChange(_ textInput: UITextInput?) {}
+    func textDidChange(_ textInput: UITextInput?) { textChanges += 1 }
+    @available(iOS 18.4, *)
+    func conversationContext(_ context: UIConversationContext?, didChange textInput: UITextInput?) {}
+}
+#endif

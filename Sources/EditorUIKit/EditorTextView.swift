@@ -65,11 +65,27 @@ open class EditorTextView: UIView, UIKeyInput {
     /// The document position currently anchoring a drag selection.
     private var dragAnchor: Int?
 
+    // MARK: - UITextInput state
+    /// The system input delegate, notified when text/selection change outside
+    /// of a UITextInput-initiated edit.
+    weak var textInputDelegate: UITextInputDelegate?
+    /// The marked (composing/IME) range in document positions, if any.
+    var markedRange: (Int, Int)?
+    var markedTextStyleStore: [NSAttributedString.Key: Any]?
+    /// Set while applying a UITextInput-initiated edit, so our `onChange` hook
+    /// doesn't echo the change back to the input delegate (which would confuse
+    /// autocorrect / marked-text state).
+    var applyingTextInput = false
+    lazy var inputTokenizer: UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
+
     public required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     // MARK: - Layout lifecycle
 
     private func setNeedsRebuild() {
+        // Tell the system input system about changes it didn't initiate (caret
+        // moves, key edits) so autocorrect / marked text stay in sync.
+        if !applyingTextInput { textInputDelegate?.selectionDidChange(self) }
         // The layout is rebuilt lazily by `ensureLayout`, and only when the
         // document or width actually changes — selection/caret/scroll changes
         // reuse the existing layout (avoiding a full relayout per keystroke move).
@@ -90,7 +106,42 @@ open class EditorTextView: UIView, UIKeyInput {
         setNeedsRebuild()
     }
 
-    private func ensureLayout() -> DocumentLayout {
+    // A flat text projection with exactly one character per document position
+    // (real characters for text, a placeholder per node-boundary/atom token).
+    // This keeps `text(in:).count == offset(from:to:)`, the invariant UIKit's
+    // text input relies on — without it, character-index arithmetic across block
+    // boundaries lands inserts on the wrong line.
+    private var projectionCache: [Character] = []
+    private var projectionDoc: Node?
+
+    func projectedCharacters() -> [Character] {
+        if let projectionDoc, projectionDoc == editor.doc { return projectionCache }
+        var chars: [Character] = []
+        chars.reserveCapacity(editor.doc.content.size)
+        EditorTextView.project(editor.doc, into: &chars)
+        projectionCache = chars
+        projectionDoc = editor.doc
+        return chars
+    }
+
+    /// Append one character per position of `node`'s content: text characters
+    /// verbatim, a placeholder for each leaf atom and each open/close token.
+    private static func project(_ node: Node, into chars: inout [Character]) {
+        for i in 0..<node.childCount {
+            let child = node.child(i)
+            if child.isText {
+                chars.append(contentsOf: child.text ?? "")
+            } else if child.isLeaf {
+                chars.append("\u{fffc}") // leaf atom occupies one position
+            } else {
+                chars.append("\n")       // open token
+                project(child, into: &chars)
+                chars.append("\n")       // close token
+            }
+        }
+    }
+
+    func ensureLayout() -> DocumentLayout {
         if let layout, lastLayoutWidth == bounds.width, layoutDoc == editor.doc { return layout }
         let l = DocumentLayout(doc: editor.doc, width: max(bounds.width, 1), theme: theme,
                                imageProvider: { [weak self] src in self?.imageCache[src] })
@@ -178,12 +229,14 @@ open class EditorTextView: UIView, UIKeyInput {
         }
         l.draw(in: ctx)
 
-        // Spelling: dotted red underline beneath each misspelled range.
+        // Spelling: dotted red underline beneath each misspelled range — but not
+        // the word the caret is currently in (the word being typed), so a
+        // half-typed word isn't flagged until the caret leaves it.
         ctx.setStrokeColor(UIColor.systemRed.cgColor)
         ctx.setLineWidth(1.5)
         ctx.setLineDash(phase: 0, lengths: [2, 2])
-        for deco in decorations where deco.attributes["spelling"] != nil {
-            for r in l.selectionRects(from: deco.from, to: deco.to) {
+        for (from, to) in visibleSpellingRanges(decorations) {
+            for r in l.selectionRects(from: from, to: to) {
                 let y = r.maxY - 1
                 ctx.move(to: CGPoint(x: r.minX, y: y))
                 ctx.addLine(to: CGPoint(x: r.maxX, y: y))
@@ -191,6 +244,31 @@ open class EditorTextView: UIView, UIKeyInput {
         }
         ctx.strokePath()
         ctx.setLineDash(phase: 0, lengths: [])
+
+        // Marked (IME / composing) text: a solid underline.
+        if let m = markedRange {
+            ctx.setStrokeColor(theme.textColor.cgColor)
+            ctx.setLineWidth(1)
+            for r in l.selectionRects(from: m.0, to: m.1) {
+                let y = r.maxY - 0.5
+                ctx.move(to: CGPoint(x: r.minX, y: y))
+                ctx.addLine(to: CGPoint(x: r.maxX, y: y))
+            }
+            ctx.strokePath()
+        }
+    }
+
+    /// The misspelled ranges that should currently be underlined: every spelling
+    /// decoration except the one containing the collapsed caret (the word being
+    /// typed isn't flagged until the caret leaves it — e.g. after a space).
+    func visibleSpellingRanges(_ decorations: [Decoration]) -> [(Int, Int)] {
+        let sel = editor.state.selection
+        let caret: Int? = sel.empty ? sel.head : nil
+        return decorations.compactMap { deco in
+            guard deco.attributes["spelling"] != nil else { return nil }
+            if let caret, caret >= deco.from, caret <= deco.to { return nil }
+            return (deco.from, deco.to)
+        }
     }
 
     private var spellCacheDoc: Node?
@@ -563,6 +641,18 @@ open class EditorTextView: UIView, UIKeyInput {
     public var hasText: Bool { editor.doc.content.size > 0 }
 
     public func insertText(_ text: String) {
+        // This is a UIKit-initiated edit: suppress the input-delegate echo so a
+        // mid-stream selectionDidChange doesn't desync fast typing.
+        applyingTextInput = true
+        defer { applyingTextInput = false }
+        // Committing an IME composition: replace the marked range with the final text.
+        if let m = markedRange {
+            let tr = editor.state.tr
+            try? tr.insertText(text, min(m.0, editor.doc.content.size), min(m.1, editor.doc.content.size))
+            editor.dispatch(tr)
+            markedRange = nil
+            return
+        }
         if text == "\n" { runKey("Enter"); return }
         let sel = editor.state.selection
         // Try input rules (only at a collapsed cursor).
@@ -573,6 +663,9 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     public func deleteBackward() {
+        applyingTextInput = true
+        defer { applyingTextInput = false }
+        markedRange = nil // a delete ends any composition
         deleteInDirection(.backward, by: .character)
     }
 
