@@ -29,7 +29,7 @@ let schema: Schema = {
         ("tableHeader", NodeSpec(content: "block+", isolating: true)),
     ]
     let marks: [(String, MarkSpec)] = [
-        ("bold", MarkSpec()), ("italic", MarkSpec()), ("strike", MarkSpec()),
+        ("bold", MarkSpec()), ("italic", MarkSpec()), ("strike", MarkSpec()), ("highlight", MarkSpec()),
         ("code", MarkSpec(excludes: "_")),
         ("link", MarkSpec(attrs: ["href": AttributeSpec(), "title": AttributeSpec(default: .null)], inclusive: false)),
     ]
@@ -94,6 +94,14 @@ test("HTML round-trip with image + blockquote") {
     try expectEqual(back, d)
 }
 
+test("HTML highlight round-trip (<mark>)") {
+    let d = doc(p(t("plain "), schema.text("lit", [schema.mark("highlight")]), t(" end")))
+    let html = HTMLSerializer.serialize(d)
+    try expect(html.contains("<mark>lit</mark>"), "expected <mark> tag, got: \(html)")
+    let back = try HTMLParser.parse(html, schema: schema)
+    try expectEqual(back, d)
+}
+
 test("HTML wikiLink round-trip") {
     let wl = node("wikiLink", ["target": .string("Home"), "label": .string("Start")])
     let d = doc(p(t("go "), wl))
@@ -115,6 +123,14 @@ test("Markdown round-trip (headings, bold, italic, code)") {
         h(1, "Doc"),
         p(t("some "), strong("bold"), t(" and "), em("italic"), t(" and "), schema.text("code", [schema.mark("code")])))
     let md = MarkdownSerializer.serialize(d)
+    let back = try MarkdownParser.parse(md, schema: schema)
+    try expectEqual(back, d)
+}
+
+test("Markdown highlight round-trip (==text==)") {
+    let d = doc(p(t("plain "), schema.text("lit", [schema.mark("highlight")]), t(" end")))
+    let md = MarkdownSerializer.serialize(d)
+    try expectEqual(md, "plain ==lit== end")
     let back = try MarkdownParser.parse(md, schema: schema)
     try expectEqual(back, d)
 }

@@ -65,6 +65,7 @@ public enum MarkdownSerializer {
         var result = text
         // link is outermost; code innermost-ish
         if marks.contains(where: { $0.type.name == "code" }) { result = "`\(result)`" }
+        if marks.contains(where: { $0.type.name == "highlight" }) { result = "==\(result)==" }
         if marks.contains(where: { $0.type.name == "strike" }) { result = "~~\(result)~~" }
         if marks.contains(where: { $0.type.name == "bold" }) { result = "**\(result)**" }
         if marks.contains(where: { $0.type.name == "italic" }) { result = "*\(result)*" }
@@ -209,7 +210,7 @@ public enum MarkdownParser {
     }
 
     // Inline parser: handles **bold**, *italic*/_italic_, `code`, ~~strike~~,
-    // [text](url), ![alt](src), and [[wiki|link]].
+    // ==highlight==, [text](url), ![alt](src), and [[wiki|link]].
     static func parseInline(_ text: String, _ schema: Schema) -> [Node] {
         var nodes: [Node] = []
         let chars = Array(text)
@@ -275,6 +276,14 @@ public enum MarkdownParser {
                 if let close = findSeq(chars, i + 2, "~~") {
                     flush()
                     nodes.append(schema.text(String(chars[(i + 2)..<close]), mark("strike")))
+                    i = close + 2; continue
+                }
+            }
+            // Highlight == ==
+            if c == "=" && i + 1 < chars.count && chars[i + 1] == "=" {
+                if let close = findSeq(chars, i + 2, "==") {
+                    flush()
+                    nodes.append(schema.text(String(chars[(i + 2)..<close]), mark("highlight")))
                     i = close + 2; continue
                 }
             }
