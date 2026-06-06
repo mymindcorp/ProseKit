@@ -47,10 +47,16 @@ public final class Editor {
 
     // MARK: - Dispatch
 
+    /// Monotonic counter bumped only when a dispatched transaction changes the
+    /// document (not for selection-only changes). Renderers key layout caches
+    /// off this so moving the caret never invalidates the layout.
+    public private(set) var docRevision = 0
+
     /// Apply a transaction and notify observers. Stamps the transaction's time
     /// so undo history groups rapid edits but separates distinct user actions.
     public func dispatch(_ tr: Transaction) {
         if tr.time == 0 { tr.time = Date().timeIntervalSince1970 * 1000 }
+        if tr.docChanged { docRevision &+= 1 }
         state = state.apply(tr)
         onChange?(state)
     }
@@ -79,10 +85,12 @@ public final class Editor {
     public func chain(_ commands: [Command]) -> Bool {
         var working = state
         var any = false
+        var changedDoc = false
         for command in commands {
             var produced: Transaction? = nil
             let did = command(working, { produced = $0 }, host as? CommandHost)
             if did, let tr = produced {
+                if tr.docChanged { changedDoc = true }
                 working = working.apply(tr)
                 any = true
             } else if !did {
@@ -90,6 +98,7 @@ public final class Editor {
             }
         }
         if any {
+            if changedDoc { docRevision &+= 1 }
             state = working
             onChange?(state)
         }

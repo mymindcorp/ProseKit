@@ -85,7 +85,7 @@ extension EditorTextView: UITextInput {
         let from = clamp(r.from), to = clamp(r.to)
         guard to > from else { return "" }
         // One character per document position, so length == offset difference.
-        return String(projectedCharacters()[from..<to])
+        return projectedText(from: from, to: to)
     }
 
     public func replace(_ range: UITextRange, withText text: String) {
@@ -93,7 +93,7 @@ extension EditorTextView: UITextInput {
         applyingTextInput = true
         defer { applyingTextInput = false }
         let tr = editor.state.tr
-        try? tr.insertText(text, clamp(r.from), clamp(r.to))
+        _ = try? tr.insertText(text, clamp(r.from), clamp(r.to))
         editor.dispatch(tr)
     }
 
@@ -107,7 +107,7 @@ extension EditorTextView: UITextInput {
         defer { applyingTextInput = false }
         let from = clamp(range.0), to = clamp(range.1)
         let tr = editor.state.tr
-        try? tr.insertText(text, from, to)
+        _ = try? tr.insertText(text, from, to)
         let newEnd = from + text.count
         markedRange = text.isEmpty ? nil : (from, newEnd)
         // Selection within the marked text (UTF-16 range approximated onto graphemes).

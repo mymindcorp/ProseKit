@@ -18,7 +18,7 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Text shown when the document is empty.
     public var placeholder: String? { didSet { setNeedsDisplay() } }
     /// Whether misspelled words are underlined.
-    public var spellCheckingEnabled = true { didSet { spellCacheDoc = nil; setNeedsDisplay() } }
+    public var spellCheckingEnabled = true { didSet { spellCheckedVersion = -1; setNeedsDisplay() } }
     /// Whether a Shift key is currently held (for shift-click selection).
     private var shiftDown = false
 
@@ -62,6 +62,25 @@ open class EditorTextView: UIView, UIKeyInput {
         editor.onChange = { [weak self] _ in self?.setNeedsRebuild() }
     }
 
+    /// The editor's document revision — bumped only when the document actually
+    /// changes (not on selection moves), so caret moves / clicks / scrolling
+    /// never invalidate the layout. O(1) cache key.
+    private var docVersion: Int { editor.docRevision }
+    private let blockCache = TextBlockLayoutCache()
+    /// Vertical scroll offset; the host feeds the enclosing scroll view's offset
+    /// so the view renders only the visible window (bounded layer + culling).
+    public var contentOffsetY: CGFloat = 0 {
+        // Scrolling only repositions the caret layer; it must NOT reveal the
+        // caret (that would scroll back to the cursor and fight the user).
+        didSet { if oldValue != contentOffsetY { setNeedsDisplay(); positionCaretLayer() } }
+    }
+    /// The full document height; the host uses it as the scroll content height.
+    public var documentHeight: CGFloat { ensureLayout().height }
+    /// Called when the document height changes (so the host can resize the
+    /// scroll content).
+    public var onDocumentHeightChange: ((CGFloat) -> Void)?
+    private var lastReportedHeight: CGFloat = -1
+
     /// The document position currently anchoring a drag selection.
     private var dragAnchor: Int?
 
@@ -96,13 +115,12 @@ open class EditorTextView: UIView, UIKeyInput {
 
     private var imageCache: [String: UIImage] = [:]
     private var imageTasks: [String: Task<Void, Never>] = [:]
-    private var layoutDoc: Node?
 
     /// Force a full relayout on the next draw (for theme / Dynamic Type changes
     /// where the document is unchanged but fonts/sizing differ).
     private func invalidateLayout() {
         layout = nil
-        layoutDoc = nil
+        layoutVersion = -1
         setNeedsRebuild()
     }
 
@@ -111,44 +129,54 @@ open class EditorTextView: UIView, UIKeyInput {
     // This keeps `text(in:).count == offset(from:to:)`, the invariant UIKit's
     // text input relies on — without it, character-index arithmetic across block
     // boundaries lands inserts on the wrong line.
-    private var projectionCache: [Character] = []
-    private var projectionDoc: Node?
-
-    func projectedCharacters() -> [Character] {
-        if let projectionDoc, projectionDoc == editor.doc { return projectionCache }
+    /// The flat projection of document positions `[from, to)` — exactly one
+    /// character per position (text verbatim, `\u{fffc}` for leaf atoms, `\n` for
+    /// node-boundary tokens). Computed over only the requested span (via
+    /// `nodesBetween`), so `text(in:)` is O(range), not O(document).
+    func projectedText(from: Int, to: Int) -> String {
+        guard to > from else { return "" }
         var chars: [Character] = []
-        chars.reserveCapacity(editor.doc.content.size)
-        EditorTextView.project(editor.doc, into: &chars)
-        projectionCache = chars
-        projectionDoc = editor.doc
-        return chars
+        chars.reserveCapacity(to - from)
+        var cursor = from
+        func fillGap(upTo end: Int) { while cursor < end { chars.append("\n"); cursor += 1 } }
+        editor.doc.nodesBetween(from, to) { node, pos, _, _ in
+            if node.isText {
+                let s = Array(node.text ?? "")
+                let lo = max(from, pos) - pos
+                let hi = min(to, pos + s.count) - pos
+                guard lo < hi else { return false }
+                fillGap(upTo: pos + lo)
+                chars.append(contentsOf: s[lo..<hi])
+                cursor = pos + hi
+                return false
+            } else if node.isLeaf {
+                guard pos >= from, pos < to else { return false }
+                fillGap(upTo: pos)
+                chars.append("\u{fffc}")
+                cursor = pos + 1
+                return false
+            }
+            return true // descend into containers; their tokens become gap "\n"
+        }
+        fillGap(upTo: to)
+        return String(chars)
     }
 
-    /// Append one character per position of `node`'s content: text characters
-    /// verbatim, a placeholder for each leaf atom and each open/close token.
-    private static func project(_ node: Node, into chars: inout [Character]) {
-        for i in 0..<node.childCount {
-            let child = node.child(i)
-            if child.isText {
-                chars.append(contentsOf: child.text ?? "")
-            } else if child.isLeaf {
-                chars.append("\u{fffc}") // leaf atom occupies one position
-            } else {
-                chars.append("\n")       // open token
-                project(child, into: &chars)
-                chars.append("\n")       // close token
-            }
-        }
-    }
+    private var layoutVersion = -1
 
     func ensureLayout() -> DocumentLayout {
-        if let layout, lastLayoutWidth == bounds.width, layoutDoc == editor.doc { return layout }
+        if let layout, lastLayoutWidth == bounds.width, layoutVersion == docVersion { return layout }
         let l = DocumentLayout(doc: editor.doc, width: max(bounds.width, 1), theme: theme,
-                               imageProvider: { [weak self] src in self?.imageCache[src] })
+                               imageProvider: { [weak self] src in self?.imageCache[src] },
+                               blockCache: blockCache, previous: layout)
         layout = l
         lastLayoutWidth = bounds.width
-        layoutDoc = editor.doc
+        layoutVersion = docVersion
         loadPendingImages(l.pendingImageSources)
+        if l.height != lastReportedHeight {
+            lastReportedHeight = l.height
+            onDocumentHeightChange?(l.height)
+        }
         return l
     }
 
@@ -196,8 +224,9 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     open override func sizeThatFits(_ size: CGSize) -> CGSize {
-        let l = DocumentLayout(doc: editor.doc, width: max(size.width, 1), theme: theme)
-        return CGSize(width: size.width, height: l.height)
+        // Use the cached layout — never a fresh full typeset, which would re-lay
+        // out the entire document on every layout pass.
+        CGSize(width: size.width, height: ensureLayout().height)
     }
 
     // MARK: - Drawing
@@ -205,18 +234,24 @@ open class EditorTextView: UIView, UIKeyInput {
     open override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
         let l = ensureLayout()
+        // Everything is laid out in document coordinates; shift by the scroll
+        // offset so we render only the visible window into a viewport-sized layer.
+        ctx.saveGState()
+        ctx.translateBy(x: 0, y: -contentOffsetY)
+        let visibleY = contentOffsetY ... (contentOffsetY + max(bounds.height, 1))
+        func onScreen(_ r: CGRect) -> Bool { r.maxY >= visibleY.lowerBound && r.minY <= visibleY.upperBound }
+
         // Placeholder when the document is empty.
         if let placeholder, !placeholder.isEmpty, isDocumentEmpty {
             let attrs: [NSAttributedString.Key: Any] = [.font: theme.bodyFont, .foregroundColor: theme.codeColor]
-            let origin = CGPoint(x: theme.pageInsets.left, y: theme.pageInsets.top)
-            NSAttributedString(string: placeholder, attributes: attrs).draw(at: origin)
+            NSAttributedString(string: placeholder, attributes: attrs).draw(at: CGPoint(x: theme.pageInsets.left, y: theme.pageInsets.top))
         }
-        // Plugin + spelling decorations.
+        // Plugin (e.g. search highlight) backgrounds.
         let decorations = gatherDecorations()
         for deco in decorations where deco.kind == .inline {
             if let hex = deco.attributes["background"], let color = UIColor(hex: hex) {
                 ctx.setFillColor(color.cgColor)
-                for r in l.selectionRects(from: deco.from, to: deco.to) { ctx.fill(r) }
+                for r in l.selectionRects(from: deco.from, to: deco.to) where onScreen(r) { ctx.fill(r) }
             }
         }
         // Selection highlight (every range — a cell selection has several).
@@ -224,38 +259,51 @@ open class EditorTextView: UIView, UIKeyInput {
         if !sel.empty {
             ctx.setFillColor(theme.selectionColor.cgColor)
             for range in sel.ranges {
-                for r in l.selectionRects(from: range.from.pos, to: range.to.pos) { ctx.fill(r) }
+                for r in l.selectionRects(from: range.from.pos, to: range.to.pos) where onScreen(r) { ctx.fill(r) }
             }
         }
-        l.draw(in: ctx)
+        l.draw(in: ctx, clipY: visibleY)
 
-        // Spelling: dotted red underline beneath each misspelled range — but not
-        // the word the caret is currently in (the word being typed), so a
-        // half-typed word isn't flagged until the caret leaves it.
-        ctx.setStrokeColor(UIColor.systemRed.cgColor)
-        ctx.setLineWidth(1.5)
-        ctx.setLineDash(phase: 0, lengths: [2, 2])
-        for (from, to) in visibleSpellingRanges(decorations) {
-            for r in l.selectionRects(from: from, to: to) {
-                let y = r.maxY - 1
-                ctx.move(to: CGPoint(x: r.minX, y: y))
-                ctx.addLine(to: CGPoint(x: r.maxX, y: y))
+        // Spelling underlines — skip the word under the caret, and only the
+        // misspellings within the visible block window (bounds the work on huge
+        // documents).
+        if let visiblePos = visiblePositionRange(l, y: visibleY) {
+            ctx.setStrokeColor(UIColor.systemRed.cgColor)
+            ctx.setLineWidth(1.5)
+            ctx.setLineDash(phase: 0, lengths: [2, 2])
+            for (from, to) in visibleSpellingRanges(decorations) where to >= visiblePos.lowerBound && from <= visiblePos.upperBound {
+                for r in l.selectionRects(from: from, to: to) where onScreen(r) {
+                    let y = r.maxY - 1
+                    ctx.move(to: CGPoint(x: r.minX, y: y))
+                    ctx.addLine(to: CGPoint(x: r.maxX, y: y))
+                }
             }
+            ctx.strokePath()
+            ctx.setLineDash(phase: 0, lengths: [])
         }
-        ctx.strokePath()
-        ctx.setLineDash(phase: 0, lengths: [])
 
         // Marked (IME / composing) text: a solid underline.
         if let m = markedRange {
             ctx.setStrokeColor(theme.textColor.cgColor)
             ctx.setLineWidth(1)
-            for r in l.selectionRects(from: m.0, to: m.1) {
+            for r in l.selectionRects(from: m.0, to: m.1) where onScreen(r) {
                 let y = r.maxY - 0.5
                 ctx.move(to: CGPoint(x: r.minX, y: y))
                 ctx.addLine(to: CGPoint(x: r.maxX, y: y))
             }
             ctx.strokePath()
         }
+        ctx.restoreGState()
+    }
+
+    /// The document-position range spanned by the blocks intersecting the
+    /// visible y window (for culling per-position drawing on large documents).
+    private func visiblePositionRange(_ l: DocumentLayout, y: ClosedRange<CGFloat>) -> ClosedRange<Int>? {
+        var lo = Int.max, hi = Int.min
+        for b in l.blocks where b.frame.maxY >= y.lowerBound && b.frame.minY <= y.upperBound {
+            lo = min(lo, b.contentStart); hi = max(hi, b.contentEnd)
+        }
+        return lo <= hi ? lo...hi : nil
     }
 
     /// The misspelled ranges that should currently be underlined: every spelling
@@ -271,8 +319,10 @@ open class EditorTextView: UIView, UIKeyInput {
         }
     }
 
-    private var spellCacheDoc: Node?
     private var spellCache: [Decoration] = []
+    private var spellCheckedVersion = -1
+    private var spellCheckedRange: ClosedRange<Int>?
+    private var spellInFlight = false
 
     /// Collect decorations contributed by the active plugins, plus spelling.
     private func gatherDecorations() -> [Decoration] {
@@ -286,28 +336,59 @@ open class EditorTextView: UIView, UIKeyInput {
         return result
     }
 
-    private var spellInFlightDoc: Node?
+    /// Spell-check decorations, computed off the main thread and **bounded to the
+    /// visible region (± a viewport margin)** so the cost is independent of
+    /// document size. `draw` never blocks — it shows the last result until the
+    /// async pass lands and triggers a redraw.
+    private var spellWorkItem: DispatchWorkItem?
 
-    /// Spell-check decorations. Computed off the main thread (UITextChecker is
-    /// slow) and cached by document; `draw` never blocks on it — it shows the
-    /// last result until the async pass finishes and triggers a redraw.
+    /// The visible document range to spell-check (± a viewport margin), or nil
+    /// when nothing is laid out.
+    private func spellTargetRange() -> ClosedRange<Int>? {
+        let margin = max(bounds.height, 300)
+        let expandedY = (contentOffsetY - margin) ... (contentOffsetY + max(bounds.height, 1) + margin)
+        return visiblePositionRange(ensureLayout(), y: expandedY)
+    }
+
+    private func spellCovered(_ want: ClosedRange<Int>) -> Bool {
+        spellCheckedVersion == docVersion
+            && (spellCheckedRange.map { $0.lowerBound <= want.lowerBound && $0.upperBound >= want.upperBound } ?? false)
+    }
+
     private func currentSpellDecorations() -> [Decoration] {
         guard spellCheckingEnabled else { return [] }
+        // Debounce: while scrolling/typing keeps changing the visible region or
+        // the document, defer the (relatively expensive) UITextChecker pass until
+        // things settle, rather than running it on every frame/keystroke.
+        if let want = spellTargetRange(), !spellCovered(want) {
+            spellWorkItem?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.runSpellPassIfNeeded() }
+            spellWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+        }
+        // Only draw decorations computed for the CURRENT document revision — the
+        // positions of a stale pass are wrong once an edit shifts the text.
+        return spellCheckedVersion == docVersion ? spellCache : []
+    }
+
+    /// Run a spell pass for the region visible *now*, if still needed.
+    private func runSpellPassIfNeeded() {
+        guard spellCheckingEnabled, !spellInFlight, let want = spellTargetRange(), !spellCovered(want) else { return }
+        spellInFlight = true
         let doc = editor.doc
-        if spellCacheDoc == doc { return spellCache }
-        if spellInFlightDoc != doc {
-            spellInFlightDoc = doc
-            Task.detached(priority: .utility) {
-                let decos = SpellCheck.decorations(for: doc)
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.spellCache = decos
-                    self.spellCacheDoc = doc
-                    if self.editor.doc == doc { self.setNeedsDisplay() }
-                }
+        let version = docVersion
+        Task.detached(priority: .utility) {
+            let decos = SpellCheck.decorations(for: doc, in: want)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.spellInFlight = false
+                guard self.docVersion == version else { return } // document moved on
+                self.spellCache = decos
+                self.spellCheckedVersion = version
+                self.spellCheckedRange = want
+                self.setNeedsDisplay()
             }
         }
-        return spellCache // possibly stale; refreshed when the async pass lands
     }
 
     /// Whether the document is a single empty textblock.
@@ -319,6 +400,21 @@ open class EditorTextView: UIView, UIKeyInput {
 
     // MARK: - Caret
 
+    /// Convert a gesture point (viewport coordinates) to document coordinates.
+    func docPoint(_ point: CGPoint) -> CGPoint { CGPoint(x: point.x, y: point.y + contentOffsetY) }
+
+    /// Reposition the caret layer for the current scroll offset, without
+    /// scrolling (used while the user scrolls).
+    private func positionCaretLayer() {
+        guard isFirstResponder, editor.state.selection.empty,
+              let rect = ensureLayout().caretRect(at: editor.state.selection.head) else {
+            caretLayer.path = nil
+            return
+        }
+        caretLayer.path = UIBezierPath(rect: rect.offsetBy(dx: 0, dy: -contentOffsetY)).cgPath
+        caretLayer.fillColor = theme.caretColor.cgColor
+    }
+
     private func updateCaret() {
         let sel = editor.state.selection
         guard isFirstResponder, sel.empty, let rect = ensureLayout().caretRect(at: sel.head) else {
@@ -328,17 +424,32 @@ open class EditorTextView: UIView, UIKeyInput {
             }
             return
         }
-        caretLayer.path = UIBezierPath(rect: rect).cgPath
+        // The caret layer lives in viewport coordinates; the rect is in document
+        // coordinates, so shift by the scroll offset.
+        caretLayer.path = UIBezierPath(rect: rect.offsetBy(dx: 0, dy: -contentOffsetY)).cgPath
         caretLayer.fillColor = theme.caretColor.cgColor
         caretLayer.opacity = 1
         revealRect(rect)
     }
 
-    /// Scroll the nearest enclosing scroll view so the given rect is visible.
+    /// Scroll the nearest enclosing scroll view so the document-coordinate rect
+    /// is visible. Works whether the view is the scroll content or a fixed
+    /// viewport whose content height the host sets to `documentHeight`.
     private func revealRect(_ rect: CGRect) {
         guard let scrollView = enclosingScrollView else { return }
-        let inView = convert(rect.insetBy(dx: 0, dy: -8), to: scrollView)
-        scrollView.scrollRectToVisible(inView, animated: false)
+        let viewportHeight = scrollView.bounds.height
+        guard viewportHeight > 0 else { return }
+        let margin: CGFloat = 8
+        var offset = scrollView.contentOffset.y
+        if rect.minY - margin < offset {
+            offset = rect.minY - margin
+        } else if rect.maxY + margin > offset + viewportHeight {
+            offset = rect.maxY + margin - viewportHeight
+        }
+        offset = max(0, min(offset, max(0, scrollView.contentSize.height - viewportHeight)))
+        if abs(offset - scrollView.contentOffset.y) > 0.5 {
+            scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: offset), animated: false)
+        }
     }
 
     private var enclosingScrollView: UIScrollView? {
@@ -393,7 +504,7 @@ open class EditorTextView: UIView, UIKeyInput {
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         if !isFirstResponder { becomeFirstResponder() }
-        let point = gesture.location(in: self)
+        let point = docPoint(gesture.location(in: self))
         let now = CACurrentMediaTime()
         if now - lastClickTime <= multiClickInterval, hypot(point.x - lastClickPoint.x, point.y - lastClickPoint.y) <= multiClickSlop {
             clickCount += 1
@@ -455,11 +566,11 @@ open class EditorTextView: UIView, UIKeyInput {
 
     // Touch long-press and mouse/trackpad drag share one drag-selection model.
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
-        driveDragSelection(state: gesture.state, point: gesture.location(in: self))
+        driveDragSelection(state: gesture.state, point: docPoint(gesture.location(in: self)))
     }
 
     @objc private func handleMouseDrag(_ gesture: UIPanGestureRecognizer) {
-        driveDragSelection(state: gesture.state, point: gesture.location(in: self))
+        driveDragSelection(state: gesture.state, point: docPoint(gesture.location(in: self)))
     }
 
     enum DragGranularity { case character, word, paragraph }
@@ -648,7 +759,7 @@ open class EditorTextView: UIView, UIKeyInput {
         // Committing an IME composition: replace the marked range with the final text.
         if let m = markedRange {
             let tr = editor.state.tr
-            try? tr.insertText(text, min(m.0, editor.doc.content.size), min(m.1, editor.doc.content.size))
+            _ = try? tr.insertText(text, min(m.0, editor.doc.content.size), min(m.1, editor.doc.content.size))
             editor.dispatch(tr)
             markedRange = nil
             return
@@ -658,7 +769,7 @@ open class EditorTextView: UIView, UIKeyInput {
         // Try input rules (only at a collapsed cursor).
         if sel.empty, runTextInput(from: sel.from, to: sel.to, text: text) { return }
         let tr = editor.state.tr
-        try? tr.insertText(text)
+        _ = try? tr.insertText(text)
         editor.dispatch(tr)
     }
 
@@ -747,7 +858,7 @@ open class EditorTextView: UIView, UIKeyInput {
         let lines = string.components(separatedBy: "\n")
         if lines.count <= 1 {
             let tr = editor.state.tr
-            try? tr.insertText(string)
+            _ = try? tr.insertText(string)
             editor.dispatch(tr)
             return
         }

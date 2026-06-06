@@ -70,6 +70,38 @@ enum DecorationItem {
     case image(UIImage, CGRect)
 }
 
+/// A text block typeset in local coordinates (block top at y = 0), cached and
+/// reused across layouts so unchanged blocks don't re-run CoreText line breaking
+/// — the expensive per-keystroke cost on large documents.
+struct LocalTextBlock {
+    let lines: [LineLayout]   // baselineOrigin relative to (0, 0)
+    let segments: [Segment]
+    let attributed: NSAttributedString
+    let height: CGFloat
+    let imageAtoms: [(attrIndex: Int, image: UIImage, size: CGSize)]
+}
+
+/// Caches typeset blocks by (node, width). Mark-and-sweep keeps it bounded to
+/// the blocks used in the most recent layout.
+final class TextBlockLayoutCache {
+    private struct Key: Hashable { let node: Node; let width: CGFloat }
+    private var entries: [Key: LocalTextBlock] = [:]
+    private var used: Set<Key> = []
+
+    func lookup(_ node: Node, width: CGFloat) -> LocalTextBlock? {
+        let key = Key(node: node, width: width)
+        if let entry = entries[key] { used.insert(key); return entry }
+        return nil
+    }
+    func store(_ node: Node, width: CGFloat, _ block: LocalTextBlock) {
+        let key = Key(node: node, width: width)
+        entries[key] = block
+        used.insert(key)
+    }
+    func beginPass() { used.removeAll(keepingCapacity: true) }
+    func endPass() { entries = entries.filter { used.contains($0.key) } }
+}
+
 /// Lays out a document into text blocks + decorations using CoreText, and
 /// answers caret/hit-test queries.
 final class DocumentLayout {
@@ -96,15 +128,139 @@ final class DocumentLayout {
     /// cached — the view loads these and rebuilds.
     private(set) var pendingImageSources: [String] = []
     private let imageProvider: (String) -> UIImage?
+    private let blockCache: TextBlockLayoutCache?
 
-    init(doc: Node, width: CGFloat, theme: TextTheme, imageProvider: @escaping (String) -> UIImage? = { _ in nil }) {
+    /// One top-level child's fully-positioned output. Kept so an edit can reuse
+    /// the unchanged blocks (prefix as-is, suffix shifted) instead of re-laying
+    /// out the whole document.
+    struct TopEntry {
+        let node: Node
+        let docStart: Int
+        let topY: CGFloat
+        let height: CGFloat
+        let blocks: [TextBlock]
+        let decorations: [DecorationItem]
+        let checkboxes: [(rect: CGRect, pos: Int, checked: Bool)]
+        let tables: [TableInfo]
+    }
+    private(set) var entries: [TopEntry] = []
+
+    init(doc: Node, width: CGFloat, theme: TextTheme, imageProvider: @escaping (String) -> UIImage? = { _ in nil },
+         blockCache: TextBlockLayoutCache? = nil, previous: DocumentLayout? = nil) {
         self.theme = theme
         self.width = width
         self.imageProvider = imageProvider
+        self.blockCache = blockCache
+        blockCache?.beginPass()
         let contentWidth = width - theme.pageInsets.left - theme.pageInsets.right
+        let x = theme.pageInsets.left
+        if let previous, previous.width == width, let (front, back) = diff(doc, previous) {
+            buildIncremental(doc, previous: previous, front: front, back: back, x: x, width: contentWidth)
+        } else {
+            buildFull(doc, x: x, width: contentWidth)
+        }
+        blockCache?.endPass()
+    }
+
+    // MARK: - Incremental build
+
+    /// Common unchanged top-level children at the front and back of the
+    /// document (compared in O(1) each via the Fragment COW fast path).
+    private func diff(_ doc: Node, _ previous: DocumentLayout) -> (front: Int, back: Int)? {
+        let newCount = doc.childCount
+        let prev = previous.entries
+        guard prev.count > 0 else { return nil }
+        var front = 0
+        while front < newCount, front < prev.count, doc.child(front) == prev[front].node { front += 1 }
+        var back = 0
+        while back < (newCount - front), back < (prev.count - front),
+              doc.child(newCount - 1 - back) == prev[prev.count - 1 - back].node { back += 1 }
+        return (front, back)
+    }
+
+    private func buildFull(_ doc: Node, x: CGFloat, width contentWidth: CGFloat) {
         var y = theme.pageInsets.top
-        y = layoutFragment(doc.content, docPos: 0, x: theme.pageInsets.left, width: contentWidth, y: y, isFirst: true)
+        var pos = 0
+        for i in 0..<doc.childCount {
+            entries.append(layoutTopChild(doc.child(i), docPos: pos, x: x, width: contentWidth, y: &y, isFirst: i == 0))
+            pos += doc.child(i).nodeSize
+        }
         height = y + theme.pageInsets.bottom
+    }
+
+    private func buildIncremental(_ doc: Node, previous: DocumentLayout, front: Int, back: Int, x: CGFloat, width contentWidth: CGFloat) {
+        var y = theme.pageInsets.top
+        var pos = 0
+        // Prefix: unchanged blocks before the edit — positions are identical.
+        for j in 0..<front {
+            let e = previous.entries[j]
+            append(e); entries.append(e)
+            y = e.topY + e.height; pos = e.docStart + e.node.nodeSize
+        }
+        // Middle: the changed children — re-laid out.
+        let midEnd = doc.childCount - back
+        for i in front..<midEnd {
+            entries.append(layoutTopChild(doc.child(i), docPos: pos, x: x, width: contentWidth, y: &y, isFirst: i == 0))
+            pos += doc.child(i).nodeSize
+        }
+        // Suffix: unchanged blocks after the edit — same layout, shifted in y and
+        // document position by how much the middle grew/shrank.
+        let oldBackStart = previous.entries.count - back
+        let dy = back > 0 ? y - previous.entries[oldBackStart].topY : 0
+        let dPos = back > 0 ? pos - previous.entries[oldBackStart].docStart : 0
+        for j in oldBackStart..<previous.entries.count {
+            let e = shiftEntry(previous.entries[j], dPos: dPos, dy: dy)
+            append(e); entries.append(e)
+            y = e.topY + e.height; pos = e.docStart + e.node.nodeSize
+        }
+        height = y + theme.pageInsets.bottom
+    }
+
+    /// Lay out one top-level child at `y`, returning its positioned output.
+    private func layoutTopChild(_ child: Node, docPos: Int, x: CGFloat, width: CGFloat, y: inout CGFloat, isFirst: Bool) -> TopEntry {
+        let topY = y
+        let (b0, d0, c0, t0) = (blocks.count, decorations.count, checkboxes.count, tables.count)
+        y += theme.spacingBefore(child, isFirst: isFirst)
+        y = layoutBlock(child, docPos: docPos, x: x, width: width, y: y)
+        return TopEntry(node: child, docStart: docPos, topY: topY, height: y - topY,
+                        blocks: Array(blocks[b0...]), decorations: Array(decorations[d0...]),
+                        checkboxes: Array(checkboxes[c0...]), tables: Array(tables[t0...]))
+    }
+
+    private func append(_ e: TopEntry) {
+        blocks += e.blocks; decorations += e.decorations; checkboxes += e.checkboxes; tables += e.tables
+    }
+
+    private func shiftEntry(_ e: TopEntry, dPos: Int, dy: CGFloat) -> TopEntry {
+        guard dPos != 0 || dy != 0 else { return e }
+        return TopEntry(node: e.node, docStart: e.docStart + dPos, topY: e.topY + dy, height: e.height,
+                        blocks: e.blocks.map { shiftBlock($0, dPos: dPos, dy: dy) },
+                        decorations: e.decorations.map { shiftDeco($0, dy: dy) },
+                        checkboxes: e.checkboxes.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos, checked: $0.checked) },
+                        tables: e.tables.map { TableInfo(tablePos: $0.tablePos + dPos, originX: $0.originX, widths: $0.widths, top: $0.top + dy, bottom: $0.bottom + dy) })
+    }
+
+    private func shiftBlock(_ b: TextBlock, dPos: Int, dy: CGFloat) -> TextBlock {
+        TextBlock(contentStart: b.contentStart + dPos, contentEnd: b.contentEnd + dPos,
+                  frame: b.frame.offsetBy(dx: 0, dy: dy),
+                  lines: dy == 0 ? b.lines : b.lines.map {
+                      LineLayout(ctLine: $0.ctLine, baselineOrigin: CGPoint(x: $0.baselineOrigin.x, y: $0.baselineOrigin.y + dy),
+                                 stringRange: $0.stringRange, height: $0.height, ascent: $0.ascent)
+                  },
+                  segments: dPos == 0 ? b.segments : b.segments.map {
+                      Segment(docStart: $0.docStart + dPos, docLen: $0.docLen, attrStart: $0.attrStart, attrLen: $0.attrLen, text: $0.text)
+                  },
+                  attributed: b.attributed)
+    }
+
+    private func shiftDeco(_ d: DecorationItem, dy: CGFloat) -> DecorationItem {
+        guard dy != 0 else { return d }
+        switch d {
+        case let .fill(r, c): return .fill(r.offsetBy(dx: 0, dy: dy), c)
+        case let .stroke(r, c, w): return .stroke(r.offsetBy(dx: 0, dy: dy), c, w)
+        case let .text(s, p, a): return .text(s, CGPoint(x: p.x, y: p.y + dy), a)
+        case let .image(img, r): return .image(img, r.offsetBy(dx: 0, dy: dy))
+        }
     }
 
     // MARK: - Layout
@@ -276,8 +432,42 @@ final class DocumentLayout {
 
     private func layoutTextBlock(_ node: Node, docPos: Int, x: CGFloat, width: CGFloat, y: CGFloat) -> CGFloat {
         let contentStart = docPos + 1
+        // Reuse the cached typeset block (in local coords) when unchanged; this
+        // is what keeps per-keystroke cost off the whole document.
+        let local = blockCache?.lookup(node, width: width) ?? {
+            let built = typesetBlock(node, contentStart: contentStart, width: width)
+            blockCache?.store(node, width: width, built)
+            return built
+        }()
+
+        // Shift the cached local lines to this block's absolute (x, y).
+        let lines = local.lines.map {
+            LineLayout(ctLine: $0.ctLine,
+                       baselineOrigin: CGPoint(x: $0.baselineOrigin.x + x, y: $0.baselineOrigin.y + y),
+                       stringRange: $0.stringRange, height: $0.height, ascent: $0.ascent)
+        }
+        for atom in local.imageAtoms {
+            guard let line = lines.first(where: { NSLocationInRange(atom.attrIndex, $0.stringRange) }) else { continue }
+            let xOffset = CTLineGetOffsetForStringIndex(line.ctLine, atom.attrIndex, nil)
+            let top = line.baselineOrigin.y - atom.size.height
+            decorations.append(.image(atom.image, CGRect(x: line.baselineOrigin.x + xOffset, y: top, width: atom.size.width, height: atom.size.height)))
+        }
+
+        let frame = CGRect(x: x, y: y, width: width, height: local.height)
+        blocks.append(TextBlock(
+            contentStart: contentStart,
+            contentEnd: contentStart + node.content.size,
+            frame: frame,
+            lines: lines,
+            segments: local.segments.isEmpty ? [Segment(docStart: contentStart, docLen: 0, attrStart: 0, attrLen: 0, text: "")] : local.segments,
+            attributed: local.attributed))
+        return y + local.height
+    }
+
+    /// Typeset a text block in LOCAL coordinates (top at y = 0), independent of
+    /// its eventual position — cacheable by (node, width).
+    private func typesetBlock(_ node: Node, contentStart: Int, width: CGFloat) -> LocalTextBlock {
         let (attr, segments, imageAtoms) = buildAttributed(node, contentStart: contentStart, width: width)
-        // Determine the paragraph's base writing direction (RTL for Hebrew/Arabic).
         let rtl = isRightToLeft(attr.string)
         let base = NSMutableAttributedString(attributedString:
             attr.length == 0 ? NSAttributedString(string: " ", attributes: [.font: theme.blockFont(node)]) : attr)
@@ -285,53 +475,28 @@ final class DocumentLayout {
         para.baseWritingDirection = rtl ? .rightToLeft : .leftToRight
         para.alignment = rtl ? .right : .natural
         base.addAttribute(.paragraphStyle, value: para, range: NSRange(location: 0, length: base.length))
-        let attrForLayout: NSAttributedString = base
 
-        let typesetter = CTTypesetterCreateWithAttributedString(attrForLayout as CFAttributedString)
-        let length = attrForLayout.length
+        let typesetter = CTTypesetterCreateWithAttributedString(base as CFAttributedString)
+        let length = base.length
         var lines: [LineLayout] = []
         var lineStart = 0
-        var lineY = y
-        var maxLineBottom = y
+        var lineY: CGFloat = 0
         while lineStart < length {
             let count = CTTypesetterSuggestLineBreak(typesetter, lineStart, Double(width))
-            let range = CFRangeMake(lineStart, count)
-            let ctLine = CTTypesetterCreateLine(typesetter, range)
+            let ctLine = CTTypesetterCreateLine(typesetter, CFRangeMake(lineStart, count))
             var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
             CTLineGetTypographicBounds(ctLine, &ascent, &descent, &leading)
             let lineHeight = ascent + descent + leading + theme.lineSpacing
-            // Right-align RTL lines so the text reads from the right edge.
             let penOffset = rtl ? CGFloat(CTLineGetPenOffsetForFlush(ctLine, 1, Double(width))) : 0
-            let baseline = CGPoint(x: x + penOffset, y: lineY + ascent)
-            lines.append(LineLayout(
-                ctLine: ctLine,
-                baselineOrigin: baseline,
-                stringRange: NSRange(location: lineStart, length: count),
-                height: lineHeight,
-                ascent: ascent))
+            lines.append(LineLayout(ctLine: ctLine,
+                                    baselineOrigin: CGPoint(x: penOffset, y: lineY + ascent),
+                                    stringRange: NSRange(location: lineStart, length: count),
+                                    height: lineHeight, ascent: ascent))
             lineY += lineHeight
-            maxLineBottom = lineY
             lineStart += count
             if count == 0 { break }
         }
-
-        // Draw inline images at their run positions.
-        for atom in imageAtoms {
-            guard let line = lines.first(where: { NSLocationInRange(atom.attrIndex, $0.stringRange) }) else { continue }
-            let xOffset = CTLineGetOffsetForStringIndex(line.ctLine, atom.attrIndex, nil)
-            let top = line.baselineOrigin.y - atom.size.height
-            decorations.append(.image(atom.image, CGRect(x: line.baselineOrigin.x + xOffset, y: top, width: atom.size.width, height: atom.size.height)))
-        }
-
-        let frame = CGRect(x: x, y: y, width: width, height: maxLineBottom - y)
-        blocks.append(TextBlock(
-            contentStart: contentStart,
-            contentEnd: contentStart + node.content.size,
-            frame: frame,
-            lines: lines,
-            segments: segments.isEmpty ? [Segment(docStart: contentStart, docLen: 0, attrStart: 0, attrLen: 0, text: "")] : segments,
-            attributed: attrForLayout))
-        return maxLineBottom
+        return LocalTextBlock(lines: lines, segments: segments, attributed: base, height: lineY, imageAtoms: imageAtoms)
     }
 
     private func buildAttributed(_ node: Node, contentStart: Int, width: CGFloat) -> (NSMutableAttributedString, [Segment], [(attrIndex: Int, image: UIImage, size: CGSize)]) {
@@ -419,22 +584,33 @@ final class DocumentLayout {
     /// there is no line in that direction. Moving by adjacent line (rather than
     /// by a guessed point) avoids snapping back across inter-block gaps.
     func verticalPosition(from pos: Int, up: Bool, preferredX: CGFloat) -> Int? {
-        // All lines across all blocks, in vertical order, tagged with their block.
-        var entries: [(block: TextBlock, line: LineLayout)] = []
-        for block in blocks {
-            for line in block.lines { entries.append((block, line)) }
-        }
-        entries.sort { $0.line.baselineOrigin.y < $1.line.baselineOrigin.y }
-        guard let block = blocks.first(where: { pos >= $0.contentStart && pos <= $0.contentEnd }) else { return nil }
+        // The target line is the adjacent line in the same block, or the first/
+        // last line of the neighbouring block — found locally, without building
+        // or sorting every line in the document.
+        guard let bi = blockIndex(containing: pos) else { return nil }
+        let block = blocks[bi]
         let attrIndex = block.attrIndex(forDocPos: pos)
-        guard let current = entries.firstIndex(where: { entry in
-            entry.block.contentStart == block.contentStart &&
-                (NSLocationInRange(attrIndex, entry.line.stringRange)
-                    || attrIndex == entry.line.stringRange.location + entry.line.stringRange.length)
+        guard let li = block.lines.firstIndex(where: {
+            NSLocationInRange(attrIndex, $0.stringRange) || attrIndex == $0.stringRange.location + $0.stringRange.length
         }) else { return nil }
-        let targetIndex = up ? current - 1 : current + 1
-        guard targetIndex >= 0, targetIndex < entries.count else { return nil }
-        let target = entries[targetIndex]
+
+        var target: (block: TextBlock, line: LineLayout)?
+        if up {
+            if li > 0 {
+                target = (block, block.lines[li - 1])
+            } else {
+                var j = bi - 1
+                while j >= 0, target == nil { if let last = blocks[j].lines.last { target = (blocks[j], last) }; j -= 1 }
+            }
+        } else {
+            if li < block.lines.count - 1 {
+                target = (block, block.lines[li + 1])
+            } else {
+                var j = bi + 1
+                while j < blocks.count, target == nil { if let first = blocks[j].lines.first { target = (blocks[j], first) }; j += 1 }
+            }
+        }
+        guard let target else { return nil }
         let relative = CGPoint(x: preferredX - target.line.baselineOrigin.x, y: 0)
         let attr = CTLineGetStringIndexForPosition(target.line.ctLine, relative)
         return target.block.docPos(forAttrIndex: attr)
@@ -443,7 +619,7 @@ final class DocumentLayout {
     /// The document position at the start or end of the *visual* line that
     /// contains `pos` (the wrapped line, not the whole textblock).
     func lineBoundary(from pos: Int, toEnd: Bool) -> Int? {
-        guard let block = blocks.first(where: { pos >= $0.contentStart && pos <= $0.contentEnd }) else { return nil }
+        guard let block = blockContaining(pos) else { return nil }
         let attrIndex = block.attrIndex(forDocPos: pos)
         guard let line = block.lines.first(where: {
             NSLocationInRange(attrIndex, $0.stringRange) || attrIndex == $0.stringRange.location + $0.stringRange.length
@@ -476,9 +652,16 @@ final class DocumentLayout {
 
     /// Selection highlight rectangles for a document range.
     func selectionRects(from: Int, to: Int) -> [CGRect] {
-        guard to > from else { return [] }
+        guard to > from, !blocks.isEmpty else { return [] }
         var rects: [CGRect] = []
-        for block in blocks where from < block.contentEnd && to > block.contentStart {
+        // First block overlapping [from, to): smallest index with contentEnd > from.
+        var lo = 0, hi = blocks.count
+        while lo < hi { let mid = (lo + hi) / 2; if blocks[mid].contentEnd <= from { lo = mid + 1 } else { hi = mid } }
+        var i = lo
+        while i < blocks.count, blocks[i].contentStart < to {
+            let block = blocks[i]
+            i += 1
+            guard from < block.contentEnd, to > block.contentStart else { continue }
             let blockFrom = max(from, block.contentStart)
             let blockTo = min(to, block.contentEnd)
             let aFrom = block.attrIndex(forDocPos: blockFrom)
@@ -498,36 +681,64 @@ final class DocumentLayout {
         return rects
     }
 
+    /// Index of the block whose [contentStart, contentEnd] contains `pos`, via
+    /// binary search (blocks are in document order, sorted by position).
+    private func blockIndex(containing pos: Int) -> Int? {
+        var lo = 0, hi = blocks.count - 1
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            let b = blocks[mid]
+            if pos < b.contentStart { hi = mid - 1 }
+            else if pos > b.contentEnd { lo = mid + 1 }
+            else { return mid }
+        }
+        return nil
+    }
+
     private func blockContaining(_ pos: Int) -> TextBlock? {
-        blocks.first { pos >= $0.contentStart && pos <= $0.contentEnd }
+        blockIndex(containing: pos).map { blocks[$0] }
     }
 
     private func nearestBlock(toPos pos: Int) -> TextBlock? {
-        blocks.min(by: { abs($0.contentStart - pos) < abs($1.contentStart - pos) })
+        if let i = blockIndex(containing: pos) { return blocks[i] }
+        guard !blocks.isEmpty else { return nil }
+        // Binary-search the insertion point, then pick the nearer neighbour.
+        var lo = 0, hi = blocks.count
+        while lo < hi { let mid = (lo + hi) / 2; if blocks[mid].contentStart < pos { lo = mid + 1 } else { hi = mid } }
+        let candidates = [lo - 1, lo].filter { $0 >= 0 && $0 < blocks.count }
+        return candidates.min { abs(blocks[$0].contentStart - pos) < abs(blocks[$1].contentStart - pos) }.map { blocks[$0] }
     }
 
     // MARK: - Draw
 
-    func draw(in ctx: CGContext) {
+    func draw(in ctx: CGContext, clipY: ClosedRange<CGFloat>? = nil) {
+        func visible(_ minY: CGFloat, _ maxY: CGFloat) -> Bool {
+            guard let clipY else { return true }
+            return maxY >= clipY.lowerBound && minY <= clipY.upperBound
+        }
         // Decorations first (under text where they overlap, e.g. quote bars).
         for deco in decorations {
             switch deco {
             case let .fill(rect, color):
+                guard visible(rect.minY, rect.maxY) else { continue }
                 ctx.setFillColor(color.cgColor)
                 ctx.fill(rect)
             case let .stroke(rect, color, w):
+                guard visible(rect.minY, rect.maxY) else { continue }
                 ctx.setStrokeColor(color.cgColor)
                 ctx.setLineWidth(w)
                 ctx.stroke(rect)
             case let .text(string, point, attrs):
+                guard visible(point.y, point.y + 40) else { continue }
                 let ns = NSAttributedString(string: string, attributes: attrs)
                 ns.draw(at: point)
             case let .image(image, rect):
+                guard visible(rect.minY, rect.maxY) else { continue }
                 image.draw(in: rect)
             }
         }
         // Text blocks via CoreText.
-        for block in blocks {
+        for block in blocks where visible(block.frame.minY, block.frame.maxY) {
             for line in block.lines {
                 ctx.textPosition = .zero
                 ctx.textMatrix = .identity

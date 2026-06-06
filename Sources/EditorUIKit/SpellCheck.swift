@@ -7,13 +7,19 @@ import EditorStateKit
 /// Lives in the renderer because `UITextChecker` is a UIKit facility; the
 /// decorations it returns are drawn as dotted red underlines.
 enum SpellCheck {
-    static func decorations(for doc: Node, language: String = "en") -> [Decoration] {
+    /// Spelling decorations for the textblocks overlapping `range` (or the whole
+    /// document when nil). Bounding to the visible range keeps the cost
+    /// independent of document size.
+    static func decorations(for doc: Node, in range: ClosedRange<Int>? = nil, language: String = "en") -> [Decoration] {
         let checker = UITextChecker()
         var result: [Decoration] = []
         doc.descendants { node, pos, _, _ in
             guard node.isTextblock else { return true }
             if node.type.spec.code { return false } // don't spell-check code
             let contentStart = pos + 1
+            if let range, contentStart + node.content.size < range.lowerBound || contentStart > range.upperBound {
+                return false // textblock outside the requested range
+            }
             let text = String(TextNavigation.inlineCharacters(of: node))
             let ns = text as NSString
             var offset = 0
