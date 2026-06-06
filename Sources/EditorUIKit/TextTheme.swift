@@ -34,6 +34,15 @@ public struct TextTheme: Sendable {
     public var dynamicType: Bool = true
     /// The base body point size used when `dynamicType` is off.
     public var fixedBodyFontSize: CGFloat = 17
+    /// A custom font face name for body text (e.g. "Georgia", "Charter").
+    /// When nil, the system font is used.
+    public var fontName: String?
+    /// A custom monospaced font face name for code (e.g. "Menlo", "Courier").
+    /// When nil, the system monospaced font is used.
+    public var monoFontName: String?
+    /// Heading point sizes as multiples of the body size (levels 1…6); used both
+    /// for custom fonts and (when `dynamicType` is off) for the system font.
+    public var headingScale: [CGFloat] = [1.8, 1.5, 1.25, 1.1, 1.0, 0.9]
     /// The effective body point size (drives caret vertical movement).
     public var baseFontSize: CGFloat { bodyFont.pointSize }
     public var textColor: UIColor = .label
@@ -52,29 +61,41 @@ public struct TextTheme: Sendable {
 
     public init() {}
 
-    /// The base (body) font — preferred (Dynamic Type) or fixed.
-    public var bodyFont: UIFont {
-        dynamicType ? UIFont.preferredFont(forTextStyle: .body) : UIFont.systemFont(ofSize: fixedBodyFontSize)
+    /// The body point size (Dynamic Type scaled, or fixed).
+    private var bodyPointSize: CGFloat {
+        dynamicType ? UIFont.preferredFont(forTextStyle: .body).pointSize : fixedBodyFontSize
     }
+
+    /// The base (body) font — custom face if configured, else the system font.
+    public var bodyFont: UIFont {
+        if let fontName, let custom = UIFont(name: fontName, size: bodyPointSize) { return custom }
+        return dynamicType ? UIFont.preferredFont(forTextStyle: .body) : UIFont.systemFont(ofSize: fixedBodyFontSize)
+    }
+
     public var monoFont: UIFont {
-        let base = UIFont.monospacedSystemFont(ofSize: bodyFont.pointSize - 1, weight: .regular)
-        return dynamicType ? UIFontMetrics(forTextStyle: .body).scaledFont(for: base) : base
+        let size = bodyPointSize - 1
+        if let monoFontName, let custom = UIFont(name: monoFontName, size: size) { return custom }
+        return UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
     /// The font for a block node (heading sizes, code blocks, etc.).
     public func blockFont(_ node: Node) -> UIFont {
         switch node.type.name {
         case "heading":
-            let level = node.attrs["level"]?.intValue ?? 1
+            let level = min(max(node.attrs["level"]?.intValue ?? 1, 1), 6)
+            // A custom face: scale the body size by the heading multiplier, bold.
+            if let fontName, let custom = UIFont(name: fontName, size: bodyPointSize * headingScale[level - 1]) {
+                let descriptor = custom.fontDescriptor.withSymbolicTraits(.traitBold) ?? custom.fontDescriptor
+                return UIFont(descriptor: descriptor, size: custom.pointSize)
+            }
+            // System font: prefer the matching Dynamic Type text style.
             if dynamicType {
                 let styles: [UIFont.TextStyle] = [.title1, .title2, .title3, .headline, .headline, .subheadline]
-                let style = styles[min(max(level, 1), 6) - 1]
-                let font = UIFont.preferredFont(forTextStyle: style)
+                let font = UIFont.preferredFont(forTextStyle: styles[level - 1])
                 let descriptor = font.fontDescriptor.withSymbolicTraits(.traitBold) ?? font.fontDescriptor
                 return UIFont(descriptor: descriptor, size: font.pointSize)
             }
-            let sizes: [CGFloat] = [28, 24, 20, 18, 17, 16]
-            return UIFont.systemFont(ofSize: sizes[min(max(level, 1), 6) - 1], weight: .bold)
+            return UIFont.systemFont(ofSize: fixedBodyFontSize * headingScale[level - 1], weight: .bold)
         case "codeBlock":
             return monoFont
         default:
