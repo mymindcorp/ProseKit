@@ -78,11 +78,37 @@ public final class BlockquoteExtension: NodeExtension {
     }
     public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
         guard let type = ctx.nodeType else { return [:] }
-        return ["Mod-Shift-b": toggleWrap(type)]
+        var shortcuts: [String: Command] = ["Mod-Shift-b": toggleWrap(type)]
+        if let paragraph = ctx.schema.nodes["paragraph"] {
+            // Shift-Enter exits the quote into a fresh paragraph after it.
+            shortcuts["Shift-Enter"] = exitToParagraph(type, paragraph)
+        }
+        return shortcuts
     }
     public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
         guard let type = ctx.nodeType else { return [] }
         return [wrappingInputRule("^\\s*>\\s$", type)]
+    }
+}
+
+/// Exit the enclosing block of `blockType` (code block / blockquote): insert an
+/// empty paragraph immediately after it and place the cursor there. No-op (false)
+/// when the selection isn't inside such a block, so it can chain with the
+/// default Shift-Enter (hard break).
+func exitToParagraph(_ blockType: NodeType, _ paragraphType: NodeType) -> Command {
+    { state, dispatch, _ in
+        let from = state.selection.resolvedFrom
+        var depth = from.depth
+        while depth > 0, from.node(depth).type !== blockType { depth -= 1 }
+        guard depth > 0, from.node(depth).type === blockType, let paragraph = paragraphType.createAndFill() else { return false }
+        if let dispatch {
+            let after = from.after(depth)
+            let tr = state.tr
+            _ = try? tr.insert(after, paragraph)
+            tr.setSelection(TextSelection.create(tr.doc, after + 1))
+            dispatch(tr.scrollIntoView())
+        }
+        return true
     }
 }
 
@@ -103,6 +129,8 @@ public final class CodeBlockExtension: NodeExtension {
             // elsewhere so list/table Tab handling still applies.
             "Tab": indentCodeBlock(type),
             "Shift-Tab": outdentCodeBlock(type),
+            // Shift-Enter exits the code block into a fresh paragraph after it.
+            "Shift-Enter": exitToParagraph(type, para),
         ]
     }
     public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
