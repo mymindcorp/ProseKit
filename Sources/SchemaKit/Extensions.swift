@@ -358,7 +358,7 @@ public final class LinkExtension: MarkExtension {
             if sel.empty { return false }
             if let dispatch {
                 let tr = state.tr
-                try? tr.removeMark(sel.from, sel.to, type)
+                _ = try? tr.removeMark(sel.from, sel.to, type)
                 dispatch(tr.scrollIntoView())
             }
             return true

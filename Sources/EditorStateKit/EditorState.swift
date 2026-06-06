@@ -43,7 +43,7 @@ public final class EditorState: @unchecked Sendable {
 
     /// Create a fresh state from a configuration.
     public static func create(_ config: EditorStateConfig) -> EditorState {
-        let doc = config.doc ?? (try? config.schema.topNodeType.createAndFill()) ?? (try! config.schema.topNodeType.create())
+        let doc = config.doc ?? config.schema.topNodeType.createAndFill() ?? (try! config.schema.topNodeType.create())
         let selection = config.selection ?? Selection.atStart(doc)
         let state = EditorState(schema: config.schema, plugins: config.plugins, doc: doc, selection: selection, storedMarks: config.storedMarks)
         for plugin in config.plugins {

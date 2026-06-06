@@ -25,7 +25,7 @@ func smartQuoteRule(_ quote: Character, open: String, close: String) -> InputRul
         let before = start > 0 ? state.doc.textBetween(start - 1, start) : ""
         let opensHere = before.isEmpty || before == " " || "([{\u{201C}\u{2018}\n\t".contains(before)
         let tr = state.tr
-        try? tr.insertText(opensHere ? open : close, start, end)
+        _ = try? tr.insertText(opensHere ? open : close, start, end)
         return tr
     }
 }

@@ -97,7 +97,7 @@ public extension Editor {
         guard let s = searchState, s.currentIndex < matches.count else { return false }
         let match = matches[s.currentIndex]
         let tr = state.tr
-        try? tr.insertText(replacement, match.from, match.to)
+        _ = try? tr.insertText(replacement, match.from, match.to)
         dispatch(tr.scrollIntoView())
         return true
     }
@@ -110,7 +110,7 @@ public extension Editor {
         let tr = state.tr
         // Replace from the end so earlier positions stay valid.
         for match in matches.reversed() {
-            try? tr.insertText(replacement, match.from, match.to)
+            _ = try? tr.insertText(replacement, match.from, match.to)
         }
         dispatch(tr)
         return matches.count

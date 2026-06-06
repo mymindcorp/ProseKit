@@ -147,12 +147,12 @@ public extension Transform {
         doc.nodesBetween(from, to, { node, pos, _, _ in
             let mappedPos = self.mapping.slice(mapFrom).map(pos, 1)
             if node.isTextblock && !node.hasMarkup(type, attrs) && canChangeType(self.doc, mappedPos, type) {
-                try? self.clearIncompatible(self.mapping.slice(mapFrom).map(pos, 1), type)
+                _ = try? self.clearIncompatible(self.mapping.slice(mapFrom).map(pos, 1), type)
                 let mapping = self.mapping.slice(mapFrom)
                 let startM = mapping.map(pos, 1)
                 let endM = mapping.map(pos + node.nodeSize, 1)
                 let newNode = (try? type.create(attrs, content: .empty, marks: node.marks)) ?? node
-                try? self.step(ReplaceAroundStep(startM, endM, startM + 1, endM - 1,
+                _ = try? self.step(ReplaceAroundStep(startM, endM, startM + 1, endM - 1,
                     Slice(content: Fragment.from(newNode), openStart: 0, openEnd: 0), 1, structure: true))
                 return false
             }

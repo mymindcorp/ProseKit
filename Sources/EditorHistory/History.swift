@@ -29,7 +29,7 @@ public final class HistoryState {
 }
 
 /// The key under which the history state is stored.
-nonisolated(unsafe) public let historyKey = PluginKey<HistoryState>("history")
+public let historyKey = PluginKey<HistoryState>("history")
 
 private let historyMeta = "history$"
 private let addToHistoryMeta = "addToHistory"

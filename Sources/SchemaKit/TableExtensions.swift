@@ -135,7 +135,7 @@ private func replaceTable(_ state: EditorState, _ ctx: TableContext, _ newGrid: 
     guard let newTable = buildTable(state.schema, like: ctx.table, newGrid) else { return false }
     if let dispatch {
         let tr = state.tr
-        try? tr.replaceWith(ctx.tablePos, ctx.tablePos + ctx.table.nodeSize, newTable)
+        _ = try? tr.replaceWith(ctx.tablePos, ctx.tablePos + ctx.table.nodeSize, newTable)
         // Keep the cursor near where it was.
         let target = min(ctx.tablePos + 2, tr.doc.content.size)
         tr.setSelection(Selection.near(tr.doc.resolve(target)))

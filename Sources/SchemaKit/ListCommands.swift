@@ -47,7 +47,7 @@ private func doWrapInList(_ tr: Transaction, _ range: NodeRange, _ wrappers: [No
         content = Fragment.from((try? wrappers[i].type.create(wrappers[i].attrs, content: content)) ?? content.firstChild!)
         i -= 1
     }
-    try? tr.step(ReplaceAroundStep(range.start - (joinBefore ? 2 : 0), range.end, range.start, range.end,
+    _ = try? tr.step(ReplaceAroundStep(range.start - (joinBefore ? 2 : 0), range.end, range.start, range.end,
                                    Slice(content: content, openStart: 0, openEnd: 0), wrappers.count, structure: true))
     var found = 0
     for (idx, w) in wrappers.enumerated() where w.type === listType { found = idx + 1 }
@@ -59,7 +59,7 @@ private func doWrapInList(_ tr: Transaction, _ range: NodeRange, _ wrappers: [No
     var first = true
     while idx < end {
         if !first && canSplit(tr.doc, splitPos, splitDepth) {
-            try? tr.split(splitPos, splitDepth)
+            _ = try? tr.split(splitPos, splitDepth)
             splitPos += 2 * splitDepth
         }
         splitPos += parent.child(idx).nodeSize
@@ -89,7 +89,7 @@ public func splitListItem(_ itemType: NodeType, _ itemAttrs: Attrs? = nil) -> Co
 
         let nextType: NodeType? = to.pos == from.end() ? grandParent.contentMatchAt(0).defaultType : nil
         let tr = state.tr
-        try? tr.delete(from.pos, to.pos)
+        _ = try? tr.delete(from.pos, to.pos)
         var types: [NodeTypeWithAttrs?]? = nil
         if let nextType {
             types = [itemAttrs != nil ? NodeTypeWithAttrs(itemType, itemAttrs!) : nil, NodeTypeWithAttrs(nextType)]
@@ -97,7 +97,7 @@ public func splitListItem(_ itemType: NodeType, _ itemAttrs: Attrs? = nil) -> Co
         let splitPos = from.pos
         if !canSplit(tr.doc, splitPos, 2, types) { return false }
         if let dispatch {
-            try? tr.split(splitPos, 2, types)
+            _ = try? tr.split(splitPos, 2, types)
             dispatch(tr.scrollIntoView())
         }
         return true
@@ -123,7 +123,7 @@ public func sinkListItem(_ itemType: NodeType) -> Command {
                               openStart: nestedBefore ? 3 : 1, openEnd: 0)
             let before = range.start, after = range.end
             let tr = state.tr
-            try? tr.step(ReplaceAroundStep(before - (nestedBefore ? 3 : 1), after, before, after, slice, 1, structure: true))
+            _ = try? tr.step(ReplaceAroundStep(before - (nestedBefore ? 3 : 1), after, before, after, slice, 1, structure: true))
             dispatch(tr.scrollIntoView())
         }
         return true
@@ -150,14 +150,14 @@ private func liftToOuterList(_ state: EditorState, _ dispatch: Dispatch, _ itemT
     let end = range.end
     let endOfList = range.to.end(range.depth)
     if end < endOfList {
-        try? tr.step(ReplaceAroundStep(end - 1, endOfList, end, endOfList,
+        _ = try? tr.step(ReplaceAroundStep(end - 1, endOfList, end, endOfList,
             Slice(content: Fragment.from(try! itemType.create([:], content: range.parent.copy(content: .empty).content)), openStart: 1, openEnd: 0), 1, structure: true))
         range = NodeRange(tr.doc.resolve(range.from.pos), tr.doc.resolve(endOfList), range.depth)
     }
     guard let target = liftTarget(range) else { return false }
-    try? tr.lift(range, target)
+    _ = try? tr.lift(range, target)
     let after = tr.mapping.map(end, -1) - 1
-    if canJoin(tr.doc, after) { try? tr.join(after) }
+    if canJoin(tr.doc, after) { _ = try? tr.join(after) }
     dispatch(tr.scrollIntoView())
     return true
 }
@@ -170,7 +170,7 @@ private func liftOutOfList(_ state: EditorState, _ dispatch: Dispatch, _ range: 
     let e = range.startIndex
     while i > e {
         pos -= list.child(i).nodeSize
-        try? tr.delete(pos - 1, pos + 1)
+        _ = try? tr.delete(pos - 1, pos + 1)
         i -= 1
     }
     let start = tr.doc.resolve(range.start)
@@ -188,7 +188,7 @@ private func liftOutOfList(_ state: EditorState, _ dispatch: Dispatch, _ range: 
     let endPos = startPos + item.nodeSize
     let sliceContent = (atStart ? Fragment.empty : Fragment.from(list.copy(content: .empty)))
         .append(atEnd ? .empty : Fragment.from(list.copy(content: .empty)))
-    try? tr.step(ReplaceAroundStep(startPos - (atStart ? 1 : 0), endPos + (atEnd ? 1 : 0), startPos + 1, endPos - 1,
+    _ = try? tr.step(ReplaceAroundStep(startPos - (atStart ? 1 : 0), endPos + (atEnd ? 1 : 0), startPos + 1, endPos - 1,
         Slice(content: sliceContent, openStart: atStart ? 0 : 1, openEnd: atEnd ? 0 : 1), atStart ? 0 : 1, structure: true))
     dispatch(tr.scrollIntoView())
     return true

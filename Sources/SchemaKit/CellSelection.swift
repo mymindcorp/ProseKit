@@ -168,7 +168,7 @@ nonisolated(unsafe) public let deleteCellSelectionContent: Command = { state, di
         for pos in selection.selectedCellPositions.sorted(by: >) {
             guard let cell = state.doc.nodeAt(pos),
                   let filled = cell.type.createAndFill() else { continue }
-            try? tr.replaceWith(pos, pos + cell.nodeSize, filled)
+            _ = try? tr.replaceWith(pos, pos + cell.nodeSize, filled)
         }
         tr.setSelection(Selection.near(tr.doc.resolve(min(selection.anchorCell.pos + 2, tr.doc.content.size))))
         dispatch(tr.scrollIntoView())

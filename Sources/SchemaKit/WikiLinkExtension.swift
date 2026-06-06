@@ -62,7 +62,7 @@ public final class WikiLinkExtension: NodeExtension {
             if let label = match[2], !label.isEmpty { attrs["label"] = .string(label) }
             guard let node = try? type.create(attrs) else { return nil }
             let tr = state.tr
-            try? tr.replaceWith(start, end, node)
+            _ = try? tr.replaceWith(start, end, node)
             return tr
         }]
     }
@@ -126,7 +126,7 @@ public extension Editor {
         if let label { attrs["label"] = .string(label) }
         guard let node = try? type.create(attrs) else { return false }
         let tr = state.tr
-        try? tr.replaceWith(suggestion.from, suggestion.to, node)
+        _ = try? tr.replaceWith(suggestion.from, suggestion.to, node)
         dispatch(tr.scrollIntoView())
         return true
     }

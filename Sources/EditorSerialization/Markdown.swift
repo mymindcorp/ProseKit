@@ -269,7 +269,6 @@ public enum MarkdownParser {
                     flush()
                     nodes.append(schema.text(String(chars[(i + 1)..<close]), mark("italic")))
                     i = close + 1; continue
-                    _ = delim
                 }
             }
             // Strike ~~ ~~

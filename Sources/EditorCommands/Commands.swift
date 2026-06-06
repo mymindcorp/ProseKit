@@ -138,8 +138,8 @@ private func joinMaybeClear(_ state: EditorState, _ pos: ResolvedPos, _ dispatch
     }
     if let dispatch {
         let tr = state.tr
-        try? tr.clearIncompatible(pos.pos, before.type, before.contentMatchAt(before.childCount))
-        try? tr.join(pos.pos)
+        _ = try? tr.clearIncompatible(pos.pos, before.type, before.contentMatchAt(before.childCount))
+        _ = try? tr.join(pos.pos)
         dispatch(tr.scrollIntoView())
     }
     return true
@@ -388,7 +388,7 @@ public func splitBlockAs(_ splitNode: ((_ node: Node, _ atEnd: Bool) -> NodeType
                 }
             }
             if can {
-                try? tr.split(realFrom, 1, typesAfter)
+                _ = try? tr.split(realFrom, 1, typesAfter)
                 if !atEnd, from.parentOffset == 0, from.depth > 0 {
                     // nothing extra
                 }
@@ -462,10 +462,10 @@ public func toggleMark(_ markType: MarkType, _ attrs: Attrs = [:]) -> Command {
                 for range in ranges {
                     let from = range.from.pos, to = range.to.pos
                     if has {
-                        try? tr.removeMark(from, to, markType)
+                        _ = try? tr.removeMark(from, to, markType)
                     } else {
                         // trim leading/trailing whitespace-only? keep simple
-                        try? tr.addMark(from, to, markType.create(attrs))
+                        _ = try? tr.addMark(from, to, markType.create(attrs))
                     }
                 }
                 dispatch(tr.scrollIntoView())
@@ -514,7 +514,7 @@ public func setBlockType(_ nodeType: NodeType, _ attrs: Attrs = [:]) -> Command 
         if let dispatch {
             let tr = state.tr
             for range in ranges {
-                try? tr.setBlockType(range.from.pos, range.to.pos, nodeType, attrs)
+                _ = try? tr.setBlockType(range.from.pos, range.to.pos, nodeType, attrs)
             }
             dispatch(tr.scrollIntoView())
         }

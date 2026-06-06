@@ -26,7 +26,7 @@ public final class InputRulesState: @unchecked Sendable {
     var text: String = ""
 }
 
-nonisolated(unsafe) public let inputRulesKey = PluginKey<InputRulesState>("inputRules")
+public let inputRulesKey = PluginKey<InputRulesState>("inputRules")
 
 private let MAX_MATCH = 500
 
@@ -81,15 +81,15 @@ public func wrappingInputRule(_ pattern: String, _ nodeType: NodeType, _ getAttr
     InputRule(pattern) { state, match, start, end in
         let attrs = getAttrs?(match) ?? [:]
         let tr = state.tr
-        try? tr.delete(start, end)
+        _ = try? tr.delete(start, end)
         let resolvedStart = tr.doc.resolve(start)
         guard let range = resolvedStart.blockRange(),
               let wrapping = findWrappingForRange(range, nodeType, attrs) else { return nil }
-        try? tr.wrap(range, wrapping)
+        _ = try? tr.wrap(range, wrapping)
         if start - 1 >= 0, let before = tr.doc.resolve(start - 1).nodeBefore,
            before.type === nodeType, canJoin(tr.doc, start - 1),
            joinPredicate?(match, before) ?? true {
-            try? tr.join(start - 1)
+            _ = try? tr.join(start - 1)
         }
         return tr
     }
@@ -104,8 +104,8 @@ public func textblockTypeInputRule(_ pattern: String, _ nodeType: NodeType, _ ge
             return nil
         }
         let tr = state.tr
-        try? tr.delete(start, end)
-        try? tr.setBlockType(start, start, nodeType, attrs)
+        _ = try? tr.delete(start, end)
+        _ = try? tr.setBlockType(start, start, nodeType, attrs)
         return tr
     }
 }
@@ -132,10 +132,10 @@ public func markInputRule(_ pattern: String, _ markType: MarkType, _ getAttrs: (
         let tr = state.tr
         // Delete trailing markers first so the earlier positions stay valid,
         // then the opening markers (after any leading whitespace).
-        if textEnd < end { try? tr.delete(textEnd, end) }
-        if textStart > start + leadingSpaces { try? tr.delete(start + leadingSpaces, textStart) }
+        if textEnd < end { _ = try? tr.delete(textEnd, end) }
+        if textStart > start + leadingSpaces { _ = try? tr.delete(start + leadingSpaces, textStart) }
         let markStart = start + leadingSpaces
-        try? tr.addMark(markStart, markStart + inner.count, markType.create(attrs))
+        _ = try? tr.addMark(markStart, markStart + inner.count, markType.create(attrs))
         tr.removeStoredMark(markType)
         return tr
     }
@@ -144,14 +144,14 @@ public func markInputRule(_ pattern: String, _ markType: MarkType, _ getAttrs: (
 /// Replaces `--` with an em-dash.
 nonisolated(unsafe) public let emDashRule = InputRule("--$") { state, _, start, end in
     let t = state.tr
-    try? t.insertText("\u{2014}", start, end)
+    _ = try? t.insertText("\u{2014}", start, end)
     return t
 }
 
 /// Replaces three dots with an ellipsis character.
 nonisolated(unsafe) public let ellipsisRule = InputRule("\\.\\.\\.$") { state, _, start, end in
     let t = state.tr
-    try? t.insertText("\u{2026}", start, end)
+    _ = try? t.insertText("\u{2026}", start, end)
     return t
 }
 
@@ -170,9 +170,9 @@ nonisolated(unsafe) public let undoInputRule: (EditorState, ((Transaction) -> Vo
         }
         if !s.text.isEmpty {
             let marks = tr.doc.resolve(s.from).marks()
-            try? tr.replaceWith(s.from, s.to, state.schema.text(s.text, marks))
+            _ = try? tr.replaceWith(s.from, s.to, state.schema.text(s.text, marks))
         } else {
-            try? tr.delete(s.from, s.to)
+            _ = try? tr.delete(s.from, s.to)
         }
         dispatch(tr)
     }

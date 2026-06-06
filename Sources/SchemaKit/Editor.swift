@@ -166,7 +166,7 @@ public final class Editor {
 
     public func setContent(_ doc: Node) {
         let tr = state.tr
-        try? tr.replaceWith(0, state.doc.content.size, doc.content)
+        _ = try? tr.replaceWith(0, state.doc.content.size, doc.content)
         tr.setSelection(Selection.atStart(tr.doc))
         tr.setMeta("addToHistory", false) // initial/replaced content isn't undoable
         dispatch(tr)

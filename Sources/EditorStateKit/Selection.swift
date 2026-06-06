@@ -66,20 +66,14 @@ open class Selection {
 
     /// Replace the selection with a slice (or empty to delete it).
     open func replace(_ tr: Transaction, _ content: Slice = .empty) {
-        // Put the new selection at the position after the inserted content.
-        var lastNode: Node? = nil
-        if content.content.childCount > 0 {
-            // find last non-leaf-ish node — best-effort
-        }
         var mapFrom = tr.steps.count
         for range in ranges {
             let mapping = tr.mapping.slice(mapFrom)
             let from = mapping.map(range.from.pos)
             let to = mapping.map(range.to.pos)
-            try? tr.replaceRange(from, to, content)
+            _ = try? tr.replaceRange(from, to, content)
             mapFrom = tr.steps.count
         }
-        _ = lastNode
     }
 
     /// Replace the selection with the given node.
@@ -89,7 +83,7 @@ open class Selection {
             let mapping = tr.mapping.slice(mapFrom)
             let from = mapping.map(range.from.pos)
             let to = mapping.map(range.to.pos)
-            try? tr.replaceRangeWith(from, to, node)
+            _ = try? tr.replaceRangeWith(from, to, node)
             mapFrom = tr.steps.count
         }
     }

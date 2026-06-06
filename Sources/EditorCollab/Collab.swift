@@ -93,7 +93,7 @@ public func receiveTransaction(_ state: EditorState, _ steps: [Step], _ clientID
     var ours = 0
     while ours < clientIDs.count && clientIDs[ours] == ourID { ours += 1 }
     var unconfirmed = Array(collabState.unconfirmed.dropFirst(ours))
-    var remoteSteps = ours != 0 ? Array(steps.dropFirst(ours)) : steps
+    let remoteSteps = ours != 0 ? Array(steps.dropFirst(ours)) : steps
 
     if remoteSteps.isEmpty {
         let tr = state.tr
