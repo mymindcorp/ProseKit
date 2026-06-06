@@ -59,7 +59,7 @@ public struct ReplaceStep: Step {
         return json
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
         guard let from = json["from"]?.intValue, let to = json["to"]?.intValue else {
             throw ModelError.invalidJSON("Invalid input for ReplaceStep.fromJSON")
         }
@@ -141,7 +141,7 @@ public struct ReplaceAroundStep: Step {
         return json
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
         guard let from = json["from"]?.intValue, let to = json["to"]?.intValue,
               let gapFrom = json["gapFrom"]?.intValue, let gapTo = json["gapTo"]?.intValue,
               let insert = json["insert"]?.intValue else {

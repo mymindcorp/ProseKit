@@ -129,7 +129,7 @@ public struct Node: Hashable, Sendable {
 
     /// Replace the part of the document between the given positions with the
     /// given slice.
-    public func replace(_ from: Int, _ to: Int, _ slice: Slice) throws -> Node {
+    public func replace(_ from: Int, _ to: Int, _ slice: Slice) throws(ModelError) -> Node {
         try ReplaceAlgorithm.replace(resolve(from), resolve(to), slice)
     }
 
@@ -231,7 +231,7 @@ public struct Node: Hashable, Sendable {
     // MARK: - Validation
 
     /// Check whether this node and its descendants conform to the schema.
-    public func check() throws {
+    public func check() throws(ModelError) {
         try type.checkContent(content)
         try type.checkAttrs(attrs)
         var copy = marks
@@ -290,13 +290,13 @@ public struct Node: Hashable, Sendable {
         return obj
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws -> Node {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Node {
         guard let typeName = json["type"]?.stringValue else {
             throw ModelError.invalidJSON("Invalid node JSON: missing type")
         }
         var marks: [Mark] = []
         if case let .array(markArr)? = json["marks"] {
-            marks = try markArr.map { v -> Mark in
+            marks = try markArr.map { (v) throws(ModelError) -> Mark in
                 guard case let .object(o) = v else { throw ModelError.invalidJSON("Invalid mark JSON") }
                 return try Mark.fromJSON(schema, o)
             }

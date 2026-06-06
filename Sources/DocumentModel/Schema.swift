@@ -152,11 +152,11 @@ public final class NodeType: @unchecked Sendable {
     public var isAtom: Bool { isLeaf || spec.atom }
     public var whitespace: NodeSpec.Whitespace { spec.whitespace }
 
-    public func compute(attrs given: Attrs) throws -> Attrs {
+    public func compute(attrs given: Attrs) throws(ModelError) -> Attrs {
         try Schema.computeAttrs(self.attrs, given, what: "node '\(name)'")
     }
 
-    public func create(_ attrs: Attrs = [:], content: Fragment = .empty, marks: [Mark] = []) throws -> Node {
+    public func create(_ attrs: Attrs = [:], content: Fragment = .empty, marks: [Mark] = []) throws(ModelError) -> Node {
         if hasRequiredAttrs || !attrs.isEmpty {
             let computed = try compute(attrs: attrs)
             return Node(type: self, attrs: computed, content: content, marks: Mark.setFrom(marks))
@@ -164,13 +164,13 @@ public final class NodeType: @unchecked Sendable {
         return Node(type: self, attrs: defaultAttrs, content: content, marks: Mark.setFrom(marks))
     }
 
-    public func create(_ attrs: Attrs = [:], content: Node, marks: [Mark] = []) throws -> Node {
+    public func create(_ attrs: Attrs = [:], content: Node, marks: [Mark] = []) throws(ModelError) -> Node {
         try create(attrs, content: Fragment.from(content), marks: marks)
     }
 
     /// Like `create`, but check that the content matches the type's content
     /// expression, and throw if it does not.
-    public func createChecked(_ attrs: Attrs = [:], content: Fragment = .empty, marks: [Mark] = []) throws -> Node {
+    public func createChecked(_ attrs: Attrs = [:], content: Fragment = .empty, marks: [Mark] = []) throws(ModelError) -> Node {
         if contentMatch.matchFragment(content)?.validEnd != true {
             throw ModelError.invalidContent("Invalid content for node \(name)")
         }
@@ -197,13 +197,13 @@ public final class NodeType: @unchecked Sendable {
         return true
     }
 
-    public func checkContent(_ content: Fragment) throws {
+    public func checkContent(_ content: Fragment) throws(ModelError) {
         if !validContent(content) {
             throw ModelError.invalidContent("Invalid content for node \(name): \(content)")
         }
     }
 
-    public func checkAttrs(_ attrs: Attrs) throws {
+    public func checkAttrs(_ attrs: Attrs) throws(ModelError) {
         _ = try Schema.computeAttrs(self.attrs, attrs, what: "node '\(name)'")
     }
 
@@ -266,7 +266,7 @@ public final class MarkType: @unchecked Sendable {
         return Mark(type: self, attrs: computed)
     }
 
-    public func checkAttrs(_ attrs: Attrs) throws {
+    public func checkAttrs(_ attrs: Attrs) throws(ModelError) {
         _ = try Schema.computeAttrs(self.attrs, attrs, what: "mark '\(name)'")
     }
 
@@ -291,7 +291,7 @@ public final class Schema: @unchecked Sendable {
     public let nodeSpecOrder: [String]
     public let markSpecOrder: [String]
 
-    public init(nodes: [(String, NodeSpec)], marks: [(String, MarkSpec)] = [], topNode: String = "doc") throws {
+    public init(nodes: [(String, NodeSpec)], marks: [(String, MarkSpec)] = [], topNode: String = "doc") throws(ModelError) {
         var nodeTypes: [String: NodeType] = [:]
         var nodeOrder: [String] = []
         // First pass: create node and mark types (schema back-reference set below).
@@ -359,18 +359,18 @@ public final class Schema: @unchecked Sendable {
         }
     }
 
-    public func nodeType(_ name: String) throws -> NodeType {
+    public func nodeType(_ name: String) throws(ModelError) -> NodeType {
         guard let t = nodes[name] else {
             throw ModelError.rangeError("Unknown node type: \(name)")
         }
         return t
     }
 
-    public func node(_ type: String, _ attrs: Attrs = [:], content: Fragment = .empty, marks: [Mark] = []) throws -> Node {
+    public func node(_ type: String, _ attrs: Attrs = [:], content: Fragment = .empty, marks: [Mark] = []) throws(ModelError) -> Node {
         try nodeType(type).create(attrs, content: content, marks: marks)
     }
 
-    public func node(_ type: NodeType, _ attrs: Attrs = [:], content: Fragment = .empty, marks: [Mark] = []) throws -> Node {
+    public func node(_ type: NodeType, _ attrs: Attrs = [:], content: Fragment = .empty, marks: [Mark] = []) throws(ModelError) -> Node {
         try type.create(attrs, content: content, marks: marks)
     }
 
@@ -388,17 +388,17 @@ public final class Schema: @unchecked Sendable {
         type.create(attrs)
     }
 
-    public func nodeFromJSON(_ json: [String: AttributeValue]) throws -> Node {
+    public func nodeFromJSON(_ json: [String: AttributeValue]) throws(ModelError) -> Node {
         try Node.fromJSON(self, json)
     }
 
-    public func markFromJSON(_ json: [String: AttributeValue]) throws -> Mark {
+    public func markFromJSON(_ json: [String: AttributeValue]) throws(ModelError) -> Mark {
         try Mark.fromJSON(self, json)
     }
 
     // MARK: helpers
 
-    static func gatherMarks(_ expr: String, _ markTypes: [String: MarkType]) throws -> [MarkType] {
+    static func gatherMarks(_ expr: String, _ markTypes: [String: MarkType]) throws(ModelError) -> [MarkType] {
         var found: [MarkType] = []
         for name in expr.split(separator: " ").map(String.init) {
             if let t = markTypes[name] {
@@ -415,7 +415,7 @@ public final class Schema: @unchecked Sendable {
         return found.sorted { $0.rank < $1.rank }
     }
 
-    static func computeAttrs(_ specs: [String: AttributeSpec], _ given: Attrs, what: String) throws -> Attrs {
+    static func computeAttrs(_ specs: [String: AttributeSpec], _ given: Attrs, what: String) throws(ModelError) -> Attrs {
         var result: Attrs = [:]
         for (name, spec) in specs {
             if let value = given[name] {

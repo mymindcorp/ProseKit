@@ -292,9 +292,9 @@ public struct Fragment: Hashable, Sendable {
         content.map { .object($0.toJSON()) }
     }
 
-    public static func fromJSON(_ schema: Schema, _ value: [AttributeValue]?) throws -> Fragment {
+    public static func fromJSON(_ schema: Schema, _ value: [AttributeValue]?) throws(ModelError) -> Fragment {
         guard let value, !value.isEmpty else { return .empty }
-        let nodes = try value.map { v -> Node in
+        let nodes = try value.map { (v) throws(ModelError) -> Node in
             guard case let .object(o) = v else {
                 throw ModelError.invalidJSON("Invalid fragment child JSON")
             }

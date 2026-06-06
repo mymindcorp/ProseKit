@@ -12,7 +12,7 @@ public final class ExtensionManager {
     public let schema: Schema
     private let htmlByName: [String: HTMLSpec]
 
-    public init(_ extensions: [Extension]) throws {
+    public init(_ extensions: [Extension]) throws(ModelError) {
         // Sort by priority (descending), stable on declaration order.
         let sorted = extensions.enumerated().sorted { a, b in
             a.element.priority != b.element.priority

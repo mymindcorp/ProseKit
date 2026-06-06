@@ -75,7 +75,7 @@ public struct Mark: Hashable, Sendable {
         return obj
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws -> Mark {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Mark {
         guard let name = json["type"]?.stringValue else {
             throw ModelError.invalidJSON("Invalid mark JSON: missing type")
         }

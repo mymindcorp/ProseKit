@@ -68,7 +68,7 @@ public struct Slice: Hashable, Sendable {
         return json
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]?) throws -> Slice {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]?) throws(ModelError) -> Slice {
         guard let json else { return .empty }
         var contentArr: [AttributeValue] = []
         if case let .array(c)? = json["content"] { contentArr = c }
@@ -99,7 +99,7 @@ public struct Slice: Hashable, Sendable {
 // MARK: - The replace algorithm (prosemirror-model replace.ts)
 
 enum ReplaceAlgorithm {
-    static func replace(_ from: ResolvedPos, _ to: ResolvedPos, _ slice: Slice) throws -> Node {
+    static func replace(_ from: ResolvedPos, _ to: ResolvedPos, _ slice: Slice) throws(ModelError) -> Node {
         if slice.openStart > from.depth {
             throw ModelError.invalidContent("Inserted content deeper than insertion position")
         }
@@ -109,7 +109,7 @@ enum ReplaceAlgorithm {
         return try replaceOuter(from, to, slice, 0)
     }
 
-    private static func replaceOuter(_ from: ResolvedPos, _ to: ResolvedPos, _ slice: Slice, _ depth: Int) throws -> Node {
+    private static func replaceOuter(_ from: ResolvedPos, _ to: ResolvedPos, _ slice: Slice, _ depth: Int) throws(ModelError) -> Node {
         let index = from.index(depth)
         let node = from.node(depth)
         if index == to.index(depth) && depth < from.depth - slice.openStart {
@@ -128,13 +128,13 @@ enum ReplaceAlgorithm {
         }
     }
 
-    private static func checkJoin(_ main: Node, _ sub: Node) throws {
+    private static func checkJoin(_ main: Node, _ sub: Node) throws(ModelError) {
         if !sub.type.compatibleContent(main.type) {
             throw ModelError.invalidContent("Cannot join \(sub.type.name) onto \(main.type.name)")
         }
     }
 
-    private static func joinable(_ before: ResolvedPos, _ after: ResolvedPos, _ depth: Int) throws -> Node {
+    private static func joinable(_ before: ResolvedPos, _ after: ResolvedPos, _ depth: Int) throws(ModelError) -> Node {
         let node = before.node(depth)
         try checkJoin(node, after.node(depth))
         return node
@@ -171,12 +171,12 @@ enum ReplaceAlgorithm {
         }
     }
 
-    private static func close(_ node: Node, _ content: Fragment) throws -> Node {
+    private static func close(_ node: Node, _ content: Fragment) throws(ModelError) -> Node {
         try node.type.checkContent(content)
         return node.copy(content: content)
     }
 
-    private static func replaceThreeWay(_ from: ResolvedPos, _ start: ResolvedPos, _ end: ResolvedPos, _ to: ResolvedPos, _ depth: Int) throws -> Fragment {
+    private static func replaceThreeWay(_ from: ResolvedPos, _ start: ResolvedPos, _ end: ResolvedPos, _ to: ResolvedPos, _ depth: Int) throws(ModelError) -> Fragment {
         let openStart: Node? = from.depth > depth ? try joinable(from, start, depth + 1) : nil
         let openEnd: Node? = to.depth > depth ? try joinable(end, to, depth + 1) : nil
 
@@ -199,7 +199,7 @@ enum ReplaceAlgorithm {
         return Fragment(content)
     }
 
-    private static func replaceTwoWay(_ from: ResolvedPos, _ to: ResolvedPos, _ depth: Int) throws -> Fragment {
+    private static func replaceTwoWay(_ from: ResolvedPos, _ to: ResolvedPos, _ depth: Int) throws(ModelError) -> Fragment {
         var content: [Node] = []
         addRange(nil, from, depth, &content)
         if from.depth > depth {

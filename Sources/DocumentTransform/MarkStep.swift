@@ -58,7 +58,7 @@ public struct AddMarkStep: Step {
         ["stepType": "addMark", "mark": .object(mark.toJSON()), "from": .int(from), "to": .int(to)]
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
         guard let from = json["from"]?.intValue, let to = json["to"]?.intValue,
               case let .object(markJSON)? = json["mark"] else {
             throw ModelError.invalidJSON("Invalid input for AddMarkStep.fromJSON")
@@ -106,7 +106,7 @@ public struct RemoveMarkStep: Step {
         ["stepType": "removeMark", "mark": .object(mark.toJSON()), "from": .int(from), "to": .int(to)]
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
         guard let from = json["from"]?.intValue, let to = json["to"]?.intValue,
               case let .object(markJSON)? = json["mark"] else {
             throw ModelError.invalidJSON("Invalid input for RemoveMarkStep.fromJSON")
@@ -150,7 +150,7 @@ public struct AddNodeMarkStep: Step {
         ["stepType": "addNodeMark", "pos": .int(pos), "mark": .object(mark.toJSON())]
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
         guard let pos = json["pos"]?.intValue, case let .object(markJSON)? = json["mark"] else {
             throw ModelError.invalidJSON("Invalid input for AddNodeMarkStep.fromJSON")
         }
@@ -187,7 +187,7 @@ public struct RemoveNodeMarkStep: Step {
         ["stepType": "removeNodeMark", "pos": .int(pos), "mark": .object(mark.toJSON())]
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
         guard let pos = json["pos"]?.intValue, case let .object(markJSON)? = json["mark"] else {
             throw ModelError.invalidJSON("Invalid input for RemoveNodeMarkStep.fromJSON")
         }

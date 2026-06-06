@@ -150,7 +150,7 @@ public final class ContentMatch: @unchecked Sendable {
 enum ContentExpression {
     /// Parse a content expression string against a schema's node types,
     /// producing the start `ContentMatch` of the resulting DFA.
-    static func parse(_ string: String, _ nodeTypes: [String: NodeType]) throws -> ContentMatch {
+    static func parse(_ string: String, _ nodeTypes: [String: NodeType]) throws(ModelError) -> ContentMatch {
         var stream = TokenStream(string: string, nodeTypes: nodeTypes)
         if stream.next == nil {
             return ContentMatch.empty
@@ -223,7 +223,7 @@ enum ContentExpression {
         case name(NodeType)
     }
 
-    static func parseExpr(_ stream: inout TokenStream) throws -> Expr {
+    static func parseExpr(_ stream: inout TokenStream) throws(ModelError) -> Expr {
         var exprs: [Expr] = [try parseExprSeq(&stream)]
         while stream.eat("|") {
             exprs.append(try parseExprSeq(&stream))
@@ -231,7 +231,7 @@ enum ContentExpression {
         return exprs.count == 1 ? exprs[0] : .choice(exprs)
     }
 
-    static func parseExprSeq(_ stream: inout TokenStream) throws -> Expr {
+    static func parseExprSeq(_ stream: inout TokenStream) throws(ModelError) -> Expr {
         var exprs: [Expr] = []
         repeat {
             exprs.append(try parseExprSubscript(&stream))
@@ -239,7 +239,7 @@ enum ContentExpression {
         return exprs.count == 1 ? exprs[0] : .seq(exprs)
     }
 
-    static func parseExprSubscript(_ stream: inout TokenStream) throws -> Expr {
+    static func parseExprSubscript(_ stream: inout TokenStream) throws(ModelError) -> Expr {
         var expr = try parseExprAtom(&stream)
         while true {
             if stream.eat("+") { expr = .plus(expr) }
@@ -251,7 +251,7 @@ enum ContentExpression {
         return expr
     }
 
-    static func parseExprRange(_ stream: inout TokenStream, _ expr: Expr) throws -> Expr {
+    static func parseExprRange(_ stream: inout TokenStream, _ expr: Expr) throws(ModelError) -> Expr {
         _ = stream.eat("{")
         let minStr = stream.next
         guard let minStr, let minV = Int(minStr) else {
@@ -273,7 +273,7 @@ enum ContentExpression {
         return .range(min: minV, max: maxV, expr: expr)
     }
 
-    static func parseExprAtom(_ stream: inout TokenStream) throws -> Expr {
+    static func parseExprAtom(_ stream: inout TokenStream) throws(ModelError) -> Expr {
         if stream.eat("(") {
             let expr = try parseExpr(&stream)
             if !stream.eat(")") {
@@ -448,7 +448,7 @@ enum ContentExpression {
         return explore([0])
     }
 
-    static func checkForDeadEnds(_ nfa: NFA, _ stream: TokenStream) throws {
+    static func checkForDeadEnds(_ nfa: NFA, _ stream: TokenStream) throws(ModelError) {
         // Best-effort: no-op. ProseMirror warns on dead ends; we skip for now.
         _ = nfa; _ = stream
     }

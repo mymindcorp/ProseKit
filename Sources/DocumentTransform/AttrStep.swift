@@ -38,7 +38,7 @@ public struct AttrStep: Step {
         ["stepType": "attr", "pos": .int(pos), "attr": .string(attr), "value": value]
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
         guard let pos = json["pos"]?.intValue, let attr = json["attr"]?.stringValue else {
             throw ModelError.invalidJSON("Invalid input for AttrStep.fromJSON")
         }
@@ -76,7 +76,7 @@ public struct DocAttrStep: Step {
         ["stepType": "docAttr", "attr": .string(attr), "value": value]
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
         guard let attr = json["attr"]?.stringValue else {
             throw ModelError.invalidJSON("Invalid input for DocAttrStep.fromJSON")
         }

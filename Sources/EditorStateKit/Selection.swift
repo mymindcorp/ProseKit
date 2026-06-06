@@ -137,7 +137,7 @@ open class Selection {
         findSelectionIn(doc, doc, doc.content.size, doc.childCount, -1) ?? AllSelection(doc)
     }
 
-    public static func fromJSON(_ doc: Node, _ json: [String: AttributeValue]) throws -> Selection {
+    public static func fromJSON(_ doc: Node, _ json: [String: AttributeValue]) throws(ModelError) -> Selection {
         guard let type = json["type"]?.stringValue else {
             throw ModelError.invalidJSON("Invalid selection JSON: missing type")
         }

@@ -132,7 +132,7 @@ public final class EditorState: @unchecked Sendable {
         ["doc": .object(doc.toJSON()), "selection": .object(selection.toJSON())]
     }
 
-    public static func fromJSON(_ config: EditorStateConfig, _ json: [String: AttributeValue]) throws -> EditorState {
+    public static func fromJSON(_ config: EditorStateConfig, _ json: [String: AttributeValue]) throws(ModelError) -> EditorState {
         guard case let .object(docJSON)? = json["doc"] else {
             throw ModelError.invalidJSON("Invalid input for EditorState.fromJSON")
         }
