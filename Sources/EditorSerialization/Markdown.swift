@@ -264,7 +264,6 @@ public enum MarkdownParser {
             }
             // Italic * * or _ _
             if c == "*" || c == "_" {
-                let delim = String(c)
                 if let close = findChar(chars, i + 1, c) {
                     flush()
                     nodes.append(schema.text(String(chars[(i + 1)..<close]), mark("italic")))

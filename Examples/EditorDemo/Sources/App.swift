@@ -3,6 +3,7 @@ import UIKit
 import DocumentModel
 import EditorStateKit
 import SchemaKit
+import EditorSerialization
 import EditorUIKit
 
 @main
@@ -25,19 +26,117 @@ let demoDocuments: [(name: String, build: @Sendable (Schema) -> Node)] = [
 
 struct ContentView: View {
     @State private var docIndex = 0
+    /// The most recent paste-prose request, applied once by `EditorContainer`.
+    @State private var proseLoad: ProseLoad?
+    /// Monotonic id so each tap of "Load" is a distinct request.
+    @State private var proseLoadSeq = 0
+    @State private var showProseSheet = false
+    @State private var proseDraft = sampleProseJSON
+    @State private var loadError: String?
+
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Document", selection: $docIndex) {
-                ForEach(demoDocuments.indices, id: \.self) { i in Text(demoDocuments[i].name).tag(i) }
+            HStack(spacing: 8) {
+                Picker("Document", selection: $docIndex) {
+                    ForEach(demoDocuments.indices, id: \.self) { i in Text(demoDocuments[i].name).tag(i) }
+                }
+                .pickerStyle(.segmented)
+                Button("Load Prose…") { showProseSheet = true }
+                    .buttonStyle(.bordered)
             }
-            .pickerStyle(.segmented)
             .padding(8)
             Divider()
-            EditorContainer(docIndex: docIndex)
-                .ignoresSafeArea(.keyboard)
+            EditorContainer(docIndex: docIndex, proseLoad: proseLoad) { message in
+                loadError = message
+            }
+            .ignoresSafeArea(.keyboard)
+        }
+        .sheet(isPresented: $showProseSheet) {
+            ProseSheet(json: $proseDraft, onLoad: {
+                proseLoadSeq += 1
+                proseLoad = ProseLoad(id: proseLoadSeq, json: proseDraft)
+                showProseSheet = false
+            }, onCancel: { showProseSheet = false })
+        }
+        .alert("Couldn’t load prose", isPresented: Binding(
+            get: { loadError != nil },
+            set: { if !$0 { loadError = nil } }
+        )) {
+            Button("OK", role: .cancel) { loadError = nil }
+        } message: {
+            Text(loadError ?? "")
         }
     }
 }
+
+/// A single request to load pasted ProseMirror JSON into the editor. The `id`
+/// lets the editor host apply each paste exactly once across SwiftUI updates.
+struct ProseLoad: Equatable {
+    let id: Int
+    let json: String
+}
+
+/// Load a document from "prose" — ProseMirror-shaped JSON, the canonical
+/// interchange format produced by `DocumentJSON.string(_:)` — into a live editor.
+///
+/// Decoding is done against the editor's own schema so the resulting node types
+/// line up with the running document, then the content is swapped in via
+/// `setContent` (which marks it non-undoable, like the initial document).
+///
+/// - Throws: `ModelError.invalidJSON` for malformed input, or a schema error if
+///   the document references node or mark types the editor doesn't know about.
+func loadProse(_ json: String, into editor: Editor) throws {
+    let doc = try DocumentJSON.decode(editor.schema, json)
+    editor.setContent(doc)
+}
+
+/// A sheet for pasting ProseMirror JSON and loading it into the editor.
+struct ProseSheet: View {
+    @Binding var json: String
+    let onLoad: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            TextEditor(text: $json)
+                .font(.system(.body, design: .monospaced))
+                .autocorrectionDisabled()
+                .padding(8)
+                .navigationTitle("Load Prose")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel", action: onCancel)
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Load", action: onLoad)
+                            .disabled(json.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+        }
+    }
+}
+
+/// A small, valid ProseMirror document shown in the paste field by default, so
+/// the expected JSON shape is obvious and "Load" works out of the box.
+let sampleProseJSON = """
+{
+  "type": "doc",
+  "content": [
+    { "type": "heading", "attrs": { "level": 1 },
+      "content": [ { "type": "text", "text": "Loaded from prose" } ] },
+    { "type": "paragraph", "content": [
+      { "type": "text", "text": "This document was decoded from ProseMirror JSON via " },
+      { "type": "text", "marks": [ { "type": "code" } ], "text": "DocumentJSON.decode" },
+      { "type": "text", "text": ". Edit the JSON above and tap Load." }
+    ] },
+    { "type": "bulletList", "content": [
+      { "type": "listItem", "content": [
+        { "type": "paragraph", "content": [ { "type": "text", "text": "Lists, marks, and headings all round-trip." } ] }
+      ] }
+    ] }
+  ]
+}
+"""
 
 /// Hosts an `EditorTextView` inside a scroll view, virtualized: the editor view
 /// is pinned to the scroll viewport (never taller than the screen) and renders
@@ -45,12 +144,18 @@ struct ContentView: View {
 /// height. This is what lets a 500-paragraph × 500-word document render at all.
 struct EditorContainer: UIViewRepresentable {
     let docIndex: Int
+    /// The latest pasted-prose request, or nil. Applied once per `id`.
+    var proseLoad: ProseLoad?
+    /// Surfaces a human-readable message when pasted prose fails to decode.
+    var onLoadError: (String) -> Void
 
     @MainActor final class Coordinator: NSObject, UIScrollViewDelegate {
         weak var editor: Editor?
         weak var textView: EditorTextView?
         weak var scroll: UIScrollView?
         var currentIndex = -1
+        var lastProseID = 0
+        var onLoadError: ((String) -> Void)?
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             textView?.contentOffsetY = scrollView.contentOffset.y
@@ -98,13 +203,36 @@ struct EditorContainer: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIScrollView, context: Context) {
-        guard context.coordinator.currentIndex != docIndex,
-              let editor = context.coordinator.editor, let textView = context.coordinator.textView else { return }
+        let coordinator = context.coordinator
+        guard let editor = coordinator.editor, let textView = coordinator.textView else { return }
+        coordinator.onLoadError = onLoadError
+
+        // A pasted-prose request takes priority and is applied exactly once.
+        if let proseLoad, proseLoad.id != coordinator.lastProseID {
+            coordinator.lastProseID = proseLoad.id
+            do {
+                try loadProse(proseLoad.json, into: editor)
+                resetScroll(uiView, textView, coordinator)
+            } catch {
+                let message = String(describing: error)
+                // Defer past the SwiftUI update phase before mutating @State.
+                DispatchQueue.main.async { coordinator.onLoadError?(message) }
+            }
+            return
+        }
+
+        guard coordinator.currentIndex != docIndex else { return }
         editor.setContent(demoDocuments[docIndex].build(editor.schema))
-        context.coordinator.currentIndex = docIndex
-        uiView.setContentOffset(.zero, animated: false)
+        coordinator.currentIndex = docIndex
+        resetScroll(uiView, textView, coordinator)
+    }
+
+    /// Scroll back to the top and resync the virtualized content height after a
+    /// document swap.
+    private func resetScroll(_ scroll: UIScrollView, _ textView: EditorTextView, _ coordinator: Coordinator) {
+        scroll.setContentOffset(.zero, animated: false)
         textView.contentOffsetY = 0
-        DispatchQueue.main.async { context.coordinator.syncContentHeight(textView.documentHeight) }
+        DispatchQueue.main.async { coordinator.syncContentHeight(textView.documentHeight) }
     }
 }
 

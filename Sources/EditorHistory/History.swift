@@ -126,12 +126,12 @@ private func shift(_ state: EditorState, _ from: WritableKeyPath<HistoryState, [
 }
 
 /// Undo the most recent change.
-nonisolated(unsafe) public let undo: (EditorState, ((Transaction) -> Void)?) -> Bool = { state, dispatch in
+public let undo: @Sendable (EditorState, ((Transaction) -> Void)?) -> Bool = { state, dispatch in
     shift(state, \.done, true, dispatch)
 }
 
 /// Redo the most recently undone change.
-nonisolated(unsafe) public let redo: (EditorState, ((Transaction) -> Void)?) -> Bool = { state, dispatch in
+public let redo: @Sendable (EditorState, ((Transaction) -> Void)?) -> Bool = { state, dispatch in
     shift(state, \.undone, false, dispatch)
 }
 

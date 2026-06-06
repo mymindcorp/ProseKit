@@ -10,6 +10,7 @@
 		5A3907A7CDDDBCE4D0AFEE26 /* SchemaKit in Frameworks */ = {isa = PBXBuildFile; productRef = BA5025BD668EA3CE832294E2 /* SchemaKit */; };
 		AFBF2302D1CB88A78691E3B6 /* EditorUIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 19BA9BED7783674E6633DB53 /* EditorUIKit */; };
 		CC3F882277935F81F4F6CA24 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = C38094E21AAF9D1B26EE9FA4 /* App.swift */; };
+		D52EB5A2D3E9EF4F3B0D7D08 /* EditorSerialization in Frameworks */ = {isa = PBXBuildFile; productRef = F2E3F86748440B91FEE6F64A /* EditorSerialization */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -25,6 +26,7 @@
 			files = (
 				AFBF2302D1CB88A78691E3B6 /* EditorUIKit in Frameworks */,
 				5A3907A7CDDDBCE4D0AFEE26 /* SchemaKit in Frameworks */,
+				D52EB5A2D3E9EF4F3B0D7D08 /* EditorSerialization in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -82,6 +84,7 @@
 			packageProductDependencies = (
 				19BA9BED7783674E6633DB53 /* EditorUIKit */,
 				BA5025BD668EA3CE832294E2 /* SchemaKit */,
+				F2E3F86748440B91FEE6F64A /* EditorSerialization */,
 			);
 			productName = EditorDemo;
 			productReference = ABCC030F750627BD1A854BD2 /* EditorDemo.app */;
@@ -339,6 +342,10 @@
 		BA5025BD668EA3CE832294E2 /* SchemaKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SchemaKit;
+		};
+		F2E3F86748440B91FEE6F64A /* EditorSerialization */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EditorSerialization;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

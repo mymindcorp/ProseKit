@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import DocumentModel
 import DocumentTransform
 
@@ -81,12 +82,13 @@ public final class PluginKey<T>: @unchecked Sendable {
 }
 
 enum PluginKeyCounter {
-    nonisolated(unsafe) private static var counts: [String: Int] = [:]
-    private static let lock = NSLock()
+    private static let counts = Mutex<[String: Int]>([:])
     static func next(_ name: String = "plugin") -> String {
-        lock.lock(); defer { lock.unlock() }
-        let n = (counts[name] ?? 0) + 1
-        counts[name] = n
+        let n = counts.withLock { counts -> Int in
+            let n = (counts[name] ?? 0) + 1
+            counts[name] = n
+            return n
+        }
         return "\(name)$\(n)"
     }
 }

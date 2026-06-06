@@ -6,13 +6,13 @@ import EditorStateKit
 /// An input rule maps a regular expression matching the text before the cursor
 /// to a transformation. When the user types and the rule's pattern matches, the
 /// handler runs.
-public struct InputRule {
+public struct InputRule: Sendable {
     let regex: NSRegularExpression
-    let handler: (_ state: EditorState, _ match: [String?], _ start: Int, _ end: Int) -> Transaction?
+    let handler: @Sendable (_ state: EditorState, _ match: [String?], _ start: Int, _ end: Int) -> Transaction?
     /// When true, the rule may fire on text already present (used for paste).
     let inCode: Bool
 
-    public init(_ pattern: String, inCode: Bool = false, handler: @escaping (_ state: EditorState, _ match: [String?], _ start: Int, _ end: Int) -> Transaction?) {
+    public init(_ pattern: String, inCode: Bool = false, handler: @escaping @Sendable (_ state: EditorState, _ match: [String?], _ start: Int, _ end: Int) -> Transaction?) {
         self.regex = try! NSRegularExpression(pattern: pattern)
         self.handler = handler
         self.inCode = inCode
@@ -142,14 +142,14 @@ public func markInputRule(_ pattern: String, _ markType: MarkType, _ getAttrs: (
 }
 
 /// Replaces `--` with an em-dash.
-nonisolated(unsafe) public let emDashRule = InputRule("--$") { state, _, start, end in
+public let emDashRule = InputRule("--$") { state, _, start, end in
     let t = state.tr
     _ = try? t.insertText("\u{2014}", start, end)
     return t
 }
 
 /// Replaces three dots with an ellipsis character.
-nonisolated(unsafe) public let ellipsisRule = InputRule("\\.\\.\\.$") { state, _, start, end in
+public let ellipsisRule = InputRule("\\.\\.\\.$") { state, _, start, end in
     let t = state.tr
     _ = try? t.insertText("\u{2026}", start, end)
     return t
@@ -159,7 +159,7 @@ nonisolated(unsafe) public let ellipsisRule = InputRule("\\.\\.\\.$") { state, _
 
 /// Undo the input rule that was just applied, if the previous transaction was
 /// an input rule.
-nonisolated(unsafe) public let undoInputRule: (EditorState, ((Transaction) -> Void)?) -> Bool = { state, dispatch in
+public let undoInputRule: @Sendable (EditorState, ((Transaction) -> Void)?) -> Bool = { state, dispatch in
     guard let s = inputRulesKey.getState(state), let transform = s.transform else { return false }
     if let dispatch {
         let tr = state.tr

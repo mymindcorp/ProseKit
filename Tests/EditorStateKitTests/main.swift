@@ -116,7 +116,7 @@ test("appendTransaction lets a plugin react") {
         appendTransaction: { trs, _, newState in
             if trs.contains(where: { $0.docChanged }) && newState.doc.textContent != "yz" {
                 let tr = newState.tr
-                try? tr.insertText("z", newState.doc.content.size - 1)
+                _ = try? tr.insertText("z", newState.doc.content.size - 1)
                 return tr
             }
             return nil

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import DocumentModel
 
 /// The result of applying a step. Contains either a new document or a failure
@@ -54,33 +55,36 @@ public extension Step {
 /// Registry mapping JSON step IDs to decoders, used by `Step.fromJSON`.
 public enum StepRegistry {
     public typealias StepDecoder = @Sendable (Schema, [String: AttributeValue]) throws -> Step
-    nonisolated(unsafe) private static var decoders: [String: StepDecoder] = [:]
-    nonisolated(unsafe) private static var didBootstrap = false
-    private static let lock = NSLock()
+
+    private struct State {
+        var decoders: [String: StepDecoder] = [:]
+        var didBootstrap = false
+    }
+    private static let state = Mutex(State())
 
     public static func register(_ id: String, _ decoder: @escaping StepDecoder) {
-        lock.lock(); defer { lock.unlock() }
-        decoders[id] = decoder
+        state.withLock { $0.decoders[id] = decoder }
     }
 
     public static func decoder(for id: String) -> StepDecoder? {
-        lock.lock(); defer { lock.unlock() }
-        bootstrapLocked()
-        return decoders[id]
+        state.withLock { state in
+            bootstrap(&state)
+            return state.decoders[id]
+        }
     }
 
-    /// Register the built-in step types. Idempotent.
-    private static func bootstrapLocked() {
-        if didBootstrap { return }
-        didBootstrap = true
-        decoders["replace"] = { try ReplaceStep.fromJSON($0, $1) }
-        decoders["replaceAround"] = { try ReplaceAroundStep.fromJSON($0, $1) }
-        decoders["addMark"] = { try AddMarkStep.fromJSON($0, $1) }
-        decoders["removeMark"] = { try RemoveMarkStep.fromJSON($0, $1) }
-        decoders["addNodeMark"] = { try AddNodeMarkStep.fromJSON($0, $1) }
-        decoders["removeNodeMark"] = { try RemoveNodeMarkStep.fromJSON($0, $1) }
-        decoders["attr"] = { try AttrStep.fromJSON($0, $1) }
-        decoders["docAttr"] = { try DocAttrStep.fromJSON($0, $1) }
+    /// Register the built-in step types. Idempotent; called while the lock is held.
+    private static func bootstrap(_ state: inout State) {
+        if state.didBootstrap { return }
+        state.didBootstrap = true
+        state.decoders["replace"] = { try ReplaceStep.fromJSON($0, $1) }
+        state.decoders["replaceAround"] = { try ReplaceAroundStep.fromJSON($0, $1) }
+        state.decoders["addMark"] = { try AddMarkStep.fromJSON($0, $1) }
+        state.decoders["removeMark"] = { try RemoveMarkStep.fromJSON($0, $1) }
+        state.decoders["addNodeMark"] = { try AddNodeMarkStep.fromJSON($0, $1) }
+        state.decoders["removeNodeMark"] = { try RemoveNodeMarkStep.fromJSON($0, $1) }
+        state.decoders["attr"] = { try AttrStep.fromJSON($0, $1) }
+        state.decoders["docAttr"] = { try DocAttrStep.fromJSON($0, $1) }
     }
 }
 
