@@ -77,7 +77,7 @@ private func run(_ state: EditorState, _ from: Int, _ to: Int, _ text: String, _
 // MARK: - Rule builders
 
 /// Build a rule that wraps the matched block in a node of the given type.
-public func wrappingInputRule(_ pattern: String, _ nodeType: NodeType, _ getAttrs: (([String?]) -> Attrs)? = nil, joinPredicate: (([String?], Node) -> Bool)? = nil) -> InputRule {
+public func wrappingInputRule(_ pattern: String, _ nodeType: NodeType, _ getAttrs: (@Sendable ([String?]) -> Attrs)? = nil, joinPredicate: (@Sendable ([String?], Node) -> Bool)? = nil) -> InputRule {
     InputRule(pattern) { state, match, start, end in
         let attrs = getAttrs?(match) ?? [:]
         let tr = state.tr
@@ -96,7 +96,7 @@ public func wrappingInputRule(_ pattern: String, _ nodeType: NodeType, _ getAttr
 }
 
 /// Build a rule that changes the textblock type of the matched block.
-public func textblockTypeInputRule(_ pattern: String, _ nodeType: NodeType, _ getAttrs: (([String?]) -> Attrs)? = nil) -> InputRule {
+public func textblockTypeInputRule(_ pattern: String, _ nodeType: NodeType, _ getAttrs: (@Sendable ([String?]) -> Attrs)? = nil) -> InputRule {
     InputRule(pattern) { state, match, start, end in
         let resolvedStart = state.doc.resolve(start)
         let attrs = getAttrs?(match) ?? [:]
@@ -114,7 +114,7 @@ public func textblockTypeInputRule(_ pattern: String, _ nodeType: NodeType, _ ge
 /// group, stripping the surrounding marker characters (Tiptap-style, e.g.
 /// `**bold**` → bold "bold"). The captured group must be the inner text; any
 /// leading whitespace consumed by the pattern is preserved.
-public func markInputRule(_ pattern: String, _ markType: MarkType, _ getAttrs: (([String?]) -> Attrs)? = nil) -> InputRule {
+public func markInputRule(_ pattern: String, _ markType: MarkType, _ getAttrs: (@Sendable ([String?]) -> Attrs)? = nil) -> InputRule {
     InputRule(pattern) { state, match, start, end in
         let fullMatch = match[0] ?? ""
         // The inner text is the last participating capture group.

@@ -168,10 +168,10 @@ private func addColumn(after: Bool) -> Command {
     }
 }
 
-nonisolated(unsafe) public let addColumnAfter: Command = addColumn(after: true)
-nonisolated(unsafe) public let addColumnBefore: Command = addColumn(after: false)
+public let addColumnAfter: Command = addColumn(after: true)
+public let addColumnBefore: Command = addColumn(after: false)
 
-nonisolated(unsafe) public let deleteColumn: Command = { state, dispatch, _ in
+public let deleteColumn: Command = { state, dispatch, _ in
     guard let ctx = tableContext(state) else { return false }
     var g = grid(of: ctx.table)
     guard g.first.map({ $0.count > 1 }) ?? false else { return false }
@@ -200,10 +200,10 @@ private func addRow(after: Bool) -> Command {
     }
 }
 
-nonisolated(unsafe) public let addRowAfter: Command = addRow(after: true)
-nonisolated(unsafe) public let addRowBefore: Command = addRow(after: false)
+public let addRowAfter: Command = addRow(after: true)
+public let addRowBefore: Command = addRow(after: false)
 
-nonisolated(unsafe) public let deleteRow: Command = { state, dispatch, _ in
+public let deleteRow: Command = { state, dispatch, _ in
     guard let ctx = tableContext(state) else { return false }
     var g = grid(of: ctx.table)
     guard g.count > 1, ctx.rowIndex < g.count else { return false }
@@ -212,7 +212,7 @@ nonisolated(unsafe) public let deleteRow: Command = { state, dispatch, _ in
 }
 
 /// Delete the whole table containing the selection.
-nonisolated(unsafe) public let deleteTable: Command = { state, dispatch, _ in
+public let deleteTable: Command = { state, dispatch, _ in
     guard let ctx = tableContext(state) else { return false }
     if let dispatch {
         try? dispatch(state.tr.delete(ctx.tablePos, ctx.tablePos + ctx.table.nodeSize).scrollIntoView())

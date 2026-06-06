@@ -160,7 +160,7 @@ public final class CellSelection: Selection {
 }
 
 /// Clear the content of every cell in a cell selection (the table-aware delete).
-nonisolated(unsafe) public let deleteCellSelectionContent: Command = { state, dispatch, _ in
+public let deleteCellSelectionContent: Command = { state, dispatch, _ in
     guard let selection = state.selection as? CellSelection else { return false }
     if let dispatch {
         let tr = state.tr

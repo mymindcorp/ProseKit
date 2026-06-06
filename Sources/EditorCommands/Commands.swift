@@ -5,7 +5,7 @@ import EditorStateKit
 // MARK: - Deletion
 
 /// Delete the selection, if there is one.
-nonisolated(unsafe) public let deleteSelection: Command = { state, dispatch, _ in
+public let deleteSelection: Command = { state, dispatch, _ in
     if state.selection.empty { return false }
     dispatch?(state.tr.deleteSelection().scrollIntoView())
     return true
@@ -68,7 +68,7 @@ private func textblockAt(_ node: Node?, _ side: String, only: Bool = false) -> B
 
 /// If the cursor is at the start of a textblock, try to reduce the distance
 /// between it and the one before it.
-nonisolated(unsafe) public let joinBackward: Command = { state, dispatch, host in
+public let joinBackward: Command = { state, dispatch, host in
     guard let cursor = atBlockStart(state, host) else { return false }
     guard let cut = findCutBefore(cursor) else {
         // At the start of the document or an isolating boundary — try lift.
@@ -107,7 +107,7 @@ nonisolated(unsafe) public let joinBackward: Command = { state, dispatch, host i
 }
 
 /// Symmetric of `joinBackward`, joining the block after the cursor.
-nonisolated(unsafe) public let joinForward: Command = { state, dispatch, host in
+public let joinForward: Command = { state, dispatch, host in
     guard let cursor = atBlockEnd(state, host) else { return false }
     guard let cut = findCutAfter(cursor) else { return false }
     let after = cut.nodeAfter
@@ -193,7 +193,7 @@ private func deleteBarrier(_ state: EditorState, _ cut: ResolvedPos, _ dispatch:
 
 /// When the cursor is at the start of a textblock and there is a selectable
 /// node before it, select that node.
-nonisolated(unsafe) public let selectNodeBackward: Command = { state, dispatch, host in
+public let selectNodeBackward: Command = { state, dispatch, host in
     let sel = state.selection
     guard sel.empty else { return false }
     var cut: ResolvedPos? = sel.resolvedHead
@@ -214,7 +214,7 @@ nonisolated(unsafe) public let selectNodeBackward: Command = { state, dispatch, 
 }
 
 /// Symmetric of `selectNodeBackward`.
-nonisolated(unsafe) public let selectNodeForward: Command = { state, dispatch, host in
+public let selectNodeForward: Command = { state, dispatch, host in
     let sel = state.selection
     guard sel.empty else { return false }
     var cut: ResolvedPos? = sel.resolvedHead
@@ -257,10 +257,10 @@ private func joinUpCommand(_ state: EditorState, _ dispatch: Dispatch?) -> Bool 
 }
 
 /// Join the selected block, or the closest ancestor block, with the one above.
-nonisolated(unsafe) public let joinUp: Command = { state, dispatch, _ in joinUpCommand(state, dispatch) }
+public let joinUp: Command = { state, dispatch, _ in joinUpCommand(state, dispatch) }
 
 /// Join the selected block, or the closest ancestor block, with the one below.
-nonisolated(unsafe) public let joinDown: Command = { state, dispatch, _ in
+public let joinDown: Command = { state, dispatch, _ in
     let sel = state.selection
     var point: Int?
     if let nodeSel = sel as? NodeSelection, nodeSel.node.isBlock {
@@ -274,7 +274,7 @@ nonisolated(unsafe) public let joinDown: Command = { state, dispatch, _ in
 }
 
 /// Lift the selected block, or the closest ancestor block, out of its parent.
-nonisolated(unsafe) public let lift: Command = { state, dispatch, _ in
+public let lift: Command = { state, dispatch, _ in
     let sel = state.selection
     guard let range = sel.resolvedFrom.blockRange(sel.resolvedTo), let target = liftTarget(range) else { return false }
     if let dispatch { dispatch(try! state.tr.lift(range, target).scrollIntoView()) }
@@ -285,7 +285,7 @@ nonisolated(unsafe) public let lift: Command = { state, dispatch, _ in
 
 /// If the selection is in a node whose type has a truthy `code` spec, insert a
 /// newline.
-nonisolated(unsafe) public let newlineInCode: Command = { state, dispatch, _ in
+public let newlineInCode: Command = { state, dispatch, _ in
     let head = state.selection.resolvedHead
     let anchor = state.selection.resolvedAnchor
     guard head.parent.type.spec.code, head.sameParent(anchor) else { return false }
@@ -301,7 +301,7 @@ private func defaultBlockAt(_ match: ContentMatch) -> NodeType? {
 }
 
 /// When in a code block at the end, exit by creating a default block below.
-nonisolated(unsafe) public let exitCode: Command = { state, dispatch, _ in
+public let exitCode: Command = { state, dispatch, _ in
     let sel = state.selection
     let from = sel.resolvedFrom, to = sel.resolvedTo
     guard from.parent.type.spec.code, to.pos == from.end() else { return false }
@@ -322,7 +322,7 @@ nonisolated(unsafe) public let exitCode: Command = { state, dispatch, _ in
 
 /// If a block node is selected, create an empty paragraph before (if it's at
 /// the start of the doc) or after it.
-nonisolated(unsafe) public let createParagraphNear: Command = { state, dispatch, _ in
+public let createParagraphNear: Command = { state, dispatch, _ in
     let sel = state.selection
     let from = sel.resolvedFrom, to = sel.resolvedTo
     if from.parent.inlineContent || to.parent.inlineContent { return false }
@@ -340,7 +340,7 @@ nonisolated(unsafe) public let createParagraphNear: Command = { state, dispatch,
 }
 
 /// If the cursor is in an empty textblock that can be lifted, lift it.
-nonisolated(unsafe) public let liftEmptyBlock: Command = { state, dispatch, _ in
+public let liftEmptyBlock: Command = { state, dispatch, _ in
     guard let sel = state.selection as? TextSelection, let cursor = sel.cursor else { return false }
     if cursor.parent.content.size != 0 { return false }
     if cursor.depth > 1, cursor.after() != cursor.end(cursor.depth - 1) {
@@ -356,10 +356,10 @@ nonisolated(unsafe) public let liftEmptyBlock: Command = { state, dispatch, _ in
 }
 
 /// Split the parent block of the selection.
-nonisolated(unsafe) public let splitBlock: Command = splitBlockAs(nil)
+public let splitBlock: Command = splitBlockAs(nil)
 
 /// Build a split command, optionally choosing the type of the new block.
-public func splitBlockAs(_ splitNode: ((_ node: Node, _ atEnd: Bool) -> NodeTypeWithAttrs?)?) -> Command {
+public func splitBlockAs(_ splitNode: (@Sendable (_ node: Node, _ atEnd: Bool) -> NodeTypeWithAttrs?)?) -> Command {
     { state, dispatch, _ in
         let sel = state.selection
         let from = sel.resolvedFrom, to = sel.resolvedTo
@@ -404,7 +404,7 @@ public func splitBlockAs(_ splitNode: ((_ node: Node, _ atEnd: Bool) -> NodeType
 // MARK: - Selection commands
 
 /// Move the selection to the node wrapping the current selection, if any.
-nonisolated(unsafe) public let selectParentNode: Command = { state, dispatch, _ in
+public let selectParentNode: Command = { state, dispatch, _ in
     let sel = state.selection
     var pos: Int?
     let same = sel.resolvedFrom.sharedDepth(sel.to)
@@ -415,7 +415,7 @@ nonisolated(unsafe) public let selectParentNode: Command = { state, dispatch, _ 
 }
 
 /// Select the whole document.
-nonisolated(unsafe) public let selectAll: Command = { state, dispatch, _ in
+public let selectAll: Command = { state, dispatch, _ in
     dispatch?(state.tr.setSelection(AllSelection(state.doc)))
     return true
 }
