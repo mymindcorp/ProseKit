@@ -87,7 +87,7 @@ open class EditorTextView: UIView, UIKeyInput {
     public var contentOffsetY: CGFloat = 0 {
         // Scrolling only repositions the caret layer; it must NOT reveal the
         // caret (that would scroll back to the cursor and fight the user).
-        didSet { if oldValue != contentOffsetY { setNeedsDisplay(); positionCaretLayer(); updateSuggestionPopup() } }
+        didSet { if oldValue != contentOffsetY { realizeVisibleIfNeeded(); setNeedsDisplay(); positionCaretLayer(); updateSuggestionPopup() } }
     }
     /// The full document height; the host uses it as the scroll content height.
     public var documentHeight: CGFloat { ensureLayout().height }
@@ -181,7 +181,7 @@ open class EditorTextView: UIView, UIKeyInput {
         if let layout, lastLayoutWidth == bounds.width, layoutVersion == docVersion { return layout }
         let l = DocumentLayout(doc: editor.doc, width: max(bounds.width, 1), theme: theme,
                                imageProvider: { [weak self] src in self?.imageCache[src] },
-                               blockCache: blockCache, previous: layout)
+                               blockCache: blockCache, previous: layout, realizeWindow: realizeWindow())
         layout = l
         lastLayoutWidth = bounds.width
         layoutVersion = docVersion
@@ -191,6 +191,25 @@ open class EditorTextView: UIView, UIKeyInput {
             onDocumentHeightChange?(l.height)
         }
         return l
+    }
+
+    /// The document y-window to lay out exactly (the viewport ± a generous
+    /// margin). Children outside it are height-estimated on a cold build of a
+    /// very large document, then realized here as they scroll near the viewport.
+    private func realizeWindow() -> ClosedRange<CGFloat> {
+        let margin = max(bounds.height * 2, 600)
+        return (contentOffsetY - margin) ... (contentOffsetY + max(bounds.height, 1) + margin)
+    }
+
+    /// Typeset any estimated blocks that have scrolled near the viewport.
+    private func realizeVisibleIfNeeded() {
+        guard let layout, layout.hasEstimatedContent, layout.realize(window: realizeWindow()) else { return }
+        loadPendingImages(layout.pendingImageSources)
+        if layout.height != lastReportedHeight {
+            lastReportedHeight = layout.height
+            onDocumentHeightChange?(layout.height)
+        }
+        setNeedsDisplay()
     }
 
     /// Asynchronously load any images the layout couldn't find in the cache,

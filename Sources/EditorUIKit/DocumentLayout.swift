@@ -142,11 +142,19 @@ final class DocumentLayout {
         let decorations: [DecorationItem]
         let checkboxes: [(rect: CGRect, pos: Int, checked: Bool)]
         let tables: [TableInfo]
+        /// When true this child's height is an estimate and it hasn't been
+        /// typeset — it carries no blocks/decorations. Realized on demand when it
+        /// scrolls near the viewport.
+        var estimated: Bool = false
     }
     private(set) var entries: [TopEntry] = []
+    /// Below this child count, the whole document is always laid out eagerly
+    /// (estimation only pays off for very large documents).
+    private static let lazyThreshold = 60
 
     init(doc: Node, width: CGFloat, theme: TextTheme, imageProvider: @escaping (String) -> UIImage? = { _ in nil },
-         blockCache: TextBlockLayoutCache? = nil, previous: DocumentLayout? = nil) {
+         blockCache: TextBlockLayoutCache? = nil, previous: DocumentLayout? = nil,
+         realizeWindow: ClosedRange<CGFloat>? = nil) {
         self.theme = theme
         self.width = width
         self.imageProvider = imageProvider
@@ -154,8 +162,12 @@ final class DocumentLayout {
         blockCache?.beginPass()
         let contentWidth = width - theme.pageInsets.left - theme.pageInsets.right
         let x = theme.pageInsets.left
-        if let previous, previous.width == width, let (front, back) = diff(doc, previous) {
+        if let previous, previous.width == width, let (front, back) = diff(doc, previous), front + back > 0 {
+            // A real edit: reuse the unchanged prefix/suffix, re-lay the middle.
             buildIncremental(doc, previous: previous, front: front, back: back, x: x, width: contentWidth)
+        } else if let realizeWindow, doc.childCount > Self.lazyThreshold {
+            // Lazy: typeset only children near the viewport, estimate the rest.
+            buildLazy(doc, window: realizeWindow, x: x, width: contentWidth)
         } else {
             buildFull(doc, x: x, width: contentWidth)
         }
@@ -237,8 +249,88 @@ final class DocumentLayout {
                         blocks: e.blocks.map { shiftBlock($0, dPos: dPos, dy: dy) },
                         decorations: e.decorations.map { shiftDeco($0, dy: dy) },
                         checkboxes: e.checkboxes.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos, checked: $0.checked) },
-                        tables: e.tables.map { TableInfo(tablePos: $0.tablePos + dPos, originX: $0.originX, widths: $0.widths, top: $0.top + dy, bottom: $0.bottom + dy) })
+                        tables: e.tables.map { TableInfo(tablePos: $0.tablePos + dPos, originX: $0.originX, widths: $0.widths, top: $0.top + dy, bottom: $0.bottom + dy) },
+                        estimated: e.estimated)
     }
+
+    // MARK: - Lazy (estimated) layout
+
+    /// Typeset only the children whose estimated y-range overlaps `window`;
+    /// estimate the height of the rest so the total document height is known
+    /// without paying to lay out every block.
+    private func buildLazy(_ doc: Node, window: ClosedRange<CGFloat>, x: CGFloat, width contentWidth: CGFloat) {
+        var y = theme.pageInsets.top
+        var pos = 0
+        for i in 0..<doc.childCount {
+            let child = doc.child(i)
+            let spacing = theme.spacingBefore(child, isFirst: i == 0)
+            let estimated = spacing + estimatedContentHeight(of: child)
+            // Realize if the child's (estimated) span is anywhere near the window.
+            if y + estimated >= window.lowerBound && y <= window.upperBound {
+                entries.append(layoutTopChild(child, docPos: pos, x: x, width: contentWidth, y: &y, isFirst: i == 0))
+            } else {
+                let topY = y
+                y += estimated
+                entries.append(TopEntry(node: child, docStart: pos, topY: topY, height: estimated,
+                                        blocks: [], decorations: [], checkboxes: [], tables: [], estimated: true))
+            }
+            pos += child.nodeSize
+        }
+        height = y + theme.pageInsets.bottom
+    }
+
+    /// A cheap height estimate for a top-level child (no typesetting): its text
+    /// length wrapped at the content width.
+    private func estimatedContentHeight(of child: Node) -> CGFloat {
+        let font = theme.blockFont(child)
+        let lineHeight = font.lineHeight + theme.lineSpacing
+        let avgChar = max(font.pointSize * 0.5, 1)
+        let usableWidth = max(width - theme.pageInsets.left - theme.pageInsets.right, avgChar)
+        let charsPerLine = max(Int(usableWidth / avgChar), 1)
+        let textLength = max(child.textContent.count, 1)
+        let lines = Int(ceil(Double(textLength) / Double(charsPerLine)))
+        return CGFloat(max(lines, 1)) * lineHeight + theme.paragraphSpacing
+    }
+
+    /// Realize (typeset) any estimated children overlapping `window`, re-flowing
+    /// positions and correcting the total height. Returns true if anything
+    /// changed (the caller should redraw and re-report the height). O(children)
+    /// plus the cost of the few children actually typeset.
+    func realize(window: ClosedRange<CGFloat>) -> Bool {
+        guard entries.contains(where: { $0.estimated }) else { return false }
+        // Anything to do?
+        var probe = theme.pageInsets.top
+        var hit = false
+        for e in entries {
+            if e.estimated, probe + e.height >= window.lowerBound, probe <= window.upperBound { hit = true; break }
+            probe = e.topY + e.height
+        }
+        guard hit else { return false }
+
+        let old = entries
+        entries = []; blocks = []; decorations = []; checkboxes = []; tables = []; pendingImageSources = []
+        let x = theme.pageInsets.left
+        let contentWidth = width - theme.pageInsets.left - theme.pageInsets.right
+        var y = theme.pageInsets.top
+        for (i, e) in old.enumerated() {
+            if e.estimated, y + e.height >= window.lowerBound, y <= window.upperBound {
+                entries.append(layoutTopChild(e.node, docPos: e.docStart, x: x, width: contentWidth, y: &y, isFirst: i == 0))
+            } else if e.estimated {
+                entries.append(TopEntry(node: e.node, docStart: e.docStart, topY: y, height: e.height,
+                                        blocks: [], decorations: [], checkboxes: [], tables: [], estimated: true))
+                y += e.height
+            } else {
+                let shifted = shiftEntry(e, dPos: 0, dy: y - e.topY)
+                append(shifted); entries.append(shifted)
+                y = shifted.topY + shifted.height
+            }
+        }
+        height = y + theme.pageInsets.bottom
+        return true
+    }
+
+    /// Whether any part of the document is still only estimated.
+    var hasEstimatedContent: Bool { entries.contains { $0.estimated } }
 
     private func shiftBlock(_ b: TextBlock, dPos: Int, dy: CGFloat) -> TextBlock {
         TextBlock(contentStart: b.contentStart + dPos, contentEnd: b.contentEnd + dPos,
