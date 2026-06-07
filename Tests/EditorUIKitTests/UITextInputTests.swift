@@ -28,6 +28,47 @@ final class UITextInputTests: XCTestCase {
         XCTAssertEqual(view.text(in: range(7, 12)), "world")
     }
 
+    /// Replacing a (double-tap) selection must collapse to a caret *after* the
+    /// inserted text, so the next keystroke appends instead of replacing it —
+    /// otherwise typed characters get "eaten".
+    func testReplaceCollapsesCaretSoTypingDoesNotEat() throws {
+        let view = try makeView("hello world")
+        view.replace(range(1, 6), withText: "Hi") // replace the selected word "hello"
+        XCTAssertEqual(view.editor.doc.textContent, "Hi world")
+        let caret = try XCTUnwrap(view.selectedTextRange as? DocTextRange)
+        XCTAssertTrue(caret.isEmpty, "selection should collapse to a caret")
+        XCTAssertEqual(caret.from, 3, "caret sits right after the inserted text")
+        // The next system edit (typing) must append, not replace the new text.
+        view.replace(view.selectedTextRange!, withText: "!")
+        XCTAssertEqual(view.editor.doc.textContent, "Hi! world")
+    }
+
+    /// The reported bug: double-tap a word, then type. The first character must
+    /// replace the whole word; each subsequent character appends (no eating).
+    func testTypingOverDoubleTappedWordReplacesThenAppends() throws {
+        let view = try makeView("hello world")
+        view.selectedTextRange = range(1, 6) // double-tap selects "hello"
+        view.insertText("X")
+        XCTAssertEqual(view.editor.doc.textContent, "X world", "first char replaces the word")
+        let caret = try XCTUnwrap(view.selectedTextRange as? DocTextRange)
+        XCTAssertTrue(caret.isEmpty)
+        XCTAssertEqual(caret.from, 2, "caret after the inserted character")
+        view.insertText("Y")
+        view.insertText("Z")
+        XCTAssertEqual(view.editor.doc.textContent, "XYZ world", "subsequent chars append")
+    }
+
+    /// Even replacing an empty (zero-width) selection must not leave the inserted
+    /// character selected.
+    func testReplaceEmptySelectionInsertsAndAdvancesCaret() throws {
+        let view = try makeView("ab")
+        view.replace(range(2, 2), withText: "X") // insert between a and b
+        XCTAssertEqual(view.editor.doc.textContent, "aXb")
+        let caret = try XCTUnwrap(view.selectedTextRange as? DocTextRange)
+        XCTAssertTrue(caret.isEmpty)
+        XCTAssertEqual(caret.from, 3)
+    }
+
     /// The invariant UIKit relies on: text length must equal the position offset
     /// difference, even across block boundaries (otherwise inserts land on the
     /// wrong line during fast typing).

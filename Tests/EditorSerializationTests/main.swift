@@ -118,6 +118,12 @@ test("Markdown serialize") {
     try expectEqual(md, "## Title\n\na **b**\n\n- x\n- y")
 }
 
+test("Node.toMarkdown() convenience matches the serializer") {
+    let d = doc(h(2, "Title"), p(t("a "), strong("b")))
+    try expectEqual(d.toMarkdown(), MarkdownSerializer.serialize(d))
+    try expectEqual(d.toMarkdown(), "## Title\n\na **b**")
+}
+
 test("Markdown round-trip (headings, bold, italic, code)") {
     let d = doc(
         h(1, "Doc"),
