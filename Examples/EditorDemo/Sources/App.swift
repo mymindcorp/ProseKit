@@ -33,6 +33,8 @@ struct ContentView: View {
     @State private var showProseSheet = false
     @State private var proseDraft = sampleProseJSON
     @State private var loadError: String?
+    /// Whether the simulated remote collaborator is inserting text as you type.
+    @State private var agentOn = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,10 +45,13 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 Button("Load Prose…") { showProseSheet = true }
                     .buttonStyle(.bordered)
+                Button(agentOn ? "🤖 Stop" : "🤖 Agent") { agentOn.toggle() }
+                    .buttonStyle(.bordered)
+                    .tint(agentOn ? .orange : nil)
             }
             .padding(8)
             Divider()
-            EditorContainer(docIndex: docIndex, proseLoad: proseLoad) { message in
+            EditorContainer(docIndex: docIndex, proseLoad: proseLoad, agentOn: agentOn) { message in
                 loadError = message
             }
             .ignoresSafeArea(.keyboard)
@@ -146,6 +151,8 @@ struct EditorContainer: UIViewRepresentable {
     let docIndex: Int
     /// The latest pasted-prose request, or nil. Applied once per `id`.
     var proseLoad: ProseLoad?
+    /// Whether the simulated collaborator ("Agent") is running.
+    var agentOn: Bool = false
     /// Surfaces a human-readable message when pasted prose fails to decode.
     var onLoadError: (String) -> Void
 
@@ -156,6 +163,78 @@ struct EditorContainer: UIViewRepresentable {
         var currentIndex = -1
         var lastProseID = 0
         var onLoadError: ((String) -> Void)?
+
+        // A simulated remote collaborator that inserts random words at random
+        // positions — as transactions — while you type, to prove edits and
+        // cursors interleave correctly.
+        private var agentTimer: Timer?
+        private var agentRunning = false
+        private let agentWords = ["lorem", "ipsum", "banana", "quick", "fox", "editor",
+                                  "swift", "async", "token", "river", "ember", "atlas", "pixel", "idea", "note"]
+
+        func setAgent(_ on: Bool) {
+            guard on != agentRunning else { return }
+            agentRunning = on
+            agentTimer?.invalidate()
+            agentTimer = nil
+            guard on, let editor else { return }
+            editor.setCollabCursor(id: "agent", anchor: 1, head: 1, color: "#FF9500", label: "Agent")
+            agentTimer = Timer.scheduledTimer(withTimeInterval: 0.9, repeats: true) { [weak self] timer in
+                guard let self else { timer.invalidate(); return } // coordinator gone → stop
+                Task { @MainActor in self.agentStep() }
+            }
+        }
+
+        private func agentStep() {
+            guard let editor, editor.doc.content.size > 2 else { return }
+            // Mostly type a handful of words; sometimes delete one. Each is its
+            // own transaction, so it maps the user's selection (and other cursors)
+            // exactly how a real remote edit would arrive.
+            if Int.random(in: 0 ..< 10) < 3 {
+                agentDeleteWord(editor)
+            } else {
+                agentTypeWords(editor)
+            }
+        }
+
+        private func agentTypeWords(_ editor: Editor) {
+            let count = Int.random(in: 1 ... 5) // a handful in a row
+            let text = (0 ..< count).map { _ in agentWords.randomElement() ?? "word" }.joined(separator: " ") + " "
+            let pos = Int.random(in: 1 ..< editor.doc.content.size)
+            let tr = editor.state.tr
+            do { try tr.insertText(text, pos) } catch { return } // skip non-text positions
+            editor.dispatch(tr)
+            let head = min(pos + text.count, editor.doc.content.size)
+            editor.setCollabCursor(id: "agent", anchor: head, head: head, color: "#FF9500", label: "Agent")
+        }
+
+        private func agentDeleteWord(_ editor: Editor) {
+            let pos = Int.random(in: 1 ..< editor.doc.content.size)
+            guard let (from, to) = agentWordRange(editor, at: pos) else { agentTypeWords(editor); return }
+            let tr = editor.state.tr
+            do { try tr.delete(from, to) } catch { return }
+            editor.dispatch(tr)
+            editor.setCollabCursor(id: "agent", anchor: from, head: from, color: "#FF9500", label: "Agent")
+        }
+
+        /// The document range of the word at `pos` (plus one trailing space), or
+        /// nil if `pos` isn't inside a text word. Confined to a single textblock.
+        private func agentWordRange(_ editor: Editor, at pos: Int) -> (Int, Int)? {
+            let clamped = min(max(pos, 1), editor.doc.content.size)
+            let resolved = editor.doc.resolve(clamped)
+            guard resolved.parent.isTextblock, resolved.parent.content.size > 0 else { return nil }
+            let chars = Array(resolved.parent.textBetween(0, resolved.parent.content.size))
+            guard !chars.isEmpty else { return nil }
+            let blockStart = clamped - resolved.parentOffset // doc position of the block's first character
+            var i = min(resolved.parentOffset, chars.count - 1)
+            if chars[i].isWhitespace, i > 0 { i -= 1 } // step back off a boundary
+            guard !chars[i].isWhitespace else { return nil }
+            var lo = i, hi = i + 1
+            while lo > 0, !chars[lo - 1].isWhitespace { lo -= 1 }
+            while hi < chars.count, !chars[hi].isWhitespace { hi += 1 }
+            if hi < chars.count, chars[hi] == " " { hi += 1 } // also remove one trailing space
+            return (blockStart + lo, blockStart + hi)
+        }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             textView?.contentOffsetY = scrollView.contentOffset.y
@@ -168,7 +247,16 @@ struct EditorContainer: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> UIScrollView {
-        let editor = try! Editor(extensions: fullKit())
+        // `[[` wiki-link suggestions from a fixed demo list. The provider lives on
+        // the WikiLink extension (self-contained); the renderer just shows the
+        // popup for whichever suggestion source is active. The `/` slash menu is
+        // included by `fullKit` with its default commands.
+        let editor = try! Editor(extensions: fullKit(wikiLinkSuggestions: { query in
+            let pages = ["Home", "Getting Started", "Architecture", "ProseMirror", "Tiptap",
+                         "Document Model", "Commands", "Keymap", "Schema", "Releases", "Roadmap"]
+            guard !query.isEmpty else { return pages }
+            return pages.filter { $0.range(of: query, options: .caseInsensitive) != nil }
+        }))
         editor.setContent(demoDocuments[docIndex].build(editor.schema))
 
         let scroll = UIScrollView()
@@ -206,6 +294,7 @@ struct EditorContainer: UIViewRepresentable {
         let coordinator = context.coordinator
         guard let editor = coordinator.editor, let textView = coordinator.textView else { return }
         coordinator.onLoadError = onLoadError
+        coordinator.setAgent(agentOn)
 
         // A pasted-prose request takes priority and is applied exactly once.
         if let proseLoad, proseLoad.id != coordinator.lastProseID {
