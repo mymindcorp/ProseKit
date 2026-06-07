@@ -107,9 +107,9 @@ final class TableEditingTests: XCTestCase {
         // Border between the two equal columns. Drag it well to the left.
         let borderX = info.borderX(after: 0)
         let y = (info.top + info.bottom) / 2
-        view.beginDrag(at: CGPoint(x: borderX, y: y), granularity: .character)
-        view.updateDrag(to: CGPoint(x: borderX - 60, y: y))
-        view.endDrag()
+        view.beginColumnResize(at: CGPoint(x: borderX, y: y))
+        view.updateColumnResize(to: CGPoint(x: borderX - 60, y: y))
+        view.endColumnResize()
         // Re-read the layout: column 0 should now be narrower than column 1.
         let after = DocumentLayout(doc: view.editor.doc, width: 320, theme: TextTheme())
         let widths = try XCTUnwrap(after.tables.first).widths

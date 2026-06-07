@@ -96,9 +96,6 @@ open class EditorTextView: UIView, UIKeyInput {
     public var onDocumentHeightChange: ((CGFloat) -> Void)?
     private var lastReportedHeight: CGFloat = -1
 
-    /// The document position currently anchoring a drag selection.
-    private var dragAnchor: Int?
-
     // MARK: - UITextInput state
     /// The system input delegate, notified when text/selection change outside
     /// of a UITextInput-initiated edit.
@@ -594,36 +591,17 @@ open class EditorTextView: UIView, UIKeyInput {
         }
     }
 
-    /// The document position before the table cell containing `pos`, if any.
-    private func cellPosition(containing pos: Int) -> Int? {
-        let resolved = editor.doc.resolve(min(max(pos, 0), editor.doc.content.size))
-        var depth = resolved.depth
-        while depth > 0 {
-            let name = resolved.node(depth).type.name
-            if name == "tableCell" || name == "tableHeader" { return resolved.before(depth) }
-            depth -= 1
-        }
-        return nil
-    }
-
-    /// Select the whole textblock (paragraph/heading/…) at the given position.
-    private func selectParagraph(at pos: Int) {
-        guard let r = paragraphRange(at: pos) else { return }
-        setTextSelection(anchor: r.0, head: r.1)
-    }
-
-    /// The textblock content range containing `pos`.
-    private func paragraphRange(at pos: Int) -> (Int, Int)? {
-        let resolved = editor.doc.resolve(min(max(pos, 0), editor.doc.content.size))
-        guard resolved.parent.isTextblock else { return nil }
-        return (resolved.start(), resolved.end())
-    }
-
-
-    // The column-resize pan (gated to table borders) shares the drag model;
-    // it only ever takes the resize path since it begins on a border.
+    // The column-resize pan, gated by the gesture delegate to begin only on a
+    // table column border. Caret placement and text selection are handled
+    // natively by UITextInteraction.
     @objc private func handleMouseDrag(_ gesture: UIPanGestureRecognizer) {
-        driveDragSelection(state: gesture.state, point: docPoint(gesture.location(in: self)))
+        let point = docPoint(gesture.location(in: self))
+        switch gesture.state {
+        case .began: beginColumnResize(at: point)
+        case .changed: updateColumnResize(to: point)
+        case .ended, .cancelled, .failed: endColumnResize()
+        default: break
+        }
     }
 
     /// Our checkbox tap and column-resize pan begin only over their target, so
@@ -636,82 +614,19 @@ open class EditorTextView: UIView, UIKeyInput {
         return super.gestureRecognizerShouldBegin(gesture)
     }
 
-    enum DragGranularity { case character, word, paragraph }
-    private var dragGranularity: DragGranularity = .character
-    private var dragAnchorRange: (Int, Int)?
-
-    private func driveDragSelection(state: UIGestureRecognizer.State, point: CGPoint) {
-        switch state {
-        case .began:
-            // The only gesture routed here is the column-resize pan (gated to
-            // table borders), which takes the resize path regardless of
-            // granularity. Word/paragraph drag selection is exercised directly
-            // by tests via `beginDrag(at:granularity:)`.
-            beginDrag(at: point, granularity: .character)
-        case .changed:
-            updateDrag(to: point)
-        case .ended, .cancelled, .failed:
-            endDrag()
-        default:
-            break
-        }
-    }
-
     // Column-resize state, captured at the start of a border drag.
     private var resize: (tablePos: Int, leftColumn: Int, widths: [CGFloat], originX: CGFloat)?
 
-    func beginDrag(at point: CGPoint, granularity: DragGranularity) {
-        if !isFirstResponder { becomeFirstResponder() }
-        // A drag that starts on a column border resizes columns instead of selecting.
-        if let hit = columnBorderHit(at: point) {
-            resize = (hit.table.tablePos, hit.leftColumn, hit.table.widths, hit.table.originX)
-            return
-        }
-        guard let pos = ensureLayout().position(at: point) else { dragAnchor = nil; return }
-        dragAnchor = pos
-        dragGranularity = granularity
-        switch granularity {
-        case .character:
-            dragAnchorRange = nil
-            editor.dispatch(editor.state.tr.setSelection(Selection.near(editor.doc.resolve(min(pos, editor.doc.content.size)))))
-        case .word:
-            dragAnchorRange = wordRange(at: pos)
-            if let r = dragAnchorRange { setTextSelection(anchor: r.0, head: r.1) }
-        case .paragraph:
-            dragAnchorRange = paragraphRange(at: pos)
-            if let r = dragAnchorRange { setTextSelection(anchor: r.0, head: r.1) }
-        }
+    func beginColumnResize(at point: CGPoint) {
+        guard let hit = columnBorderHit(at: point) else { resize = nil; return }
+        resize = (hit.table.tablePos, hit.leftColumn, hit.table.widths, hit.table.originX)
     }
 
-    func updateDrag(to point: CGPoint) {
-        if let r = resize { performColumnResize(r, to: point); return }
-        guard let anchor = dragAnchor, let head = ensureLayout().position(at: point) else { return }
-        switch dragGranularity {
-        case .character:
-            // Dragging across cells of the same table makes a cell selection.
-            if let anchorCell = cellPosition(containing: anchor),
-               let headCell = cellPosition(containing: head), anchorCell != headCell {
-                editor.dispatch(editor.state.tr.setSelection(
-                    CellSelection.create(editor.doc, anchorCellPos: anchorCell, headCellPos: headCell)))
-            } else {
-                setTextSelection(anchor: anchor, head: head)
-            }
-        case .word, .paragraph:
-            guard let base = dragAnchorRange else { setTextSelection(anchor: anchor, head: head); return }
-            let cur = dragGranularity == .word ? wordRange(at: head) : paragraphRange(at: head)
-            let lo = min(base.0, cur?.0 ?? head)
-            let hi = max(base.1, cur?.1 ?? head)
-            // The head trails the drag direction so it keeps growing by unit.
-            if head >= base.1 { setTextSelection(anchor: lo, head: hi) }
-            else { setTextSelection(anchor: hi, head: lo) }
-        }
+    func updateColumnResize(to point: CGPoint) {
+        if let r = resize { performColumnResize(r, to: point) }
     }
 
-    func endDrag() {
-        dragAnchor = nil
-        dragAnchorRange = nil
-        resize = nil
-    }
+    func endColumnResize() { resize = nil }
 
     /// The internal column border (and its table) within ~6pt of `point`, if any.
     func columnBorderHit(at point: CGPoint) -> (table: DocumentLayout.TableInfo, leftColumn: Int)? {
@@ -766,47 +681,6 @@ open class EditorTextView: UIView, UIKeyInput {
         let a = editor.doc.resolve(min(max(anchor, 0), size))
         let h = editor.doc.resolve(min(max(head, 0), size))
         editor.dispatch(editor.state.tr.setSelection(TextSelection.between(a, h)))
-    }
-
-    /// Select the word at the given document position.
-    private func selectWord(at pos: Int) {
-        guard let r = wordRange(at: pos) else { return }
-        setTextSelection(anchor: r.0, head: r.1)
-    }
-
-    /// The word range containing `pos` (a single character when not on a word).
-    private func wordRange(at pos: Int) -> (Int, Int)? {
-        let resolved = editor.doc.resolve(min(max(pos, 0), editor.doc.content.size))
-        guard resolved.parent.isTextblock else {
-            return (pos, min(pos + 1, editor.doc.content.size))
-        }
-        let contentStart = resolved.start()
-        let chars = inlineCharacters(of: resolved.parent)
-        let offset = pos - contentStart
-        let isWord: (Character) -> Bool = { $0.isLetter || $0.isNumber || $0 == "_" }
-        var lo = min(max(offset, 0), chars.count)
-        var hi = lo
-        while lo > 0 && isWord(chars[lo - 1]) { lo -= 1 }
-        while hi < chars.count && isWord(chars[hi]) { hi += 1 }
-        if lo == hi { // not on a word — select a single character if possible
-            if hi < chars.count { hi += 1 } else if lo > 0 { lo -= 1 }
-        }
-        return (contentStart + lo, contentStart + hi)
-    }
-
-    /// The inline characters of a textblock, one entry per document position
-    /// (atoms contribute a single placeholder).
-    private func inlineCharacters(of parent: Node) -> [Character] {
-        var chars: [Character] = []
-        for i in 0..<parent.childCount {
-            let child = parent.child(i)
-            if child.isText {
-                chars.append(contentsOf: Array(child.text ?? ""))
-            } else {
-                chars.append("\u{fffc}") // object replacement — a non-word boundary
-            }
-        }
-        return chars
     }
 
     // MARK: - UIKeyInput

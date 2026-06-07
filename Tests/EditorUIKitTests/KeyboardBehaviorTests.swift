@@ -467,36 +467,6 @@ final class KeyboardBehaviorTests: XCTestCase {
         XCTAssertGreaterThan(count(view, "bulletList"), before)
     }
 
-    // MARK: - Drag selection granularity
-
-    func testWordGranularDragExtendsByWholeWords() throws {
-        let view = try makeView(["alpha beta gamma"])
-        let layout = DocumentLayout(doc: view.editor.doc, width: 320, theme: TextTheme())
-        // Drag from inside "alpha" to inside "gamma" at word granularity.
-        let alphaMid = try XCTUnwrap(layout.caretRect(at: 3))   // within "alpha"
-        let gammaMid = try XCTUnwrap(layout.caretRect(at: 14))  // within "gamma"
-        view.beginDrag(at: CGPoint(x: alphaMid.midX, y: alphaMid.midY), granularity: .word)
-        view.updateDrag(to: CGPoint(x: gammaMid.midX, y: gammaMid.midY))
-        view.endDrag()
-        let sel = view.editor.state.selection
-        let selected = view.editor.doc.textBetween(sel.from, sel.to)
-        XCTAssertEqual(selected, "alpha beta gamma", "word drag should snap to whole-word boundaries")
-    }
-
-    func testWordGranularDragSnapsAnchorWordEvenWhenShrinking() throws {
-        let view = try makeView(["one two three"])
-        let layout = DocumentLayout(doc: view.editor.doc, width: 320, theme: TextTheme())
-        let twoMid = try XCTUnwrap(layout.caretRect(at: 6))   // within "two"
-        let oneMid = try XCTUnwrap(layout.caretRect(at: 2))   // within "one"
-        view.beginDrag(at: CGPoint(x: twoMid.midX, y: twoMid.midY), granularity: .word)
-        // Initial selection is the whole "two".
-        XCTAssertEqual(view.editor.doc.textBetween(view.editor.state.selection.from, view.editor.state.selection.to), "two")
-        view.updateDrag(to: CGPoint(x: oneMid.midX, y: oneMid.midY)) // drag back over "one"
-        view.endDrag()
-        let sel = view.editor.state.selection
-        XCTAssertEqual(view.editor.doc.textBetween(sel.from, sel.to), "one two")
-    }
-
     // MARK: - Tab in lists
 
     func testTabSinksListItem() throws {
