@@ -92,8 +92,15 @@ extension EditorTextView: UITextInput {
         guard let r = range as? DocTextRange else { return }
         applyingTextInput = true
         defer { applyingTextInput = false }
+        let from = clamp(r.from), to = clamp(r.to)
         let tr = editor.state.tr
-        _ = try? tr.insertText(text, clamp(r.from), clamp(r.to))
+        _ = try? tr.insertText(text, from, to)
+        // Collapse to a caret *after* the inserted text. Without this, mapping the
+        // old (often ranged, from a double-tap) selection through the replace can
+        // leave the inserted text selected — so the next keystroke replaces it
+        // instead of appending, which reads as "typed characters get eaten".
+        let caret = min(from + text.count, tr.doc.content.size)
+        tr.setSelection(TextSelection.create(tr.doc, caret))
         editor.dispatch(tr)
     }
 

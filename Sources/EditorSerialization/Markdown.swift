@@ -76,6 +76,11 @@ public enum MarkdownSerializer {
     }
 }
 
+public extension Node {
+    /// Serialize this node — typically the document — to Markdown.
+    func toMarkdown() -> String { MarkdownSerializer.serialize(self) }
+}
+
 // MARK: - Parse
 
 public enum MarkdownParser {

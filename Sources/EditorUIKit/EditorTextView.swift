@@ -19,8 +19,6 @@ open class EditorTextView: UIView, UIKeyInput {
     public var placeholder: String? { didSet { setNeedsDisplay() } }
     /// Whether misspelled words are underlined.
     public var spellCheckingEnabled = true { didSet { spellCheckedVersion = -1; setNeedsDisplay() } }
-    /// Whether a Shift key is currently held (for shift-click selection).
-    private var shiftDown = false
 
     private var layout: DocumentLayout?
     private var lastLayoutWidth: CGFloat = 0
@@ -311,7 +309,37 @@ open class EditorTextView: UIView, UIKeyInput {
             }
             ctx.strokePath()
         }
+
+        // Remote collaboration cursors (other participants / agents).
+        for cursor in editor.collabCursors {
+            guard let color = UIColor(hex: cursor.color) else { continue }
+            // Selection highlight (when not collapsed).
+            if !cursor.isCollapsed {
+                ctx.setFillColor(color.withAlphaComponent(0.25).cgColor)
+                for r in l.selectionRects(from: min(cursor.anchor, cursor.head), to: max(cursor.anchor, cursor.head)) where onScreen(r) {
+                    ctx.fill(r)
+                }
+            }
+            guard let caret = l.caretRect(at: min(cursor.head, editor.doc.content.size)), onScreen(caret) else { continue }
+            let bar = CGRect(x: caret.minX, y: caret.minY, width: 2, height: caret.height)
+            ctx.setFillColor(color.cgColor)
+            ctx.fill(bar)
+            drawCollabLabel(cursor.label, color: color, at: bar, in: ctx)
+        }
         ctx.restoreGState()
+    }
+
+    /// A small name flag above a remote caret.
+    private func drawCollabLabel(_ label: String, color: UIColor, at caret: CGRect, in ctx: CGContext) {
+        guard !label.isEmpty else { return }
+        let font = UIFont.systemFont(ofSize: 10, weight: .semibold)
+        let text = NSAttributedString(string: label, attributes: [.font: font, .foregroundColor: UIColor.white])
+        let textSize = text.size()
+        let pad: CGFloat = 4
+        let flag = CGRect(x: caret.minX, y: caret.minY - (textSize.height + 4), width: textSize.width + pad * 2, height: textSize.height + 2)
+        ctx.setFillColor(color.cgColor)
+        UIBezierPath(roundedRect: flag, cornerRadius: 3).fill()
+        text.draw(at: CGPoint(x: flag.minX + pad, y: flag.minY + 1))
     }
 
     /// The document-position range spanned by the blocks intersecting the
@@ -792,8 +820,10 @@ open class EditorTextView: UIView, UIKeyInput {
         defer { applyingTextInput = false }
         // Committing an IME composition: replace the marked range with the final text.
         if let m = markedRange {
+            let from = min(m.0, editor.doc.content.size)
             let tr = editor.state.tr
-            _ = try? tr.insertText(text, min(m.0, editor.doc.content.size), min(m.1, editor.doc.content.size))
+            _ = try? tr.insertText(text, from, min(m.1, editor.doc.content.size))
+            collapseCaret(tr, after: from, text: text)
             editor.dispatch(tr)
             markedRange = nil
             return
@@ -802,9 +832,22 @@ open class EditorTextView: UIView, UIKeyInput {
         let sel = editor.state.selection
         // Try input rules (only at a collapsed cursor).
         if sel.empty, runTextInput(from: sel.from, to: sel.to, text: text) { return }
+        // Replacing a *ranged* selection (e.g. a double-tapped word): the typed
+        // text replaces it, then the caret must collapse to *after* the new text
+        // so the next keystroke appends. (Mapping the old ranged selection through
+        // the replace would otherwise leave the inserted text selected, so each
+        // following character would replace it — "typing eats letters".)
+        let from = sel.from
         let tr = editor.state.tr
         _ = try? tr.insertText(text)
+        collapseCaret(tr, after: from, text: text)
         editor.dispatch(tr)
+    }
+
+    /// Place a collapsed caret just after text inserted at `from`.
+    private func collapseCaret(_ tr: Transaction, after from: Int, text: String) {
+        let pos = min(from + text.count, tr.doc.content.size)
+        tr.setSelection(TextSelection.create(tr.doc, pos))
     }
 
     public func deleteBackward() {
@@ -956,18 +999,9 @@ open class EditorTextView: UIView, UIKeyInput {
         var handledAny = false
         for press in presses {
             guard let key = press.key else { continue }
-            if key.modifierFlags.contains(.shift) { shiftDown = true }
             if handle(key: key) { handledAny = true }
         }
         if !handledAny { super.pressesBegan(presses, with: event) }
-    }
-
-    open override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        for press in presses where !(press.key?.modifierFlags.contains(.shift) ?? true) { shiftDown = false }
-        if presses.contains(where: { $0.key?.keyCode == .keyboardLeftShift || $0.key?.keyCode == .keyboardRightShift }) {
-            shiftDown = false
-        }
-        super.pressesEnded(presses, with: event)
     }
 
     /// A key press, decoupled from `UIKey` so the key handler can be unit-tested
