@@ -325,6 +325,25 @@ public final class StrikeExtension: MarkExtension {
     }
 }
 
+public final class HighlightExtension: MarkExtension {
+    public let name = "highlight"
+    public init() {}
+    public var markSpec: MarkSpec { MarkSpec() }
+    public var html: HTMLSpec { HTMLSpec(tag: "mark") }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["toggleHighlight": toggleMark(type)]
+    }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["Mod-Shift-h": toggleMark(type)]
+    }
+    public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
+        guard let type = ctx.markType else { return [] }
+        return [markInputRule("(?:==)([^=]+)(?:==)$", type)]
+    }
+}
+
 public final class CodeExtension: MarkExtension {
     public let name = "code"
     public init() {}
@@ -385,6 +404,7 @@ public func starterKit() -> [Extension] {
         BoldExtension(),
         ItalicExtension(),
         StrikeExtension(),
+        HighlightExtension(),
         CodeExtension(),
         LinkExtension(),
         TypographyExtension(),
@@ -392,6 +412,8 @@ public func starterKit() -> [Extension] {
 }
 
 /// The starter kit plus tables, task lists, images, wiki-links, and search.
-public func fullKit() -> [Extension] {
-    starterKit() + tableExtensions() + taskListExtensions() + [ImageExtension(), WikiLinkExtension(), SearchExtension()]
+public func fullKit(wikiLinkSuggestions: ((String) -> [String])? = nil) -> [Extension] {
+    starterKit() + tableExtensions() + taskListExtensions()
+        + [ImageExtension(), WikiLinkExtension(suggestions: wikiLinkSuggestions), SearchExtension(),
+           SlashMenuExtension(), CollabCursorExtension()]
 }
