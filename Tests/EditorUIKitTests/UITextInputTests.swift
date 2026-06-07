@@ -58,6 +58,30 @@ final class UITextInputTests: XCTestCase {
         XCTAssertEqual(view.editor.doc.textContent, "XYZ world", "subsequent chars append")
     }
 
+    /// Regression (crash): deleting a selection that runs from inside a nested
+    /// block out to a shallower position used to trap (out-of-bounds) in the
+    /// model's `deleteRange`. This is the exact path the system's autocorrect
+    /// "delete-and-reinsert" hit.
+    func testDeleteBackwardOverCrossDepthSelectionDoesNotCrash() throws {
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        editor.setContent(try! s.node("doc", [:], content: Fragment.from([
+            try! s.node("blockquote", [:], content: Fragment.from([
+                try! s.node("paragraph", [:], content: Fragment.from([s.text("hello")])),
+            ])),
+            try! s.node("paragraph", [:], content: Fragment.from([s.text("world")])),
+        ])))
+        let view = EditorTextView(editor: editor)
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
+        view.layoutIfNeeded()
+        let end = editor.doc.content.size
+        // Inside the quoted paragraph (deep) → the document end (shallow).
+        editor.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.doc, 4, end)))
+        view.deleteBackward()
+        XCTAssertLessThan(editor.doc.content.size, end)
+        XCTAssertTrue(editor.state.selection.empty)
+    }
+
     /// Even replacing an empty (zero-width) selection must not leave the inserted
     /// character selected.
     func testReplaceEmptySelectionInsertsAndAdvancesCaret() throws {

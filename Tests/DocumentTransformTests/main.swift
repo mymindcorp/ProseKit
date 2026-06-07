@@ -64,6 +64,26 @@ test("Transform.delete across blockquote (Fitter, structured)") {
     try expectEqual(tr.doc, B.doc(B.p("a")))
 }
 
+// Regression: deleteRange must not trap when `to` resolves shallower than
+// `from` (e.g. deleting from inside a nested block out to a top-level position).
+// The old "covered depths" loop read `resolvedTo` at depths it didn't have.
+test("deleteRange from inside a nested block out to the document end") {
+    let doc = B.doc(B.blockquote(B.p("hello")), B.p("world"))
+    let end = doc.content.size
+    let tr = Transform(doc)
+    try tr.deleteRange(4, end) // deep `from` (doc>blockquote>p), shallow `to` (doc end)
+    try expect(tr.doc.content.size < end, "the range was deleted")
+    try expectEqual(tr.doc.firstChild?.type.name, "blockquote")
+}
+
+test("deleteRange across a list item out to a shallow position") {
+    let doc = B.doc(B.ul(B.li(B.p("one")), B.li(B.p("two"))), B.p("after"))
+    let end = doc.content.size
+    let tr = Transform(doc)
+    try tr.deleteRange(4, end) // inside the first list item's paragraph → doc end
+    try expect(tr.doc.content.size < end)
+}
+
 test("Transform steps are invertible") {
     let doc = B.doc(B.p("hello world"))
     let tr = Transform(doc)

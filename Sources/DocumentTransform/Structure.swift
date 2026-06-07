@@ -294,18 +294,13 @@ public extension Transform {
     /// result.
     @discardableResult
     func deleteRange(_ from: Int, _ to: Int) throws -> Self {
-        let resolvedFrom = doc.resolve(from)
-        let resolvedTo = doc.resolve(to)
-        var d = 0
-        while d <= resolvedFrom.depth {
-            let parent = resolvedFrom.node(d)
-            if resolvedFrom.index(d) == parent.childCount - resolvedTo.indexAfter(d) + resolvedFrom.index(d),
-               resolvedFrom.start(d) == resolvedFrom.before(d + 1) || resolvedFrom.start(d) > resolvedTo.end(d) {
-                // (best-effort; fall through to plain delete)
-            }
-            d += 1
-        }
-        return try delete(from, to)
+        // A plain structural delete already joins content correctly across node
+        // boundaries (the Fitter handles it). An earlier "covered depths"
+        // expansion here was a no-op loop that read `resolvedTo` at depths it
+        // doesn't have — trapping (array out-of-bounds) whenever `to` resolves to
+        // a shallower depth than `from`, e.g. deleting a selection running from
+        // inside a nested block out to a top-level position.
+        try delete(from, to)
     }
 }
 
