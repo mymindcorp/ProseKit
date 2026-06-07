@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "EditorSwift",
+    name: "ProseKit",
     platforms: [
         .macOS(.v15),
         .iOS(.v18),
@@ -69,7 +69,8 @@ let package = Package(
         .executableTarget(
             name: "SchemaKitTests",
             dependencies: ["SchemaKit", "TestHarness"],
-            path: "Tests/SchemaKitTests"),
+            path: "Tests/SchemaKitTests",
+            resources: [.copy("highlight-doc.json")]),
         .executableTarget(
             name: "EditorSerializationTests",
             dependencies: ["EditorSerialization", "TestHarness"],
