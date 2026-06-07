@@ -27,3 +27,17 @@ public enum DocumentJSON {
         try decode(schema, Data(string.utf8))
     }
 }
+
+public extension Node {
+    /// Load a document node from a ProseMirror-shaped JSON string against the
+    /// given schema. Throws `ModelError.invalidJSON` for malformed input, or a
+    /// schema error for unknown node/mark types.
+    static func fromJSON(_ json: String, schema: Schema) throws -> Node {
+        try DocumentJSON.decode(schema, json)
+    }
+
+    /// Serialize this node to a ProseMirror-shaped JSON string.
+    func toJSONString(pretty: Bool = false) throws -> String {
+        try DocumentJSON.string(self, pretty: pretty)
+    }
+}

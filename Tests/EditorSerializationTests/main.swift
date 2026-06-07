@@ -124,6 +124,13 @@ test("Node.toMarkdown() convenience matches the serializer") {
     try expectEqual(d.toMarkdown(), "## Title\n\na **b**")
 }
 
+test("Node JSON string helpers round-trip") {
+    let d = doc(h(1, "Title"), p(t("hello "), strong("world")))
+    let json = try d.toJSONString()
+    let back = try Node.fromJSON(json, schema: schema)
+    try expectEqual(back, d)
+}
+
 test("Markdown round-trip (headings, bold, italic, code)") {
     let d = doc(
         h(1, "Doc"),

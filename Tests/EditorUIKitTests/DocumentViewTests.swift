@@ -3,6 +3,7 @@ import XCTest
 import UIKit
 import DocumentModel
 import SchemaKit
+import EditorSerialization
 @testable import EditorUIKit
 
 /// Rendering helpers: the read-only `DocumentView` (visible-window only) and the
@@ -62,6 +63,19 @@ final class DocumentViewTests: XCTestCase {
         XCTAssertGreaterThan(inkPixels(topImage), 100)
         XCTAssertGreaterThan(inkPixels(bottomImage), 100)
         XCTAssertNotEqual(topImage, bottomImage, "different scroll offsets render different content")
+    }
+
+    func testDocumentViewFromJSONStringRenders() throws {
+        let s = schema()
+        let json = try s.node("doc", [:], content: Fragment.from([
+            try s.node("heading", ["level": .int(1)], content: Fragment.from([s.text("Title")])),
+            try s.node("paragraph", [:], content: Fragment.from([s.text("Loaded from JSON")])),
+        ])).toJSONString()
+        let view = try DocumentView(json: json, schema: s)
+        view.frame = CGRect(x: 0, y: 0, width: 300, height: 200)
+        view.layoutIfNeeded()
+        XCTAssertGreaterThan(view.documentHeight, 0)
+        XCTAssertGreaterThan(inkPixels(rgba(of: view).bytes), 100, "the JSON document renders")
     }
 
     func testRenderIntoArbitraryContext() {

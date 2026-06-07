@@ -4,7 +4,7 @@ options:
   deploymentTarget:
     iOS: "18.0"
 packages:
-  EditorSwift:
+  ProseKit:
     path: ../..
 targets:
   EditorDemo:
@@ -14,11 +14,11 @@ targets:
     sources:
       - Sources
     dependencies:
-      - package: EditorSwift
+      - package: ProseKit
         product: EditorUIKit
-      - package: EditorSwift
+      - package: ProseKit
         product: SchemaKit
-      - package: EditorSwift
+      - package: ProseKit
         product: EditorSerialization
     settings:
       base:

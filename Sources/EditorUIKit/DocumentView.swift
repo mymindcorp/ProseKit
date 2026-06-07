@@ -1,6 +1,7 @@
 #if canImport(UIKit)
 import UIKit
 import DocumentModel
+import EditorSerialization
 
 /// A lightweight, **read-only** view that renders a document with the shared
 /// layout engine and **only draws the visible window**.
@@ -38,6 +39,11 @@ public final class DocumentView: UIView {
         contentMode = .redraw
     }
     public required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    /// Render a document parsed from a ProseMirror-JSON string.
+    public convenience init(json: String, schema: Schema, theme: TextTheme = TextTheme()) throws {
+        self.init(document: try Node.fromJSON(json, schema: schema), theme: theme)
+    }
 
     /// Discard the cached layout and redraw.
     public func invalidateLayout() {
