@@ -50,6 +50,22 @@ func registerSlashMenuTests() {
         try expect(items.filter { $0.matches("list") }.count >= 2)
     }
 
+    test("slash menu: applying over a captured range works even after the selection moved") {
+        let editor = try Editor(extensions: fullKit())
+        try type(editor, "/h1")
+        let menu = editor.slashMenu
+        try expectNotNil(menu)
+        // Simulate a tap moving the caret, which clears the live slash menu — the
+        // exact situation that made clicking a menu item a no-op.
+        select(editor, 1, 1)
+        try expect(editor.slashMenu == nil)
+        let item = defaultSlashCommands().first { $0.command == "toggleHeading1" }
+        try expectNotNil(item)
+        try expect(editor.applySlashCommand(item!, from: menu!.from, to: menu!.to))
+        try expect(editor.isActive(node: "heading", attrs: ["level": .int(1)]))
+        try expectEqual(editor.doc.textContent, "")
+    }
+
     test("slash menu: applying a command deletes the /query and runs it") {
         let editor = try Editor(extensions: fullKit())
         try type(editor, "/h1")

@@ -98,8 +98,11 @@ final class WikiLinkSuggestionSource: SuggestionSource {
         editor.wikiLinkSuggestion.map { SuggestionContext(from: $0.from, to: $0.to, query: $0.query) }
     }
     func entries(_ query: String, _ editor: Editor) -> [SuggestionEntry] {
-        provider(query).map { target in
-            SuggestionEntry(title: target) { $0.acceptWikiLinkSuggestion(target: target) }
+        guard let suggestion = editor.wikiLinkSuggestion else { return [] }
+        // Capture the `[[` range now (a tap can clear the live suggestion).
+        let from = suggestion.from, to = suggestion.to
+        return provider(query).map { target in
+            SuggestionEntry(title: target) { $0.acceptWikiLinkSuggestion(target: target, from: from, to: to) }
         }
     }
 }
@@ -146,12 +149,20 @@ public extension Editor {
     /// Replace the active `[[` query with a wiki-link to the chosen target.
     @discardableResult
     func acceptWikiLinkSuggestion(target: String, label: String? = nil) -> Bool {
-        guard let type = schema.nodes["wikiLink"], let suggestion = wikiLinkSuggestion else { return false }
+        guard let suggestion = wikiLinkSuggestion else { return false }
+        return acceptWikiLinkSuggestion(target: target, label: label, from: suggestion.from, to: suggestion.to)
+    }
+
+    /// Replace an explicit `[[` range with a wiki-link. Use this when the range
+    /// was captured before a tap could move the selection.
+    @discardableResult
+    func acceptWikiLinkSuggestion(target: String, label: String? = nil, from: Int, to: Int) -> Bool {
+        guard let type = schema.nodes["wikiLink"] else { return false }
         var attrs: Attrs = ["target": .string(target)]
         if let label { attrs["label"] = .string(label) }
         guard let node = try? type.create(attrs) else { return false }
         let tr = state.tr
-        _ = try? tr.replaceWith(suggestion.from, suggestion.to, node)
+        _ = try? tr.replaceWith(min(from, to), max(from, to), node)
         dispatch(tr.scrollIntoView())
         return true
     }

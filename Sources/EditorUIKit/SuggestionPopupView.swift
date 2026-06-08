@@ -37,7 +37,6 @@ final class SuggestionPopupView: UIView {
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
-        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap(_:))))
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -80,9 +79,12 @@ final class SuggestionPopupView: UIView {
         }
     }
 
-    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        let y = gesture.location(in: stack).y
-        for (i, row) in rowViews.enumerated() where row.frame.minY <= y && y <= row.frame.maxY {
+    // Select on touch-DOWN, not a tap recognizer: the editor's UITextInteraction
+    // tap (which fires on touch-up) would move the caret first and tear down the
+    // popup before a tap-based selection could apply.
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let point = touches.first?.location(in: stack) else { return }
+        for (i, row) in rowViews.enumerated() where row.frame.minY <= point.y && point.y <= row.frame.maxY {
             selectedIndex = i
             onSelect?(i)
             return

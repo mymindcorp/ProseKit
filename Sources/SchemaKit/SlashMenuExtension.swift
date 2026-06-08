@@ -71,8 +71,12 @@ final class SlashSuggestionSource: SuggestionSource {
         editor.slashMenu.map { SuggestionContext(from: $0.from, to: $0.to, query: $0.query) }
     }
     func entries(_ query: String, _ editor: Editor) -> [SuggestionEntry] {
-        commands.filter { $0.matches(query) }.map { item in
-            SuggestionEntry(title: item.title) { $0.applySlashCommand(item) }
+        guard let menu = editor.slashMenu else { return [] }
+        // Capture the trigger range now: applying from a tap can move the caret
+        // (and clear the live `slashMenu`) before the command runs.
+        let from = menu.from, to = menu.to
+        return commands.filter { $0.matches(query) }.map { item in
+            SuggestionEntry(title: item.title) { $0.applySlashCommand(item, from: from, to: to) }
         }
     }
 }
@@ -121,8 +125,15 @@ public extension Editor {
     @discardableResult
     func applySlashCommand(_ item: SlashCommandItem) -> Bool {
         guard let menu = slashMenu else { return false }
+        return applySlashCommand(item, from: menu.from, to: menu.to)
+    }
+
+    /// Apply a chosen slash command over an explicit trigger range. Use this when
+    /// the range was captured before a tap could move the selection.
+    @discardableResult
+    func applySlashCommand(_ item: SlashCommandItem, from: Int, to: Int) -> Bool {
         let tr = state.tr
-        _ = try? tr.delete(menu.from, menu.to)
+        _ = try? tr.delete(min(from, to), max(from, to))
         dispatch(tr)
         return run(item.command)
     }
