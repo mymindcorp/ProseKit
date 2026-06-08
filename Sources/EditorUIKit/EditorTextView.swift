@@ -1191,7 +1191,7 @@ open class EditorTextView: UIView, UIKeyInput {
         let sel = editor.state.selection
         // A non-extending character move with a range collapses to its edge.
         if !extend, !sel.empty, granularity == .character {
-            let edge = direction == .backward ? sel.from : sel.to
+            let edge = min(max(direction == .backward ? sel.from : sel.to, 0), editor.doc.content.size)
             editor.dispatch(editor.state.tr.setSelection(Selection.near(editor.doc.resolve(edge), direction.sign)))
             return
         }
@@ -1314,20 +1314,30 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
         }
     }
 
-    /// Insert dropped text at `dropPos`, or move it there from `moveFrom`.
+    /// Insert dropped text at `dropPos`, or move it there from `moveFrom`. All
+    /// positions are clamped against the live document at each step — the source
+    /// range can include inline atoms (so its document span differs from the
+    /// text's character count), and the document can shift between drop capture
+    /// and this call (async load / a collaborator's edit).
     func dropText(_ text: String, at dropPos: Int, movingFrom moveFrom: (from: Int, to: Int)?) {
         let tr = editor.state.tr
-        if let (a, b) = moveFrom {
-            if dropPos >= a && dropPos <= b { return } // dropped inside itself — no-op
-            if dropPos > b {
+        func clamp(_ p: Int) -> Int { min(max(p, 0), tr.doc.content.size) }
+        if let raw = moveFrom {
+            let a = clamp(min(raw.from, raw.to)), b = clamp(max(raw.from, raw.to))
+            let drop = clamp(dropPos)
+            if a >= b || (drop >= a && drop <= b) {
+                if a >= b { _ = try? tr.insertText(text, drop) } // empty source → just insert
+                // dropped inside the source range → no-op
+            } else if drop > b {
                 _ = try? tr.delete(a, b)
-                _ = try? tr.insertText(text, dropPos - (b - a))
-            } else { // dropPos < a
-                _ = try? tr.insertText(text, dropPos)
-                _ = try? tr.delete(a + text.count, b + text.count)
+                _ = try? tr.insertText(text, clamp(drop - (b - a)))
+            } else { // drop < a
+                _ = try? tr.insertText(text, drop)
+                let lo = clamp(a + text.count), hi = clamp(b + text.count)
+                if lo < hi { _ = try? tr.delete(lo, hi) }
             }
         } else {
-            _ = try? tr.insertText(text, dropPos)
+            _ = try? tr.insertText(text, clamp(dropPos))
         }
         if tr.docChanged { editor.dispatch(tr.scrollIntoView()) }
     }
@@ -1337,7 +1347,7 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
         guard let type = editor.schema.nodes["image"],
               let node = try? type.create(["src": .string("data:image/png;base64," + data.base64EncodedString())]) else { return }
         let tr = editor.state.tr
-        _ = try? tr.insert(dropPos, node)
+        _ = try? tr.insert(min(max(dropPos, 0), tr.doc.content.size), node)
         if tr.docChanged { editor.dispatch(tr.scrollIntoView()) }
     }
 }

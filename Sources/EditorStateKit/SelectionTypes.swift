@@ -117,8 +117,13 @@ public final class NodeSelection: Selection {
         NodeBookmark(anchor: anchor)
     }
 
-    public static func create(_ doc: Node, _ from: Int) -> NodeSelection {
-        NodeSelection(doc.resolve(from))
+    /// Select the node starting just after `from`. Falls back to a nearby
+    /// (text) selection when there is no selectable node there, so an out-of-range
+    /// or wrong position can never trap.
+    public static func create(_ doc: Node, _ from: Int) -> Selection {
+        let pos = doc.resolve(min(max(from, 0), doc.content.size))
+        if let after = pos.nodeAfter, NodeSelection.isSelectable(after) { return NodeSelection(pos) }
+        return Selection.near(pos)
     }
 
     /// Whether the given node may be selected as a node selection.

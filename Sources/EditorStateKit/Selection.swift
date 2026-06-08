@@ -151,7 +151,11 @@ open class Selection {
             guard let anchor = json["anchor"]?.intValue else {
                 throw ModelError.invalidJSON("Invalid node selection JSON")
             }
-            return NodeSelection(doc.resolve(anchor))
+            // Untrusted JSON: only build a NodeSelection where there really is a
+            // selectable node, otherwise fall back (never trap on `nodeAfter!`).
+            let pos = doc.resolve(min(max(anchor, 0), doc.content.size))
+            if let after = pos.nodeAfter, NodeSelection.isSelectable(after) { return NodeSelection(pos) }
+            return Selection.near(pos)
         case "all":
             return AllSelection(doc)
         default:

@@ -74,7 +74,14 @@ public struct Slice: Hashable, Sendable {
         if case let .array(c)? = json["content"] { contentArr = c }
         let openStart = json["openStart"]?.intValue ?? 0
         let openEnd = json["openEnd"]?.intValue ?? 0
-        return Slice(content: try Fragment.fromJSON(schema, contentArr), openStart: openStart, openEnd: openEnd)
+        let content = try Fragment.fromJSON(schema, contentArr)
+        // Clamp the (untrusted) open depths to the fragment's actual nesting so a
+        // malformed slice can't make the replace Fitter descend past real content
+        // and trap on `firstChild!`/`lastChild!`.
+        let limit = Slice.maxOpen(content)
+        return Slice(content: content,
+                     openStart: max(0, min(openStart, limit.openStart)),
+                     openEnd: max(0, min(openEnd, limit.openEnd)))
     }
 
     /// Create a slice with the maximum possible open depth on both sides given

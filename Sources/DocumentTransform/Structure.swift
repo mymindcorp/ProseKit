@@ -238,6 +238,9 @@ public extension Transform {
     @discardableResult
     func split(_ pos: Int, _ depth: Int = 1, _ typesAfter: [NodeTypeWithAttrs?]? = nil) throws -> Self {
         let resolved = doc.resolve(pos)
+        guard depth >= 1, depth <= resolved.depth else {
+            throw TransformError.failed("Split depth \(depth) out of range at position \(pos)")
+        }
         var before = Fragment.empty
         var after = Fragment.empty
         var d = resolved.depth

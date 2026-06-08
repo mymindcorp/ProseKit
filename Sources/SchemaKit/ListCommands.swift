@@ -44,7 +44,11 @@ private func doWrapInList(_ tr: Transaction, _ range: NodeRange, _ wrappers: [No
     var content = Fragment.empty
     var i = wrappers.count - 1
     while i >= 0 {
-        content = Fragment.from((try? wrappers[i].type.create(wrappers[i].attrs, content: content)) ?? content.firstChild!)
+        if let wrapped = try? wrappers[i].type.create(wrappers[i].attrs, content: content) {
+            content = Fragment.from(wrapped)
+        } else if let inner = content.firstChild {
+            content = Fragment.from(inner) // couldn't wrap (e.g. a required attr) — keep going
+        } // else: nothing to wrap yet; leave content empty
         i -= 1
     }
     _ = try? tr.step(ReplaceAroundStep(range.start - (joinBefore ? 2 : 0), range.end, range.start, range.end,

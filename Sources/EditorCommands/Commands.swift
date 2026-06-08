@@ -308,10 +308,10 @@ public let exitCode: Command = { state, dispatch, _ in
     let above = from.node(-1)
     let after = from.indexAfter(-1)
     guard let type = defaultBlockAt(above.contentMatchAt(after)),
-          above.canReplaceWith(after, after, type) else { return false }
+          above.canReplaceWith(after, after, type), let filled = type.createAndFill() else { return false }
     if let dispatch {
         let pos = from.after()
-        let tr = try! state.tr.replaceWith(pos, pos, type.createAndFill()!)
+        guard let tr = try? state.tr.replaceWith(pos, pos, filled) else { return false }
         tr.setSelection(Selection.near(tr.doc.resolve(pos), 1))
         dispatch(tr.scrollIntoView())
     }
@@ -326,15 +326,13 @@ public let createParagraphNear: Command = { state, dispatch, _ in
     let sel = state.selection
     let from = sel.resolvedFrom, to = sel.resolvedTo
     if from.parent.inlineContent || to.parent.inlineContent { return false }
-    guard let type = defaultBlockAt(to.parent.contentMatchAt(to.indexAfter())) else { return false }
+    guard let type = defaultBlockAt(to.parent.contentMatchAt(to.indexAfter())),
+          let filled = type.createAndFill() else { return false }
     if let dispatch {
-        let side = (!from.parentOffset.isMultiple(of: 1) ? from : to).pos
-        // place after
         let pos = to.pos
-        let tr = try! state.tr.insert(pos, type.createAndFill()!)
+        guard let tr = try? state.tr.insert(pos, filled) else { return false }
         tr.setSelection(TextSelection.create(tr.doc, pos + 1))
         dispatch(tr.scrollIntoView())
-        _ = side
     }
     return true
 }
