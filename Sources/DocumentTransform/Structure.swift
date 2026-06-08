@@ -212,11 +212,15 @@ public extension Transform {
     /// Remove content/marks from a node that aren't valid given a (new) parent
     /// type, fixing up content to be valid.
     @discardableResult
-    func clearIncompatible(_ pos: Int, _ parentType: NodeType, _ match: ContentMatch? = nil) throws -> Self {
+    func clearIncompatible(_ pos: Int, _ parentType: NodeType, _ match: ContentMatch? = nil, clearNewlines: Bool = true) throws -> Self {
         guard let node = doc.nodeAt(pos) else { return self }
         var match = match ?? parentType.contentMatch
         var replSteps: [Step] = []
         var cur = pos + 1
+        // Code/`pre` blocks keep literal newlines; other textblocks turn them into
+        // spaces (matching ProseMirror, so converting a code block to a paragraph
+        // doesn't leave stray newline characters).
+        let keepNewlines = parentType.spec.whitespace == .pre || parentType.spec.code
         for i in 0..<node.childCount {
             let child = node.child(i)
             let end = cur + child.nodeSize
@@ -224,6 +228,12 @@ public extension Transform {
                 match = allowed
                 for m in child.marks where !parentType.allowsMarkType(m.type) {
                     try step(RemoveMarkStep(cur, end, m))
+                }
+                if clearNewlines, !keepNewlines, child.isText, let text = child.text {
+                    let space = Slice(content: Fragment.from(parentType.schema.text(" ", parentType.allowedMarks(child.marks))), openStart: 0, openEnd: 0)
+                    for (k, ch) in Array(text).enumerated() where ch == "\n" || ch == "\r" {
+                        replSteps.append(ReplaceStep(cur + k, cur + k + 1, space))
+                    }
                 }
             } else {
                 replSteps.append(ReplaceStep(cur, end, .empty))
