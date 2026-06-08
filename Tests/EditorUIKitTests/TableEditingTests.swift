@@ -45,6 +45,37 @@ final class TableEditingTests: XCTestCase {
         return pos
     }
 
+    /// The text content of the cell containing `pos` (or nil if not in a cell).
+    private func cellText(at pos: Int, _ editor: Editor) -> String? {
+        let r = editor.doc.resolve(min(max(pos, 0), editor.doc.content.size))
+        for d in stride(from: r.depth, through: 1, by: -1) where r.node(d).type.name == "tableCell" || r.node(d).type.name == "tableHeader" {
+            return r.node(d).textContent
+        }
+        return nil
+    }
+
+    func testArrowUpDownStaysInTableColumn() throws {
+        let editor = try tableEditor() // col 0 = A / C, col 1 = B / D
+        let view = makeView(editor)
+        // Caret inside cell "A" (column 0, top row).
+        let aPos = cellTextPosition(editor, "A")
+        editor.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.doc, aPos)))
+        XCTAssertEqual(cellText(at: editor.state.selection.head, editor), "A")
+        _ = view.handle(EditorTextView.KeyEvent(.keyboardDownArrow))
+        XCTAssertEqual(cellText(at: editor.state.selection.head, editor), "C", "down moves within column 0 (A→C), not into B")
+        _ = view.handle(EditorTextView.KeyEvent(.keyboardUpArrow))
+        XCTAssertEqual(cellText(at: editor.state.selection.head, editor), "A", "up returns within column 0 (C→A)")
+    }
+
+    func testArrowDownInSecondColumnStaysInColumn() throws {
+        let editor = try tableEditor()
+        let view = makeView(editor)
+        let bPos = cellTextPosition(editor, "B") // column 1, top row
+        editor.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.doc, bPos)))
+        _ = view.handle(EditorTextView.KeyEvent(.keyboardDownArrow))
+        XCTAssertEqual(cellText(at: editor.state.selection.head, editor), "D", "down moves within column 1 (B→D)")
+    }
+
     func testClickLandsInTheCorrectCellByX() throws {
         let editor = try tableEditor()
         let layout = DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme())

@@ -50,6 +50,18 @@ final class SuggestionMenuTests: XCTestCase {
         XCTAssertEqual(view.editor.doc.textContent, "", "the /query text is removed")
     }
 
+    func testEnterViaInsertTextAcceptsSuggestion() throws {
+        // On a real keyboard, Return arrives as insertText("\n"), not through
+        // `handle` — it must still choose the highlighted item, not break the line.
+        let view = try makeView()
+        type(view, "/h1")
+        XCTAssertNotNil(view.suggestionTitles)
+        view.insertText("\n")
+        XCTAssertNil(view.suggestionTitles)
+        XCTAssertTrue(view.editor.isActive(node: "heading", attrs: ["level": .int(1)]))
+        XCTAssertEqual(view.editor.doc.textContent, "")
+    }
+
     func testSlashMenuArrowMovesSelection() throws {
         let view = try makeView()
         type(view, "/")

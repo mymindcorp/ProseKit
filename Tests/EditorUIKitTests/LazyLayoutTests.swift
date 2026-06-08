@@ -52,6 +52,20 @@ final class LazyLayoutTests: XCTestCase {
         }
     }
 
+    func testRealizeAroundPositionMakesAnOffScreenCaretAvailable() throws {
+        let (_, doc) = bigDoc(300)
+        let l = lazy(doc, window: 0 ... 800) // only the top is realized
+        let farPos = doc.content.size - 5    // near the end — estimated
+        XCTAssertTrue(l.isEstimated(pos: farPos), "the end is still estimated")
+        XCTAssertTrue(l.realize(aroundPos: farPos, viewportHeight: 800))
+        XCTAssertFalse(l.isEstimated(pos: farPos), "now realized")
+        // The caret lands far down the document — not the near-top fallback the
+        // estimated block would otherwise resolve to. (Its exact y converges as
+        // the still-estimated blocks above it are realized on scroll.)
+        let caret = try XCTUnwrap(l.caretRect(at: farPos))
+        XCTAssertGreaterThan(caret.minY, 800, "realized caret is far down, not the near-top fallback")
+    }
+
     func testSmallDocsAreNotEstimatedEvenWithAWindow() {
         let (_, doc) = bigDoc(5) // below the lazy threshold
         let l = lazy(doc, window: 0 ... 100)
