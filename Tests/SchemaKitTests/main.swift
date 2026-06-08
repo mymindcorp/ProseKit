@@ -147,5 +147,6 @@ registerHighlightTests()
 registerEditorRevisionTests()
 registerSlashMenuTests()
 registerCollabCursorTests()
+registerFuzzTests()
 
 TestSuite.main("SchemaKitTests", collector.all)

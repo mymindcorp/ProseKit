@@ -72,10 +72,17 @@ test("stored marks cleared after a step but kept on empty selection") {
 
 test("NodeSelection on an image") {
     let doc = B.doc(B.p(B.t("a"), B.img("x.png")))
-    let sel = NodeSelection.create(doc, 2) // image starts at pos 2
+    let sel = NodeSelection.create(doc, 2) as! NodeSelection // image starts at pos 2
     try expectEqual(sel.node.type.name, "image")
     try expect(!sel.empty)
     try expectEqual(sel.toJSON()["type"]?.stringValue, "node")
+}
+
+test("NodeSelection.create at a non-selectable position falls back (no trap)") {
+    let doc = B.doc(B.p(B.t("hello")))
+    // End of the paragraph content — no node after; must not crash.
+    let sel = NodeSelection.create(doc, doc.content.size)
+    try expect(!(sel is NodeSelection), "falls back to a text/near selection")
 }
 
 test("AllSelection covers the doc") {

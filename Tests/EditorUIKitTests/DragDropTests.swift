@@ -45,6 +45,24 @@ final class DragDropTests: XCTestCase {
         XCTAssertEqual(view.editor.doc.textContent, "ABCDEF")
     }
 
+    func testDropMoveWithInlineAtomDoesNotCrash() throws {
+        // A selection containing an inline atom: the dragged text's character
+        // count differs from the document-position span, which used to push the
+        // move math out of range and trap. Must be crash-safe.
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        let img = try s.node("image", ["src": .string("x.png")])
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            try s.node("paragraph", [:], content: Fragment.from([s.text("a"), img, s.text("b")])),
+        ])))
+        let view = EditorTextView(editor: editor)
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
+        view.layoutIfNeeded()
+        // The paragraph content spans positions 1...4 (a, image, b); the text is "ab".
+        view.dropText("ab", at: editor.doc.content.size, movingFrom: (1, 4))
+        XCTAssertNoThrow(try editor.doc.check(), "document stays valid")
+    }
+
     func testDropImageInsertsAnImageNode() throws {
         let view = try makeView("ABCDEF")
         let png = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).image { c in
