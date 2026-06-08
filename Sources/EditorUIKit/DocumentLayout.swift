@@ -127,7 +127,9 @@ final class DocumentLayout {
     /// Image sources referenced by the document that the provider didn't have
     /// cached — the view loads these and rebuilds.
     private(set) var pendingImageSources: [String] = []
-    private let imageProvider: (String) -> UIImage?
+    /// Resolves an image node to a drawable image (host data hook, cache, or a
+    /// decoded `data:` URL). Returns nil to draw a placeholder.
+    private let imageProvider: (Node) -> UIImage?
     private let blockCache: TextBlockLayoutCache?
 
     /// One top-level child's fully-positioned output. Kept so an edit can reuse
@@ -152,7 +154,7 @@ final class DocumentLayout {
     /// (estimation only pays off for very large documents).
     private static let lazyThreshold = 60
 
-    init(doc: Node, width: CGFloat, theme: TextTheme, imageProvider: @escaping (String) -> UIImage? = { _ in nil },
+    init(doc: Node, width: CGFloat, theme: TextTheme, imageProvider: @escaping (Node) -> UIImage? = { _ in nil },
          blockCache: TextBlockLayoutCache? = nil, previous: DocumentLayout? = nil,
          realizeWindow: ClosedRange<CGFloat>? = nil) {
         self.theme = theme
@@ -332,6 +334,28 @@ final class DocumentLayout {
     /// Whether any part of the document is still only estimated.
     var hasEstimatedContent: Bool { entries.contains { $0.estimated } }
 
+    /// Realize the content around a document position (so an off-screen caret
+    /// target becomes available for `caretRect`/reveal). Returns true if anything
+    /// changed.
+    func realize(aroundPos pos: Int, viewportHeight: CGFloat) -> Bool {
+        guard hasEstimatedContent, let y = topY(forPos: pos) else { return false }
+        let h = max(viewportHeight, 1)
+        return realize(window: (y - h) ... (y + h))
+    }
+
+    /// The top y of the top-level child containing `pos` (estimated or realized).
+    private func topY(forPos pos: Int) -> CGFloat? {
+        for e in entries where pos >= e.docStart && pos <= e.docStart + e.node.nodeSize { return e.topY }
+        return entries.last?.topY
+    }
+
+    /// Whether the top-level child containing `pos` is still only estimated (so
+    /// `caretRect`/`selectionRects` would fall back to the nearest realized block).
+    func isEstimated(pos: Int) -> Bool {
+        for e in entries where pos >= e.docStart && pos <= e.docStart + e.node.nodeSize { return e.estimated }
+        return false
+    }
+
     private func shiftBlock(_ b: TextBlock, dPos: Int, dy: CGFloat) -> TextBlock {
         TextBlock(contentStart: b.contentStart + dPos, contentEnd: b.contentEnd + dPos,
                   frame: b.frame.offsetBy(dx: 0, dy: dy),
@@ -395,7 +419,7 @@ final class DocumentLayout {
             return lineY + 9
         case "image":
             let src = node.attrs["src"]?.stringValue ?? ""
-            if let image = imageProvider(src) {
+            if let image = imageProvider(node) {
                 // Scale to fit the content width, preserving aspect ratio.
                 let maxWidth = min(width, image.size.width)
                 let scale = image.size.width > 0 ? maxWidth / image.size.width : 1
@@ -618,7 +642,7 @@ final class DocumentLayout {
                 result.append(NSAttributedString(string: "\u{2028}", attributes: [.font: blockFont]))
                 segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: 1, text: "\u{2028}"))
                 docPos += 1
-            } else if child.type.name == "image", let src = child.attrs["src"]?.stringValue, let image = imageProvider(src) {
+            } else if child.type.name == "image", let image = imageProvider(child) {
                 // Inline image: reserve its (scaled) box via a run delegate, and
                 // record it to draw at its run position after line breaking.
                 let maxWidth = min(width, image.size.width)
@@ -690,22 +714,40 @@ final class DocumentLayout {
         if up {
             if li > 0 {
                 target = (block, block.lines[li - 1])
-            } else {
-                var j = bi - 1
-                while j >= 0, target == nil { if let last = blocks[j].lines.last { target = (blocks[j], last) }; j -= 1 }
+            } else if let nb = neighbourBlock(below: false, of: block, preferredX: preferredX) {
+                target = (nb, nb.lines.last!)
             }
         } else {
             if li < block.lines.count - 1 {
                 target = (block, block.lines[li + 1])
-            } else {
-                var j = bi + 1
-                while j < blocks.count, target == nil { if let first = blocks[j].lines.first { target = (blocks[j], first) }; j += 1 }
+            } else if let nb = neighbourBlock(below: true, of: block, preferredX: preferredX) {
+                target = (nb, nb.lines.first!)
             }
         }
         guard let target else { return nil }
         let relative = CGPoint(x: preferredX - target.line.baselineOrigin.x, y: 0)
         let attr = CTLineGetStringIndexForPosition(target.line.ctLine, relative)
         return target.block.docPos(forAttrIndex: attr)
+    }
+
+    /// The block directly above/below `block` at `preferredX` — i.e. the next
+    /// block in flow, but for side-by-side table cells the one in the **same
+    /// column** (whose x-range straddles `preferredX`), not the next cell in the
+    /// row. Falls back to the vertically-nearest block when none share the column.
+    private func neighbourBlock(below: Bool, of block: TextBlock, preferredX: CGFloat) -> TextBlock? {
+        let cur = block.frame
+        func yGap(_ f: CGRect) -> CGFloat { below ? f.minY - cur.maxY : cur.minY - f.maxY }
+        var inColumn: TextBlock?  // straddles preferredX, nearest in y
+        var nearest: TextBlock?   // nearest in y, any x
+        for b in blocks where !b.lines.isEmpty {
+            guard below ? (b.frame.minY >= cur.maxY - 0.5) : (b.frame.maxY <= cur.minY + 0.5) else { continue }
+            if nearest == nil || yGap(b.frame) < yGap(nearest!.frame) { nearest = b }
+            if b.frame.minX - 0.5 <= preferredX, preferredX <= b.frame.maxX + 0.5,
+               inColumn == nil || yGap(b.frame) < yGap(inColumn!.frame) {
+                inColumn = b
+            }
+        }
+        return inColumn ?? nearest
     }
 
     /// The document position at the start or end of the *visual* line that
