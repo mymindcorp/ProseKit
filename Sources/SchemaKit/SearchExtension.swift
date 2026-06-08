@@ -94,8 +94,11 @@ public extension Editor {
     @discardableResult
     func replaceCurrentMatch(with replacement: String) -> Bool {
         let matches = searchMatches
-        guard let s = searchState, s.currentIndex < matches.count else { return false }
-        let match = matches[s.currentIndex]
+        guard !matches.isEmpty, let s = searchState else { return false }
+        // Before the first Find-next, `currentIndex` is -1 ("before first match");
+        // replace the first match in that case (and never index out of bounds).
+        let index = (s.currentIndex >= 0 && s.currentIndex < matches.count) ? s.currentIndex : 0
+        let match = matches[index]
         let tr = state.tr
         _ = try? tr.insertText(replacement, match.from, match.to)
         dispatch(tr.scrollIntoView())

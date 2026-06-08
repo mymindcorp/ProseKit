@@ -174,6 +174,24 @@ final class UITextInputTests: XCTestCase {
         XCTAssertNil(view.position(from: view.endOfDocument, offset: 1))
     }
 
+    func testScrollResyncsSelectionGeometry() throws {
+        // The system draws the selection from our (view-coordinate) UITextInput
+        // geometry; our virtualized scroll changes it without moving the view, so
+        // scrolling with a selection must re-notify the input delegate.
+        let view = try makeView("hello world")
+        let delegate = CountingInputDelegate()
+        view.inputDelegate = delegate
+        view.editor.dispatch(view.editor.state.tr.setSelection(TextSelection.create(view.editor.doc, 1, 6)))
+        let withSelection = delegate.selectionChanges
+        view.contentOffsetY = 120
+        XCTAssertGreaterThan(delegate.selectionChanges, withSelection, "scroll with a selection re-syncs geometry")
+        // A collapsed caret rides the caret layer; no need to spam the delegate.
+        view.editor.dispatch(view.editor.state.tr.setSelection(TextSelection.create(view.editor.doc, 3)))
+        let withCaret = delegate.selectionChanges
+        view.contentOffsetY = 240
+        XCTAssertEqual(delegate.selectionChanges, withCaret, "scroll with only a caret does not re-sync")
+    }
+
     func testTypingDoesNotEchoSelectionNotifications() throws {
         // Regression: a selectionDidChange fired during UIKit's own insertText
         // makes UIKit re-sync mid-stream, which broke words during fast typing.

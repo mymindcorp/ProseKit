@@ -28,6 +28,9 @@ open class EditorTextView: UIView, UIKeyInput {
     private var textInteraction: UITextInteraction?
     private weak var checkboxRecognizer: UIGestureRecognizer?
     private weak var columnResizeRecognizer: UIGestureRecognizer?
+    /// The document range being dragged (set while a local drag we started is in
+    /// flight), so a drop back into this document moves rather than copies.
+    private var dragSourceRange: (from: Int, to: Int)?
 
     // MARK: - Suggestion menus
     //
@@ -72,6 +75,11 @@ open class EditorTextView: UIView, UIKeyInput {
             recognizer.cancelsTouchesInView = false
             addGestureRecognizer(recognizer)
         }
+
+        // Drag selected text/images out, and drop text/images in (move within the
+        // document, or copy from another app).
+        addInteraction(UIDragInteraction(delegate: self))
+        addInteraction(UIDropInteraction(delegate: self))
 
         editor.onChange = { [weak self] _ in self?.setNeedsRebuild() }
         registerForDynamicTypeChanges()
@@ -646,6 +654,72 @@ open class EditorTextView: UIView, UIKeyInput {
         hideSuggestion()
     }
 
+    // MARK: - Find / replace
+
+    private var findBar: FindBarView?
+    /// Whether the find bar is currently shown. (For tests/inspection.)
+    var isFindBarVisible: Bool { findBar != nil }
+
+    @objc private func handleFindCommand() { showFindBar() }
+    @objc private func handleFindNextCommand() { editor.findNext(); refreshFindCount() }
+    @objc private func handleFindPreviousCommand() { editor.findPrevious(); refreshFindCount() }
+
+    /// Show the find/replace bar (⌘F), seeding it with the current selection.
+    func showFindBar() {
+        if findBar == nil {
+            let bar = makeFindBar()
+            addSubview(bar)
+            NSLayoutConstraint.activate([
+                bar.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 8),
+                bar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+                bar.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 8),
+            ])
+            findBar = bar
+        }
+        guard let bar = findBar else { return }
+        let sel = editor.state.selection
+        if !sel.empty {
+            let text = editor.doc.textBetween(sel.from, sel.to)
+            if !text.isEmpty && !text.contains("\n") {
+                bar.queryField.text = text
+                editor.setSearch(text)
+                refreshFindCount()
+            }
+        }
+        bar.queryField.becomeFirstResponder()
+    }
+
+    func hideFindBar() {
+        findBar?.removeFromSuperview()
+        findBar = nil
+        editor.clearSearch()
+        becomeFirstResponder()
+    }
+
+    private func makeFindBar() -> FindBarView {
+        let bar = FindBarView(theme: theme)
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        bar.onQueryChange = { [weak self] query in self?.editor.setSearch(query); self?.refreshFindCount() }
+        bar.onNext = { [weak self] in self?.editor.findNext(); self?.refreshFindCount() }
+        bar.onPrevious = { [weak self] in self?.editor.findPrevious(); self?.refreshFindCount() }
+        bar.onReplace = { [weak self] in
+            guard let self, let bar = self.findBar else { return }
+            _ = self.editor.replaceCurrentMatch(with: bar.replaceField.text ?? "")
+            self.refreshFindCount()
+        }
+        bar.onReplaceAll = { [weak self] in
+            guard let self, let bar = self.findBar else { return }
+            _ = self.editor.replaceAllMatches(with: bar.replaceField.text ?? "")
+            self.refreshFindCount()
+        }
+        bar.onClose = { [weak self] in self?.hideFindBar() }
+        return bar
+    }
+
+    private func refreshFindCount() {
+        findBar?.setCount(current: editor.searchState?.currentIndex ?? -1, total: editor.searchMatches.count)
+    }
+
     /// Toggle a task-item checkbox. Gated by the gesture delegate to begin only
     /// when the tap lands on a checkbox (otherwise UITextInteraction places the
     /// caret).
@@ -923,6 +997,13 @@ open class EditorTextView: UIView, UIKeyInput {
             command.wantsPriorityOverSystemBehavior = true
             commands.append(command)
         }
+        // Find / replace.
+        let find = UIKeyCommand(input: "f", modifierFlags: .command, action: #selector(handleFindCommand))
+        find.wantsPriorityOverSystemBehavior = true
+        find.discoverabilityTitle = "Find"
+        commands.append(find)
+        commands.append(UIKeyCommand(input: "g", modifierFlags: .command, action: #selector(handleFindNextCommand)))
+        commands.append(UIKeyCommand(input: "g", modifierFlags: [.command, .shift], action: #selector(handleFindPreviousCommand)))
         return commands
     }
 
@@ -1017,6 +1098,7 @@ open class EditorTextView: UIView, UIKeyInput {
             // The Tab key produces "\t"; map it to the named "Tab" binding.
             return runKey(mods.contains(.shift) ? "Shift-Tab" : "Tab")
         case .keyboardEscape:
+            if isFindBarVisible { hideFindBar(); return true }
             // Escape has no characters, so map it to the named binding.
             return runKey("Escape")
         default:
@@ -1185,6 +1267,78 @@ open class EditorTextView: UIView, UIKeyInput {
 
     deinit {
         imageTasks.values.forEach { $0.cancel() }
+    }
+}
+
+// MARK: - Drag & drop
+
+extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
+    public func dragInteraction(_ interaction: UIDragInteraction, itemsForBeginning session: any UIDragSession) -> [UIDragItem] {
+        // Only drag when the gesture starts on the (non-empty) selection.
+        let sel = editor.state.selection
+        guard !sel.empty, let pos = ensureLayout().position(at: docPoint(session.location(in: self))),
+              pos >= sel.from, pos <= sel.to else { return [] }
+        let text = editor.doc.textBetween(sel.from, sel.to)
+        guard !text.isEmpty else { return [] }
+        dragSourceRange = (sel.from, sel.to)
+        return [UIDragItem(itemProvider: NSItemProvider(object: text as NSString))]
+    }
+
+    public func dragInteraction(_ interaction: UIDragInteraction, session: any UIDragSession, didEndWith operation: UIDropOperation) {
+        dragSourceRange = nil
+    }
+
+    public func dropInteraction(_ interaction: UIDropInteraction, canHandle session: any UIDropSession) -> Bool {
+        session.canLoadObjects(ofClass: NSString.self) || session.canLoadObjects(ofClass: UIImage.self)
+    }
+
+    public func dropInteraction(_ interaction: UIDropInteraction, sessionDidUpdate session: any UIDropSession) -> UIDropProposal {
+        // A drag we started → move; anything from outside → copy.
+        UIDropProposal(operation: session.localDragSession != nil ? .move : .copy)
+    }
+
+    public func dropInteraction(_ interaction: UIDropInteraction, performDrop session: any UIDropSession) {
+        guard let dropPos = ensureLayout().position(at: docPoint(session.location(in: self))) else { return }
+        // Capture the move source now (the drag session ends before async loads).
+        let moveFrom = session.localDragSession != nil ? dragSourceRange : nil
+        if session.canLoadObjects(ofClass: NSString.self) {
+            _ = session.loadObjects(ofClass: NSString.self) { [weak self] items in
+                guard let self, let text = items.first as? String, !text.isEmpty else { return }
+                Task { @MainActor in self.dropText(text, at: dropPos, movingFrom: moveFrom) }
+            }
+        } else if session.canLoadObjects(ofClass: UIImage.self) {
+            _ = session.loadObjects(ofClass: UIImage.self) { [weak self] items in
+                guard let self, let image = items.first as? UIImage, let data = image.pngData() else { return }
+                Task { @MainActor in self.dropImage(data, at: dropPos) }
+            }
+        }
+    }
+
+    /// Insert dropped text at `dropPos`, or move it there from `moveFrom`.
+    func dropText(_ text: String, at dropPos: Int, movingFrom moveFrom: (from: Int, to: Int)?) {
+        let tr = editor.state.tr
+        if let (a, b) = moveFrom {
+            if dropPos >= a && dropPos <= b { return } // dropped inside itself — no-op
+            if dropPos > b {
+                _ = try? tr.delete(a, b)
+                _ = try? tr.insertText(text, dropPos - (b - a))
+            } else { // dropPos < a
+                _ = try? tr.insertText(text, dropPos)
+                _ = try? tr.delete(a + text.count, b + text.count)
+            }
+        } else {
+            _ = try? tr.insertText(text, dropPos)
+        }
+        if tr.docChanged { editor.dispatch(tr.scrollIntoView()) }
+    }
+
+    /// Insert a dropped image as an image node (a `data:` URL it can load/render).
+    func dropImage(_ data: Data, at dropPos: Int) {
+        guard let type = editor.schema.nodes["image"],
+              let node = try? type.create(["src": .string("data:image/png;base64," + data.base64EncodedString())]) else { return }
+        let tr = editor.state.tr
+        _ = try? tr.insert(dropPos, node)
+        if tr.docChanged { editor.dispatch(tr.scrollIntoView()) }
     }
 }
 

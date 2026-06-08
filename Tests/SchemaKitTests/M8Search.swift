@@ -54,6 +54,14 @@ func registerSearchTests() {
         try expectEqual(editor.doc.textContent, "y x x")
     }
 
+    test("search: replaceCurrentMatch before Find-next replaces the first (no crash)") {
+        let editor = try editorWith("x x x")
+        editor.setSearch("x") // currentIndex is -1 ("before first match")
+        try expectEqual(editor.searchState?.currentIndex, -1)
+        try expect(editor.replaceCurrentMatch(with: "y")) // used to index matches[-1]
+        try expectEqual(editor.doc.textContent, "y x x")
+    }
+
     test("search: clearSearch removes matches") {
         let editor = try editorWith("hello hello")
         editor.setSearch("hello")
