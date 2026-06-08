@@ -87,7 +87,7 @@ open class EditorTextView: UIView, UIKeyInput {
     public var contentOffsetY: CGFloat = 0 {
         // Scrolling only repositions the caret layer; it must NOT reveal the
         // caret (that would scroll back to the cursor and fight the user).
-        didSet { if oldValue != contentOffsetY { realizeVisibleIfNeeded(); setNeedsDisplay(); positionCaretLayer(); updateSuggestionPopup() } }
+        didSet { if oldValue != contentOffsetY { realizeVisibleIfNeeded(); setNeedsDisplay(); positionCaretLayer(); updateSuggestionPopup(); notifySelectionGeometryChanged() } }
     }
     /// The full document height; the host uses it as the scroll content height.
     public var documentHeight: CGFloat { ensureLayout().height }
@@ -126,8 +126,28 @@ open class EditorTextView: UIView, UIKeyInput {
         updateCaret()
     }
 
+    /// Hook to supply the raw image bytes for an image node (e.g. from the host's
+    /// asset store, keyed off any of the node's attributes). When it returns nil
+    /// the renderer falls back to loading the node's `src` URL, and otherwise
+    /// draws a placeholder.
+    public var imageData: ((Node) -> Data?)?
+
     private var imageCache: [String: UIImage] = [:]
     private var imageTasks: [String: Task<Void, Never>] = [:]
+    /// Decoded host-provided images, keyed by the image node (avoids re-decoding).
+    private var hostImageCache: [Node: UIImage] = [:]
+
+    /// Resolve an image node to a drawable image: the host data hook first (decoded
+    /// + cached), then any image already loaded from its `src` URL. Returns nil to
+    /// draw a placeholder (and, for a non-empty `src`, kick off an async load).
+    private func resolveImage(_ node: Node) -> UIImage? {
+        if let cached = hostImageCache[node] { return cached }
+        if let data = imageData?(node), let image = UIImage(data: data) {
+            hostImageCache[node] = image
+            return image
+        }
+        return imageCache[node.attrs["src"]?.stringValue ?? ""]
+    }
 
     /// Force a full relayout on the next draw (for theme / Dynamic Type changes
     /// where the document is unchanged but fonts/sizing differ).
@@ -180,7 +200,7 @@ open class EditorTextView: UIView, UIKeyInput {
     func ensureLayout() -> DocumentLayout {
         if let layout, lastLayoutWidth == bounds.width, layoutVersion == docVersion { return layout }
         let l = DocumentLayout(doc: editor.doc, width: max(bounds.width, 1), theme: theme,
-                               imageProvider: { [weak self] src in self?.imageCache[src] },
+                               imageProvider: { [weak self] node in self?.resolveImage(node) },
                                blockCache: blockCache, previous: layout, realizeWindow: realizeWindow())
         layout = l
         lastLayoutWidth = bounds.width
@@ -199,6 +219,32 @@ open class EditorTextView: UIView, UIKeyInput {
     private func realizeWindow() -> ClosedRange<CGFloat> {
         let margin = max(bounds.height * 2, 600)
         return (contentOffsetY - margin) ... (contentOffsetY + max(bounds.height, 1) + margin)
+    }
+
+    /// The system draws the selection highlight + handles from our `UITextInput`
+    /// geometry, which is in view coordinates. Our virtualized scrolling changes
+    /// that geometry without moving the view, so the system would keep a stale
+    /// selection — tell it to re-query when there's a selection to re-map.
+    private func notifySelectionGeometryChanged() {
+        guard !applyingTextInput, !editor.state.selection.empty else { return }
+        textInputDelegate?.selectionWillChange(self)
+        textInputDelegate?.selectionDidChange(self)
+    }
+
+    /// If the caret sits in a still-estimated (off-screen) block under lazy
+    /// layout, realize the region around it so `caretRect`/`revealRect` can scroll
+    /// to it (e.g. ⌘↓ to the end of a huge document, or a programmatic selection).
+    private func realizeCaretRegionIfNeeded() {
+        guard let layout, layout.hasEstimatedContent else { return }
+        let head = editor.state.selection.head
+        guard layout.isEstimated(pos: head),
+              layout.realize(aroundPos: head, viewportHeight: bounds.height) else { return }
+        loadPendingImages(layout.pendingImageSources)
+        if layout.height != lastReportedHeight {
+            lastReportedHeight = layout.height
+            onDocumentHeightChange?(layout.height)
+        }
+        setNeedsDisplay()
     }
 
     /// Typeset any estimated blocks that have scrolled near the viewport.
@@ -467,10 +513,12 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     private func updateCaret() {
+        let l = ensureLayout()
+        realizeCaretRegionIfNeeded() // make an off-screen (estimated) caret target real
         let sel = editor.state.selection
-        guard isFirstResponder, sel.empty, let rect = ensureLayout().caretRect(at: sel.head) else {
+        guard isFirstResponder, sel.empty, let rect = l.caretRect(at: sel.head) else {
             caretLayer.path = nil
-            if isFirstResponder, let rect = ensureLayout().caretRect(at: editor.state.selection.head) {
+            if isFirstResponder, let rect = l.caretRect(at: editor.state.selection.head) {
                 revealRect(rect) // keep the active end of a range visible too
             }
             return
@@ -721,7 +769,12 @@ open class EditorTextView: UIView, UIKeyInput {
             markedRange = nil
             return
         }
-        if text == "\n" { runKey("Enter"); return }
+        if text == "\n" {
+            // Return arrives here (not via `handle`), so the suggestion popup
+            // must be consulted on this path too: Enter chooses the item.
+            if suggestionPopup != nil { acceptSuggestion(); return }
+            runKey("Enter"); return
+        }
         let sel = editor.state.selection
         // Try input rules (only at a collapsed cursor).
         if sel.empty, runTextInput(from: sel.from, to: sel.to, text: text) { return }

@@ -22,13 +22,24 @@ public final class DocumentView: UIView {
     public var contentOffsetY: CGFloat = 0 { didSet { if oldValue != contentOffsetY { setNeedsDisplay() } } }
     /// Reports the rendered document height when it changes (size the scroll content from this).
     public var onDocumentHeightChange: ((CGFloat) -> Void)?
-    /// Resolves image `src`s to images (data:, file:, or pre-cached). Optional.
-    public var imageProvider: ((String) -> UIImage?)?
+    /// Hook to supply the raw image bytes for an image node. Returns nil to draw a
+    /// placeholder.
+    public var imageData: ((Node) -> Data?)?
 
     private var layout: DocumentLayout?
     private var layoutWidth: CGFloat = 0
     private let blockCache = TextBlockLayoutCache()
     private var lastReportedHeight: CGFloat = -1
+    private var hostImageCache: [Node: UIImage] = [:]
+
+    /// Resolve an image node via the host data hook (decoded + cached), else a
+    /// placeholder.
+    private func resolveImage(_ node: Node) -> UIImage? {
+        if let cached = hostImageCache[node] { return cached }
+        guard let data = imageData?(node), let image = UIImage(data: data) else { return nil }
+        hostImageCache[node] = image
+        return image
+    }
 
     public init(document: Node? = nil, theme: TextTheme = TextTheme()) {
         self.document = document
@@ -62,7 +73,7 @@ public final class DocumentView: UIView {
         guard let document else { return nil }
         if let layout, layoutWidth == bounds.width { return layout }
         let l = DocumentLayout(doc: document, width: max(bounds.width, 1), theme: theme,
-                               imageProvider: { [weak self] src in self?.imageProvider?(src) },
+                               imageProvider: { [weak self] node in self?.resolveImage(node) },
                                blockCache: blockCache, previous: layout)
         layout = l
         layoutWidth = bounds.width
