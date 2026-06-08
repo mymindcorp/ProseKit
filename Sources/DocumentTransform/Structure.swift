@@ -19,12 +19,20 @@ public func liftTarget(_ range: NodeRange) -> Int? {
     let parent = range.parent
     let content = parent.content.cutByIndex(range.startIndex, range.endIndex)
     var depth = range.depth
+    // Track whether there is sibling content before/after the range at deeper
+    // levels: at a shallower depth the lifted content must be inserted *beside*
+    // that content (not replace it), so a lift that would push content before a
+    // required node (e.g. a paragraph before a mandatory heading) is rejected.
+    var contentBefore = 0
+    var contentAfter = 0
     while true {
         let node = range.from.node(depth)
-        let index = range.from.index(depth)
-        let endIndex = range.to.indexAfter(depth)
+        let index = range.from.index(depth) + contentBefore
+        let endIndex = range.to.indexAfter(depth) - contentAfter
         if depth < range.depth && node.canReplace(index, endIndex, replacement: content) { return depth }
         if depth == 0 || node.type.spec.isolating || !canCut(node, index, endIndex) { break }
+        if index != 0 { contentBefore = 1 }
+        if endIndex < node.childCount { contentAfter = 1 }
         depth -= 1
     }
     return nil
