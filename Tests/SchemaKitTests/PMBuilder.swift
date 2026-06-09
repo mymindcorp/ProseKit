@@ -6,6 +6,13 @@ import DocumentModel
 // like ProseMirror's, so its transform/replace/selection/content test suites can
 // be ported verbatim. (See prosemirror-test-builder/src/build.ts.)
 
+let pmCellAttrs: [String: AttributeSpec] = [
+    "colspan": AttributeSpec(default: .int(1)),
+    "rowspan": AttributeSpec(default: .int(1)),
+    "colwidth": AttributeSpec(default: .null),
+    "test": AttributeSpec(default: .string("default")),
+]
+
 let basicSchema: Schema = {
     let nodes: [(String, NodeSpec)] = [
         ("doc", NodeSpec(content: "block+")),
@@ -22,6 +29,10 @@ let basicSchema: Schema = {
         ("ordered_list", NodeSpec(content: "list_item+", group: "block", attrs: ["order": AttributeSpec(default: .int(1))])),
         ("bullet_list", NodeSpec(content: "list_item+", group: "block")),
         ("list_item", NodeSpec(content: "paragraph block*", defining: true)),
+        ("table", NodeSpec(content: "tableRow+", group: "block", isolating: true)),
+        ("tableRow", NodeSpec(content: "(tableCell | tableHeader)+")),
+        ("tableCell", NodeSpec(content: "block+", attrs: pmCellAttrs, isolating: true)),
+        ("tableHeader", NodeSpec(content: "block+", attrs: pmCellAttrs, isolating: true)),
     ]
     let marks: [(String, MarkSpec)] = [
         ("link", MarkSpec(attrs: ["href": AttributeSpec(), "title": AttributeSpec(default: .null)], inclusive: false)),
@@ -122,3 +133,27 @@ func em(_ c: PMContentChild...) -> MarkFrag { markBuilder("em", [:], c) }
 func strong(_ c: PMContentChild...) -> MarkFrag { markBuilder("strong", [:], c) }
 func code(_ c: PMContentChild...) -> MarkFrag { markBuilder("code", [:], c) }
 func a(_ c: PMContentChild..., href: String = "foo") -> MarkFrag { markBuilder("link", ["href": .string(href)], c) }
+
+// MARK: - Table builders (prosemirror-tables test-builder)
+
+func table(_ c: PMContentChild...) -> TaggedNode { block("table", [:], c) }
+func tr(_ c: PMContentChild...) -> TaggedNode { block("tableRow", [:], c) }
+func td(_ c: PMContentChild...) -> TaggedNode { block("tableCell", [:], c) }
+func th(_ c: PMContentChild...) -> TaggedNode { block("tableHeader", [:], c) }
+func tdAttrs(_ attrs: Attrs, _ c: PMContentChild...) -> TaggedNode { block("tableCell", attrs, c) }
+func thAttrs(_ attrs: Attrs, _ c: PMContentChild...) -> TaggedNode { block("tableHeader", attrs, c) }
+func cell(_ colspan: Int, _ rowspan: Int, _ text: String = "x") -> TaggedNode {
+    block("tableCell", ["colspan": .int(colspan), "rowspan": .int(rowspan)], [p(text)])
+}
+func head(_ colspan: Int, _ rowspan: Int, _ text: String = "x") -> TaggedNode {
+    block("tableHeader", ["colspan": .int(colspan), "rowspan": .int(rowspan)], [p(text)])
+}
+func c11() -> TaggedNode { cell(1, 1) }
+func h11() -> TaggedNode { head(1, 1) }
+func cEmpty() -> TaggedNode { block("tableCell", [:], [p()]) }
+func hEmpty() -> TaggedNode { block("tableHeader", [:], [p()]) }
+func cCursor() -> TaggedNode { block("tableCell", [:], [p("x<cursor>")]) }
+func cCursorBefore() -> TaggedNode { block("tableCell", [:], [p("<cursor>x")]) }
+func hCursor() -> TaggedNode { block("tableHeader", [:], [p("x<cursor>")]) }
+func cAnchor() -> TaggedNode { block("tableCell", [:], [p("x<anchor>")]) }
+func cHead() -> TaggedNode { block("tableCell", [:], [p("x<head>")]) }

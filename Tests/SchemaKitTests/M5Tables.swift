@@ -134,12 +134,12 @@ func registerM5Tests() {
         _ = editor.insertTable(rows: 2, cols: 2, withHeaderRow: false)
         cursorInFirstCell(editor)
         let firstHead = editor.state.selection.head
-        try expect(editor.run(goToNextCell(.forward)))
+        try expect(editor.run(goToNextCell(1)))
         // The selection should land inside a (different, later) cell.
         try expect(editor.state.selection.head > firstHead)
         try expect(editor.isActive(node: "tableCell"))
         // Shift-Tab goes back.
-        try expect(editor.run(goToNextCell(.backward)))
+        try expect(editor.run(goToNextCell(-1)))
         try expectEqual(editor.state.selection.head, firstHead)
     }
 
@@ -147,7 +147,7 @@ func registerM5Tests() {
         let editor = try makeFullEditor()
         _ = editor.insertTable(rows: 1, cols: 1, withHeaderRow: false)
         cursorInFirstCell(editor)
-        try expect(!editor.run(goToNextCell(.forward)))
+        try expect(!editor.run(goToNextCell(1)))
     }
 
     test("cellSelection: spans a rectangle of cells") {
@@ -175,10 +175,14 @@ func registerM5Tests() {
         }
         let sel = CellSelection.create(editor.doc, anchorCellPos: cellPos[0], headCellPos: cellPos[1]) // top row only
         let slice = sel.content()
-        let table = slice.content.firstChild
-        try expectEqual(table?.type.name, "table")
-        try expectEqual(table?.childCount, 1)             // one row selected
-        try expectEqual(table?.firstChild?.childCount, 2) // two cells in it
+        // ProseMirror's CellSelection.content() returns the selected rows as an
+        // open slice (openStart/openEnd 1), not wrapped in a table node.
+        try expectEqual(slice.openStart, 1)
+        try expectEqual(slice.openEnd, 1)
+        let row = slice.content.firstChild
+        try expectEqual(row?.type.name, "tableRow")
+        try expectEqual(slice.content.childCount, 1)  // one row selected
+        try expectEqual(row?.childCount, 2)           // two cells in it
     }
 
     test("cellSelection: create falls back to text selection outside a table") {

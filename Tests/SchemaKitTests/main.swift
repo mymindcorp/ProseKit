@@ -149,6 +149,6 @@ registerSlashMenuTests()
 registerCollabCursorTests()
 registerFuzzTests()
 
-registerPMListTests()
+registerPMListTests(); registerPMTableMapTests(); registerPMTableCommandsTests()
 
 TestSuite.main("SchemaKitTests", collector.all)

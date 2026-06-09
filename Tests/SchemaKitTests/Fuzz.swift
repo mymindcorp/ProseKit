@@ -18,7 +18,13 @@ private let fuzzAlphabet = Array("ab cd\nef 🙂g.,#-*>`[]")
 private let fuzzCommands = ["toggleBold", "toggleItalic", "toggleCode", "toggleStrike",
                             "toggleBulletList", "toggleOrderedList", "toggleTaskList",
                             "toggleHeading1", "toggleHeading2", "toggleBlockquote",
-                            "toggleCodeBlock", "setHorizontalRule", "setParagraph"]
+                            "toggleCodeBlock", "setHorizontalRule", "setParagraph",
+                            // table commands (no-ops outside a table; exercise the
+                            // spanning-aware TableMap/CellSelection machinery in one)
+                            "addColumnBefore", "addColumnAfter", "deleteColumn",
+                            "addRowBefore", "addRowAfter", "deleteRow",
+                            "mergeCells", "splitCell", "toggleHeaderRow", "toggleHeaderColumn",
+                            "goToNextCell", "goToPreviousCell", "deleteTable"]
 private let fuzzKeys = ["Enter", "Backspace", "Delete", "Tab", "Shift-Tab", "Mod-z", "Mod-y", "Mod-Enter"]
 
 private func randomString(_ rng: inout FuzzRNG) -> String {
@@ -49,9 +55,17 @@ private func runOneFuzz(seed: UInt64, ops: Int) throws {
     var rng = FuzzRNG(seed: seed)
     let editor = try Editor(extensions: fullKit())
     func pos() -> Int { Int.random(in: 0 ... max(0, editor.doc.content.size), using: &rng) }
+    func cellPositions() -> [Int] {
+        var result: [Int] = []
+        editor.doc.descendants { node, p, _, _ in
+            if node.type.name == "tableCell" || node.type.name == "tableHeader" { result.append(p) }
+            return true
+        }
+        return result
+    }
 
     for step in 0 ..< ops {
-        switch Int.random(in: 0 ..< 12, using: &rng) {
+        switch Int.random(in: 0 ..< 14, using: &rng) {
         case 0:
             let tr = editor.state.tr
             _ = try? tr.insertText(randomString(&rng), min(pos(), editor.doc.content.size))
@@ -89,6 +103,16 @@ private func runOneFuzz(seed: UInt64, ops: Int) throws {
             editor.findNext(); editor.findPrevious()
         case 11:
             _ = editor.run("lift")
+        case 12: // insert a (possibly spanning, via later merges) table
+            _ = editor.insertTable(rows: Int.random(in: 1 ... 3, using: &rng),
+                                   cols: Int.random(in: 1 ... 3, using: &rng),
+                                   withHeaderRow: Bool.random(using: &rng))
+        case 13: // a random cell selection (exercises CellSelection.map/content)
+            let cells = cellPositions()
+            if cells.count >= 2 {
+                let a = cells.randomElement(using: &rng)!, b = cells.randomElement(using: &rng)!
+                editor.dispatch(editor.state.tr.setSelection(CellSelection.create(editor.doc, a, b)))
+            }
         default: break
         }
 
@@ -103,11 +127,70 @@ private func runOneFuzz(seed: UInt64, ops: Int) throws {
     }
 }
 
+/// A table-biased fuzz: keep a table alive and hammer it with random cell
+/// selections + spanning commands (merge/split/add/delete/toggle-header), which
+/// the general fuzz only hits occasionally.
+private func runTableFuzz(seed: UInt64, ops: Int) throws {
+    var rng = FuzzRNG(seed: seed)
+    let editor = try Editor(extensions: fullKit())
+    let cmds = ["addColumnBefore", "addColumnAfter", "deleteColumn", "addRowBefore", "addRowAfter",
+                "deleteRow", "mergeCells", "splitCell", "toggleHeaderRow", "toggleHeaderColumn"]
+    func cells() -> [Int] {
+        var r: [Int] = []
+        editor.doc.descendants { node, p, _, _ in
+            if node.type.name == "tableCell" || node.type.name == "tableHeader" { r.append(p) }
+            return true
+        }
+        return r
+    }
+    _ = editor.insertTable(rows: Int.random(in: 2 ... 4, using: &rng), cols: Int.random(in: 2 ... 4, using: &rng),
+                           withHeaderRow: Bool.random(using: &rng))
+    for step in 0 ..< ops {
+        let c = cells()
+        if c.isEmpty { // table got deleted — make a new one
+            _ = editor.insertTable(rows: Int.random(in: 2 ... 4, using: &rng), cols: Int.random(in: 2 ... 4, using: &rng))
+        }
+        var action = ""
+        switch Int.random(in: 0 ..< 5, using: &rng) {
+        case 0 where c.count >= 2: // rectangular cell selection
+            editor.dispatch(editor.state.tr.setSelection(
+                CellSelection.create(editor.doc, c.randomElement(using: &rng)!, c.randomElement(using: &rng)!)))
+            action = "cellSelect"
+        case 1: // cursor inside a cell
+            if let cp = c.randomElement(using: &rng) {
+                editor.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.doc, min(cp + 2, editor.doc.content.size))))
+            }
+            action = "cursor"
+        case 2: // type into the current cell
+            let tr = editor.state.tr
+            _ = try? tr.insertText(randomString(&rng), min(editor.state.selection.from, editor.doc.content.size))
+            editor.dispatch(tr)
+            action = "type"
+        default: // run a table command
+            let cmd = cmds.randomElement(using: &rng)!
+            _ = editor.run(cmd)
+            action = cmd
+        }
+        var checkErr: Error?
+        do { try editor.doc.check() } catch { checkErr = error }
+        try expect(checkErr == nil, "invalid doc — table seed \(seed) step \(step) after \(action): \(checkErr.map { "\($0)" } ?? "")")
+        let size = editor.doc.content.size
+        try expect(editor.state.selection.from >= 0 && editor.state.selection.to <= size,
+                   "selection in range at table seed \(seed) step \(step)")
+        if let cs = editor.state.selection as? CellSelection { cs.forEachCell { _, _ in } } // must not trap
+    }
+}
+
 func registerFuzzTests() {
     test("fuzz: random edits/selections/commands never crash or corrupt the doc") {
         // Many seeds × many ops. A trap would abort with the reproducing seed.
         for seed in UInt64(1) ... 120 {
             try runOneFuzz(seed: seed, ops: 150)
+        }
+    }
+    test("fuzz: table-biased cell selections + spanning commands stay valid") {
+        for seed in UInt64(1) ... 120 {
+            try runTableFuzz(seed: seed, ops: 150)
         }
     }
 }
