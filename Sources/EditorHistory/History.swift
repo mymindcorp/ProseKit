@@ -15,11 +15,15 @@ public final class HistoryState {
     var done: [HistoryEvent]
     var undone: [HistoryEvent]
     var prevTime: Double
+    /// The document ranges (new coords) touched by the most recently grouped
+    /// change — used to decide whether the next change is adjacent.
+    var prevRanges: [Int]
 
-    init(done: [HistoryEvent] = [], undone: [HistoryEvent] = [], prevTime: Double = 0) {
+    init(done: [HistoryEvent] = [], undone: [HistoryEvent] = [], prevTime: Double = 0, prevRanges: [Int] = []) {
         self.done = done
         self.undone = undone
         self.prevTime = prevTime
+        self.prevRanges = prevRanges
     }
 
     /// Whether there is anything to undo.
@@ -70,16 +74,30 @@ public func history(_ options: HistoryOptions = HistoryOptions()) -> Plugin {
                 if let update = tr.getMeta(historyMeta) as? HistoryUpdate {
                     switch update { case let .set(newState): return newState }
                 }
-                guard tr.docChanged, (tr.getMeta(addToHistoryMeta) as? Bool) ?? true else { return hist }
+                guard tr.docChanged else { return hist }
+                let addToHist = (tr.getMeta(addToHistoryMeta) as? Bool) ?? true
+                if !addToHist {
+                    // A change that isn't itself undoable (e.g. a remote edit) still
+                    // has to be mapped through, so the stored undo/redo steps keep
+                    // pointing at the right positions.
+                    return HistoryState(
+                        done: hist.done.map { mapEvent($0, tr.mapping) },
+                        undone: hist.undone.map { mapEvent($0, tr.mapping) },
+                        prevTime: hist.prevTime,
+                        prevRanges: hist.prevRanges.map { tr.mapping.map($0) })
+                }
                 let event = HistoryEvent(
                     steps: invertedSteps(tr.steps, tr.docs, tr.doc),
                     selection: oldState.selection.getBookmark(),
                     time: tr.time)
                 var done = hist.done
-                // Merge into the previous event if it is recent enough.
-                if let last = done.last, tr.time - hist.prevTime < options.newGroupDelay, !done.isEmpty {
-                    // Prepend the new undo steps before the previous event's
-                    // undo steps so the whole group undoes together.
+                // Start a new event when too much time has passed since the last
+                // one, or when this change doesn't touch the same region.
+                let newGroup = done.isEmpty || tr.time - hist.prevTime >= options.newGroupDelay
+                    || !isAdjacentTo(tr, hist.prevRanges)
+                if !newGroup, let last = done.last {
+                    // Prepend the new undo steps before the previous event's undo
+                    // steps so the whole group undoes together.
                     done[done.count - 1] = HistoryEvent(
                         steps: event.steps + last.steps,
                         selection: last.selection,
@@ -88,7 +106,7 @@ public func history(_ options: HistoryOptions = HistoryOptions()) -> Plugin {
                     done.append(event)
                     if done.count > options.depth { done.removeFirst(done.count - options.depth) }
                 }
-                return HistoryState(done: done, undone: [], prevTime: tr.time)
+                return HistoryState(done: done, undone: [], prevTime: tr.time, prevRanges: rangesFor(tr.mapping.maps))
             }))
 }
 
@@ -139,3 +157,38 @@ public let redo: @Sendable (EditorState, ((Transaction) -> Void)?) -> Bool = { s
 public func undoDepth(_ state: EditorState) -> Int { historyKey.getState(state)?.done.count ?? 0 }
 /// The number of redoable events.
 public func redoDepth(_ state: EditorState) -> Int { historyKey.getState(state)?.undone.count ?? 0 }
+
+// MARK: - Grouping / remapping helpers
+
+/// Remap an event's undo steps (and drop any that map away) so they stay valid
+/// after a change that isn't recorded in the history.
+private func mapEvent(_ event: HistoryEvent, _ mapping: Mapping) -> HistoryEvent {
+    HistoryEvent(steps: event.steps.compactMap { $0.map(mapping) }, selection: event.selection, time: event.time)
+}
+
+/// Whether `tr`'s first changed range overlaps the previously-touched ranges,
+/// i.e. it continues editing the same region (ProseMirror's `isAdjacentTo`).
+private func isAdjacentTo(_ tr: Transaction, _ prevRanges: [Int]) -> Bool {
+    if prevRanges.isEmpty { return false }
+    if !tr.docChanged { return true }
+    var adjacent = false
+    tr.mapping.maps[0].forEach { start, end, _, _ in
+        var i = 0
+        while i < prevRanges.count {
+            if start <= prevRanges[i + 1] && end >= prevRanges[i] { adjacent = true }
+            i += 2
+        }
+    }
+    return adjacent
+}
+
+/// The new-coordinate ranges touched by the last non-empty step map of a change.
+private func rangesFor(_ maps: [StepMap]) -> [Int] {
+    var result: [Int] = []
+    var i = maps.count - 1
+    while i >= 0, result.isEmpty {
+        maps[i].forEach { _, _, from, to in result.append(from); result.append(to) }
+        i -= 1
+    }
+    return result
+}
