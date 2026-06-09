@@ -191,4 +191,6 @@ test("wrappingInputRule turns '- ' into a bullet list") {
     try expectEqual(out!.doc, B.doc(B.ul(B.li(B.p("")))))
 }
 
+registerPMCommandsTests()
+
 TestSuite.main("EditorCommandsTests", collector.all)

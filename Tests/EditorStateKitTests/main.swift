@@ -256,4 +256,6 @@ test("TextSearch is case-insensitive by default and spans blocks separately") {
     try expectEqual(matches.count, 2)
 }
 
+registerPMSelectionTests()
+
 TestSuite.main("EditorStateKitTests", collector.all)
