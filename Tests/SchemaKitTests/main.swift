@@ -149,4 +149,6 @@ registerSlashMenuTests()
 registerCollabCursorTests()
 registerFuzzTests()
 
+registerPMListTests()
+
 TestSuite.main("SchemaKitTests", collector.all)

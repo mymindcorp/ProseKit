@@ -151,4 +151,6 @@ test("collab: steps are JSON-codable for transport") {
     }
 }
 
+registerPMRebaseTests()
+
 TestSuite.main("EditorCollabTests", collector.all)
