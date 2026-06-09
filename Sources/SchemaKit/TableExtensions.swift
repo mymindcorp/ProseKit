@@ -26,13 +26,20 @@ public final class TableExtension: NodeExtension {
          "toggleHeaderRow": toggleHeaderRow, "toggleHeaderColumn": toggleHeaderColumn, "toggleHeaderCell": toggleHeaderCell]
     }
     public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
-        ["Tab": goToNextCell(1), "Shift-Tab": goToNextCell(-1)]
+        ["Tab": goToNextCell(1), "Shift-Tab": goToNextCell(-1),
+         "ArrowLeft": tableArrow(.horiz, -1), "ArrowRight": tableArrow(.horiz, 1),
+         "ArrowUp": tableArrow(.vert, -1), "ArrowDown": tableArrow(.vert, 1),
+         "Shift-ArrowLeft": tableShiftArrow(.horiz, -1), "Shift-ArrowRight": tableShiftArrow(.horiz, 1),
+         "Shift-ArrowUp": tableShiftArrow(.vert, -1), "Shift-ArrowDown": tableShiftArrow(.vert, 1),
+         "Backspace": deleteCellSelectionContent, "Mod-Backspace": deleteCellSelectionContent,
+         "Delete": deleteCellSelectionContent, "Mod-Delete": deleteCellSelectionContent]
     }
     public func plugins(_ ctx: ExtensionContext) -> [Plugin] {
         // Keep tables rectangular after every edit (the invariant the commands
-        // and TableMap assume), mirroring prosemirror-tables' fixTables plugin.
+        // and TableMap assume) and normalize cell/row/table node-selections into
+        // CellSelections — mirroring prosemirror-tables' fixTables + normalizeSelection.
         [Plugin(key: "fixTables", appendTransaction: { _, oldState, newState in
-            fixTables(newState, oldState)
+            normalizeSelection(newState, fixTables(newState, oldState), false)
         })]
     }
 }

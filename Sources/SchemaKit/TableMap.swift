@@ -22,7 +22,7 @@ public enum TableProblem {
     case zeroSized
 }
 
-public enum TableAxis { case horiz, vert }
+public enum TableAxis: Sendable { case horiz, vert }
 
 // Cell attribute accessors (colspan/rowspan default 1; colwidth is an int array or nil).
 func cellColspan(_ node: Node) -> Int { node.attrs["colspan"]?.intValue ?? 1 }
