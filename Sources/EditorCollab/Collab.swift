@@ -4,10 +4,15 @@ import EditorStateKit
 
 /// A step paired with its inverse and the origin transaction, kept around while
 /// it is unconfirmed by the central authority.
-struct Rebaseable {
-    var step: Step
-    var inverted: Step
-    var origin: Transaction?
+public struct Rebaseable {
+    public var step: Step
+    public var inverted: Step
+    public var origin: Transaction?
+    public init(step: Step, inverted: Step, origin: Transaction? = nil) {
+        self.step = step
+        self.inverted = inverted
+        self.origin = origin
+    }
 }
 
 /// The collab plugin's state: the confirmed version number and the steps this
@@ -118,7 +123,8 @@ public func receiveTransaction(_ state: EditorState, _ steps: [Step], _ clientID
     return tr
 }
 
-private func rebaseSteps(_ steps: [Rebaseable], _ over: [Step], _ transform: Transaction) -> [Rebaseable] {
+@discardableResult
+public func rebaseSteps(_ steps: [Rebaseable], _ over: [Step], _ transform: Transform) -> [Rebaseable] {
     // Undo our local steps...
     var i = steps.count - 1
     while i >= 0 { transform.maybeStep(steps[i].inverted); i -= 1 }
