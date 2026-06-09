@@ -84,6 +84,22 @@ public enum HTMLSerializer {
             let target = node.attrs["target"]?.stringValue ?? ""
             let label = node.attrs["label"]?.stringValue ?? target
             return "<a href=\"\(escape(target))\" data-wikilink=\"\(escape(target))\">\(escape(label))</a>"
+        case "taskList":
+            return "<ul data-type=\"taskList\">\(serializeFragment(node.content, config))</ul>"
+        case "taskItem":
+            let checked = node.attrs["checked"]?.boolValue ?? false
+            let box = "<input type=\"checkbox\"\(checked ? " checked=\"checked\"" : "")>"
+            return "<li data-type=\"taskItem\" data-checked=\"\(checked)\">\(box)\(serializeFragment(node.content, config))</li>"
+        case "tableCell", "tableHeader":
+            let tag = node.type.name == "tableHeader" ? "th" : "td"
+            var a = ""
+            let cs = node.attrs["colspan"]?.intValue ?? 1, rs = node.attrs["rowspan"]?.intValue ?? 1
+            if cs != 1 { a += " colspan=\"\(cs)\"" }
+            if rs != 1 { a += " rowspan=\"\(rs)\"" }
+            if case let .array(cw)? = node.attrs["colwidth"] {
+                a += " data-colwidth=\"\(cw.map { String($0.intValue ?? 0) }.joined(separator: ","))\""
+            }
+            return "<\(tag)\(a)>\(serializeFragment(node.content, config))</\(tag)>"
         default:
             let tag = config.nodeTags[node.type.name] ?? "div"
             return "<\(tag)>\(serializeFragment(node.content, config))</\(tag)>"
@@ -155,6 +171,9 @@ public enum HTMLParser {
         if tag == "img" {
             return (makeImage(attrs, schema), start + 1)
         }
+        // Unknown void/self-closing element at block level (e.g. a stray <input>
+        // or <col>): skip it — it has no children to recurse into.
+        if selfClosing { return (nil, start + 1) }
         let nodeName = config.tagToNode[tag]
         // Find matching close tag.
         let end = matchingClose(tokens, start, tag)
@@ -170,7 +189,21 @@ public enum HTMLParser {
         case "paragraph":
             let inline = parseInline(Array(tokens[(start + 1)..<end]), schema, config)
             return (try? schema.node("paragraph", [:], content: Fragment.from(inline.isEmpty ? [] : inline)), end + 1)
-        case "blockquote", "bulletList", "orderedList", "listItem", "table", "tableRow", "tableCell", "tableHeader":
+        case "bulletList", "orderedList":
+            // ul/ol may actually be a task list (Tiptap data-type, or items with checkboxes).
+            return (parseList(tag, attrs, tokens, start, end, schema, config), end + 1)
+        case "tableCell", "tableHeader":
+            let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
+            var a: Attrs = [:]
+            if let cs = attrs["colspan"].flatMap({ Int($0) }), cs != 1 { a["colspan"] = .int(cs) }
+            if let rs = attrs["rowspan"].flatMap({ Int($0) }), rs != 1 { a["rowspan"] = .int(rs) }
+            if let cw = parseColwidth(attrs) { a["colwidth"] = .array(cw.map { .int($0) }) }
+            if let type = schema.nodes[nodeName!] {
+                if let n = try? type.create(a, content: Fragment.from(children)) { return (n, end + 1) }
+                if let filled = type.createAndFill(a, content: Fragment.from(children)) { return (filled, end + 1) }
+            }
+            return (nil, end + 1)
+        case "blockquote", "listItem", "table", "tableRow":
             let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
             let name = nodeName!
             if let type = schema.nodes[name] {
@@ -190,12 +223,86 @@ public enum HTMLParser {
         var result: [Node] = []
         var i = 0
         while i < tokens.count {
+            if case let .open(tag, _, _) = tokens[i] {
+                // Transparent table-section wrappers: splice their rows in directly.
+                if tag == "tbody" || tag == "thead" || tag == "tfoot" {
+                    let e = matchingClose(tokens, i, tag)
+                    result.append(contentsOf: parseBlocks(Array(tokens[(i + 1)..<e]), schema, config))
+                    i = e + 1; continue
+                }
+                if tag == "colgroup" { i = matchingClose(tokens, i, tag) + 1; continue } // <col> defs, no content
+            }
             if let (node, next) = parseBlock(tokens, i, schema, config) {
                 if let node { result.append(node) }
                 i = next
             } else { i += 1 }
         }
         return result
+    }
+
+    /// Parse a `<ul>`/`<ol>` as a task list (Tiptap `data-type`, or `<li>`s with
+    /// checkboxes — e.g. pasted from Apple Notes) when applicable, else a bullet/
+    /// ordered list.
+    private static func parseList(_ tag: String, _ attrs: [String: String], _ tokens: [Token], _ start: Int, _ end: Int, _ schema: Schema, _ config: HTMLConfig) -> Node? {
+        let isTask = attrs["data-type"] == "taskList" || listLooksLikeTasks(tokens, start, end)
+        if isTask, let listType = schema.nodes["taskList"], schema.nodes["taskItem"] != nil {
+            var items: [Node] = []
+            var i = start + 1
+            while i < end {
+                if case let .open(t, liAttrs, _) = tokens[i], t == "li" {
+                    let liEnd = matchingClose(tokens, i, "li")
+                    if let item = parseTaskItem(tokens, i, liEnd, liAttrs, schema, config) { items.append(item) }
+                    i = liEnd + 1
+                } else { i += 1 }
+            }
+            if !items.isEmpty, let n = try? listType.create([:], content: Fragment.from(items)) { return n }
+        }
+        let name = config.tagToNode[tag] ?? "bulletList"
+        let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
+        guard let type = schema.nodes[name] else { return nil }
+        if let n = try? type.create([:], content: Fragment.from(children)) { return n }
+        return type.createAndFill([:], content: Fragment.from(children))
+    }
+
+    private static func parseTaskItem(_ tokens: [Token], _ liStart: Int, _ liEnd: Int, _ liAttrs: [String: String], _ schema: Schema, _ config: HTMLConfig) -> Node? {
+        guard let itemType = schema.nodes["taskItem"] else { return nil }
+        var checked = liAttrs["data-checked"] == "true"
+        // Drop the checkbox <input> from the item's content, recording its state.
+        var inner: [Token] = []
+        var k = liStart + 1
+        while k < liEnd {
+            if case let .open(t, a, _) = tokens[k], t == "input", (a["type"] ?? "") == "checkbox" {
+                if a["checked"] != nil { checked = true }
+                k += 1; continue
+            }
+            inner.append(tokens[k]); k += 1
+        }
+        // Trim the whitespace that typically sits between the checkbox and the text.
+        if case let .text(s) = inner.first {
+            inner[0] = .text(String(s.drop(while: { $0 == " " || $0 == "\n" || $0 == "\t" })))
+        }
+        let children = parseBlocks(inner, schema, config)
+        let a: Attrs = ["checked": .bool(checked)]
+        if let n = try? itemType.create(a, content: Fragment.from(children)) { return n }
+        return itemType.createAndFill(a, content: Fragment.from(children))
+    }
+
+    private static func listLooksLikeTasks(_ tokens: [Token], _ start: Int, _ end: Int) -> Bool {
+        var i = start + 1
+        while i < end {
+            if case let .open(t, a, _) = tokens[i] {
+                if t == "input", (a["type"] ?? "") == "checkbox" { return true }
+                if t == "li", a["data-checked"] != nil { return true }
+            }
+            i += 1
+        }
+        return false
+    }
+
+    private static func parseColwidth(_ attrs: [String: String]) -> [Int]? {
+        guard let s = attrs["data-colwidth"] else { return nil }
+        let parts = s.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        return parts.isEmpty ? nil : parts
     }
 
     // Parse inline content (text + marks + inline atoms) within a block.
@@ -302,7 +409,7 @@ public enum HTMLParser {
         return tokens
     }
 
-    private static let voidTags: Set<String> = ["br", "hr", "img"]
+    private static let voidTags: Set<String> = ["br", "hr", "img", "input", "col", "wbr", "source", "area"]
 
     private static func parseTag(_ raw: String) -> (String, [String: String], Bool) {
         var s = raw.trimmingCharacters(in: .whitespaces)
