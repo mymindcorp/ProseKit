@@ -409,6 +409,15 @@ public enum HTMLParser {
         var i = 0
         while i < chars.count {
             if chars[i] == "<" {
+                // Markup declarations, comments, CDATA, and processing
+                // instructions: <!DOCTYPE …>, <!-- … -->, <![CDATA[ … ]]>, <? … >.
+                // These aren't elements — skip them (a leading <!DOCTYPE> from
+                // Cocoa's HTML writer / Apple Notes would otherwise swallow the
+                // whole document).
+                if i + 1 < chars.count, chars[i + 1] == "!" || chars[i + 1] == "?" {
+                    i = skipDeclaration(chars, from: i)
+                    continue
+                }
                 // find end of tag
                 var j = i + 1
                 while j < chars.count && chars[j] != ">" { j += 1 }
@@ -429,6 +438,43 @@ public enum HTMLParser {
             }
         }
         return tokens
+    }
+
+    /// Skip a non-element construct starting at `start` (chars[start] == "<" and
+    /// the next char is "!" or "?"). Returns the index just past its terminator:
+    /// "-->" (or the spec's incorrectly-closed "--!>") for comments, "]]>" for
+    /// CDATA, and the first ">" for everything else (DOCTYPEs and processing
+    /// instructions — matching browsers' bogus-comment state). An unterminated
+    /// construct consumes to end of input, as in browsers.
+    private static func skipDeclaration(_ chars: [Character], from start: Int) -> Int {
+        func match(_ s: String, at j: Int) -> Bool {
+            var k = j
+            for c in s {
+                guard k < chars.count, chars[k] == c else { return false }
+                k += 1
+            }
+            return true
+        }
+        if match("<!--", at: start) {
+            var j = start + 4
+            while j < chars.count {
+                if match("-->", at: j) { return j + 3 }
+                if match("--!>", at: j) { return j + 4 }
+                j += 1
+            }
+            return chars.count
+        }
+        if match("<![CDATA[", at: start) {
+            var j = start + 9
+            while j < chars.count {
+                if match("]]>", at: j) { return j + 3 }
+                j += 1
+            }
+            return chars.count
+        }
+        var j = start + 1
+        while j < chars.count, chars[j] != ">" { j += 1 }
+        return min(j + 1, chars.count)
     }
 
     private static let voidTags: Set<String> = ["br", "hr", "img", "input", "col", "wbr", "source", "area", "meta", "link"]
@@ -466,11 +512,38 @@ public enum HTMLParser {
         return (name.lowercased(), attrs, selfClosing)
     }
 
+    private static let namedEntities: [String: Character] = [
+        "lt": "<", "gt": ">", "quot": "\"", "apos": "'", "amp": "&", "nbsp": "\u{00A0}",
+    ]
+
     static func decodeEntities(_ s: String) -> String {
-        s.replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&#39;", with: "'")
-            .replacingOccurrences(of: "&amp;", with: "&")
+        guard s.contains("&") else { return s }
+        var out = ""
+        out.reserveCapacity(s.count)
+        var i = s.startIndex
+        while i < s.endIndex {
+            // An entity is "&" + a short name or numeric reference + ";".
+            guard s[i] == "&",
+                  let semi = s[s.index(after: i)...].firstIndex(of: ";"),
+                  s.distance(from: i, to: semi) <= 10
+            else { out.append(s[i]); i = s.index(after: i); continue }
+            let name = s[s.index(after: i)..<semi]
+            var decoded: Character?
+            if let c = namedEntities[String(name)] {
+                decoded = c
+            } else if name.hasPrefix("#x") || name.hasPrefix("#X") {
+                if let v = UInt32(name.dropFirst(2), radix: 16), let u = Unicode.Scalar(v) { decoded = Character(u) }
+            } else if name.hasPrefix("#") {
+                if let v = UInt32(name.dropFirst()), let u = Unicode.Scalar(v) { decoded = Character(u) }
+            }
+            if let decoded {
+                out.append(decoded)
+                i = s.index(after: semi)
+            } else {
+                out.append(s[i])
+                i = s.index(after: i)
+            }
+        }
+        return out
     }
 }

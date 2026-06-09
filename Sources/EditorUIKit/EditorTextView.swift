@@ -883,9 +883,15 @@ open class EditorTextView: UIView, UIKeyInput {
         switch action {
         case #selector(copy(_:)), #selector(cut(_:)):
             return !editor.state.selection.empty
-        case #selector(paste(_:)), #selector(pasteAndMatchStyle(_:)):
+        case #selector(paste(_:)):
             let pb = UIPasteboard.general
-            return pb.hasStrings || pb.contains(pasteboardTypes: ["public.html"])
+            return pb.hasStrings || pb.contains(pasteboardTypes: [
+                "public.html", "com.apple.flat-rtfd", "public.rtfd", "public.rtf",
+            ])
+        case #selector(pasteAndMatchStyle(_:)):
+            // Match-style only reads the plain-text flavor; offering it for
+            // rich-only pasteboards would be an enabled item that does nothing.
+            return UIPasteboard.general.hasStrings
         case #selector(selectAll(_:)):
             return editor.doc.content.size > 0
         default:
@@ -902,11 +908,12 @@ open class EditorTextView: UIView, UIKeyInput {
 
     open override func paste(_ sender: Any?) {
         let pb = UIPasteboard.general
-        if pb.contains(pasteboardTypes: ["public.html"]),
-           let data = pb.data(forPasteboardType: "public.html"),
+        if let data = pb.data(forPasteboardType: "public.html"),
            let html = String(data: data, encoding: .utf8),
            let doc = try? HTMLParser.parse(html, schema: editor.schema) {
-            insertContent(doc.content)
+            // Sources can flatten checklists in their HTML while carrying the
+            // state in the Notes proto — recover here too, not just on the RTF path.
+            insertContent(recoverChecklists(in: doc, from: pb, attributedString: nil).content)
         } else if let doc = richTextPasteDoc(pb) {
             // Rich text without public.html (e.g. Apple Notes / Pages, which are
             // RTF-first) — bridge via NSAttributedString → HTML so tables, lists,
@@ -922,23 +929,74 @@ open class EditorTextView: UIView, UIKeyInput {
         }
     }
 
-    /// Read RTF/RTFD from the pasteboard, convert to HTML via NSAttributedString,
-    /// and parse it. Returns nil if no rich-text flavor is present or conversion fails.
+    /// Build a document from the pasteboard's rich-text flavors. Best case:
+    /// Apple Notes' private proto converted directly (headings, lists, marks,
+    /// and checklist state all survive) — used when its text matches the pasted
+    /// attributed string, so a whole-note proto never replaces a selection
+    /// paste. Otherwise: RTF/RTFD → HTML via NSAttributedString, parsed, with
+    /// checklist state recovered. Returns nil if no flavor converts.
     private func richTextPasteDoc(_ pb: UIPasteboard) -> Node? {
+        let proto = pb.data(forPasteboardType: "com.apple.notes.richtext")
         let candidates: [(String, NSAttributedString.DocumentType)] = [
             ("com.apple.flat-rtfd", .rtfd), ("public.rtfd", .rtfd), ("public.rtf", .rtf),
         ]
-        for (type, docType) in candidates where pb.contains(pasteboardTypes: [type]) {
+        for (type, docType) in candidates {
             guard let data = pb.data(forPasteboardType: type),
-                  let attr = try? NSAttributedString(data: data, options: [.documentType: docType], documentAttributes: nil),
-                  let htmlData = try? attr.data(from: NSRange(location: 0, length: attr.length),
+                  let attr = try? NSAttributedString(data: data, options: [.documentType: docType], documentAttributes: nil)
+            else { continue }
+            if let proto,
+               let doc = AppleNotesPasteboard.document(fromArchive: proto, schema: editor.schema,
+                                                       matchingText: attr.string) {
+                return doc
+            }
+            guard let htmlData = try? attr.data(from: NSRange(location: 0, length: attr.length),
                                                 documentAttributes: [.documentType: NSAttributedString.DocumentType.html]),
                   let html = String(data: htmlData, encoding: .utf8),
                   let doc = try? HTMLParser.parse(html, schema: editor.schema)
             else { continue }
+            return recoverChecklists(in: doc, from: pb, attributedString: attr)
+        }
+        // A proto with no convertible RTF flavor still describes the content.
+        if let proto, let doc = AppleNotesPasteboard.document(fromArchive: proto, schema: editor.schema) {
             return doc
         }
         return nil
+    }
+
+    /// Restore checklists the HTML round-trip flattened to bullet lists, using
+    /// Apple Notes' private proto (every line + checked state, in note order) when
+    /// present, else the RTF `{check}` markers (checked items only).
+    private func recoverChecklists(in doc: Node, from pb: UIPasteboard, attributedString attr: NSAttributedString?) -> Node {
+        let lines = pb.data(forPasteboardType: "com.apple.notes.richtext")
+            .flatMap(AppleNotesPasteboard.checklist(fromArchive:)) ?? []
+        let checked = attr.map(checkedLines(from:)) ?? []
+        guard !lines.isEmpty || !checked.isEmpty else { return doc }
+        let content = applyChecklistMarkers(doc.content, checkedTexts: checked,
+                                            checklistLines: lines, schema: editor.schema)
+        return doc.copy(content: content)
+    }
+
+    /// The trimmed text of every paragraph whose list marker is a checkbox check
+    /// (`{check}`) — i.e. checked checklist items in the attributed string.
+    private func checkedLines(from attr: NSAttributedString) -> Set<String> {
+        var result = Set<String>()
+        let ns = attr.string as NSString
+        attr.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: attr.length), options: []) { val, range, _ in
+            guard let ps = val as? NSParagraphStyle,
+                  ps.textLists.contains(where: { $0.markerFormat.rawValue.contains("check") }) else { return }
+            for raw in ns.substring(with: range).components(separatedBy: "\n") {
+                var line = Substring(raw)
+                // Some RTF imports keep the list marker in the text ("☑\tmilk");
+                // drop a leading non-alphanumeric marker prefix ending in a tab.
+                if let tab = line.firstIndex(of: "\t"),
+                   line[..<tab].rangeOfCharacter(from: .alphanumerics) == nil {
+                    line = line[line.index(after: tab)...]
+                }
+                let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !t.isEmpty { result.insert(t) }
+            }
+        }
+        return result
     }
 
     /// Paste the pasteboard's text as plain text, discarding any rich formatting.
