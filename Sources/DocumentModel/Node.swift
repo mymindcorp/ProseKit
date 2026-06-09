@@ -78,7 +78,8 @@ public struct Node: Hashable, Sendable {
 
     /// The string representation of this node's content type description.
     public var textContent: String {
-        (isLeaf && type.spec.leafText != nil) ? type.spec.leafText!(self)
+        if let text { return text }
+        return (isLeaf && type.spec.leafText != nil) ? type.spec.leafText!(self)
             : textBetween(0, content.size, blockSeparator: "")
     }
 
@@ -234,11 +235,15 @@ public struct Node: Hashable, Sendable {
     public func check() throws(ModelError) {
         try type.checkContent(content)
         try type.checkAttrs(attrs)
-        var copy = marks
+        // Rebuild the mark set through addToSet and compare: this catches invalid
+        // collections (e.g. duplicate or excluded marks) the same way ProseMirror does.
+        var copy: [Mark] = []
         for mark in marks {
             try mark.type.checkAttrs(mark.attrs)
-            copy = mark.removeFromSet(copy)
-            _ = copy
+            copy = mark.addToSet(copy)
+        }
+        if !Mark.sameSet(copy, marks) {
+            throw ModelError.invalidContent("Invalid collection of marks for node \(type.name): \(marks.map { $0.type.name })")
         }
         for i in 0..<content.childCount {
             try content.child(i).check()

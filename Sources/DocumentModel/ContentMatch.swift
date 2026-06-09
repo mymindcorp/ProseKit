@@ -147,10 +147,18 @@ public final class ContentMatch: @unchecked Sendable {
 
 // MARK: - Content expression parser → NFA → DFA
 
+public extension ContentMatch {
+    /// Parse a content expression (e.g. `"paragraph block*"`) into a content
+    /// match against the given node types.
+    static func parse(_ expr: String, _ nodeTypes: [String: NodeType]) throws(ModelError) -> ContentMatch {
+        try ContentExpression.parse(expr, nodeTypes)
+    }
+}
+
 enum ContentExpression {
     /// Parse a content expression string against a schema's node types,
     /// producing the start `ContentMatch` of the resulting DFA.
-    static func parse(_ string: String, _ nodeTypes: [String: NodeType]) throws(ModelError) -> ContentMatch {
+    public static func parse(_ string: String, _ nodeTypes: [String: NodeType]) throws(ModelError) -> ContentMatch {
         var stream = TokenStream(string: string, nodeTypes: nodeTypes)
         if stream.next == nil {
             return ContentMatch.empty

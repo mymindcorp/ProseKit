@@ -80,6 +80,16 @@ public struct ResolvedPos: Sendable {
         return d == self.depth + 1 ? pos : path[d - 1].pos + node(d).nodeSize
     }
 
+    /// The (absolute) position of the start of the `index`-th child of the node
+    /// at the given depth.
+    public func posAtIndex(_ index: Int, _ depth: Int? = nil) -> Int {
+        let d = resolveDepth(depth)
+        let node = self.node(d)
+        var pos = start(d)
+        for i in 0..<index { pos += node.child(i).nodeSize }
+        return pos
+    }
+
     /// When this position points into a text node, this returns the distance
     /// between the position and the start of the text node. Will be zero for
     /// positions that point between nodes.
@@ -124,6 +134,25 @@ public struct ResolvedPos: Sendable {
             if mark.type.spec.inclusive == false && (other == nil || !mark.isInSet(other!.marks)) {
                 marks = mark.removeFromSet(marks)
                 // do not advance i since array shrank
+            } else {
+                i += 1
+            }
+        }
+        return marks
+    }
+
+    /// The set of marks that the inline content starting here carries across the
+    /// range to `end` — used to preserve marks when a selection is deleted.
+    /// Returns nil when there is no inline content directly after this position.
+    public func marksAcross(_ end: ResolvedPos) -> [Mark]? {
+        guard let after = parent.maybeChild(index()), after.isInline else { return nil }
+        var marks = after.marks
+        let next = end.parent.maybeChild(end.index())
+        var i = 0
+        while i < marks.count {
+            let mark = marks[i]
+            if mark.type.spec.inclusive == false && (next == nil || !mark.isInSet(next!.marks)) {
+                marks = mark.removeFromSet(marks)
             } else {
                 i += 1
             }

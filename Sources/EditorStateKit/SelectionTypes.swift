@@ -33,6 +33,16 @@ public final class TextSelection: Selection {
         TextBookmark(anchor: anchor, head: head)
     }
 
+    /// Deleting a text selection keeps the marks that spanned it as stored marks,
+    /// so subsequent typing continues in the same style (matches ProseMirror).
+    public override func replace(_ tr: Transaction, _ content: Slice = .empty) {
+        super.replace(tr, content)
+        if content.content.childCount == 0, content.openStart == 0, content.openEnd == 0,
+           let marks = resolvedFrom.marksAcross(resolvedTo) {
+            _ = tr.ensureMarks(marks)
+        }
+    }
+
     /// Create a text selection from non-resolved positions.
     public static func create(_ doc: Node, _ anchor: Int, _ head: Int? = nil) -> TextSelection {
         let resolvedAnchor = doc.resolve(anchor)

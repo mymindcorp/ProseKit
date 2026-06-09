@@ -292,13 +292,86 @@ public extension Transform {
     @discardableResult
     func replaceRange(_ from: Int, _ to: Int, _ slice: Slice) throws -> Self {
         if slice.size == 0 { return try deleteRange(from, to) }
-        let resolvedFrom = doc.resolve(from)
-        let resolvedTo = doc.resolve(to)
-        if fitsTrivially(resolvedFrom, resolvedTo, slice) {
+        let rFrom = doc.resolve(from)
+        let rTo = doc.resolve(to)
+        if fitsTrivially(rFrom, rTo, slice) {
             return try step(ReplaceStep(from, to, slice))
         }
-        // Fall back to the generic replace (Fitter handles structure).
-        return try replace(from, to, slice)
+
+        // Depths at which the range covers whole nodes — candidate levels to
+        // expand the replacement out to so the slice's structure is preserved.
+        var targetDepths = coveredDepths(rFrom, rTo)
+        if targetDepths.last == 0 { targetDepths.removeLast() } // can't replace the whole doc
+        // Negative depths mean "replace from before(-d) to `to`" without expanding
+        // the right side over the whole node.
+        var preferredTarget = -(rFrom.depth + 1)
+        targetDepths.insert(preferredTarget, at: 0)
+        var pos = rFrom.pos - 1
+        var d = rFrom.depth
+        while d > 0 {
+            let spec = rFrom.node(d).type.spec
+            if spec.defining || spec.isolating { break }
+            if targetDepths.contains(d) { preferredTarget = d }
+            else if rFrom.before(d) == pos { targetDepths.insert(-d, at: 1) }
+            d -= 1; pos -= 1
+        }
+        let preferredTargetIndex = targetDepths.firstIndex(of: preferredTarget) ?? 0
+
+        // The chain of left-edge nodes of the slice (deepest = openStart).
+        var leftNodes: [Node] = []
+        var preferredDepth = slice.openStart
+        var content = slice.content
+        var i = 0
+        while let node = content.firstChild {
+            leftNodes.append(node)
+            if i == slice.openStart { break }
+            content = node.content
+            i += 1
+        }
+        // Back up preferredDepth to cover defining textblocks above it.
+        var dd = preferredDepth - 1
+        while dd >= 0 {
+            let leftNode = leftNodes[dd]
+            let def = leftNode.type.spec.defining
+            if def && !leftNode.sameMarkup(rFrom.node(abs(preferredTarget) - 1)) { preferredDepth = dd }
+            else if def || !leftNode.type.isTextblock { break }
+            dd -= 1
+        }
+
+        // Try fitting each slice depth into each target depth, preferred first.
+        var j = slice.openStart
+        while j >= 0 {
+            let openDepth = (j + preferredDepth + 1) % (slice.openStart + 1)
+            if openDepth < leftNodes.count {
+                let insert = leftNodes[openDepth]
+                for k in 0..<targetDepths.count {
+                    var targetDepth = targetDepths[(k + preferredTargetIndex) % targetDepths.count]
+                    var expand = true
+                    if targetDepth < 0 { expand = false; targetDepth = -targetDepth }
+                    let parent = rFrom.node(targetDepth - 1)
+                    let index = rFrom.index(targetDepth - 1)
+                    if parent.canReplaceWith(index, index, insert.type, insert.marks) {
+                        let newContent = closeFragment(slice.content, 0, slice.openStart, openDepth, nil)
+                        return try replace(rFrom.before(targetDepth), expand ? rTo.after(targetDepth) : to,
+                                           Slice(content: newContent, openStart: openDepth, openEnd: slice.openEnd))
+                    }
+                }
+            }
+            j -= 1
+        }
+
+        // Fall back to a plain replace, widening the range until a step lands.
+        let startSteps = steps.count
+        var f = from, t = to
+        var k = targetDepths.count - 1
+        while k >= 0 {
+            _ = try? replace(f, t, slice)
+            if steps.count > startSteps { break }
+            let depth = targetDepths[k]
+            if depth >= 0 { f = rFrom.before(depth); t = rTo.after(depth) }
+            k -= 1
+        }
+        return self
     }
 
     /// Replace the given range with a single node.
@@ -311,18 +384,99 @@ public extension Transform {
         return try replaceWith(from, to, node)
     }
 
-    /// Delete the given range, joining content where that produces a valid
-    /// result.
+    /// Delete the given range. Where deleting the inner content would leave an
+    /// empty parent, the deletion is expanded outward to drop that parent too
+    /// (so deleting the only paragraph in a list item removes the item). Mirrors
+    /// ProseMirror's `deleteRange`; every depth access is bounded by the shallower
+    /// of `from`/`to`, so it never traps when `to` resolves shallower than `from`.
     @discardableResult
     func deleteRange(_ from: Int, _ to: Int) throws -> Self {
-        // A plain structural delete already joins content correctly across node
-        // boundaries (the Fitter handles it). An earlier "covered depths"
-        // expansion here was a no-op loop that read `resolvedTo` at depths it
-        // doesn't have — trapping (array out-of-bounds) whenever `to` resolves to
-        // a shallower depth than `from`, e.g. deleting a selection running from
-        // inside a nested block out to a top-level position.
-        try delete(from, to)
+        var from = from
+        var to = to
+        var rFrom = doc.resolve(from)
+        var rTo = doc.resolve(to)
+
+        // When the range spans from the start of one textblock to the start of
+        // another, move out of the start of both blocks before deleting.
+        if rFrom.parent.isTextblock, rTo.parent.isTextblock,
+           rFrom.start() != rTo.start(), rFrom.pos == rFrom.start(), rTo.pos == rTo.start() {
+            let shared = rFrom.sharedDepth(to)
+            var isolated = false
+            var d = rFrom.depth
+            while d > shared { if rFrom.node(d).type.spec.isolating { isolated = true }; d -= 1 }
+            d = rTo.depth
+            while d > shared { if rTo.node(d).type.spec.isolating { isolated = true }; d -= 1 }
+            if !isolated {
+                d = rFrom.depth
+                while d > 0, from == rFrom.start(d) { from = rFrom.before(d); d -= 1 }
+                d = rTo.depth
+                while d > 0, to == rTo.start(d) { to = rTo.before(d); d -= 1 }
+                rFrom = doc.resolve(from)
+                rTo = doc.resolve(to)
+            }
+        }
+
+        let covered = coveredDepths(rFrom, rTo)
+        for (i, depth) in covered.enumerated() {
+            let last = i == covered.count - 1
+            if (last && depth == 0) || rFrom.node(depth).type.contentMatch.validEnd {
+                return try delete(rFrom.start(depth), rTo.end(depth))
+            }
+            if depth > 0,
+               last || rFrom.node(depth - 1).canReplace(rFrom.index(depth - 1), rTo.indexAfter(depth - 1)) {
+                return try delete(rFrom.before(depth), rTo.after(depth))
+            }
+        }
+        var d = 1
+        while d <= rFrom.depth, d <= rTo.depth {
+            if from - rFrom.start(d) == rFrom.depth - d, to > rFrom.end(d), rTo.end(d) - to != rTo.depth - d,
+               rFrom.start(d - 1) == rTo.start(d - 1),
+               rFrom.node(d - 1).canReplace(rFrom.index(d - 1), rTo.index(d - 1)) {
+                return try delete(rFrom.before(d), to)
+            }
+            d += 1
+        }
+        return try delete(from, to)
     }
+}
+
+/// The list of depths, deepest first, at which `from`/`to` cover whole nodes —
+/// i.e. the range runs exactly from a node's start to its end. (ProseMirror's
+/// `coveredDepths`.) Bounded by `min(from.depth, to.depth)`.
+/// Re-close a slice's content to a new open depth, filling required nodes so the
+/// (now shallower) open fragment is valid. (ProseMirror's `closeFragment`.)
+private func closeFragment(_ fragment: Fragment, _ depth: Int, _ oldOpen: Int, _ newOpen: Int, _ parent: Node?) -> Fragment {
+    var fragment = fragment
+    if depth < oldOpen, let first = fragment.firstChild {
+        fragment = fragment.replaceChild(0, first.copy(content: closeFragment(first.content, depth + 1, oldOpen, newOpen, first)))
+    }
+    if depth > newOpen, let parent {
+        let match = parent.contentMatchAt(0)
+        let start = (match.fillBefore(fragment) ?? .empty).append(fragment)
+        let end = match.matchFragment(start)?.fillBefore(.empty, toEnd: true) ?? .empty
+        fragment = start.append(end)
+    }
+    return fragment
+}
+
+private func coveredDepths(_ from: ResolvedPos, _ to: ResolvedPos) -> [Int] {
+    var result: [Int] = []
+    let minDepth = min(from.depth, to.depth)
+    var d = minDepth
+    while d >= 0 {
+        let start = from.start(d)
+        if start < from.pos - (from.depth - d) ||
+            to.end(d) > to.pos + (to.depth - d) ||
+            from.node(d).type.spec.isolating ||
+            to.node(d).type.spec.isolating { break }
+        if start == to.start(d) ||
+            (d == from.depth && d == to.depth && from.parent.inlineContent && to.parent.inlineContent &&
+             d > 0 && to.start(d - 1) == start - 1) {
+            result.append(d)
+        }
+        d -= 1
+    }
+    return result
 }
 
 private func canChangeType(_ doc: Node, _ pos: Int, _ type: NodeType) -> Bool {

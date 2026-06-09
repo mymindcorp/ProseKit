@@ -66,26 +66,51 @@ open class Selection {
 
     /// Replace the selection with a slice (or empty to delete it).
     open func replace(_ tr: Transaction, _ content: Slice = .empty) {
+        // Bias the resulting cursor toward inline/textblock content (so it lands
+        // *inside* the inserted text rather than after a closing block boundary).
+        var lastNode = content.content.lastChild
+        var lastParent: Node?
+        for _ in 0..<content.openEnd { lastParent = lastNode; lastNode = lastNode?.lastChild }
+        let startLen = tr.steps.count
         var mapFrom = tr.steps.count
-        for range in ranges {
+        for (i, range) in ranges.enumerated() {
             let mapping = tr.mapping.slice(mapFrom)
             let from = mapping.map(range.from.pos)
             let to = mapping.map(range.to.pos)
-            _ = try? tr.replaceRange(from, to, content)
+            _ = try? tr.replaceRange(from, to, i == 0 ? content : .empty)
+            if i == 0 {
+                let inline = lastNode?.isInline ?? (lastParent?.isTextblock ?? false)
+                selectionToInsertionEnd(tr, startLen, inline ? -1 : 1)
+            }
             mapFrom = tr.steps.count
         }
     }
 
     /// Replace the selection with the given node.
     open func replaceWith(_ tr: Transaction, _ node: Node) {
+        let startLen = tr.steps.count
         var mapFrom = tr.steps.count
-        for range in ranges {
+        for (i, range) in ranges.enumerated() {
             let mapping = tr.mapping.slice(mapFrom)
-            let from = mapping.map(range.from.pos)
-            let to = mapping.map(range.to.pos)
-            _ = try? tr.replaceRangeWith(from, to, node)
+            let from = mapping.map(range.from.pos, 1)
+            let to = mapping.map(range.to.pos, -1)
+            if i == 0 { _ = try? tr.replaceRangeWith(from, to, node) }
+            else { _ = try? tr.replaceRange(from, to, .empty) }
             mapFrom = tr.steps.count
         }
+        selectionToInsertionEnd(tr, startLen, node.isInline ? -1 : 1)
+    }
+
+    /// Move the transaction's selection to the end of the content inserted by the
+    /// last replace step (matches ProseMirror's `selectionToInsertionEnd`).
+    func selectionToInsertionEnd(_ tr: Transaction, _ startLen: Int, _ bias: Int) {
+        let last = tr.steps.count - 1
+        guard last >= startLen else { return }
+        let step = tr.steps[last]
+        guard step is ReplaceStep || step is ReplaceAroundStep else { return }
+        var end: Int?
+        tr.mapping.maps[last].forEach { _, _, _, newTo in if end == nil { end = newTo } }
+        if let end { _ = tr.setSelection(Selection.near(tr.doc.resolve(end), bias)) }
     }
 
     /// Serialize to JSON.

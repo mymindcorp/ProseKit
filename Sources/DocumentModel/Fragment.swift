@@ -304,7 +304,21 @@ public struct Fragment: Hashable, Sendable {
     }
 
     public static func from(_ nodes: [Node]) -> Fragment {
-        Fragment(nodes)
+        if nodes.isEmpty { return .empty }
+        // Merge adjacent text nodes that share markup, matching ProseMirror's
+        // Fragment.fromArray (keeps documents in canonical, joined form).
+        var joined: [Node]?
+        for i in nodes.indices {
+            let node = nodes[i]
+            if i > 0, node.isText, nodes[i - 1].sameMarkup(node) {
+                if joined == nil { joined = Array(nodes[0..<i]) }
+                let prev = joined![joined!.count - 1]
+                joined![joined!.count - 1] = prev.withText((prev.text ?? "") + (node.text ?? ""))
+            } else {
+                joined?.append(node)
+            }
+        }
+        return Fragment(joined ?? nodes)
     }
 
     public static func from(_ node: Node) -> Fragment {

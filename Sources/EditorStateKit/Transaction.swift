@@ -102,8 +102,12 @@ public final class Transaction: Transform {
         let selection = self.selection
         var node = node
         if inheritMarks {
-            let marks = storedMarks ?? (selection.empty ? selection.resolvedFrom.marks() : selection.resolvedFrom.marks())
-            node = node.mark(marks.isEmpty ? node.marks : node.type.allowedMarks(marks))
+            // Apply the inherited marks directly (like ProseMirror) — don't filter by
+            // node.type.allowedMarks: a text node's own markSet is empty, so filtering
+            // would wrongly strip inline marks the parent block does allow.
+            let marks = storedMarks ?? (selection.empty ? selection.resolvedFrom.marks()
+                : (selection.resolvedFrom.marksAcross(selection.resolvedTo) ?? Mark.none))
+            node = node.mark(marks)
         }
         selection.replaceWith(self, node)
         return self
@@ -122,9 +126,7 @@ public final class Transaction: Transform {
         let schema = doc.type.schema!
         if from == nil {
             if text.isEmpty { return deleteSelection() }
-            let marks = storedMarks ?? selection.resolvedHead.marks()
-            let node = schema.text(text, marks)
-            return replaceSelectionWith(node, inheritMarks: false)
+            return replaceSelectionWith(schema.text(text), inheritMarks: true)
         }
         let from = from!
         let to = to ?? from
@@ -132,7 +134,8 @@ public final class Transaction: Transform {
             try delete(from, to)
             return self
         }
-        let marks = storedMarks ?? doc.resolve(from).marks()
+        let marks = storedMarks ?? (to == from ? doc.resolve(from).marks()
+            : (doc.resolve(from).marksAcross(doc.resolve(to)) ?? Mark.none))
         try replaceWith(from, to, schema.text(text, marks))
         return self
     }

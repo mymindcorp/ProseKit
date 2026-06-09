@@ -151,6 +151,28 @@ private func deleteBarrier(_ state: EditorState, _ cut: ResolvedPos, _ dispatch:
     if !isolated && joinMaybeClear(state, cut, dispatch) { return true }
 
     let canDelAfter = !isolated && cut.parent.canReplace(cut.index(), cut.index() + 1)
+    // Try moving the after-block *into* the before-block (e.g. a paragraph
+    // following a blockquote joins inside it), wrapping it as needed.
+    let match = before.contentMatchAt(before.childCount)
+    if canDelAfter, let conn = match.findWrapping(after.type),
+       match.matchType(conn.first ?? after.type)?.validEnd == true {
+        if let dispatch {
+            let end = cut.pos + after.nodeSize
+            var wrap = Fragment.empty
+            var i = conn.count - 1
+            while i >= 0 { wrap = Fragment.from(try! conn[i].create(content: wrap)); i -= 1 }
+            wrap = Fragment.from(before.copy(content: wrap))
+            let tr = state.tr
+            _ = try? tr.step(ReplaceAroundStep(cut.pos - 1, end, cut.pos, end,
+                                               Slice(content: wrap, openStart: 1, openEnd: 0), conn.count, structure: true))
+            let joinAt = tr.doc.resolve(end + 2 * conn.count)
+            if let na = joinAt.nodeAfter, na.type === before.type, canJoin(tr.doc, joinAt.pos) {
+                _ = try? tr.join(joinAt.pos)
+            }
+            dispatch(tr.scrollIntoView())
+        }
+        return true
+    }
     // Try lifting the after-block out.
     let selAfter = (after.type.spec.isolating || (dir > 0 && isolated)) ? nil : Selection.findFrom(cut, 1)
     if let selAfter, let range = selAfter.resolvedFrom.blockRange(selAfter.resolvedTo),
@@ -238,14 +260,14 @@ public let selectNodeForward: Command = { state, dispatch, host in
 
 private func joinUpCommand(_ state: EditorState, _ dispatch: Dispatch?) -> Bool {
     let sel = state.selection
-    var nodeSel = sel as? NodeSelection
-    var point: Int?
-    if let nodeSel, nodeSel.node.isBlock {
-        if nodeSel.resolvedFrom.depth == 0 { return false }
-        point = joinPoint(state.doc, nodeSel.resolvedFrom.before())
+    let nodeSel = sel as? NodeSelection
+    let point: Int?
+    if let nodeSel {
+        // A selected (non-textblock) node joins with its previous sibling.
+        if nodeSel.node.isTextblock || !canJoin(state.doc, sel.from) { return false }
+        point = sel.from
     } else {
         point = joinPoint(state.doc, sel.from, -1)
-        nodeSel = nil
     }
     guard let p = point else { return false }
     if let dispatch {
@@ -262,9 +284,10 @@ public let joinUp: Command = { state, dispatch, _ in joinUpCommand(state, dispat
 /// Join the selected block, or the closest ancestor block, with the one below.
 public let joinDown: Command = { state, dispatch, _ in
     let sel = state.selection
-    var point: Int?
-    if let nodeSel = sel as? NodeSelection, nodeSel.node.isBlock {
-        point = joinPoint(state.doc, nodeSel.resolvedTo.after(), 1)
+    let point: Int?
+    if let nodeSel = sel as? NodeSelection {
+        if nodeSel.node.isTextblock || !canJoin(state.doc, sel.to) { return false }
+        point = sel.to
     } else {
         point = joinPoint(state.doc, sel.to, 1)
     }
@@ -329,7 +352,9 @@ public let createParagraphNear: Command = { state, dispatch, _ in
     guard let type = defaultBlockAt(to.parent.contentMatchAt(to.indexAfter())),
           let filled = type.createAndFill() else { return false }
     if let dispatch {
-        let pos = to.pos
+        // Insert before the node when it's at the start of its parent and has
+        // siblings after it; otherwise insert after.
+        let pos = (from.pos == from.start() && to.indexAfter() < to.parent.childCount) ? from.pos : to.pos
         guard let tr = try? state.tr.insert(pos, filled) else { return false }
         tr.setSelection(TextSelection.create(tr.doc, pos + 1))
         dispatch(tr.scrollIntoView())
@@ -458,11 +483,15 @@ public func toggleMark(_ markType: MarkType, _ attrs: Attrs = [:]) -> Command {
                     has = state.doc.rangeHasMark(range.from.pos, range.to.pos, markType)
                 }
                 for range in ranges {
-                    let from = range.from.pos, to = range.to.pos
                     if has {
-                        _ = try? tr.removeMark(from, to, markType)
+                        _ = try? tr.removeMark(range.from.pos, range.to.pos, markType)
                     } else {
-                        // trim leading/trailing whitespace-only? keep simple
+                        // Skip leading/trailing whitespace when adding a mark (but
+                        // not for whitespace-only selections), matching ProseMirror.
+                        var from = range.from.pos, to = range.to.pos
+                        let spaceStart = range.from.nodeAfter?.isText == true ? leadingWhitespace(range.from.nodeAfter!.text ?? "") : 0
+                        let spaceEnd = range.to.nodeBefore?.isText == true ? trailingWhitespace(range.to.nodeBefore!.text ?? "") : 0
+                        if from + spaceStart < to { from += spaceStart; to -= spaceEnd }
                         _ = try? tr.addMark(from, to, markType.create(attrs))
                     }
                 }
@@ -518,4 +547,15 @@ public func setBlockType(_ nodeType: NodeType, _ attrs: Attrs = [:]) -> Command 
         }
         return true
     }
+}
+
+private func leadingWhitespace(_ s: String) -> Int {
+    var n = 0
+    for ch in s { if ch.isWhitespace { n += 1 } else { break } }
+    return n
+}
+private func trailingWhitespace(_ s: String) -> Int {
+    var n = 0
+    for ch in s.reversed() { if ch.isWhitespace { n += 1 } else { break } }
+    return n
 }
