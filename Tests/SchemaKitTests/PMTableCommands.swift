@@ -7,7 +7,13 @@ import TestHarness
 
 // Ported from prosemirror-tables/test/commands.test.ts.
 
-private func selectionFor(_ d: TaggedNode) -> Selection {
+private func runCmd(_ d: TaggedNode, _ cmd: @escaping Command) -> EditorState {
+    var state = EditorState.create(EditorStateConfig(schema: basicSchema, doc: d.node, selection: selectionFor(d)))
+    _ = cmd(state, { tr in state = state.apply(tr) }, nil)
+    return state
+}
+
+func selectionFor(_ d: TaggedNode) -> Selection {
     if let cursor = d.tags["cursor"] { return TextSelection(d.node.resolve(cursor)) }
     if let anchor = d.tags["anchor"], let a = cellAround(d.node.resolve(anchor)) {
         let h = d.tags["head"].flatMap { cellAround(d.node.resolve($0)) }
@@ -132,4 +138,28 @@ func registerPMTableCommandsTests() {
     tcase("toggleHeader column: keeps first cell header when column header enabled",
           doc(p("x"), table(tr(h11(), c11()), tr(hCursor(), c11()), tr(h11(), c11()))), toggleHeader(.row),
           doc(p("x"), table(tr(h11(), h11()), tr(h11(), c11()), tr(h11(), c11()))))
+
+    // MARK: keyboard cell navigation/selection (input.ts)
+    test("PM tableShiftArrow: starts a cell selection across two cells") {
+        let s = runCmd(table(tr(cCursor(), c11())), tableShiftArrow(.horiz, 1))
+        try expect(s.selection is CellSelection, "expected CellSelection")
+        try expectEqual(s.selection.ranges.count, 2)
+    }
+    test("PM tableShiftArrow: extends an existing cell selection downward") {
+        let d = table(tr(cAnchor(), c11()), tr(c11(), c11()))
+        let s = runCmd(d, tableShiftArrow(.vert, 1))
+        try expect(s.selection is CellSelection)
+        try expectEqual(s.selection.ranges.count, 2) // anchor cell + the one below
+    }
+    test("PM tableArrow: moves into the next cell from a cell edge") {
+        let d = table(tr(cCursor(), c11()))
+        let s = runCmd(d, tableArrow(.horiz, 1))
+        try expect(s.selection is TextSelection)
+        try expect(s.selection.head > (d.tags["cursor"] ?? 0), "cursor advanced into the next cell")
+    }
+    test("PM tableArrow: collapses a cell selection to its head") {
+        let d = table(tr(cAnchor(), cHead()))
+        let s = runCmd(d, tableArrow(.horiz, 1))
+        try expect(!(s.selection is CellSelection), "cell selection collapsed")
+    }
 }

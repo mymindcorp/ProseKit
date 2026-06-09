@@ -11,9 +11,10 @@ import TestHarness
 //   • parse → serialize → parse is idempotent (no structure lost either way).
 
 // Block builders (no clash with the existing doc/p/t/strong/em/h in main.swift).
-private func ul(_ c: Node...) -> Node { node("bulletList", [:], c) }
-private func ol(_ c: Node...) -> Node { node("orderedList", [:], c) }
-private func li(_ c: Node...) -> Node { node("listItem", [:], c) }
+// ul/ol/li are internal: main.swift's HTML paste tests share them.
+func ul(_ c: Node...) -> Node { node("bulletList", [:], c) }
+func ol(_ c: Node...) -> Node { node("orderedList", [:], c) }
+func li(_ c: Node...) -> Node { node("listItem", [:], c) }
 private func pre(_ s: String) -> Node { node("codeBlock", [:], s.isEmpty ? [] : [t(s)]) }
 private func bq(_ c: Node...) -> Node { node("blockquote", [:], c) }
 private func hr() -> Node { node("horizontalRule", [:]) }

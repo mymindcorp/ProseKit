@@ -149,6 +149,76 @@ registerSlashMenuTests()
 registerCollabCursorTests()
 registerFuzzTests()
 
-registerPMListTests(); registerPMTableMapTests(); registerPMTableCommandsTests()
+registerPMListTests(); registerPMTableMapTests(); registerPMTableCommandsTests(); registerPMCellCopyPasteTests(); registerPMTableExtraTests()
+
+// Shared builders for the checklist-import tests below.
+private let clSchema = try! makeFullEditor().schema
+private func clNode(_ t: String, _ a: Attrs = [:], _ c: [Node] = []) -> Node {
+    try! clSchema.node(t, a, content: Fragment.from(c))
+}
+private func clPara(_ s: String) -> Node { clNode("paragraph", [:], [clSchema.text(s)]) }
+private func clItem(_ s: String, _ extra: [Node] = []) -> Node { clNode("listItem", [:], [clPara(s)] + extra) }
+
+test("checklist import: bullet list with a checked line → task list") {
+    // bulletList(li "milk", li "eggs", li "bread") with "milk" and "bread" checked
+    let bl = clNode("bulletList", [:], [clItem("milk"), clItem("eggs"), clItem("bread")])
+    let out = applyChecklistMarkers(Fragment.from([bl]), checkedTexts: ["milk", "bread"], schema: clSchema)
+    let list = out.firstChild
+    try expectEqual(list?.type.name, "taskList")
+    try expectEqual(list?.childCount, 3)
+    try expectEqual(list?.child(0).attrs["checked"]?.boolValue, true)   // milk
+    try expectEqual(list?.child(1).attrs["checked"]?.boolValue, false)  // eggs
+    try expectEqual(list?.child(2).attrs["checked"]?.boolValue, true)   // bread
+    try expectEqual(list?.child(0).textContent, "milk")
+}
+
+test("checklist import: all-unchecked checklist (via proto lines) → task list") {
+    let bl = clNode("bulletList", [:], [clItem("beta"), clItem("gamma")])
+    // No checked items, but proto told us these are checklist lines.
+    let out = applyChecklistMarkers(Fragment.from([bl]), checkedTexts: [],
+                                    checklistLines: [("beta", false), ("gamma", false)], schema: clSchema)
+    try expectEqual(out.firstChild?.type.name, "taskList")
+    try expectEqual(out.firstChild?.child(0).attrs["checked"]?.boolValue, false)
+    try expectEqual(out.firstChild?.child(1).attrs["checked"]?.boolValue, false)
+}
+
+test("checklist import: plain bullet list (no checked lines) is unchanged") {
+    let bl = clNode("bulletList", [:], [clItem("a")])
+    let out = applyChecklistMarkers(Fragment.from([bl]), checkedTexts: ["something else"], schema: clSchema)
+    try expectEqual(out.firstChild?.type.name, "bulletList")
+}
+
+test("checklist import: duplicate item texts resolve positionally (proto lines)") {
+    let bl = clNode("bulletList", [:], [clItem("call mom"), clItem("call mom")])
+    let out = applyChecklistMarkers(Fragment.from([bl]), checkedTexts: [],
+                                    checklistLines: [("call mom", true), ("call mom", false)], schema: clSchema)
+    try expectEqual(out.firstChild?.type.name, "taskList")
+    try expectEqual(out.firstChild?.child(0).attrs["checked"]?.boolValue, true)
+    try expectEqual(out.firstChild?.child(1).attrs["checked"]?.boolValue, false)
+}
+
+test("checklist import: item with a nested plain sub-list still matches its line") {
+    // Item text must be line-scoped: "milk" with a nested list must not become
+    // "milksub" for matching, and the inner plain list must stay a bulletList.
+    let nested = clNode("bulletList", [:], [clItem("sub")])
+    let bl = clNode("bulletList", [:], [clItem("milk", [nested]), clItem("eggs")])
+    let out = applyChecklistMarkers(Fragment.from([bl]), checkedTexts: ["milk", "eggs"], schema: clSchema)
+    let list = out.firstChild
+    try expectEqual(list?.type.name, "taskList")
+    try expectEqual(list?.child(0).attrs["checked"]?.boolValue, true)
+    try expectEqual(list?.child(0).child(1).type.name, "bulletList") // inner list untouched
+}
+
+test("checklist import: unrelated bullet list sharing one line text stays a bullet list") {
+    // With full proto lines, a list converts only if ALL its items are checklist
+    // lines — a coincidental "milk" in a plain list must not flip it.
+    let checklist = clNode("bulletList", [:], [clItem("milk"), clItem("bread")])
+    let plain = clNode("bulletList", [:], [clItem("milk"), clItem("apples")])
+    let out = applyChecklistMarkers(Fragment.from([checklist, plain]), checkedTexts: [],
+                                    checklistLines: [("milk", true), ("bread", false)], schema: clSchema)
+    try expectEqual(out.firstChild?.type.name, "taskList")
+    try expectEqual(out.firstChild?.child(0).attrs["checked"]?.boolValue, true)
+    try expectEqual(out.child(1).type.name, "bulletList")
+}
 
 TestSuite.main("SchemaKitTests", collector.all)
