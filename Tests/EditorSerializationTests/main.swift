@@ -176,4 +176,6 @@ test("Markdown code fence round-trip") {
 
 registerProseTests()
 
+registerPMMarkdownTests()
+
 TestSuite.main("EditorSerializationTests", collector.all)
