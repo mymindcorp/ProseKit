@@ -15,7 +15,7 @@ public enum MarkdownSerializer {
     static func serializeBlock(_ node: Node, indent: String) -> String {
         switch node.type.name {
         case "paragraph":
-            return serializeInline(node.content)
+            return escapeLeadingBlockMarker(serializeInline(node.content))
         case "heading":
             let level = node.attrs["level"]?.intValue ?? 1
             return String(repeating: "#", count: level) + " " + serializeInline(node.content)
@@ -34,6 +34,27 @@ public enum MarkdownSerializer {
         default:
             return serializeInline(node.content)
         }
+    }
+
+    /// Escape a leading `#`/`>`/`-`/`*`/`+`/`1.` so a paragraph that happens to
+    /// start with block-marker syntax round-trips as a paragraph, not a heading/
+    /// quote/list.
+    private static func escapeLeadingBlockMarker(_ s: String) -> String {
+        let chars = Array(s)
+        guard let first = chars.first else { return s }
+        if first == "#" {
+            var n = 0
+            while n < chars.count, chars[n] == "#" { n += 1 }
+            if n <= 6, n == chars.count || chars[n] == " " { return "\\" + s }
+        }
+        if first == ">" { return "\\" + s }
+        if first == "-" || first == "*" || first == "+", chars.count > 1, chars[1] == " " { return "\\" + s }
+        var n = 0
+        while n < chars.count, chars[n].isNumber { n += 1 }
+        if n > 0, n < chars.count, chars[n] == ".", n + 1 < chars.count, chars[n + 1] == " " {
+            return String(chars[0..<n]) + "\\." + String(chars[(n + 1)...])
+        }
+        return s
     }
 
     static func listItemText(_ item: Node) -> String {
@@ -156,7 +177,9 @@ public enum MarkdownParser {
                     || bulletMatch(t) != nil || orderedMatch(t) != nil { break }
                 para.append(t); i += 1
             }
-            let inline = parseInline(para.joined(separator: " "), schema)
+            // Keep line breaks so the inline parser can turn a trailing `\` into a
+            // hard break and collapse other soft wraps into spaces.
+            let inline = parseInline(para.joined(separator: "\n"), schema)
             if let p = try? schema.node("paragraph", [:], content: Fragment.from(inline)) { blocks.append(p) }
         }
         if blocks.isEmpty, let p = schema.nodes["paragraph"]?.createAndFill() { blocks = [p] }
@@ -188,9 +211,18 @@ public enum MarkdownParser {
     private static func collectList(_ lines: [String], _ start: Int, ordered: Bool) -> (items: [String], next: Int) {
         var items: [String] = []
         var i = start
+        func isItem(_ t: String) -> Bool { ordered ? orderedMatch(t) != nil : bulletMatch(t) != nil }
         while i < lines.count {
             let t = lines[i].trimmingCharacters(in: .whitespaces)
-            if ordered, let _ = orderedMatch(t) {
+            if t.isEmpty {
+                // A blank line continues the list (loose list) only if another item
+                // of the same kind follows; otherwise the list ends here.
+                var j = i + 1
+                while j < lines.count, lines[j].trimmingCharacters(in: .whitespaces).isEmpty { j += 1 }
+                if j < lines.count, isItem(lines[j].trimmingCharacters(in: .whitespaces)) { i = j; continue }
+                break
+            }
+            if ordered, orderedMatch(t) != nil {
                 items.append(String(t.drop(while: { $0.isNumber }).dropFirst(2)))
                 i += 1
             } else if !ordered, let text = bulletMatch(t) {
@@ -227,8 +259,22 @@ public enum MarkdownParser {
         func mark(_ name: String, _ attrs: Attrs = [:]) -> [Mark] {
             schema.marks[name].map { [$0.create(attrs)] } ?? []
         }
+        let asciiPunct = Set("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
         while i < chars.count {
             let c = chars[i]
+            // Backslash: a hard break before a newline, otherwise an escape that
+            // emits the next punctuation character literally.
+            if c == "\\", i + 1 < chars.count {
+                let next = chars[i + 1]
+                if next == "\n" {
+                    flush()
+                    if let br = try? schema.nodes["hardBreak"]?.create() { nodes.append(br) }
+                    i += 2; continue
+                }
+                if asciiPunct.contains(next) { buffer.append(next); i += 2; continue }
+            }
+            // Soft line break collapses to a space.
+            if c == "\n" { buffer.append(" "); i += 1; continue }
             // Wiki link [[...]]
             if c == "[" && i + 1 < chars.count && chars[i + 1] == "[" {
                 if let close = findSeq(chars, i + 2, "]]") {
