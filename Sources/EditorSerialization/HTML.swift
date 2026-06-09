@@ -139,20 +139,25 @@ public enum HTMLParser {
 
     public static func parse(_ html: String, schema: Schema, config: HTMLConfig = .default) throws -> Node {
         let tokens = tokenize(html)
-        var blocks: [Node] = []
-        var index = 0
-        while index < tokens.count {
-            if let (node, next) = parseBlock(tokens, index, schema, config) {
-                if let node { blocks.append(node) }
-                index = next
-            } else {
-                index += 1
-            }
-        }
+        var blocks = parseBlocks(tokens, schema, config)
         if blocks.isEmpty, let p = schema.nodes["paragraph"]?.createAndFill() {
             blocks = [p]
         }
         return try schema.node("doc", [:], content: Fragment.from(blocks))
+    }
+
+    // Tags whose children are spliced in transparently (document/section wrappers).
+    private static let transparentWrappers: Set<String> = ["html", "body", "tbody", "thead", "tfoot"]
+    // Tags dropped entirely along with their content (document metadata, CSS, JS).
+    private static let skippedWrappers: Set<String> = ["head", "style", "script", "title", "noscript", "colgroup"]
+    private static let blockTags: Set<String> = [
+        "p", "div", "ul", "ol", "li", "table", "tr", "td", "th", "tbody", "thead", "tfoot",
+        "blockquote", "pre", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article",
+    ]
+
+    private static func containsBlockTag(_ tokens: [Token]) -> Bool {
+        for t in tokens { if case let .open(tag, _, _) = t, blockTags.contains(tag) { return true } }
+        return false
     }
 
     // Parse a single block-level element starting at `start`.
@@ -224,13 +229,30 @@ public enum HTMLParser {
         var i = 0
         while i < tokens.count {
             if case let .open(tag, _, _) = tokens[i] {
-                // Transparent table-section wrappers: splice their rows in directly.
-                if tag == "tbody" || tag == "thead" || tag == "tfoot" {
+                // Document/section wrappers (incl. <html>/<body> from full-document
+                // clipboard HTML, e.g. Apple Notes): splice their children in.
+                if transparentWrappers.contains(tag) {
                     let e = matchingClose(tokens, i, tag)
                     result.append(contentsOf: parseBlocks(Array(tokens[(i + 1)..<e]), schema, config))
                     i = e + 1; continue
                 }
-                if tag == "colgroup" { i = matchingClose(tokens, i, tag) + 1; continue } // <col> defs, no content
+                // <head>/<style>/<script>/… — drop entirely.
+                if skippedWrappers.contains(tag) { i = matchingClose(tokens, i, tag) + 1; continue }
+                // <div>: a generic block container. With block children, flatten it;
+                // otherwise treat its inline content as a paragraph (preserving marks).
+                if tag == "div" {
+                    let e = matchingClose(tokens, i, tag)
+                    let inner = Array(tokens[(i + 1)..<e])
+                    if containsBlockTag(inner) {
+                        result.append(contentsOf: parseBlocks(inner, schema, config))
+                    } else {
+                        let inline = parseInline(inner, schema, config)
+                        if !inline.isEmpty, let para = try? schema.node("paragraph", [:], content: Fragment.from(inline)) {
+                            result.append(para)
+                        }
+                    }
+                    i = e + 1; continue
+                }
             }
             if let (node, next) = parseBlock(tokens, i, schema, config) {
                 if let node { result.append(node) }
@@ -409,7 +431,7 @@ public enum HTMLParser {
         return tokens
     }
 
-    private static let voidTags: Set<String> = ["br", "hr", "img", "input", "col", "wbr", "source", "area"]
+    private static let voidTags: Set<String> = ["br", "hr", "img", "input", "col", "wbr", "source", "area", "meta", "link"]
 
     private static func parseTag(_ raw: String) -> (String, [String: String], Bool) {
         var s = raw.trimmingCharacters(in: .whitespaces)

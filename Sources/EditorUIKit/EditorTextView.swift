@@ -907,6 +907,11 @@ open class EditorTextView: UIView, UIKeyInput {
            let html = String(data: data, encoding: .utf8),
            let doc = try? HTMLParser.parse(html, schema: editor.schema) {
             insertContent(doc.content)
+        } else if let doc = richTextPasteDoc(pb) {
+            // Rich text without public.html (e.g. Apple Notes / Pages, which are
+            // RTF-first) — bridge via NSAttributedString → HTML so tables, lists,
+            // and checklists survive.
+            insertContent(doc.content)
         } else if let string = pb.string {
             // Treat clearly-Markdown text as Markdown; otherwise plain.
             if looksLikeMarkdown(string), let doc = try? MarkdownParser.parse(string, schema: editor.schema) {
@@ -915,6 +920,25 @@ open class EditorTextView: UIView, UIKeyInput {
                 pastePlainText(string)
             }
         }
+    }
+
+    /// Read RTF/RTFD from the pasteboard, convert to HTML via NSAttributedString,
+    /// and parse it. Returns nil if no rich-text flavor is present or conversion fails.
+    private func richTextPasteDoc(_ pb: UIPasteboard) -> Node? {
+        let candidates: [(String, NSAttributedString.DocumentType)] = [
+            ("com.apple.flat-rtfd", .rtfd), ("public.rtfd", .rtfd), ("public.rtf", .rtf),
+        ]
+        for (type, docType) in candidates where pb.contains(pasteboardTypes: [type]) {
+            guard let data = pb.data(forPasteboardType: type),
+                  let attr = try? NSAttributedString(data: data, options: [.documentType: docType], documentAttributes: nil),
+                  let htmlData = try? attr.data(from: NSRange(location: 0, length: attr.length),
+                                                documentAttributes: [.documentType: NSAttributedString.DocumentType.html]),
+                  let html = String(data: htmlData, encoding: .utf8),
+                  let doc = try? HTMLParser.parse(html, schema: editor.schema)
+            else { continue }
+            return doc
+        }
+        return nil
     }
 
     /// Paste the pasteboard's text as plain text, discarding any rich formatting.
