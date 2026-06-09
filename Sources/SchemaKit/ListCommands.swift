@@ -84,11 +84,37 @@ public func splitListItem(_ itemType: NodeType, _ itemAttrs: Attrs? = nil) -> Co
         if grandParent.type !== itemType { return false }
 
         if from.parent.content.size == 0 && from.node(-1).childCount == from.indexAfter(-1) {
-            // In an empty block at the end of the item — lift out instead.
-            if from.depth == 2 || from.node(-3).type !== itemType || from.index(-2) != from.node(-2).childCount - 1 {
-                return liftListItem(itemType)(state, dispatch, nil)
+            // In an empty block. If this is a nested list, split the wrapping list
+            // item; otherwise bail out and let the next command handle lifting.
+            if from.depth == 3 || from.node(-3).type !== itemType || from.index(-2) != from.node(-2).childCount - 1 {
+                return false
             }
-            return false
+            if let dispatch {
+                var wrap = Fragment.empty
+                let depthBefore = from.index(-1) != 0 ? 1 : (from.index(-2) != 0 ? 2 : 3)
+                // Empty copies of the structure from the outer list item down to
+                // the cursor's parent.
+                var d = from.depth - depthBefore
+                while d >= from.depth - 3 {
+                    wrap = Fragment.from(from.node(d).copy(content: wrap))
+                    d -= 1
+                }
+                let depthAfter = from.indexAfter(-1) < from.node(-2).childCount ? 1
+                    : (from.indexAfter(-2) < from.node(-3).childCount ? 2 : 3)
+                wrap = wrap.append(Fragment.from(try! itemType.createAndFill()!))
+                let start = from.before(from.depth - (depthBefore - 1))
+                let tr = state.tr
+                _ = try? tr.replace(start, from.after(-depthAfter), Slice(content: wrap, openStart: 4 - depthBefore, openEnd: 0))
+                var sel = -1
+                tr.doc.nodesBetween(start, tr.doc.content.size, { node, pos, _, _ in
+                    if sel > -1 { return false }
+                    if node.isTextblock && node.content.size == 0 { sel = pos + 1 }
+                    return true
+                })
+                if sel > -1 { tr.setSelection(Selection.near(tr.doc.resolve(sel))) }
+                dispatch(tr.scrollIntoView())
+            }
+            return true
         }
 
         let nextType: NodeType? = to.pos == from.end() ? grandParent.contentMatchAt(0).defaultType : nil
@@ -154,14 +180,19 @@ private func liftToOuterList(_ state: EditorState, _ dispatch: Dispatch, _ itemT
     let end = range.end
     let endOfList = range.to.end(range.depth)
     if end < endOfList {
+        // Siblings after the lifted items must become children of the last item:
+        // wrap them in an empty copy of the surrounding list inside a new item.
         _ = try? tr.step(ReplaceAroundStep(end - 1, endOfList, end, endOfList,
-            Slice(content: Fragment.from(try! itemType.create([:], content: range.parent.copy(content: .empty).content)), openStart: 1, openEnd: 0), 1, structure: true))
+            Slice(content: Fragment.from(try! itemType.create([:], content: range.parent.copy(content: .empty))), openStart: 1, openEnd: 0), 1, structure: true))
         range = NodeRange(tr.doc.resolve(range.from.pos), tr.doc.resolve(endOfList), range.depth)
     }
     guard let target = liftTarget(range) else { return false }
     _ = try? tr.lift(range, target)
-    let after = tr.mapping.map(end, -1) - 1
-    if canJoin(tr.doc, after) { _ = try? tr.join(after) }
+    let afterPos = tr.mapping.map(end, -1) - 1
+    let after = tr.doc.resolve(afterPos)
+    if canJoin(tr.doc, afterPos), after.nodeBefore?.type === after.nodeAfter?.type {
+        _ = try? tr.join(afterPos)
+    }
     dispatch(tr.scrollIntoView())
     return true
 }
