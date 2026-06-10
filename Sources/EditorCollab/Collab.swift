@@ -36,8 +36,9 @@ private let addToHistoryMeta = "addToHistory"
 
 private enum CollabUpdate { case set(CollabState) }
 
-/// Create the collaboration plugin.
-public func collab(version: Int = 0, clientID: Int) -> Plugin {
+/// Create the collaboration plugin. `clientID` distinguishes this client's
+/// changes from peers'; it defaults to a random 32-bit number like upstream.
+public func collab(version: Int = 0, clientID: Int = Int.random(in: 0..<0x1_0000_0000)) -> Plugin {
     Plugin(
         key: collabKey.key,
         stateField: PluginStateField(
@@ -71,6 +72,10 @@ public struct SendableSteps {
     public let version: Int
     public let steps: [Step]
     public let clientID: Int
+    /// The original transactions that produced each step — useful for timestamps
+    /// and other metadata. Note the steps may since have been rebased, while the
+    /// origins are the old, unchanged transactions.
+    public let origins: [Transaction?]
 }
 
 /// Steps to send to the central authority, or `nil` if there are none.
@@ -78,7 +83,8 @@ public func sendableSteps(_ state: EditorState) -> SendableSteps? {
     guard let collabState = collabKey.getState(state), !collabState.unconfirmed.isEmpty else { return nil }
     return SendableSteps(version: collabState.version,
                          steps: collabState.unconfirmed.map { $0.step },
-                         clientID: collabState.clientID)
+                         clientID: collabState.clientID,
+                         origins: collabState.unconfirmed.map { $0.origin })
 }
 
 /// The confirmed document version for this state.
@@ -89,7 +95,11 @@ public func getVersion(_ state: EditorState) -> Int {
 /// Create a transaction that represents a set of remote steps received from the
 /// authority (each with the client ID that produced it). Apply the returned
 /// transaction to advance and rebase local unconfirmed steps.
-public func receiveTransaction(_ state: EditorState, _ steps: [Step], _ clientIDs: [Int]) -> Transaction {
+///
+/// With `mapSelectionBackward` (off by default, like upstream), a text selection
+/// is mapped with negative bias so content inserted at the cursor lands after it.
+public func receiveTransaction(_ state: EditorState, _ steps: [Step], _ clientIDs: [Int],
+                               mapSelectionBackward: Bool = false) -> Transaction {
     let collabState = collabKey.getState(state)!
     let version = collabState.version + steps.count
     let ourID = collabState.clientID
@@ -116,10 +126,13 @@ public func receiveTransaction(_ state: EditorState, _ steps: [Step], _ clientID
     }
 
     let newCollabState = CollabState(version: version, unconfirmed: unconfirmed, clientID: ourID)
+    if mapSelectionBackward, state.selection is TextSelection {
+        tr.setSelection(TextSelection.between(tr.doc.resolve(tr.mapping.map(state.selection.anchor, -1)),
+                                              tr.doc.resolve(tr.mapping.map(state.selection.head, -1)), -1))
+    }
     tr.setMeta(rebasedMeta, nUnconfirmed)
     tr.setMeta(addToHistoryMeta, false)
     tr.setMeta(collabMeta, CollabUpdate.set(newCollabState))
-    _ = remoteSteps
     return tr
 }
 
