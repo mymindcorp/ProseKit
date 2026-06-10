@@ -41,7 +41,7 @@ func registerPMTableMoveTests() {
     }
 
     // MARK: convertTableNodeToArrayOfRows
-    func grid(_ t: TaggedNode) -> [[String?]] {
+    @Sendable func grid(_ t: TaggedNode) -> [[String?]] {
         convertTableNodeToArrayOfRows(t.node).map { $0.map { $0?.textContent } }
     }
     test("PM convert→array: simple table") {

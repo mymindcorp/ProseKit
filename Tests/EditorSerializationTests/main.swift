@@ -222,10 +222,10 @@ test("HTML tokenizer: malformed fragments never crash") {
         "<!-- unterminated", "<i><b></i></b>", "<p =\"v\">x</p>", "<p/ >x",
         String(repeating: "<div>", count: 200) + "x",
     ]
-    for c in cases {
-        try? c.write(toFile: "/tmp/html-fuzz-case.txt", atomically: true, encoding: .utf8)
-        _ = try? HTMLParser.parse(c, schema: schema)
-    }
+    for c in cases { _ = try? HTMLParser.parse(c, schema: schema) }
+    // Regression for the trap this test originally caught: an unterminated open
+    // tag as the final token must recover, keeping its content.
+    try expectEqual(try HTMLParser.parse("<p>hi", schema: schema), doc(p("hi")))
 }
 
 test("HTML paste: Apple Notes via RTF→Cocoa HTML Writer (doctype + p/span/ul)") {
