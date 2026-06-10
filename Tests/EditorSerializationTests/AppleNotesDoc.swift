@@ -124,4 +124,43 @@ func registerAppleNotesDocTests() {
         let huge = Data([0x12] + Array(repeating: 0x80, count: 9) + [0x01])
         try expect(AppleNotesPasteboard.parseNoteDocument(huge, schema: schema) == nil)
     }
+
+    test("Notes proto doc: no trailing newline / only-newlines / underline degrade") {
+        // Last line without a terminating "\n" still becomes a block.
+        try expectEqual(AppleNotesPasteboard.parseNoteDocument(noteProto("hi", [runProto(2)]), schema: schema),
+                        doc(p("hi")))
+        // A note that is only blank lines trims to nothing → nil.
+        try expect(AppleNotesPasteboard.parseNoteDocument(noteProto("\n\n", [runProto(2)]), schema: schema) == nil)
+        // Underline run in a schema without an "underline" mark degrades to plain.
+        try expectEqual(AppleNotesPasteboard.parseNoteDocument(noteProto("u\n", [runProto(2, underline: true)]), schema: schema),
+                        doc(p("u")))
+    }
+
+    test("Notes proto fuzz: random, truncated, and bit-flipped inputs never crash") {
+        // Deterministic xorshift so failures are reproducible.
+        var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+        func rnd() -> UInt64 {
+            state ^= state << 13; state ^= state >> 7; state ^= state << 17
+            return state
+        }
+        let fixture = [UInt8](Data(base64Encoded: notesChecklistFixture)!)
+        for round in 0..<400 {
+            var bytes: [UInt8]
+            switch round % 3 {
+            case 0: // pure noise
+                bytes = (0..<Int(rnd() % 80)).map { _ in UInt8(truncatingIfNeeded: rnd()) }
+            case 1: // truncated real fixture
+                bytes = Array(fixture.prefix(Int(rnd() % UInt64(fixture.count + 1))))
+            default: // bit-flipped real fixture
+                bytes = fixture
+                for _ in 0...(rnd() % 8) {
+                    bytes[Int(rnd() % UInt64(bytes.count))] = UInt8(truncatingIfNeeded: rnd())
+                }
+            }
+            let d = Data(bytes)
+            _ = AppleNotesPasteboard.parseNoteProto(d)
+            _ = AppleNotesPasteboard.parseNoteDocument(d, schema: schema)
+            _ = AppleNotesPasteboard.checklist(fromArchive: d)
+        }
+    }
 }

@@ -150,6 +150,7 @@ registerCollabCursorTests()
 registerFuzzTests()
 
 registerPMListTests(); registerPMTableMapTests(); registerPMTableCommandsTests(); registerPMCellCopyPasteTests(); registerPMTableExtraTests()
+registerPMTableMoveTests()
 
 // Shared builders for the checklist-import tests below.
 private let clSchema = try! makeFullEditor().schema

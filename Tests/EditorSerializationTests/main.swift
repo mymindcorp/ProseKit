@@ -208,6 +208,26 @@ test("HTML entities: &nbsp; and numeric references decode") {
     try expectEqual(back, doc(p("a\u{00A0}b AB &lt;")))
 }
 
+test("HTML entities: invalid references stay literal") {
+    // Out-of-range, surrogate, unknown-name, and empty refs must pass through.
+    let back = try HTMLParser.parse("<p>&#x110000; &#xD800; &bogus; &; & end&</p>", schema: schema)
+    try expectEqual(back, doc(p("&#x110000; &#xD800; &bogus; &; & end&")))
+}
+
+test("HTML tokenizer: malformed fragments never crash") {
+    // Robustness only — output shape is unspecified for these, crash-freedom isn't.
+    let cases = [
+        "<p", "<", "<>", "</", "</p", "<p attr=\"unterminated>x", "x > y",
+        "&", "&;", "&#;", "&#x;", "a & b", "<b>x", "<!", "<?", "<![CDATA[",
+        "<!-- unterminated", "<i><b></i></b>", "<p =\"v\">x</p>", "<p/ >x",
+        String(repeating: "<div>", count: 200) + "x",
+    ]
+    for c in cases {
+        try? c.write(toFile: "/tmp/html-fuzz-case.txt", atomically: true, encoding: .utf8)
+        _ = try? HTMLParser.parse(c, schema: schema)
+    }
+}
+
 test("HTML paste: Apple Notes via RTF→Cocoa HTML Writer (doctype + p/span/ul)") {
     // The exact shape NSAttributedString emits for Apple Notes' RTF: a <!DOCTYPE>,
     // a <head><style>, and <p class><span class> / <ul class><li class> bodies.
