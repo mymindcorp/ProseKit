@@ -10,6 +10,9 @@ public struct Decoration: Sendable, Equatable {
         case inline
         /// A zero-width marker at `from` (e.g. a remote collaborator's caret).
         case widget
+        /// Styles a single node: `[from, to)` must span exactly one node
+        /// (`from` just before it, `to` just after).
+        case node
     }
 
     public var from: Int
@@ -34,6 +37,11 @@ public struct Decoration: Sendable, Equatable {
     /// A widget decoration at `pos`.
     public static func widget(_ pos: Int, _ attributes: [String: String]) -> Decoration {
         Decoration(from: pos, to: pos, kind: .widget, attributes: attributes)
+    }
+
+    /// A node decoration spanning exactly the node in `[from, to)`.
+    public static func node(_ from: Int, _ to: Int, _ attributes: [String: String]) -> Decoration {
+        Decoration(from: from, to: to, kind: .node, attributes: attributes)
     }
 }
 
@@ -66,6 +74,13 @@ public struct DecorationSet: Sendable, Equatable {
             case .inline:
                 let to = mapping.map(d.to, -1)
                 return to > from ? Decoration(from: from, to: to, kind: .inline, attributes: d.attributes) : nil
+            case .node:
+                // A node decoration survives only while its node does: drop it
+                // when either boundary was deleted or the span collapsed.
+                let fromResult = mapping.mapResult(d.from, 1)
+                let toResult = mapping.mapResult(d.to, -1)
+                if fromResult.deleted || toResult.deleted || toResult.pos <= fromResult.pos { return nil }
+                return Decoration(from: fromResult.pos, to: toResult.pos, kind: .node, attributes: d.attributes)
             }
         }
         return DecorationSet(mapped)
