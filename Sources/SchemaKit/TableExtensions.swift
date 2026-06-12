@@ -40,7 +40,8 @@ public final class TableExtension: NodeExtension {
         // CellSelections — mirroring prosemirror-tables' fixTables + normalizeSelection.
         [Plugin(key: "fixTables", appendTransaction: { _, oldState, newState in
             normalizeSelection(newState, fixTables(newState, oldState), false)
-        })]
+        }),
+         columnResizing()]
     }
 }
 
