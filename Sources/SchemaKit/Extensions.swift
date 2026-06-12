@@ -461,5 +461,6 @@ public func fullKit(wikiLinkSuggestions: ((String) -> [String])? = nil,
     starterKit() + tableExtensions() + taskListExtensions()
         + [ImageExtension(), WikiLinkExtension(suggestions: wikiLinkSuggestions),
            MentionExtension(suggestions: mentionSuggestions), SearchExtension(),
-           SlashMenuExtension(), CollabCursorExtension(), GapCursorExtension()]
+           SlashMenuExtension(), CollabCursorExtension(), GapCursorExtension(),
+           SuggestionModeExtension()]
 }

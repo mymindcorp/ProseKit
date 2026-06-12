@@ -84,7 +84,9 @@ final class MentionSuggestionSource: SuggestionSource {
 
 private func computeMentionSuggestion(_ state: EditorState) -> MentionSuggestion? {
     guard let cursor = (state.selection as? TextSelection)?.cursor else { return nil }
-    let textBefore = cursor.parent.textBetween(0, cursor.parentOffset)
+    // Neutralize leaf atoms (a mention's own leaf text starts with "@" and
+    // must not re-trigger the popup right after insertion).
+    let textBefore = cursor.parent.textBetween(0, cursor.parentOffset, blockSeparator: nil, leafText: "\u{fffc}")
     guard let atRange = textBefore.range(of: "@", options: .backwards) else { return nil }
     // The trigger must start a word.
     if let before = textBefore[..<atRange.lowerBound].last, !before.isWhitespace { return nil }
