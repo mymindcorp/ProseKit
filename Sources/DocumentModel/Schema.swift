@@ -35,6 +35,9 @@ public struct NodeSpec: Sendable {
     public var whitespace: Whitespace
     public var defining: Bool
     public var isolating: Bool
+    /// Overrides whether a gap cursor is allowed inside this node (nil = the
+    /// default content-based rule). Read by EditorStateKit's GapCursor.
+    public var allowGapCursor: Bool?
     public var leafText: (@Sendable (Node) -> String)?
 
     public enum Whitespace: Sendable { case normal, pre }
@@ -52,6 +55,7 @@ public struct NodeSpec: Sendable {
         whitespace: Whitespace = .normal,
         defining: Bool = false,
         isolating: Bool = false,
+        allowGapCursor: Bool? = nil,
         leafText: (@Sendable (Node) -> String)? = nil
     ) {
         self.content = content
@@ -66,6 +70,7 @@ public struct NodeSpec: Sendable {
         self.whitespace = whitespace
         self.defining = defining
         self.isolating = isolating
+        self.allowGapCursor = allowGapCursor
         self.leafText = leafText
     }
 }
