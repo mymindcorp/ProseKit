@@ -411,9 +411,18 @@ public func starterKit() -> [Extension] {
     ]
 }
 
+/// Contributes the gap cursor plugin: arrow keys can place a caret in "gaps"
+/// (between two tables, before a leading table, after a trailing hr) where no
+/// text position exists; typing there materializes a paragraph.
+public final class GapCursorExtension: Extension {
+    public let name = "gapCursor"
+    public init() {}
+    public func plugins(_ ctx: ExtensionContext) -> [Plugin] { [gapCursor()] }
+}
+
 /// The starter kit plus tables, task lists, images, wiki-links, and search.
 public func fullKit(wikiLinkSuggestions: ((String) -> [String])? = nil) -> [Extension] {
     starterKit() + tableExtensions() + taskListExtensions()
         + [ImageExtension(), WikiLinkExtension(suggestions: wikiLinkSuggestions), SearchExtension(),
-           SlashMenuExtension(), CollabCursorExtension()]
+           SlashMenuExtension(), CollabCursorExtension(), GapCursorExtension()]
 }

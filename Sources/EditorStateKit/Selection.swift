@@ -183,6 +183,12 @@ open class Selection {
             return Selection.near(pos)
         case "all":
             return AllSelection(doc)
+        case "gapcursor":
+            guard let pos = json["pos"]?.intValue else {
+                throw ModelError.invalidJSON("Invalid gap cursor JSON")
+            }
+            let resolved = doc.resolve(min(max(0, pos), doc.content.size))
+            return GapCursor.valid(resolved) ? GapCursor(resolved) : Selection.near(resolved)
         default:
             throw ModelError.invalidJSON("No selection type \(type)")
         }
