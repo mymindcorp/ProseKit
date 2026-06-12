@@ -335,7 +335,11 @@ open class EditorTextView: UIView, UIKeyInput {
         // Plugin (e.g. search highlight) backgrounds.
         let decorations = gatherDecorations()
         for deco in decorations where deco.kind == .inline {
-            if let hex = deco.attributes["background"], let color = UIColor(hex: hex) {
+            // Explicit background attribute, else a known decoration class (the
+            // ported search/table plugins emit upstream's class names only).
+            let color = deco.attributes["background"].flatMap { UIColor(hex: $0) }
+                ?? Self.decorationClassColor(deco.attributes["class"])
+            if let color {
                 ctx.setFillColor(color.cgColor)
                 for r in l.selectionRects(from: deco.from, to: deco.to) where onScreen(r) { ctx.fill(r) }
             }
@@ -508,11 +512,71 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Convert a gesture point (viewport coordinates) to document coordinates.
     func docPoint(_ point: CGPoint) -> CGPoint { CGPoint(x: point.x, y: point.y + contentOffsetY) }
 
+    /// The caret rect for the current (empty) selection: the usual vertical
+    /// bar, or a short horizontal bar for a gap cursor (there is no text
+    /// position at a gap, so the caret marks where the paragraph would go).
+    func selectionCaretRect(_ l: DocumentLayout) -> CGRect? {
+        let sel = editor.state.selection
+        guard sel.empty else { return nil }
+        if sel is GapCursor { return gapCaretRect(at: sel.head, in: l) }
+        return l.caretRect(at: sel.head)
+    }
+
+    /// A horizontal blink bar at the block boundary `pos` points at, centered
+    /// in the visual gap between its neighbor blocks.
+    func gapCaretRect(at pos: Int, in l: DocumentLayout) -> CGRect {
+        let below = l.blocks.first(where: { $0.contentStart >= pos })
+        let above = l.blocks.last(where: { $0.contentEnd <= pos })
+        var x = theme.pageInsets.left
+        var y = theme.pageInsets.top
+        switch (above, below) {
+        case let (above?, below?):
+            x = below.frame.minX
+            y = (above.frame.maxY + below.frame.minY) / 2 - 1
+        case let (nil, below?):
+            x = below.frame.minX
+            y = max(0, below.frame.minY - 4)
+        case let (above?, nil):
+            x = above.frame.minX
+            y = above.frame.maxY + 2
+        case (nil, nil):
+            break
+        }
+        return CGRect(x: x, y: y, width: 20, height: 2)
+    }
+
+    /// The document position of the top-level gap at `point` (doc coords), if
+    /// the point sits between blocks and a gap cursor is valid there.
+    func gapBoundaryPosition(at point: CGPoint) -> Int? {
+        let l = ensureLayout()
+        var above: TextBlock?
+        var below: TextBlock?
+        for b in l.blocks {
+            if b.frame.minY <= point.y, point.y <= b.frame.maxY { return nil } // inside a block band
+            if b.frame.maxY < point.y {
+                if above == nil || b.frame.maxY > above!.frame.maxY { above = b }
+            } else if b.frame.minY > point.y {
+                if below == nil || b.frame.minY < below!.frame.minY { below = b }
+            }
+        }
+        let pos: Int
+        if let above {
+            // After the top-level node containing the block above the point.
+            pos = editor.doc.resolve(min(above.contentEnd, editor.doc.content.size)).after(1)
+        } else if below != nil {
+            pos = 0 // above the first block
+        } else {
+            return nil
+        }
+        guard pos >= 0, pos <= editor.doc.content.size else { return nil }
+        return GapCursor.valid(editor.doc.resolve(pos)) ? pos : nil
+    }
+
     /// Reposition the caret layer for the current scroll offset, without
     /// scrolling (used while the user scrolls).
     private func positionCaretLayer() {
         guard isFirstResponder, editor.state.selection.empty,
-              let rect = ensureLayout().caretRect(at: editor.state.selection.head) else {
+              let rect = selectionCaretRect(ensureLayout()) else {
             caretLayer.path = nil
             return
         }
@@ -524,7 +588,7 @@ open class EditorTextView: UIView, UIKeyInput {
         let l = ensureLayout()
         realizeCaretRegionIfNeeded() // make an off-screen (estimated) caret target real
         let sel = editor.state.selection
-        guard isFirstResponder, sel.empty, let rect = l.caretRect(at: sel.head) else {
+        guard isFirstResponder, sel.empty, let rect = selectionCaretRect(l) else {
             caretLayer.path = nil
             if isFirstResponder, let rect = l.caretRect(at: editor.state.selection.head) {
                 revealRect(rect) // keep the active end of a range visible too
@@ -717,7 +781,7 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     private func refreshFindCount() {
-        findBar?.setCount(current: editor.searchState?.currentIndex ?? -1, total: editor.searchMatches.count)
+        findBar?.setCount(current: editor.currentSearchMatchIndex, total: editor.searchMatches.count)
     }
 
     /// Toggle a task-item checkbox. Gated by the gesture delegate to begin only
@@ -761,13 +825,32 @@ open class EditorTextView: UIView, UIKeyInput {
     func beginColumnResize(at point: CGPoint) {
         guard let hit = columnBorderHit(at: point) else { resize = nil; return }
         resize = (hit.table.tablePos, hit.leftColumn, hit.table.widths, hit.table.originX)
+        // Mirror the drag into the column-resizing plugin (handle first: setting
+        // it resets dragging, so the metas go in separate transactions).
+        if let cell = resizeHandleCell(tablePos: hit.table.tablePos, column: hit.leftColumn) {
+            editor.dispatch(setResizeHandle(editor.state.tr, cell))
+            editor.dispatch(setResizeDragging(editor.state.tr, ColumnDragging(
+                startX: Double(point.x), startWidth: Double(hit.table.widths[hit.leftColumn]))))
+        }
     }
 
     func updateColumnResize(to point: CGPoint) {
         if let r = resize { performColumnResize(r, to: point) }
     }
 
-    func endColumnResize() { resize = nil }
+    func endColumnResize() {
+        resize = nil
+        // Clearing the handle also ends the drag in the plugin state.
+        editor.dispatch(setResizeHandle(editor.state.tr, -1))
+    }
+
+    /// The first-row cell whose right edge is column `column`'s border.
+    private func resizeHandleCell(tablePos: Int, column: Int) -> Int? {
+        guard let table = editor.doc.nodeAt(tablePos) else { return nil }
+        let map = TableMap.get(table)
+        guard map.height > 0, column < map.width else { return nil }
+        return tablePos + 1 + map.map[column]
+    }
 
     /// The internal column border (and its table) within ~6pt of `point`, if any.
     func columnBorderHit(at point: CGPoint) -> (table: DocumentLayout.TableInfo, leftColumn: Int)? {
@@ -790,30 +873,20 @@ open class EditorTextView: UIView, UIKeyInput {
         let delta = point.x - originalBorderX
         let pairSum = r.widths[left] + r.widths[right]
         let newLeft = min(max(r.widths[left] + delta, minWidth), pairSum - minWidth)
-        var widths = r.widths
-        widths[left] = newLeft
-        widths[right] = pairSum - newLeft
-        setColumnWidths(tablePos: r.tablePos, widths: widths)
-    }
-
-    /// Write `colwidth` onto every cell in each column of the table at `tablePos`.
-    private func setColumnWidths(tablePos: Int, widths: [CGFloat]) {
-        guard let table = editor.doc.nodeAt(tablePos) else { return }
-        var tr = editor.state.tr
-        var rowPos = tablePos + 1
-        for r in 0..<table.childCount {
-            let row = table.child(r)
-            var cellPos = rowPos + 1
-            for c in 0..<row.childCount {
-                if c < widths.count {
-                    tr = (try? tr.setNodeAttribute(cellPos, "colwidth", .double(Double(widths[c])))) ?? tr
-                }
-                cellPos += row.child(c).nodeSize
-            }
-            rowPos += row.nodeSize
-        }
+        // Write both columns through the official plugin transaction (colwidth
+        // as the array-of-ints the schema/serializer/TableMap expect). This
+        // border drag keeps the pair's total width, unlike upstream's
+        // one-column resize.
+        guard let table = editor.doc.nodeAt(r.tablePos) else { return }
+        let map = TableMap.get(table)
+        guard map.height > 0, right < map.width else { return }
+        let start = r.tablePos + 1
+        let tr = editor.state.tr
+        updateColumnWidth(tr, start + map.map[left], Int(newLeft.rounded()))
+        updateColumnWidth(tr, start + map.map[right], Int((pairSum - newLeft).rounded()))
         editor.dispatch(tr)
     }
+
 
     /// Set a text selection between two document positions, snapping to valid
     /// text positions.
@@ -822,6 +895,17 @@ open class EditorTextView: UIView, UIKeyInput {
         let a = editor.doc.resolve(min(max(anchor, 0), size))
         let h = editor.doc.resolve(min(max(head, 0), size))
         editor.dispatch(editor.state.tr.setSelection(TextSelection.between(a, h)))
+    }
+
+    /// Fill colors for upstream decoration class names (the ported plugins
+    /// don't carry explicit colors).
+    private static func decorationClassColor(_ cls: String?) -> UIColor? {
+        switch cls {
+        case "ProseMirror-search-match": return UIColor(hex: "#FFE082")
+        case "ProseMirror-active-search-match": return UIColor(hex: "#FFB300")
+        case "column-resize-dragging": return UIColor.systemBlue.withAlphaComponent(0.10)
+        default: return nil
+        }
     }
 
     // MARK: - UIKeyInput
@@ -887,6 +971,7 @@ open class EditorTextView: UIView, UIKeyInput {
             let pb = UIPasteboard.general
             return pb.hasStrings || pb.contains(pasteboardTypes: [
                 "public.html", "com.apple.flat-rtfd", "public.rtfd", "public.rtf",
+                "com.apple.notes.richtext", // proto-only pasteboards still paste
             ])
         case #selector(pasteAndMatchStyle(_:)):
             // Match-style only reads the plain-text flavor; offering it for
@@ -940,9 +1025,11 @@ open class EditorTextView: UIView, UIKeyInput {
         let candidates: [(String, NSAttributedString.DocumentType)] = [
             ("com.apple.flat-rtfd", .rtfd), ("public.rtfd", .rtfd), ("public.rtf", .rtf),
         ]
+        var sawRichData = false
         for (type, docType) in candidates {
-            guard let data = pb.data(forPasteboardType: type),
-                  let attr = try? NSAttributedString(data: data, options: [.documentType: docType], documentAttributes: nil)
+            guard let data = pb.data(forPasteboardType: type) else { continue }
+            sawRichData = true
+            guard let attr = try? NSAttributedString(data: data, options: [.documentType: docType], documentAttributes: nil)
             else { continue }
             if let proto,
                let doc = AppleNotesPasteboard.document(fromArchive: proto, schema: editor.schema,
@@ -956,8 +1043,13 @@ open class EditorTextView: UIView, UIKeyInput {
             else { continue }
             return recoverChecklists(in: doc, from: pb, attributedString: attr)
         }
-        // A proto with no convertible RTF flavor still describes the content.
-        if let proto, let doc = AppleNotesPasteboard.document(fromArchive: proto, schema: editor.schema) {
+        // A proto with no convertible RTF flavor still describes the content —
+        // but "RTF present yet undecodable" must not paste the whole note over a
+        // selection copy, so keep the text-match guard whenever any text exists
+        // to match against (a truly proto-only pasteboard has neither).
+        if let proto, pb.string != nil || !sawRichData,
+           let doc = AppleNotesPasteboard.document(fromArchive: proto, schema: editor.schema,
+                                                   matchingText: pb.string) {
             return doc
         }
         return nil
@@ -965,10 +1057,13 @@ open class EditorTextView: UIView, UIKeyInput {
 
     /// Restore checklists the HTML round-trip flattened to bullet lists, using
     /// Apple Notes' private proto (every line + checked state, in note order) when
-    /// present, else the RTF `{check}` markers (checked items only).
+    /// present AND describing exactly the pasted content — a whole-note proto
+    /// must not drive recovery for a selection copy (its lines would feed the
+    /// positional queues with non-pasted state). Else the RTF `{check}` markers
+    /// (checked items only).
     private func recoverChecklists(in doc: Node, from pb: UIPasteboard, attributedString attr: NSAttributedString?) -> Node {
         let lines = pb.data(forPasteboardType: "com.apple.notes.richtext")
-            .flatMap(AppleNotesPasteboard.checklist(fromArchive:)) ?? []
+            .flatMap { AppleNotesPasteboard.checklist(fromArchive: $0, matchingText: attr?.string ?? pb.string) } ?? []
         let checked = attr.map(checkedLines(from:)) ?? []
         guard !lines.isEmpty || !checked.isEmpty else { return doc }
         let content = applyChecklistMarkers(doc.content, checkedTexts: checked,
@@ -984,14 +1079,10 @@ open class EditorTextView: UIView, UIKeyInput {
         attr.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: attr.length), options: []) { val, range, _ in
             guard let ps = val as? NSParagraphStyle,
                   ps.textLists.contains(where: { $0.markerFormat.rawValue.contains("check") }) else { return }
-            for raw in ns.substring(with: range).components(separatedBy: "\n") {
-                var line = Substring(raw)
-                // Some RTF imports keep the list marker in the text ("☑\tmilk");
-                // drop a leading non-alphanumeric marker prefix ending in a tab.
-                if let tab = line.firstIndex(of: "\t"),
-                   line[..<tab].rangeOfCharacter(from: .alphanumerics) == nil {
-                    line = line[line.index(after: tab)...]
-                }
+            // NB: literal RTF list markers ("☑\tmilk") are NOT stripped here —
+            // applyChecklistMarkers' normalizedLine strips them on BOTH sides of
+            // the comparison, so stripping one side here would re-break matching.
+            for line in ns.substring(with: range).components(separatedBy: "\n") {
                 let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !t.isEmpty { result.insert(t) }
             }

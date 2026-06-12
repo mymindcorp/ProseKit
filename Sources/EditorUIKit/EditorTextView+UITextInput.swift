@@ -71,6 +71,12 @@ extension EditorTextView: UITextInput {
             defer { applyingTextInput = false }
             let a = editor.doc.resolve(clamp(r.from))
             let h = editor.doc.resolve(clamp(r.to))
+            // An empty selection at a valid gap becomes a gap cursor —
+            // TextSelection.between would snap away into a neighbor block.
+            if r.from == r.to, GapCursor.valid(h) {
+                editor.dispatch(editor.state.tr.setSelection(GapCursor(h)))
+                return
+            }
             editor.dispatch(editor.state.tr.setSelection(TextSelection.between(a, h)))
         }
     }
@@ -227,7 +233,11 @@ extension EditorTextView: UITextInput {
     }
 
     public func closestPosition(to point: CGPoint) -> UITextPosition? {
-        DocTextPosition(ensureLayout().position(at: docPoint(point)) ?? 0)
+        let dp = docPoint(point)
+        // A tap between blocks where no text position exists maps to the gap
+        // boundary; setting an empty selection there produces a GapCursor.
+        if let gap = gapBoundaryPosition(at: dp) { return DocTextPosition(gap) }
+        return DocTextPosition(ensureLayout().position(at: dp) ?? 0)
     }
 
     public func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? {
