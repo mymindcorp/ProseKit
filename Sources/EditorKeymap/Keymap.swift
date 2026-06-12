@@ -42,11 +42,12 @@ public func normalizeKeyName(_ name: String) -> String {
     guard let key = parts.last else { return name }
     var mod = false, ctrl = false, alt = false, shift = false
     for p in parts.dropLast() {
+        // Single letters are w3c-keyname's aliases (c-s-Space == Ctrl-Shift-Space).
         switch p.lowercased() {
-        case "mod", "cmd", "meta": mod = true
-        case "ctrl", "control": ctrl = true
-        case "alt", "option": alt = true
-        case "shift": shift = true
+        case "mod", "cmd", "meta", "m": mod = true
+        case "ctrl", "control", "c": ctrl = true
+        case "alt", "option", "a": alt = true
+        case "shift", "s": shift = true
         default: break
         }
     }
