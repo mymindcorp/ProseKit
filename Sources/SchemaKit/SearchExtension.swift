@@ -2,105 +2,70 @@ import DocumentModel
 import DocumentTransform
 import EditorStateKit
 
-/// Search/replace state: the active query and which match is "current".
-public final class SearchState {
-    public let query: String
-    public let caseSensitive: Bool
-    public let currentIndex: Int
-    init(query: String, caseSensitive: Bool, currentIndex: Int) {
-        self.query = query
-        self.caseSensitive = caseSensitive
-        self.currentIndex = currentIndex
-    }
-}
-
-/// Contributes the search/highlight plugin to an editor.
+/// Contributes the search/highlight plugin (EditorStateKit's prosemirror-search
+/// port) to an editor, and a Tiptap-flavored facade over its query state and
+/// commands. The find bar drives the facade; everything below it is the
+/// official engine — string or regexp queries, case-sensitivity, whole-word.
 public final class SearchExtension: Extension {
     public let name = "search"
     public init() {}
-    public func plugins(_ ctx: ExtensionContext) -> [Plugin] { [searchPlugin()] }
-}
-
-public let searchKey = PluginKey<SearchState>("search")
-private let setQueryMeta = "search.setQuery"
-private let setIndexMeta = "search.setIndex"
-
-/// A plugin that highlights search matches as decorations. Drive it via the
-/// `Editor` search API below.
-public func searchPlugin() -> Plugin {
-    Plugin(
-        key: searchKey.key,
-        stateField: PluginStateField(
-            initialize: { _, _ in SearchState(query: "", caseSensitive: false, currentIndex: 0) },
-            apply: { tr, value, _, _ in
-                let state = value as! SearchState
-                if let (q, cs) = tr.getMeta(setQueryMeta) as? (String, Bool) {
-                    return SearchState(query: q, caseSensitive: cs, currentIndex: -1) // -1 = before first match
-                }
-                if let idx = tr.getMeta(setIndexMeta) as? Int {
-                    return SearchState(query: state.query, caseSensitive: state.caseSensitive, currentIndex: idx)
-                }
-                return state
-            }),
-        props: PluginProps(decorations: { editorState in
-            guard let s = searchKey.getState(editorState), !s.query.isEmpty else { return nil }
-            let matches = TextSearch.matches(in: editorState.doc, query: s.query, caseSensitive: s.caseSensitive)
-            let decos = matches.enumerated().map { i, m -> Decoration in
-                let isCurrent = i == s.currentIndex
-                return .inline(m.from, m.to, [
-                    "class": isCurrent ? "search-current" : "search",
-                    "background": isCurrent ? "#FFB300" : "#FFE082",
-                ])
-            }
-            return DecorationSet(decos)
-        }))
+    public func plugins(_ ctx: ExtensionContext) -> [Plugin] { [searchQueryPlugin()] }
 }
 
 public extension Editor {
-    var searchState: SearchState? { searchKey.getState(state) }
+    /// The active search query (nil when the search plugin isn't installed).
+    var searchQuery: SearchQuery? { searchQueryKey.getState(state)?.query }
 
-    /// The current search matches (recomputed from the live document).
-    var searchMatches: [TextSearch.Match] {
-        guard let s = searchState, !s.query.isEmpty else { return [] }
-        return TextSearch.matches(in: doc, query: s.query, caseSensitive: s.caseSensitive)
+    /// All matches of the active query, in document order.
+    var searchMatches: [(from: Int, to: Int)] {
+        guard let qs = searchQueryKey.getState(state), qs.query.valid else { return [] }
+        var result: [(from: Int, to: Int)] = []
+        var pos = qs.range?.from ?? 0
+        let end = qs.range?.to ?? state.doc.content.size
+        while let next = qs.query.findNext(state, pos, end) {
+            result.append((next.from, next.to))
+            pos = next.to
+        }
+        return result
+    }
+
+    /// The index of the match the selection sits on, or -1 — drives "n of m".
+    /// (The engine has no stored cursor; the active match IS the selection.)
+    var currentSearchMatchIndex: Int {
+        let sel = state.selection
+        return searchMatches.firstIndex { $0.from == sel.from && $0.to == sel.to } ?? -1
     }
 
     /// Set the active search query (empty clears it).
-    func setSearch(_ query: String, caseSensitive: Bool = false) {
-        dispatch(state.tr.setMeta(setQueryMeta, (query, caseSensitive)))
+    func setSearch(_ query: String, caseSensitive: Bool = false, regexp: Bool = false, wholeWord: Bool = false) {
+        dispatch(setSearchState(state.tr, SearchQuery(
+            search: query, caseSensitive: caseSensitive, regexp: regexp, wholeWord: wholeWord)))
     }
 
     func clearSearch() { setSearch("") }
 
     /// Move the selection to the next/previous match, wrapping around.
-    func findNext() { moveToMatch(by: 1) }
-    func findPrevious() { moveToMatch(by: -1) }
+    func findNext() { _ = EditorStateKit.findNext(state) { [weak self] tr in self?.dispatch(tr) } }
+    func findPrevious() { _ = EditorStateKit.findPrev(state) { [weak self] tr in self?.dispatch(tr) } }
 
-    private func moveToMatch(by delta: Int) {
-        let matches = searchMatches
-        guard !matches.isEmpty, let s = searchState else { return }
-        let count = matches.count
-        // From "before first" (-1), forward picks match 0 and backward the last.
-        let base = s.currentIndex < 0 ? (delta > 0 ? -1 : 0) : s.currentIndex
-        let index = ((base + delta) % count + count) % count
-        let match = matches[index]
-        let tr = state.tr.setMeta(setIndexMeta, index)
-        tr.setSelection(TextSelection.create(tr.doc, match.from, match.to)).scrollIntoView()
-        dispatch(tr)
-    }
-
-    /// Replace the current match with the given text. Returns false if there is
-    /// no current match.
+    /// Replace the match the selection sits on (or the first match when the
+    /// selection isn't on one). Returns false if there is no match.
     @discardableResult
     func replaceCurrentMatch(with replacement: String) -> Bool {
-        let matches = searchMatches
-        guard !matches.isEmpty, let s = searchState else { return false }
-        // Before the first Find-next, `currentIndex` is -1 ("before first match");
-        // replace the first match in that case (and never index out of bounds).
-        let index = (s.currentIndex >= 0 && s.currentIndex < matches.count) ? s.currentIndex : 0
-        let match = matches[index]
+        guard let qs = searchQueryKey.getState(state), qs.query.valid else { return false }
+        let query = qs.query.withReplace(replacement)
+        let sel = state.selection
+        let range = qs.range ?? SearchRange(from: 0, to: state.doc.content.size)
+        var match = query.findNext(state, range.from, range.to)
+        if let atSelection = query.findNext(state, sel.from, range.to),
+           atSelection.from == sel.from, atSelection.to == sel.to {
+            match = atSelection
+        }
+        guard let match else { return false }
         let tr = state.tr
-        _ = try? tr.insertText(replacement, match.from, match.to)
+        for repl in query.getReplacements(state, match).reversed() {
+            _ = try? tr.replace(repl.from, repl.to, repl.insert)
+        }
         dispatch(tr.scrollIntoView())
         return true
     }
@@ -108,14 +73,31 @@ public extension Editor {
     /// Replace every match with the given text. Returns the number replaced.
     @discardableResult
     func replaceAllMatches(with replacement: String) -> Int {
-        let matches = searchMatches
+        guard let qs = searchQueryKey.getState(state), qs.query.valid else { return 0 }
+        let query = qs.query.withReplace(replacement)
+        let range = qs.range ?? SearchRange(from: 0, to: state.doc.content.size)
+        var matches: [SearchResult] = []
+        var pos = range.from
+        while let next = query.findNext(state, pos, range.to) {
+            matches.append(next)
+            pos = next.to
+        }
         guard !matches.isEmpty else { return 0 }
         let tr = state.tr
-        // Replace from the end so earlier positions stay valid.
         for match in matches.reversed() {
-            _ = try? tr.insertText(replacement, match.from, match.to)
+            for repl in query.getReplacements(state, match).reversed() {
+                _ = try? tr.replace(repl.from, repl.to, repl.insert)
+            }
         }
         dispatch(tr)
         return matches.count
+    }
+}
+
+extension SearchQuery {
+    /// A copy of this query with different replace text.
+    func withReplace(_ replacement: String) -> SearchQuery {
+        SearchQuery(search: search, caseSensitive: caseSensitive, literal: literal,
+                    regexp: regexp, replace: replacement, wholeWord: wholeWord, filter: filter)
     }
 }
