@@ -1,5 +1,6 @@
 import Foundation
 import DocumentModel
+import EditorStateKit
 import SchemaKit
 import TestHarness
 
@@ -13,6 +14,9 @@ func registerPMTableMoveTests() {
         let expected = [["a1", "b1", "c1", "d1"], ["a2", "b2", "c2", "d2"], ["a3", "b3", "c3", "d3"]]
         try expectEqual(transpose(arr), expected)
         try expectEqual(transpose(expected), arr)
+    }
+    test("PM transpose: ragged input doesn't trap") {
+        try expectEqual(transpose([[1, 2, 3], [4, 5]]), [[1, 4], [2, 5], [3]])
     }
 
     // MARK: moveRowInArrayOfRows
@@ -62,6 +66,68 @@ func registerPMTableMoveTests() {
             tr(cell(1, 1, "A2"), tdAttrs(["colspan": .int(2)], p("B2")), tdAttrs(["rowspan": .int(2)], p("D1"))),
             tr(cell(1, 1, "A3"), cell(1, 1, "B3"), cell(1, 1, "C3")))
         try expectEqual(grid(t), [["A1", "B1", "C1", nil], ["A2", "B2", nil, "D1"], ["A3", "B3", "C3", nil]])
+    }
+
+    // MARK: moveRow / moveColumn (ported from prosemirror-tables src/utils/move-*)
+    @Sendable func moveState(_ d: TaggedNode) -> EditorState {
+        EditorState.create(EditorStateConfig(schema: basicSchema, doc: d.node,
+                                             selection: TextSelection.create(d.node, 4)))
+    }
+    test("PM moveRow: moves a row down, selecting the moved row") {
+        let d = doc(table(tr(cell(1, 1, "A1"), cell(1, 1, "B1")),
+                          tr(cell(1, 1, "A2"), cell(1, 1, "B2")),
+                          tr(cell(1, 1, "A3"), cell(1, 1, "B3"))))
+        let txn = moveState(d).tr
+        try expect(moveRow(txn, originIndex: 0, targetIndex: 2, pos: 4))
+        try expectEqual(txn.doc, doc(table(tr(cell(1, 1, "A2"), cell(1, 1, "B2")),
+                                           tr(cell(1, 1, "A3"), cell(1, 1, "B3")),
+                                           tr(cell(1, 1, "A1"), cell(1, 1, "B1")))).node)
+        try expect(txn.selection is CellSelection)
+    }
+    test("PM moveRow: moves a row up") {
+        let d = doc(table(tr(cell(1, 1, "A1"), cell(1, 1, "B1")),
+                          tr(cell(1, 1, "A2"), cell(1, 1, "B2")),
+                          tr(cell(1, 1, "A3"), cell(1, 1, "B3"))))
+        let txn = moveState(d).tr
+        try expect(moveRow(txn, originIndex: 2, targetIndex: 0, pos: 4))
+        try expectEqual(txn.doc, doc(table(tr(cell(1, 1, "A3"), cell(1, 1, "B3")),
+                                           tr(cell(1, 1, "A1"), cell(1, 1, "B1")),
+                                           tr(cell(1, 1, "A2"), cell(1, 1, "B2")))).node)
+    }
+    test("PM moveRow: a merged block moves as a unit") {
+        let d = doc(table(tr(cell(1, 1, "A1"), tdAttrs(["rowspan": .int(2)], p("B1"))),
+                          tr(cell(1, 1, "A2")),
+                          tr(cell(1, 1, "A3"), cell(1, 1, "B3"))))
+        let txn = moveState(d).tr
+        try expect(moveRow(txn, originIndex: 0, targetIndex: 2, pos: 4))
+        try expectEqual(txn.doc, doc(table(tr(cell(1, 1, "A3"), cell(1, 1, "B3")),
+                                           tr(cell(1, 1, "A1"), tdAttrs(["rowspan": .int(2)], p("B1"))),
+                                           tr(cell(1, 1, "A2")))).node)
+    }
+    test("PM moveRow: refuses a move onto itself or into its own range") {
+        let d = doc(table(tr(cell(1, 1, "A1"), tdAttrs(["rowspan": .int(2)], p("B1"))),
+                          tr(cell(1, 1, "A2")),
+                          tr(cell(1, 1, "A3"), cell(1, 1, "B3"))))
+        let txn = moveState(d).tr
+        try expect(!moveRow(txn, originIndex: 0, targetIndex: 1, pos: 4)) // 1 is inside 0's span
+        try expectEqual(txn.doc, d.node)
+    }
+    test("PM moveColumn: moves a column right, selecting it") {
+        let d = doc(table(tr(cell(1, 1, "A1"), cell(1, 1, "B1"), cell(1, 1, "C1")),
+                          tr(cell(1, 1, "A2"), cell(1, 1, "B2"), cell(1, 1, "C2"))))
+        let txn = moveState(d).tr
+        try expect(moveColumn(txn, originIndex: 0, targetIndex: 2, pos: 4))
+        try expectEqual(txn.doc, doc(table(tr(cell(1, 1, "B1"), cell(1, 1, "C1"), cell(1, 1, "A1")),
+                                           tr(cell(1, 1, "B2"), cell(1, 1, "C2"), cell(1, 1, "A2")))).node)
+        try expect(txn.selection is CellSelection)
+    }
+    test("PM moveColumn: moves a column left") {
+        let d = doc(table(tr(cell(1, 1, "A1"), cell(1, 1, "B1"), cell(1, 1, "C1")),
+                          tr(cell(1, 1, "A2"), cell(1, 1, "B2"), cell(1, 1, "C2"))))
+        let txn = moveState(d).tr
+        try expect(moveColumn(txn, originIndex: 2, targetIndex: 0, pos: 4))
+        try expectEqual(txn.doc, doc(table(tr(cell(1, 1, "C1"), cell(1, 1, "A1"), cell(1, 1, "B1")),
+                                           tr(cell(1, 1, "C2"), cell(1, 1, "A2"), cell(1, 1, "B2")))).node)
     }
 
     // MARK: convertArrayOfRowsToTableNode

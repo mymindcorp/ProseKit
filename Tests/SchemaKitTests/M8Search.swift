@@ -56,10 +56,31 @@ func registerSearchTests() {
 
     test("search: replaceCurrentMatch before Find-next replaces the first (no crash)") {
         let editor = try editorWith("x x x")
-        editor.setSearch("x") // currentIndex is -1 ("before first match")
-        try expectEqual(editor.searchState?.currentIndex, -1)
+        editor.setSearch("x") // selection isn't on a match yet
+        try expectEqual(editor.currentSearchMatchIndex, -1)
         try expect(editor.replaceCurrentMatch(with: "y")) // used to index matches[-1]
         try expectEqual(editor.doc.textContent, "y x x")
+    }
+
+    test("search: findNext sets the current match index") {
+        let editor = try editorWith("ab ab ab")
+        editor.setSearch("ab")
+        try expectEqual(editor.currentSearchMatchIndex, -1)
+        editor.findNext()
+        try expectEqual(editor.currentSearchMatchIndex, 0)
+        editor.findNext()
+        try expectEqual(editor.currentSearchMatchIndex, 1)
+    }
+
+    test("search: regexp and whole-word queries work through the facade") {
+        let editor = try editorWith("cat cats concatenate")
+        editor.setSearch("cat", wholeWord: true)
+        try expectEqual(editor.searchMatches.count, 1)
+        editor.setSearch("c.ts?", regexp: true)
+        try expectEqual(editor.searchMatches.count, 3)
+        let n = editor.replaceAllMatches(with: "dog")
+        try expectEqual(n, 3)
+        try expectEqual(editor.doc.textContent, "dog dog condogenate")
     }
 
     test("search: clearSearch removes matches") {

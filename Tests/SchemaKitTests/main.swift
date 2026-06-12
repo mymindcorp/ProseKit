@@ -151,6 +151,7 @@ registerFuzzTests()
 
 registerPMListTests(); registerPMTableMapTests(); registerPMTableCommandsTests(); registerPMCellCopyPasteTests(); registerPMTableExtraTests()
 registerPMTableMoveTests()
+registerPMColumnResizingTests()
 
 // Shared builders for the checklist-import tests below.
 private let clSchema = try! makeFullEditor().schema
@@ -208,6 +209,45 @@ test("checklist import: item with a nested plain sub-list still matches its line
     try expectEqual(list?.type.name, "taskList")
     try expectEqual(list?.child(0).attrs["checked"]?.boolValue, true)
     try expectEqual(list?.child(0).child(1).type.name, "bulletList") // inner list untouched
+}
+
+test("checklist import: duplicate texts across nesting levels resolve in note order") {
+    // Outer 'call mom' (unchecked, first line) with a nested 'call mom' (checked,
+    // second line): consumption must follow document order, not recursion order.
+    let nested = clNode("bulletList", [:], [clItem("call mom")])
+    let bl = clNode("bulletList", [:], [clItem("call mom", [nested])])
+    let out = applyChecklistMarkers(Fragment.from([bl]), checkedTexts: [],
+                                    checklistLines: [("call mom", false), ("call mom", true)], schema: clSchema)
+    let outer = out.firstChild
+    try expectEqual(outer?.type.name, "taskList")
+    try expectEqual(outer?.child(0).attrs["checked"]?.boolValue, false)
+    try expectEqual(outer?.child(0).child(1).child(0).attrs["checked"]?.boolValue, true)
+}
+
+test("checklist import: blank row doesn't block conversion (proto lines)") {
+    // The proto drops empty lines but the HTML keeps the empty <li>; it must not
+    // defeat the all-items-match gate.
+    let blank = clNode("listItem", [:], [clNode("paragraph")])
+    let bl = clNode("bulletList", [:], [clItem("milk"), blank, clItem("bread")])
+    let out = applyChecklistMarkers(Fragment.from([bl]), checkedTexts: [],
+                                    checklistLines: [("milk", true), ("bread", false)], schema: clSchema)
+    try expectEqual(out.firstChild?.type.name, "taskList")
+    try expectEqual(out.firstChild?.child(0).attrs["checked"]?.boolValue, true)
+    try expectEqual(out.firstChild?.child(1).attrs["checked"]?.boolValue, false)
+    try expectEqual(out.firstChild?.child(2).attrs["checked"]?.boolValue, false)
+}
+
+test("checklist import: literal RTF marker prefixes normalize on both sides") {
+    // "✓\tmilk" as item text vs "milk" as checked text — and the reverse.
+    let bl = clNode("bulletList", [:], [clNode("listItem", [:], [clPara("✓\tmilk")])])
+    let out = applyChecklistMarkers(Fragment.from([bl]), checkedTexts: ["milk"], schema: clSchema)
+    try expectEqual(out.firstChild?.type.name, "taskList")
+    try expectEqual(out.firstChild?.child(0).attrs["checked"]?.boolValue, true)
+
+    let bl2 = clNode("bulletList", [:], [clItem("milk")])
+    let out2 = applyChecklistMarkers(Fragment.from([bl2]), checkedTexts: ["☑\tmilk"], schema: clSchema)
+    try expectEqual(out2.firstChild?.type.name, "taskList")
+    try expectEqual(out2.firstChild?.child(0).attrs["checked"]?.boolValue, true)
 }
 
 test("checklist import: unrelated bullet list sharing one line text stays a bullet list") {

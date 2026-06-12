@@ -242,20 +242,26 @@ test("DecorationSet removingClass filters by class") {
 
 // MARK: - Search
 
-test("TextSearch finds occurrences as document positions") {
+test("SearchQuery finds occurrences as document positions") {
     let doc = B.doc(B.p("the cat sat on the mat"))
-    let matches = TextSearch.matches(in: doc, query: "the")
-    try expectEqual(matches.count, 2)
-    // first "the" is at content start (pos 1..4)
-    try expectEqual(matches.first, TextSearch.Match(from: 1, to: 4))
+    let state = EditorState.create(EditorStateConfig(schema: B.schema, doc: doc))
+    let first = SearchQuery(search: "the").findNext(state)
+    try expectEqual(first?.from, 1)
+    try expectEqual(first?.to, 4)
 }
 
-test("TextSearch is case-insensitive by default and spans blocks separately") {
+test("SearchQuery is case-insensitive when asked and spans blocks separately") {
     let doc = B.doc(B.p("Hello"), B.p("hello world"))
-    let matches = TextSearch.matches(in: doc, query: "hello")
-    try expectEqual(matches.count, 2)
+    let state = EditorState.create(EditorStateConfig(schema: B.schema, doc: doc))
+    let query = SearchQuery(search: "hello", caseSensitive: false)
+    var count = 0, pos = 0
+    while let next = query.findNext(state, pos) { count += 1; pos = next.to }
+    try expectEqual(count, 2)
 }
 
 registerPMSelectionTests()
+registerPMStateTests()
+registerPMGapCursorTests()
+registerPMSearchTests()
 
 TestSuite.main("EditorStateKitTests", collector.all)

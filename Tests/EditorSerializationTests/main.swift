@@ -198,6 +198,12 @@ test("HTML paste: comment closed by --!> doesn't swallow the rest of the doc") {
     try expectEqual(try HTMLParser.parse("<!-- c --!><p>hi</p>", schema: schema), doc(p("hi")))
 }
 
+test("HTML paste: abruptly-closed empty comments don't swallow content") {
+    // Per spec, <!--> and <!---> are complete (empty) comments.
+    try expectEqual(try HTMLParser.parse("<p>a</p><!--><p>b</p>", schema: schema), doc(p("a"), p("b")))
+    try expectEqual(try HTMLParser.parse("<p>a</p><!---><p>b</p>", schema: schema), doc(p("a"), p("b")))
+}
+
 test("HTML paste: CDATA section containing '>' is skipped whole") {
     let back = try HTMLParser.parse("<p>a</p><![CDATA[x > y]]><p>b</p>", schema: schema)
     try expectEqual(back, doc(p("a"), p("b")))
@@ -266,6 +272,14 @@ test("Apple Notes proto: garbage / drift returns nil (graceful)") {
     try expect(AppleNotesPasteboard.parseNoteProto(Data()) == nil)
     // Valid proto shape but no checklist style → nil (so caller falls back).
     try expect(AppleNotesPasteboard.parseNoteProto(Data([0x12, 0x03, 0x41, 0x42, 0x43])) == nil)
+}
+
+test("Apple Notes proto: matchingText guards checklist recovery (whole note vs selection)") {
+    let data = Data(base64Encoded: notesChecklistFixture)!
+    // A selection paste whose text doesn't match the whole note → no proto lines.
+    try expect(AppleNotesPasteboard.parseNoteProto(data, matchingText: "only part of the note") == nil)
+    // Matching text (modulo whitespace) keeps the recovery active.
+    try expectEqual(AppleNotesPasteboard.parseNoteProto(data, matchingText: "Beta Gamama Alpha")?.count, 3)
 }
 
 test("Apple Notes proto: hostile varint lengths return nil, never trap") {

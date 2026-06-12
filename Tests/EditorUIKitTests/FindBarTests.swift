@@ -27,7 +27,7 @@ final class FindBarTests: XCTestCase {
         view.editor.dispatch(view.editor.state.tr.setSelection(TextSelection.create(view.editor.doc, 1, 4)))
         view.showFindBar()
         XCTAssertTrue(view.isFindBarVisible)
-        XCTAssertEqual(view.editor.searchState?.query, "the")
+        XCTAssertEqual(view.editor.searchQuery?.search, "the")
         XCTAssertEqual(view.editor.searchMatches.count, 2, "'the' occurs twice")
     }
 

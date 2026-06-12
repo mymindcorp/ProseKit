@@ -89,6 +89,30 @@ func registerAppleNotesDocTests() {
         try expectEqual(d, doc(ul(li(p("a"), ul(li(p("b"))))), ol(li(p("c")))))
     }
 
+    test("Notes proto doc: list type switch at a nested indent starts a new nested list") {
+        // bullet@0, bullet@1, numbered@1: the numbered line must become a nested
+        // ordered list — not lose its type/indent into the outer bullet list.
+        let data = noteProto("a\nb\nc\n", [
+            runProto(2, style: styleProto(type: 100)),
+            runProto(2, style: styleProto(type: 100, indent: 1)),
+            runProto(2, style: styleProto(type: 102, indent: 1)),
+        ])
+        let d = AppleNotesPasteboard.parseNoteDocument(data, schema: schema)
+        try expectEqual(d, doc(ul(li(p("a"), ul(li(p("b"))), ol(li(p("c")))))))
+    }
+
+    test("Notes proto doc: checklist line after a nested bullet doesn't drop the list") {
+        // A taskItem must never be appended into a bulletList level (which would
+        // fail validation and silently drop the whole list).
+        let data = noteProto("a\nb\nt\n", [
+            runProto(2, style: styleProto(type: 100)),
+            runProto(2, style: styleProto(type: 100, indent: 1)),
+            runProto(2, style: styleProto(type: 103, indent: 1, done: true)),
+        ])
+        let d = AppleNotesPasteboard.parseNoteDocument(data, schema: schema)
+        try expectEqual(d, doc(ul(li(p("a"), ul(li(p("b"))), taskListN(taskItemN(true, p("t")))))))
+    }
+
     test("Notes proto doc: monospaced lines merge into one code block") {
         let data = noteProto("x = 1\ny = 2\n", [
             runProto(6, style: styleProto(type: 4)),
