@@ -29,7 +29,19 @@ struct HistoryItem {
         self.selection = selection
         self.mirrorOffset = mirrorOffset
     }
+
+    /// Merge with a newer step item that doesn't start an event (upstream
+    /// Item.merge) — used by compression to collapse adjacent typing steps.
+    func merge(_ other: HistoryItem) -> HistoryItem? {
+        guard let step, let otherStep = other.step, other.selection == nil,
+              let merged = otherStep.merge(step) else { return nil }
+        return HistoryItem(map: merged.getMap().invert(), step: merged, selection: selection)
+    }
 }
+
+/// Schedule compression when this many map-only items have accumulated
+/// (upstream max_empty_items). During collab every remote change adds one.
+private let maxEmptyItems = 500
 
 private let depthOverflow = 20
 
@@ -162,7 +174,56 @@ struct Branch {
 
         var newMaps: [HistoryItem] = []
         for i in rebasedCount..<newUntil { newMaps.append(HistoryItem(map: mapping.maps[i])) }
-        return Branch(items: Array(items[0..<start]) + newMaps + rebasedItems, eventCount: eventCount)
+        var branch = Branch(items: Array(items[0..<start]) + newMaps + rebasedItems, eventCount: eventCount)
+        if branch.emptyItemCount() > maxEmptyItems {
+            // `rebased` relies on a clean tail to associate items with rebased
+            // steps, so only the items below it are compressed.
+            branch = branch.compress(items.count - rebasedItems.count)
+        }
+        return branch
+    }
+
+    func emptyItemCount() -> Int {
+        items.count(where: { $0.step == nil })
+    }
+
+    /// Rewrite the branch to push out the "air" — map-only items that
+    /// accumulate from remote changes during collab. Steps are remapped through
+    /// the dropped maps and adjacent ones merged. Only items below `upto` are
+    /// compressed (see `rebased`).
+    func compress(_ upto: Int? = nil) -> Branch {
+        let upto = upto ?? items.count
+        let remap = remapping(0, upto)
+        var mapFrom = remap.maps.count
+        var newItems: [HistoryItem] = []
+        var events = 0
+        var i = items.count - 1
+        while i >= 0 {
+            let item = items[i]
+            if i >= upto {
+                newItems.append(item)
+                if item.selection != nil { events += 1 }
+            } else if let itemStep = item.step {
+                let step = itemStep.map(remap.slice(mapFrom))
+                let map = step?.getMap()
+                mapFrom -= 1
+                if let map { remap.appendMap(map, mapFrom) }
+                if let step {
+                    let selection = item.selection.map { $0.map(remap.slice(mapFrom)) }
+                    if selection != nil { events += 1 }
+                    let newItem = HistoryItem(map: map!.invert(), step: step, selection: selection)
+                    if let last = newItems.last, let merged = last.merge(newItem) {
+                        newItems[newItems.count - 1] = merged
+                    } else {
+                        newItems.append(newItem)
+                    }
+                }
+            } else {
+                mapFrom -= 1
+            }
+            i -= 1
+        }
+        return Branch(items: Array(newItems.reversed()), eventCount: events)
     }
 }
 
@@ -177,8 +238,8 @@ private func cutOffEvents(_ items: [HistoryItem], _ n: Int) -> [HistoryItem] {
 
 /// The plugin state for undo/redo.
 public final class HistoryState {
-    let done: Branch
-    let undone: Branch
+    var done: Branch
+    var undone: Branch
     /// The document ranges (new coords) touched by the latest event, used to
     /// decide whether the next change merges into it. nil = no context.
     let prevRanges: [Int]?
@@ -212,8 +273,10 @@ private let closeHistoryMeta = "closeHistory"
 private let rebasedMeta = "rebased"
 
 private enum HistoryUpdate {
-    case set(HistoryState)
+    case set(HistoryState, redo: Bool)
 }
+
+private let appendedTransactionMeta = "appendedTransaction"
 
 /// Mark a transaction so the change after it starts a new undo group, even if
 /// it would otherwise merge with the previous event.
@@ -241,21 +304,52 @@ public func history(_ options: HistoryOptions = HistoryOptions()) -> Plugin {
             apply: { tr, value, oldState, _ in
                 var hist = value as! HistoryState
                 if let update = tr.getMeta(historyMeta) as? HistoryUpdate {
-                    switch update { case let .set(newState): return newState }
+                    switch update { case let .set(newState, _): return newState }
                 }
                 if tr.getMeta(closeHistoryMeta) != nil {
                     hist = HistoryState(done: hist.done, undone: hist.undone, prevRanges: nil, prevTime: nil, options: options)
                 }
                 guard tr.docChanged else { return hist }
 
-                if (tr.getMeta(addToHistoryMeta) as? Bool) ?? true {
+                let appended = tr.getMeta(appendedTransactionMeta) as? Transaction
+                if let appended, let update = appended.getMeta(historyMeta) as? HistoryUpdate {
+                    // A transaction appended to an undo/redo joins that history
+                    // move: its inverse lands on the branch the move feeds, so
+                    // the counterpart command replays it too.
+                    switch update {
+                    case .set(_, redo: true):
+                        return HistoryState(
+                            done: hist.done.addTransform(tr, nil, options.depth),
+                            undone: hist.undone,
+                            prevRanges: rangesFor(tr.mapping.maps),
+                            prevTime: hist.prevTime,
+                            options: options)
+                    case .set(_, redo: false):
+                        return HistoryState(
+                            done: hist.done,
+                            undone: hist.undone.addTransform(tr, nil, options.depth),
+                            prevRanges: nil,
+                            prevTime: hist.prevTime,
+                            options: options)
+                    }
+                }
+
+                let addToHist = (tr.getMeta(addToHistoryMeta) as? Bool) ?? true
+                let rootOptedOut = (appended?.getMeta(addToHistoryMeta) as? Bool) == false
+                if addToHist && !rootOptedOut {
+                    // Appended transactions never start their own group — they
+                    // join the event of the transaction that triggered them.
                     let newGroup = hist.prevTime == nil
-                        || hist.prevTime! < tr.time - options.newGroupDelay
-                        || !isAdjacentTo(tr, hist.prevRanges)
+                        || (appended == nil
+                            && (hist.prevTime! < tr.time - options.newGroupDelay
+                                || !isAdjacentTo(tr, hist.prevRanges)))
+                    let prevRanges = appended != nil
+                        ? mapRanges(hist.prevRanges, tr.mapping)
+                        : rangesFor(tr.mapping.maps)
                     return HistoryState(
                         done: hist.done.addTransform(tr, newGroup ? oldState.selection.getBookmark() : nil, options.depth),
                         undone: .empty,
-                        prevRanges: rangesFor(tr.mapping.maps),
+                        prevRanges: prevRanges,
                         prevTime: tr.time,
                         options: options)
                 } else if let rebasedCount = tr.getMeta(rebasedMeta) as? Int {
@@ -288,7 +382,7 @@ private func histTransaction(_ hist: HistoryState, _ state: EditorState, redo: B
                                undone: redo ? pop.remaining : added,
                                prevRanges: nil, prevTime: nil, options: hist.options)
     pop.transform.setSelection(selection)
-    pop.transform.setMeta(historyMeta, HistoryUpdate.set(newHist))
+    pop.transform.setMeta(historyMeta, HistoryUpdate.set(newHist, redo: redo))
     return pop.transform
 }
 
@@ -308,6 +402,14 @@ public let redo: @Sendable (EditorState, ((Transaction) -> Void)?) -> Bool = { s
         dispatch?(tr.scrollIntoView())
     }
     return true
+}
+
+/// Force-compress the undo branch in place. Compression normally triggers
+/// automatically during rebasing (maxEmptyItems); this mirrors upstream's
+/// test-only direct compression and exists for tests/maintenance.
+public func _compressHistory(_ state: EditorState) {
+    guard let hist = historyKey.getState(state) else { return }
+    hist.done = hist.done.compress()
 }
 
 /// The number of undoable events.
