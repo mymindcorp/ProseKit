@@ -13,11 +13,14 @@ import Foundation
 
 public enum AppleNotesPasteboard {
     /// Recover checklist info from the `com.apple.notes.richtext` archive: every
-    /// checklist line in note order with its checked state. Returns nil if the
-    /// archive can't be parsed or contains no checklist (→ caller falls back).
-    public static func checklist(fromArchive data: Data) -> [(text: String, checked: Bool)]? {
+    /// checklist line in note order with its checked state. When `matchingText`
+    /// is given (the pasted content's text), the note text must match it — a
+    /// whole-note proto must not drive recovery for a partial-selection paste.
+    /// Returns nil if the archive can't be parsed, contains no checklist, or
+    /// mismatches (→ caller falls back).
+    public static func checklist(fromArchive data: Data, matchingText: String? = nil) -> [(text: String, checked: Bool)]? {
         for blob in noteBlobs(fromArchive: data) {
-            if let result = parseNoteProto(blob) { return result }
+            if let result = parseNoteProto(blob, matchingText: matchingText) { return result }
         }
         return nil
     }
@@ -37,12 +40,21 @@ public enum AppleNotesPasteboard {
         return blobs
     }
 
+    /// Compare ignoring whitespace and attachment placeholders — the two sides
+    /// come from different transformations of the same content.
+    static func normalizedForMatch(_ s: String) -> String {
+        var out = String.UnicodeScalarView()
+        for u in s.unicodeScalars where !u.properties.isWhitespace && u.value != 0xFFFC { out.append(u) }
+        return String(out)
+    }
+
     /// Parse the Note protobuf. Returns every checklist line in note order with
-    /// its checked state, or nil if the bytes aren't this proto or hold no
-    /// checklist paragraph.
-    public static func parseNoteProto(_ data: Data) -> [(text: String, checked: Bool)]? {
+    /// its checked state, or nil if the bytes aren't this proto, hold no
+    /// checklist paragraph, or don't match `matchingText` (see `checklist`).
+    public static func parseNoteProto(_ data: Data, matchingText: String? = nil) -> [(text: String, checked: Bool)]? {
         let b = [UInt8](data)
         guard let (text, runs) = parseNote(b), !runs.isEmpty else { return nil }
+        if let expected = matchingText, normalizedForMatch(text) != normalizedForMatch(expected) { return nil }
         let units = Array(text.utf16)
         guard !units.isEmpty else { return nil }
         var checkFlag = [Bool](repeating: false, count: units.count)

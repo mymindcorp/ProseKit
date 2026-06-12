@@ -28,14 +28,6 @@ extension AppleNotesPasteboard {
         return buildDocument(text: text, runs: runs, schema: schema)
     }
 
-    /// Compare ignoring whitespace and attachment placeholders — the two sides
-    /// come from different transformations of the same content.
-    private static func normalizedForMatch(_ s: String) -> String {
-        var out = String.UnicodeScalarView()
-        for u in s.unicodeScalars where !u.properties.isWhitespace && u.value != 0xFFFC { out.append(u) }
-        return String(out)
-    }
-
     // MARK: - Document assembly
 
     private struct Line {
@@ -196,16 +188,16 @@ extension AppleNotesPasteboard {
                 if let p = paragraph(line) { blocks.append(p) }
                 continue
             }
-            if let top = stack.last, line.indent > top.indent {
-                stack.append(Level(style: line.styleType, indent: line.indent, items: [item]))
-                continue
-            }
             while let top = stack.last, top.indent > line.indent { pop() }
-            if let top = stack.last, top.style != line.styleType { pop() }
-            if stack.isEmpty {
-                stack.append(Level(style: line.styleType, indent: line.indent, items: [item]))
-            } else {
+            // A different list type at the same indent closes the current level;
+            // the item then starts a fresh level (never lands in an outer list,
+            // which would lose its type/indent — or, for a taskItem appended into
+            // a bulletList, fail validation and drop the whole list).
+            if let top = stack.last, top.indent == line.indent, top.style != line.styleType { pop() }
+            if let top = stack.last, top.indent == line.indent, top.style == line.styleType {
                 stack[stack.count - 1].items.append(item)
+            } else {
+                stack.append(Level(style: line.styleType, indent: line.indent, items: [item]))
             }
         }
         while !stack.isEmpty { pop() }
