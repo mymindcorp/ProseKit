@@ -559,3 +559,152 @@ private func trailingWhitespace(_ s: String) -> Int {
     for ch in s.reversed() { if ch.isWhitespace { n += 1 } else { break } }
     return n
 }
+
+
+// MARK: - Textblock-limited joining (prosemirror-commands joinTextblockBackward/Forward)
+
+/// A more limited `joinBackward`: only joins the current textblock to the one
+/// before it, when the cursor sits at the start of a textblock.
+public let joinTextblockBackward: Command = { state, dispatch, host in
+    guard let cursor = atBlockStart(state, host), let cut = findCutBefore(cursor) else { return false }
+    return joinTextblocksAround(state, cut, dispatch)
+}
+
+/// The forward counterpart of `joinTextblockBackward`.
+public let joinTextblockForward: Command = { state, dispatch, host in
+    guard let cursor = atBlockEnd(state, host), let cut = findCutAfter(cursor) else { return false }
+    return joinTextblocksAround(state, cut, dispatch)
+}
+
+private func joinTextblocksAround(_ state: EditorState, _ cut: ResolvedPos, _ dispatch: Dispatch?) -> Bool {
+    guard var beforeText = cut.nodeBefore, var afterText = cut.nodeAfter else { return false }
+    var beforePos = cut.pos - 1
+    while !beforeText.isTextblock {
+        if beforeText.type.spec.isolating { return false }
+        guard let child = beforeText.lastChild else { return false }
+        beforeText = child
+        beforePos -= 1
+    }
+    var afterPos = cut.pos + 1
+    while !afterText.isTextblock {
+        if afterText.type.spec.isolating { return false }
+        guard let child = afterText.firstChild else { return false }
+        afterText = child
+        afterPos += 1
+    }
+    // Like upstream: a ReplaceAroundStep is acceptable here — the slice-size
+    // guard only applies to plain ReplaceSteps.
+    guard let step = replaceStep(state.doc, beforePos, afterPos, .empty) else { return false }
+    if let rs = step as? ReplaceStep {
+        guard rs.from == beforePos, rs.slice.size < afterPos - beforePos else { return false }
+    } else if let ras = step as? ReplaceAroundStep {
+        guard ras.from == beforePos else { return false }
+    } else {
+        return false
+    }
+    if let dispatch {
+        let tr = state.tr
+        _ = tr.maybeStep(step)
+        tr.setSelection(TextSelection.create(tr.doc, beforePos))
+        dispatch(tr.scrollIntoView())
+    }
+    return true
+}
+
+// MARK: - splitBlockKeepMarks
+
+/// Like `splitBlock`, but without resetting the active marks at the cursor.
+public let splitBlockKeepMarks: Command = { state, dispatch, host in
+    splitBlock(state, dispatch.map { dispatch in
+        { tr in
+            let marks = state.storedMarks
+                ?? (state.selection.resolvedTo.parentOffset > 0 ? state.selection.resolvedFrom.marks() : nil)
+            if let marks { tr.ensureMarks(marks) }
+            dispatch(tr)
+        }
+    }, host)
+}
+
+// MARK: - selectTextblockStart / selectTextblockEnd
+
+private func selectTextblockSide(_ side: Int) -> Command {
+    { state, dispatch, _ in
+        let sel = state.selection
+        let pos = side < 0 ? sel.resolvedFrom : sel.resolvedTo
+        var depth = pos.depth
+        while pos.node(depth).isInline {
+            if depth == 0 { return false }
+            depth -= 1
+        }
+        guard pos.node(depth).isTextblock else { return false }
+        dispatch?(state.tr.setSelection(TextSelection.create(
+            state.doc, side < 0 ? pos.start(depth) : pos.end(depth))))
+        return true
+    }
+}
+
+/// Move the cursor to the start of the current textblock.
+public let selectTextblockStart = selectTextblockSide(-1)
+/// Move the cursor to the end of the current textblock.
+public let selectTextblockEnd = selectTextblockSide(1)
+
+// MARK: - autoJoin
+
+/// Wrap a command so that, when its transform leaves two joinable nodes of the
+/// same type next to each other, they get joined.
+public func autoJoin(_ command: @escaping Command,
+                     _ isJoinable: @escaping @Sendable (Node, Node) -> Bool) -> Command {
+    { state, dispatch, host in
+        command(state, dispatch.map { wrapDispatchForJoin($0, isJoinable) }, host)
+    }
+}
+
+/// `autoJoin` keyed by node type names.
+public func autoJoin(_ command: @escaping Command, _ nodeTypes: [String]) -> Command {
+    autoJoin(command) { before, _ in nodeTypes.contains(before.type.name) }
+}
+
+private func wrapDispatchForJoin(_ dispatch: @escaping Dispatch,
+                                 _ isJoinable: @escaping (Node, Node) -> Bool) -> Dispatch {
+    { tr in
+        guard tr.isGeneric else { return dispatch(tr) }
+
+        var ranges: [Int] = []
+        for map in tr.mapping.maps {
+            for j in 0..<ranges.count { ranges[j] = map.map(ranges[j]) }
+            map.forEach { _, _, from, to in
+                ranges.append(from)
+                ranges.append(to)
+            }
+        }
+
+        // Joinable points inside those ranges: check node boundaries in their
+        // shared parents.
+        var joinable: [Int] = []
+        var i = 0
+        while i < ranges.count {
+            let from = ranges[i], to = ranges[i + 1]
+            i += 2
+            let resolved = tr.doc.resolve(from)
+            let depth = resolved.sharedDepth(to)
+            let parent = resolved.node(depth)
+            var index = resolved.indexAfter(depth)
+            var pos = resolved.after(depth + 1)
+            while pos <= to, let after = parent.maybeChild(index) {
+                if index > 0, !joinable.contains(pos) {
+                    let before = parent.child(index - 1)
+                    if before.type === after.type, isJoinable(before, after) {
+                        joinable.append(pos)
+                    }
+                }
+                pos += after.nodeSize
+                index += 1
+            }
+        }
+        joinable.sort()
+        for point in joinable.reversed() where canJoin(tr.doc, point) {
+            _ = try? tr.join(point)
+        }
+        dispatch(tr)
+    }
+}
