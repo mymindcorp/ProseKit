@@ -325,6 +325,21 @@ public final class StrikeExtension: MarkExtension {
     }
 }
 
+public final class UnderlineExtension: MarkExtension {
+    public let name = "underline"
+    public init() {}
+    public var markSpec: MarkSpec { MarkSpec() }
+    public var html: HTMLSpec { HTMLSpec(tag: "u") }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["toggleUnderline": toggleMark(type)]
+    }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["Mod-u": toggleMark(type)]
+    }
+}
+
 public final class HighlightExtension: MarkExtension {
     public let name = "highlight"
     public init() {}
@@ -370,6 +385,25 @@ public final class LinkExtension: MarkExtension {
         MarkSpec(attrs: ["href": AttributeSpec(default: .null), "title": AttributeSpec(default: .null)], inclusive: false)
     }
     public var html: HTMLSpec { HTMLSpec(tag: "a") }
+    public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
+        guard let type = ctx.markType else { return [] }
+        // Autolink: typing whitespace right after a URL turns it into a link.
+        // The handler must re-insert the typed character (rules replace the
+        // default insertion).
+        return [InputRule("(?:^|\\s)((?:https?://|www\\.)[^\\s]+)(\\s)$") { state, match, start, end in
+            guard let url = match[1], let typed = match[2] else { return nil }
+            let full = match[0] ?? ""
+            guard let urlRange = full.range(of: url) else { return nil }
+            let from = start + full.distance(from: full.startIndex, to: urlRange.lowerBound)
+            let to = from + url.count
+            guard to == end else { return nil }
+            let href = url.hasPrefix("www.") ? "https://" + url : url
+            let tr = state.tr
+            _ = try? tr.addMark(from, to, type.create(["href": .string(href)]))
+            _ = try? tr.insertText(typed, end)
+            return tr
+        }]
+    }
     public func commands(_ ctx: ExtensionContext) -> [String: Command] {
         guard let type = ctx.markType else { return [:] }
         return ["unsetLink": { state, dispatch, _ in
@@ -404,6 +438,7 @@ public func starterKit() -> [Extension] {
         BoldExtension(),
         ItalicExtension(),
         StrikeExtension(),
+        UnderlineExtension(),
         HighlightExtension(),
         CodeExtension(),
         LinkExtension(),
@@ -421,8 +456,10 @@ public final class GapCursorExtension: Extension {
 }
 
 /// The starter kit plus tables, task lists, images, wiki-links, and search.
-public func fullKit(wikiLinkSuggestions: ((String) -> [String])? = nil) -> [Extension] {
+public func fullKit(wikiLinkSuggestions: ((String) -> [String])? = nil,
+                    mentionSuggestions: ((String) -> [String])? = nil) -> [Extension] {
     starterKit() + tableExtensions() + taskListExtensions()
-        + [ImageExtension(), WikiLinkExtension(suggestions: wikiLinkSuggestions), SearchExtension(),
+        + [ImageExtension(), WikiLinkExtension(suggestions: wikiLinkSuggestions),
+           MentionExtension(suggestions: mentionSuggestions), SearchExtension(),
            SlashMenuExtension(), CollabCursorExtension(), GapCursorExtension()]
 }
