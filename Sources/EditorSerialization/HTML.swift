@@ -20,7 +20,7 @@ public struct HTMLConfig: Sendable {
             "horizontalRule": "hr", "hardBreak": "br", "image": "img",
             "table": "table", "tableRow": "tr", "tableCell": "td", "tableHeader": "th",
             "taskList": "ul", "taskItem": "li",
-            "wikiLink": "a",
+            "wikiLink": "a", "mention": "span",
         ]
         let markTags: [String: String] = [
             "bold": "strong", "italic": "em", "strike": "s", "highlight": "mark", "code": "code", "link": "a",
@@ -28,7 +28,7 @@ public struct HTMLConfig: Sendable {
         var tagToNode: [String: String] = [:]
         // taskList/taskItem also use ul/li but need a data-type to round-trip,
         // so they don't claim the reverse mapping (ul→bulletList, li→listItem).
-        let noReverse: Set<String> = ["wikiLink", "taskList", "taskItem"]
+        let noReverse: Set<String> = ["wikiLink", "mention", "taskList", "taskItem"]
         for (n, t) in nodeTags where !noReverse.contains(n) { tagToNode[t] = n }
         for h in 1...6 { tagToNode["h\(h)"] = "heading" }
         tagToNode["pre"] = "codeBlock"
@@ -84,6 +84,10 @@ public enum HTMLSerializer {
             let target = node.attrs["target"]?.stringValue ?? ""
             let label = node.attrs["label"]?.stringValue ?? target
             return "<a href=\"\(escape(target))\" data-wikilink=\"\(escape(target))\">\(escape(label))</a>"
+        case "mention":
+            let id = node.attrs["id"]?.stringValue ?? ""
+            let label = node.attrs["label"]?.stringValue ?? id
+            return "<span data-mention=\"\(escape(id))\">\(escape("@" + label))</span>"
         case "taskList":
             return "<ul data-type=\"taskList\">\(serializeFragment(node.content, config))</ul>"
         case "taskItem":
@@ -341,6 +345,14 @@ public enum HTMLParser {
             case let .open(tag, attrs, selfClosing):
                 if tag == "br", let br = try? schema.node("hardBreak") { result.append(br); i += 1; continue }
                 if tag == "img" { if let img = makeImage(attrs, schema) { result.append(img) }; i += 1; continue }
+                if tag == "span", let id = attrs["data-mention"], schema.nodes["mention"] != nil {
+                    let close = matchingClose(tokens, i, tag)
+                    var label = innerText(tokens, i + 1, close)
+                    if label.hasPrefix("@") { label.removeFirst() }
+                    if let m = try? schema.nodes["mention"]?.create(["id": .string(id), "label": .string(label)]) {
+                        result.append(m); i = close + 1; continue
+                    }
+                }
                 if tag == "a", attrs["data-wikilink"] != nil || schema.nodes["wikiLink"] != nil, attrs["data-wikilink"] != nil {
                     let target = attrs["data-wikilink"] ?? attrs["href"] ?? ""
                     let close = matchingClose(tokens, i, tag)
