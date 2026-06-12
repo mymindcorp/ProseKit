@@ -6,11 +6,19 @@ import DocumentModel
 // RTF list markers. This reclassifies matching bullet lists into task lists.
 
 /// Match key for a list item: the text of its first paragraph only (nested
-/// sub-lists are separate lines in the source, so they must not contribute), with
-/// NBSP and object-replacement characters normalized away (the NSAttributedString
-/// → HTML round-trip introduces both).
+/// sub-lists are separate lines in the source, so they must not contribute),
+/// normalized so both sides of the comparison agree: NBSP and object-replacement
+/// characters (the NSAttributedString → HTML round-trip introduces both) are
+/// dropped, as is a literal RTF list marker ("☑\tmilk") — some RTF imports keep
+/// the marker in the text, and Cocoa's HTML writer passes it through, so BOTH
+/// comparands need the same strip.
 private func normalizedLine(_ s: String) -> String {
-    s.replacingOccurrences(of: "\u{00A0}", with: " ")
+    var t = Substring(s)
+    if let tab = t.firstIndex(of: "\t"),
+       t[..<tab].rangeOfCharacter(from: .alphanumerics) == nil {
+        t = t[t.index(after: tab)...]
+    }
+    return t.replacingOccurrences(of: "\u{00A0}", with: " ")
         .replacingOccurrences(of: "\u{FFFC}", with: "")
         .trimmingCharacters(in: .whitespacesAndNewlines)
 }
@@ -27,8 +35,10 @@ private func itemLineText(_ item: Node) -> String {
 ///
 /// - `checklistLines`: every checklist line in source order with its checked state
 ///   (Apple Notes' proto). When present, a bullet list converts only if ALL its
-///   items are checklist lines — an unrelated bullet list that merely shares one
-///   line text survives — and duplicate texts resolve positionally (per-text FIFO).
+///   non-empty items are checklist lines — an unrelated bullet list that merely
+///   shares one line text survives, while a blank row (which the proto drops)
+///   doesn't block conversion — and duplicate texts resolve positionally: per-text
+///   FIFO queues are consumed in document order, which matches note order.
 /// - `checkedTexts`: texts of checked lines only (the RTF path, which cannot see
 ///   unchecked items). Without `checklistLines`, any matching item converts a list.
 /// No-op if the schema lacks task nodes or there are no checklist lines.
@@ -43,20 +53,28 @@ public func applyChecklistMarkers(_ content: Fragment, checkedTexts: Set<String>
           let taskListType = schema.nodes["taskList"], let taskItemType = schema.nodes["taskItem"]
     else { return content }
 
+    func matches(_ text: String) -> Bool { lineTexts.contains(text) || checked.contains(text) }
+
+    func recurseChildren(_ node: Node) -> Node {
+        guard node.childCount > 0 else { return node }
+        let kids = (0..<node.childCount).map { mapNode(node.child($0)) }
+        return node.copy(content: Fragment.from(kids))
+    }
+
     func mapNode(_ node: Node) -> Node {
-        // Recurse first so nested lists are handled too.
-        var n = node
-        if node.childCount > 0 {
-            let kids = (0..<node.childCount).map { mapNode(node.child($0)) }
-            n = node.copy(content: Fragment.from(kids))
-        }
-        guard n.type.name == "bulletList", n.childCount > 0 else { return n }
-        let items = (0..<n.childCount).map { n.child($0) }
+        guard node.type.name == "bulletList", node.childCount > 0 else { return recurseChildren(node) }
+        let items = (0..<node.childCount).map { node.child($0) }
         let texts = items.map(itemLineText)
         let isChecklist = lineTexts.isEmpty
             ? texts.contains(where: checked.contains)
-            : texts.allSatisfy { lineTexts.contains($0) || checked.contains($0) }
-        guard isChecklist else { return n }
+            : texts.contains(where: matches) && texts.allSatisfy { $0.isEmpty || matches($0) }
+        guard isChecklist else { return recurseChildren(node) }
+
+        // Convert each item BEFORE recursing into it, so queues are consumed in
+        // document order — which matches note order even across nesting levels.
+        // If any item can't convert, restore the queues and keep the list intact
+        // rather than dropping a line or leaving states shifted.
+        let queuesBefore = queues
         var taskItems: [Node] = []
         for (item, text) in zip(items, texts) {
             let isChecked: Bool
@@ -66,12 +84,17 @@ public func applyChecklistMarkers(_ content: Fragment, checkedTexts: Set<String>
             } else {
                 isChecked = checked.contains(text)
             }
-            // An unconvertible item aborts the whole list rather than dropping a line.
-            guard let ti = taskItemType.createAndFill(["checked": .bool(isChecked)], content: item.content)
-            else { return n }
+            let kids = (0..<item.childCount).map { mapNode(item.child($0)) }
+            guard let ti = taskItemType.createAndFill(["checked": .bool(isChecked)], content: Fragment.from(kids))
+            else {
+                queues = queuesBefore
+                return recurseChildren(node)
+            }
             taskItems.append(ti)
         }
-        return taskListType.createAndFill([:], content: Fragment.from(taskItems)) ?? n
+        if let list = taskListType.createAndFill([:], content: Fragment.from(taskItems)) { return list }
+        queues = queuesBefore
+        return recurseChildren(node)
     }
 
     return Fragment.from((0..<content.childCount).map { mapNode(content.child($0)) })
