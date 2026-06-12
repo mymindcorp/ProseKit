@@ -95,6 +95,14 @@ public final class ExtensionManager {
         // priority order), then chain them — falling back to the base keymap —
         // so e.g. Enter tries splitListItem for whichever list type applies.
         var perKey: [String: [Command]] = [:]
+        // Backspace right after an input rule fired reverts the rule (PM/Tiptap
+        // behavior) — it only claims the key when the last transaction was a
+        // rule application, so it must run before everything else.
+        if !rules.isEmpty {
+            perKey[normalizeKeyName("Backspace"), default: []].append { state, dispatch, _ in
+                undoInputRule(state, dispatch)
+            }
+        }
         for ext in extensions {
             for (key, command) in ext.keyboardShortcuts(context(for: ext, editor: editor)) {
                 perKey[normalizeKeyName(key), default: []].append(command)
