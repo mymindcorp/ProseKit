@@ -68,6 +68,9 @@ enum DecorationItem {
     case text(String, CGPoint, [NSAttributedString.Key: Any])
     case stroke(CGRect, UIColor, CGFloat)
     case image(UIImage, CGRect)
+    case roundedFill(CGRect, UIColor, CGFloat)
+    case roundedStroke(CGRect, UIColor, CGFloat, CGFloat)
+    case checkmark(CGRect, UIColor, CGFloat)
 }
 
 /// A text block typeset in local coordinates (block top at y = 0), cached and
@@ -376,6 +379,9 @@ final class DocumentLayout {
         case let .stroke(r, c, w): return .stroke(r.offsetBy(dx: 0, dy: dy), c, w)
         case let .text(s, p, a): return .text(s, CGPoint(x: p.x, y: p.y + dy), a)
         case let .image(img, r): return .image(img, r.offsetBy(dx: 0, dy: dy))
+        case let .roundedFill(r, c, rad): return .roundedFill(r.offsetBy(dx: 0, dy: dy), c, rad)
+        case let .roundedStroke(r, c, w, rad): return .roundedStroke(r.offsetBy(dx: 0, dy: dy), c, w, rad)
+        case let .checkmark(r, c, w): return .checkmark(r.offsetBy(dx: 0, dy: dy), c, w)
         }
     }
 
@@ -470,11 +476,15 @@ final class DocumentLayout {
             let checked = item.attrs["checked"]?.boolValue ?? false
             y += theme.spacingBefore(item, isFirst: i == 0)
             let boxRect = CGRect(x: x + theme.listIndent - boxSize - 8, y: y + 1, width: boxSize, height: boxSize)
-            // Checkbox: rounded square, filled + check glyph when checked.
-            decorations.append(.stroke(boxRect.insetBy(dx: 1, dy: 1), checked ? theme.caretColor : theme.quoteBarColor, 1.5))
+            // Checkbox: checked is a solid accent rounded square with a white
+            // check; unchecked a soft rounded outline.
+            let box = boxRect.insetBy(dx: 1, dy: 1)
+            let radius = box.height * 0.3
             if checked {
-                decorations.append(.fill(boxRect.insetBy(dx: 1, dy: 1), theme.caretColor.withAlphaComponent(0.15)))
-                decorations.append(.text("✓", CGPoint(x: boxRect.minX + 3, y: boxRect.minY), [.font: UIFont.systemFont(ofSize: boxSize - 4, weight: .bold), .foregroundColor: theme.caretColor]))
+                decorations.append(.roundedFill(box, theme.caretColor, radius))
+                decorations.append(.checkmark(box, .white, 2))
+            } else {
+                decorations.append(.roundedStroke(box, theme.quoteBarColor, 1.5, radius))
             }
             checkboxes.append((rect: boxRect.insetBy(dx: -6, dy: -6), pos: pos, checked: checked))
             y = layoutFragment(item.content, docPos: pos + 1, x: x + theme.listIndent, width: width - theme.listIndent, y: y, isFirst: true)
@@ -529,13 +539,20 @@ final class DocumentLayout {
         return y0 + 6
     }
 
+    /// A colwidth attribute's width: the official array-of-ints form (first
+    /// slot), with back-compat for the scalar doubles older documents carry.
+    private static func colwidthValue(_ attr: AttributeValue?) -> Double? {
+        if case let .array(arr)? = attr { return arr.first?.doubleValue }
+        return attr?.doubleValue
+    }
+
     /// Column widths for a table: the first row's `colwidth` attributes
     /// normalized to the available width, or an equal split when unset.
     private func columnWidths(for node: Node, cols: Int, available: CGFloat) -> [CGFloat] {
         let firstRow = node.firstChild
         let raw: [CGFloat?] = (0..<cols).map { c in
             guard let row = firstRow, c < row.childCount,
-                  let w = row.child(c).attrs["colwidth"]?.doubleValue, w > 0 else { return nil }
+                  let w = Self.colwidthValue(row.child(c).attrs["colwidth"]), w > 0 else { return nil }
             return CGFloat(w)
         }
         if raw.contains(where: { $0 == nil }) {
@@ -869,6 +886,27 @@ final class DocumentLayout {
             case let .image(image, rect):
                 guard visible(rect.minY, rect.maxY) else { continue }
                 image.draw(in: rect)
+            case let .roundedFill(rect, color, radius):
+                guard visible(rect.minY, rect.maxY) else { continue }
+                color.setFill()
+                UIBezierPath(roundedRect: rect, cornerRadius: radius).fill()
+            case let .roundedStroke(rect, color, w, radius):
+                guard visible(rect.minY, rect.maxY) else { continue }
+                color.setStroke()
+                let path = UIBezierPath(roundedRect: rect.insetBy(dx: w / 2, dy: w / 2), cornerRadius: radius)
+                path.lineWidth = w
+                path.stroke()
+            case let .checkmark(rect, color, w):
+                guard visible(rect.minY, rect.maxY) else { continue }
+                let path = UIBezierPath()
+                path.move(to: CGPoint(x: rect.minX + rect.width * 0.22, y: rect.minY + rect.height * 0.54))
+                path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.42, y: rect.minY + rect.height * 0.74))
+                path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.78, y: rect.minY + rect.height * 0.28))
+                path.lineWidth = w
+                path.lineCapStyle = .round
+                path.lineJoinStyle = .round
+                color.setStroke()
+                path.stroke()
             }
         }
         // Text blocks via CoreText.
