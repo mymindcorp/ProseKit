@@ -398,7 +398,10 @@ public enum HTMLParser {
             }
             i += 1
         }
-        return tokens.count - 1
+        // No close tag: treat everything to the end as the element's children.
+        // (Returning count, not count-1: callers slice (open+1)..<end, and an
+        // unterminated tag as the last token must not produce an inverted range.)
+        return tokens.count
     }
 
     // MARK: Tokenizer
@@ -456,6 +459,10 @@ public enum HTMLParser {
             return true
         }
         if match("<!--", at: start) {
+            // Spec: "<!-->" and "<!--->" are complete (abruptly-closed) empty
+            // comments — parsing continues after them.
+            if match(">", at: start + 4) { return start + 5 }
+            if match("->", at: start + 4) { return start + 6 }
             var j = start + 4
             while j < chars.count {
                 if match("-->", at: j) { return j + 3 }
@@ -522,12 +529,15 @@ public enum HTMLParser {
         out.reserveCapacity(s.count)
         var i = s.startIndex
         while i < s.endIndex {
-            // An entity is "&" + a short name or numeric reference + ";".
-            guard s[i] == "&",
-                  let semi = s[s.index(after: i)...].firstIndex(of: ";"),
-                  s.distance(from: i, to: semi) <= 10
-            else { out.append(s[i]); i = s.index(after: i); continue }
-            let name = s[s.index(after: i)..<semi]
+            // An entity is "&" + a short name or numeric reference + ";". Search
+            // for the ";" only within the longest legal entity (10 chars) — an
+            // unbounded scan is quadratic on '&'-dense text like URL lists.
+            guard s[i] == "&" else { out.append(s[i]); i = s.index(after: i); continue }
+            let next = s.index(after: i)
+            let windowEnd = s.index(next, offsetBy: 10, limitedBy: s.endIndex) ?? s.endIndex
+            guard let semi = s[next..<windowEnd].firstIndex(of: ";")
+            else { out.append(s[i]); i = next; continue }
+            let name = s[next..<semi]
             var decoded: Character?
             if let c = namedEntities[String(name)] {
                 decoded = c
