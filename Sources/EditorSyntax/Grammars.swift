@@ -71,8 +71,10 @@ func typescriptRules(_ c: SyntaxColors) -> [SyntaxRule] {
         rule(#""(?:\\.|[^"\\])*""#, c.string),
         rule(#"'(?:\\.|[^'\\])*'"#, c.string),
         rule(#"@[\w.]+"#, c.atRule),                            // decorators
-        rule(#"\b(?:const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|new|class|extends|super|this|typeof|instanceof|in|of|import|export|from|as|default|async|await|yield|try|catch|finally|throw|delete|void|null|true|false|undefined|static|get|set|interface|type|enum|namespace|declare|readonly|public|private|protected|implements|abstract|keyof|infer|satisfies|override|is|module)\b"#, c.keyword),
-        rule(#"\b[A-Z]\w*\b"#, c.property),                     // types
+        rule(#"\b(?:const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|new|class|extends|super|this|typeof|instanceof|in|of|import|export|from|as|default|async|await|yield|try|catch|finally|throw|delete|null|true|false|undefined|static|get|set|interface|type|enum|namespace|declare|readonly|public|private|protected|implements|abstract|keyof|infer|satisfies|override|is|module)\b"#, c.keyword),
+        // Built-in types — colored so annotations (`: string`, `): number`) read.
+        rule(#"\b(?:string|number|boolean|void|any|never|unknown|object|symbol|bigint)\b"#, c.property),
+        rule(#"\b[A-Z]\w*\b"#, c.property),                     // user types (Capitalized)
         rule(#"\b\d+(?:\.\d+)?\b"#, c.number),
     ]
 }

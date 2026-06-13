@@ -68,6 +68,13 @@ final class SyntaxHighlighterTests: XCTestCase {
 
     // MARK: tokenizing (per language, via explicit hint)
 
+    func testTypeScriptColorsBuiltinAndUserTypes() {
+        let code = "function id(x: number): User { return x }"
+        XCTAssertEqual(color(of: "function", in: code, language: "ts"), SyntaxColors.default.keyword)
+        XCTAssertEqual(color(of: "number", in: code, language: "ts"), SyntaxColors.default.property)
+        XCTAssertEqual(color(of: "User", in: code, language: "ts"), SyntaxColors.default.property)
+    }
+
     func testKeywordInsideStringStaysString() {
         let code = "let s = \"const\""
         XCTAssertEqual(color(of: "\"const\"", in: code, language: "js"), SyntaxColors.default.string)

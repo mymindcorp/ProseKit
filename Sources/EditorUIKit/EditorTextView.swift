@@ -114,6 +114,20 @@ open class EditorTextView: UIView, UIKeyInput {
     /// never invalidate the layout. O(1) cache key.
     private var docVersion: Int { editor.docRevision }
     private let blockCache = TextBlockLayoutCache()
+
+    /// Optional hook to syntax-highlight code blocks. Nil (the default) renders
+    /// code as plain monospaced text. Setting it re-typesets code blocks.
+    public var syntaxHighlighter: SyntaxHighlighter? {
+        didSet { blockCache.clear(); invalidateLayout() }
+    }
+
+    /// Optional hook returning a badge label for a code block (e.g. its detected
+    /// or explicit language), given the block's text and `language` attribute.
+    /// Nil (the default), or a nil return, draws no badge.
+    public var codeLanguageLabel: ((_ code: String, _ language: String?) -> String?)? {
+        didSet { invalidateLayout() }
+    }
+
     /// Vertical scroll offset; the host feeds the enclosing scroll view's offset
     /// so the view renders only the visible window (bounded layer + culling).
     public var contentOffsetY: CGFloat = 0 {
@@ -236,7 +250,8 @@ open class EditorTextView: UIView, UIKeyInput {
         if let layout, lastLayoutWidth == bounds.width, layoutVersion == docVersion { return layout }
         let l = DocumentLayout(doc: editor.doc, width: max(bounds.width, 1), theme: theme,
                                imageProvider: { [weak self] node in self?.resolveImage(node) },
-                               blockCache: blockCache, previous: layout, realizeWindow: realizeWindow())
+                               blockCache: blockCache, previous: layout, realizeWindow: realizeWindow(),
+                               syntaxHighlighter: syntaxHighlighter, codeLanguageLabel: codeLanguageLabel)
         layout = l
         lastLayoutWidth = bounds.width
         layoutVersion = docVersion
