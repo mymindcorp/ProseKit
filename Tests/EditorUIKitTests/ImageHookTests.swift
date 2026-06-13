@@ -1,6 +1,7 @@
 #if canImport(UIKit)
 import XCTest
 import UIKit
+import UniformTypeIdentifiers
 import DocumentModel
 import SchemaKit
 @testable import EditorUIKit
@@ -51,6 +52,82 @@ final class ImageHookTests: XCTestCase {
         view.frame = CGRect(x: 0, y: 0, width: 200, height: 200)
         view.invalidateLayout()
         XCTAssertEqual(redPixels(of: view), 0, "with no hook (and no loadable src) a placeholder is drawn, not an image")
+    }
+
+    private func emptyEditorView() throws -> EditorTextView {
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([try s.node("paragraph", [:], content: .empty)])))
+        let view = EditorTextView(editor: editor)
+        view.frame = CGRect(x: 0, y: 0, width: 200, height: 200)
+        view.layoutIfNeeded()
+        return view
+    }
+
+    private func imageSrc(_ view: EditorTextView) -> String? {
+        var src: String?
+        view.editor.doc.descendants { node, _, _, _ in
+            if node.type.name == "image" { src = node.attrs["src"]?.stringValue }
+            return true
+        }
+        return src
+    }
+
+    func testOnImageDropUsesHostAttributes() throws {
+        let view = try emptyEditorView()
+        view.onImageDrop = { img in
+            ["src": .string("asset://saved"), "alt": .string("\(img.typeIdentifier ?? "?")/\(img.suggestedName ?? "?")")]
+        }
+        view.insertDroppedImage(redPNG(), typeIdentifier: "public.png", suggestedName: "pic.png", at: 1)
+        XCTAssertEqual(imageSrc(view), "asset://saved", "the host's chosen src is used")
+        var alt: String?
+        view.editor.doc.descendants { node, _, _, _ in
+            if node.type.name == "image" { alt = node.attrs["alt"]?.stringValue }
+            return true
+        }
+        XCTAssertEqual(alt, "public.png/pic.png", "the dropped image's UTI + name reach the handler")
+    }
+
+    func testImageDropFallsBackToDataURL() throws {
+        let view = try emptyEditorView()
+        view.insertDroppedImage(redPNG(), typeIdentifier: "public.png", suggestedName: nil, at: 1)
+        XCTAssertEqual(imageSrc(view)?.hasPrefix("data:image/png;base64,"), true,
+                       "no handler → bytes embedded as a data: URL")
+    }
+
+    func testImageURLResolverResolvesCustomSrc() throws {
+        let editor = try Editor(extensions: fullKit())
+        let view = EditorTextView(editor: editor)
+        let fileURL = URL(fileURLWithPath: "/tmp/assets/x.png")
+        view.imageURLResolver = { src in src == "asset://x" ? fileURL : nil }
+        XCTAssertEqual(view.imageURLForTesting("asset://x"), fileURL, "resolver maps a custom src")
+        // Built-in handling still applies when the resolver returns nil.
+        XCTAssertEqual(view.imageURLForTesting("https://example.com/a.png")?.scheme, "https")
+        XCTAssertNil(view.imageURLForTesting("relative/unknown.png"))
+    }
+
+    func testItemProviderImageRoutesThroughHook() throws {
+        // Mirrors how Apple Notes (and Finder/Photos) vend a dragged image: an
+        // item provider with an image data representation, not a UIImage object.
+        let view = try emptyEditorView()
+        let png = redPNG()
+        var receivedUTI: String?
+        view.onImageDrop = { img in receivedUTI = img.typeIdentifier; return ["src": .string("asset://notes")] }
+
+        let provider = NSItemProvider()
+        provider.suggestedName = "from-notes"
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.png.identifier, visibility: .all) { completion in
+            completion(png, nil)
+            return nil
+        }
+        view.loadDroppedImage(from: provider, at: 1)
+
+        let done = expectation(description: "image inserted")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { done.fulfill() }
+        wait(for: [done], timeout: 2)
+
+        XCTAssertEqual(imageSrc(view), "asset://notes", "item-provider image went through onImageDrop")
+        XCTAssertEqual(receivedUTI, UTType.png.identifier, "the original image UTI is preserved")
     }
 
     func testEditorTextViewHonorsTheHook() throws {

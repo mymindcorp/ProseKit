@@ -21,10 +21,9 @@ public final class DocumentView: UIView {
     /// `[contentOffsetY, contentOffsetY + bounds.height]` is drawn.
     public var contentOffsetY: CGFloat = 0 { didSet { if oldValue != contentOffsetY { setNeedsDisplay() } } }
     /// Reports the rendered document height when it changes (size the scroll content from this).
-    public var onDocumentHeightChange: ((CGFloat) -> Void)?
-    /// Hook to supply the raw image bytes for an image node. Returns nil to draw a
-    /// placeholder.
-    public var imageData: ((Node) -> Data?)?
+    public var onDocumentHeightChange: DocumentHeightHandler?
+    /// Supplies raw image bytes for an image node; nil draws a placeholder.
+    public var imageData: ImageDataProvider?
 
     private var layout: DocumentLayout?
     private var layoutWidth: CGFloat = 0

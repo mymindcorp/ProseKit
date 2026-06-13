@@ -1,5 +1,6 @@
 #if canImport(UIKit)
 import UIKit
+import UniformTypeIdentifiers
 import DocumentModel
 import DocumentTransform
 import EditorStateKit
@@ -47,7 +48,7 @@ open class EditorTextView: UIView, UIKeyInput {
     /// uses `DefaultTaskCheckboxView` (circle + check, themed, animated). The
     /// editor positions and recycles the returned views as items scroll; your
     /// factory should return a fresh, unconfigured view each call.
-    public var checkboxViewProvider: (() -> TaskCheckboxView)? {
+    public var checkboxViewProvider: CheckboxViewProvider? {
         didSet { discardCheckboxViews(); setNeedsLayout() }
     }
     private var activeCheckboxViews: [(pos: Int, view: TaskCheckboxView)] = []
@@ -56,10 +57,15 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Called when a link is activated (Cmd-click on macOS / iPad). Defaults to
     /// opening the URL with the system; set it to handle links yourself (e.g.
     /// follow a wiki-link in-app, or confirm before leaving).
-    public var onOpenLink: ((URL) -> Void)?
+    public var onOpenLink: LinkActivationHandler?
     /// The document range being dragged (set while a local drag we started is in
     /// flight), so a drop back into this document moves rather than copies.
     private var dragSourceRange: (from: Int, to: Int)?
+
+    /// The image node (and its document range) being dragged, when the drag was
+    /// started by grabbing an existing image. A drop back into this document
+    /// moves that exact node; a drop elsewhere hands its bytes to another app.
+    private var draggingImage: (node: Node, from: Int, to: Int)?
 
     // MARK: - Suggestion menus
     //
@@ -142,7 +148,7 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Optional hook returning a badge label for a code block (e.g. its detected
     /// or explicit language), given the block's text and `language` attribute.
     /// Nil (the default), or a nil return, draws no badge.
-    public var codeLanguageLabel: ((_ code: String, _ language: String?) -> String?)? {
+    public var codeLanguageLabel: CodeLanguageLabelProvider? {
         didSet { invalidateLayout() }
     }
 
@@ -157,7 +163,7 @@ open class EditorTextView: UIView, UIKeyInput {
     public var documentHeight: CGFloat { ensureLayout().height }
     /// Called when the document height changes (so the host can resize the
     /// scroll content).
-    public var onDocumentHeightChange: ((CGFloat) -> Void)?
+    public var onDocumentHeightChange: DocumentHeightHandler?
     private var lastReportedHeight: CGFloat = -1
 
     // MARK: - UITextInput state
@@ -193,11 +199,20 @@ open class EditorTextView: UIView, UIKeyInput {
         setNeedsLayout()
     }
 
-    /// Hook to supply the raw image bytes for an image node (e.g. from the host's
-    /// asset store, keyed off any of the node's attributes). When it returns nil
-    /// the renderer falls back to loading the node's `src` URL, and otherwise
-    /// draws a placeholder.
-    public var imageData: ((Node) -> Data?)?
+    /// Supplies raw image bytes for an image node (e.g. from the host's asset
+    /// store). When it returns nil the renderer loads the node's `src` URL, and
+    /// otherwise draws a placeholder. See `ImageDataProvider`.
+    public var imageData: ImageDataProvider?
+
+    /// Handles an image dropped/pasted into the editor — persist the bytes and
+    /// return the `image` node attributes (e.g. `["src": ...]`). When nil (or it
+    /// returns nil) the bytes are embedded as a `data:` URL. See `ImageDropHandler`.
+    public var onImageDrop: ImageDropHandler?
+
+    /// Resolves an image node's `src` to a loadable URL (relative paths, custom
+    /// asset ids). When nil, `data:`/http(s)/`file:`/absolute paths are handled
+    /// built-in. See `ImageURLResolver`.
+    public var imageURLResolver: ImageURLResolver?
 
     private var imageCache: [String: UIImage] = [:]
     private var imageTasks: [String: Task<Void, Never>] = [:]
@@ -350,11 +365,16 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     private func imageURL(for src: String) -> URL? {
+        // The host's resolver wins (relative paths, custom asset ids).
+        if let resolved = imageURLResolver?(src) { return resolved }
         if src.hasPrefix("data:"), let url = URL(string: src) { return url }
         if let url = URL(string: src), let scheme = url.scheme, ["http", "https", "file"].contains(scheme) { return url }
         if FileManager.default.fileExists(atPath: src) { return URL(fileURLWithPath: src) }
         return nil
     }
+
+    /// Test hook: the resolved load URL for an image `src`.
+    func imageURLForTesting(_ src: String) -> URL? { imageURL(for: src) }
 
     open override func layoutSubviews() {
         super.layoutSubviews()
@@ -2086,9 +2106,13 @@ open class EditorTextView: UIView, UIKeyInput {
 
 extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
     public func dragInteraction(_ interaction: UIDragInteraction, itemsForBeginning session: any UIDragSession) -> [UIDragItem] {
-        // Only drag when the gesture starts on the (non-empty) selection.
+        let start = docPoint(session.location(in: self))
+        // Grabbing an existing image starts a drag of that node (move within the
+        // document; its bytes are offered to other apps).
+        if let img = imageAt(start) { return [imageDragItem(for: img)] }
+        // Otherwise, only drag when the gesture starts on the (non-empty) selection.
         let sel = editor.state.selection
-        guard !sel.empty, let pos = ensureLayout().position(at: docPoint(session.location(in: self))),
+        guard !sel.empty, let pos = ensureLayout().position(at: start),
               pos >= sel.from, pos <= sel.to else { return [] }
         let text = editor.doc.textBetween(sel.from, sel.to)
         guard !text.isEmpty else { return [] }
@@ -2098,10 +2122,44 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
 
     public func dragInteraction(_ interaction: UIDragInteraction, session: any UIDragSession, didEndWith operation: UIDropOperation) {
         dragSourceRange = nil
+        draggingImage = nil
+    }
+
+    /// The image node (and its document range) under a point, if one lands there.
+    func imageAt(_ point: CGPoint) -> (node: Node, from: Int, to: Int)? {
+        guard let pos = ensureLayout().position(at: point) else { return nil }
+        let p = min(max(pos, 0), editor.doc.content.size)
+        let resolved = editor.doc.resolve(p)
+        if let after = resolved.nodeAfter, after.type.name == "image" {
+            return (after, p, p + after.nodeSize)
+        }
+        if let before = resolved.nodeBefore, before.type.name == "image" {
+            return (before, p - before.nodeSize, p)
+        }
+        return nil
+    }
+
+    /// Build a drag item for an existing image: it records the source range for a
+    /// local move and registers the rendered image's bytes for external drops.
+    private func imageDragItem(for img: (node: Node, from: Int, to: Int)) -> UIDragItem {
+        draggingImage = img
+        dragSourceRange = nil
+        let provider = NSItemProvider()
+        if let image = resolveImage(img.node), let data = image.pngData() {
+            provider.registerDataRepresentation(forTypeIdentifier: UTType.png.identifier, visibility: .all) { completion in
+                completion(data, nil)
+                return nil
+            }
+        }
+        let item = UIDragItem(itemProvider: provider)
+        item.localObject = img.node
+        return item
     }
 
     public func dropInteraction(_ interaction: UIDropInteraction, canHandle session: any UIDropSession) -> Bool {
         session.canLoadObjects(ofClass: NSString.self) || session.canLoadObjects(ofClass: UIImage.self)
+            || imageItemProvider(in: session) != nil
+            || (session.localDragSession != nil && draggingImage != nil)
     }
 
     public func dropInteraction(_ interaction: UIDropInteraction, sessionDidUpdate session: any UIDropSession) -> UIDropProposal {
@@ -2143,16 +2201,47 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
         guard let dropPos = gapBoundaryPosition(at: location) ?? ensureLayout().position(at: location) else { return }
         // Capture the move source now (the drag session ends before async loads).
         let moveFrom = session.localDragSession != nil ? dragSourceRange : nil
-        if session.canLoadObjects(ofClass: NSString.self) {
+        // Dragging one of our own images back into the document moves that exact
+        // node (preserving its attrs), rather than re-inserting a copy of its bytes.
+        if session.localDragSession != nil, let dragged = draggingImage {
+            moveImage(dragged, to: dropPos)
+            return
+        }
+        // An image (incl. one dragged out of Apple Notes, which exposes image
+        // file data) takes priority over a text representation of the same drag.
+        if let provider = imageItemProvider(in: session) {
+            loadDroppedImage(from: provider, at: dropPos)
+        } else if session.canLoadObjects(ofClass: NSString.self) {
             _ = session.loadObjects(ofClass: NSString.self) { [weak self] items in
                 guard let self, let text = items.first as? String, !text.isEmpty else { return }
                 Task { @MainActor in self.dropText(text, at: dropPos, movingFrom: moveFrom) }
             }
         } else if session.canLoadObjects(ofClass: UIImage.self) {
+            // A provider that vends only a UIImage (no registered image-data UTI).
             _ = session.loadObjects(ofClass: UIImage.self) { [weak self] items in
                 guard let self, let image = items.first as? UIImage, let data = image.pngData() else { return }
-                Task { @MainActor in self.dropImage(data, at: dropPos) }
+                Task { @MainActor in self.insertDroppedImage(data, typeIdentifier: UTType.png.identifier, suggestedName: nil, at: dropPos) }
             }
+        }
+    }
+
+    /// The first dropped item that carries image bytes (a registered type that
+    /// conforms to `public.image`).
+    private func imageItemProvider(in session: any UIDropSession) -> NSItemProvider? {
+        session.items.map(\.itemProvider).first { provider in
+            provider.registeredTypeIdentifiers.contains { UTType($0)?.conforms(to: .image) == true }
+        }
+    }
+
+    /// Load an image item's raw bytes (preserving format/UTI/name) and insert it.
+    /// Internal so the Apple Notes / item-provider path can be tested directly.
+    func loadDroppedImage(from provider: NSItemProvider, at dropPos: Int) {
+        let uti = provider.registeredTypeIdentifiers.first { UTType($0)?.conforms(to: .image) == true }
+            ?? UTType.image.identifier
+        let name = provider.suggestedName
+        provider.loadDataRepresentation(forTypeIdentifier: uti) { [weak self] data, _ in
+            guard let self, let data else { return }
+            Task { @MainActor in self.insertDroppedImage(data, typeIdentifier: uti, suggestedName: name, at: dropPos) }
         }
     }
 
@@ -2185,12 +2274,39 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
     }
 
     /// Insert a dropped image as an image node (a `data:` URL it can load/render).
-    func dropImage(_ data: Data, at dropPos: Int) {
-        guard let type = editor.schema.nodes["image"],
-              let node = try? type.create(["src": .string("data:image/png;base64," + data.base64EncodedString())]) else { return }
+    /// Insert a dropped/pasted image at `dropPos`. The host's `onImageDrop` (if
+    /// set) chooses the `image` node's attributes — typically persisting the
+    /// bytes and returning a `src`; otherwise the bytes are embedded as a `data:`
+    /// URL. Internal so paste and tests can reuse it.
+    func insertDroppedImage(_ data: Data, typeIdentifier: String?, suggestedName: String?, at dropPos: Int) {
+        guard let type = editor.schema.nodes["image"] else { return }
+        let dropped = DroppedImage(data: data, typeIdentifier: typeIdentifier, suggestedName: suggestedName)
+        let attrs = onImageDrop?(dropped) ?? Self.dataURLAttrs(for: data, typeIdentifier: typeIdentifier)
+        guard let node = try? type.create(attrs) else { return }
         let tr = editor.state.tr
         _ = try? tr.insert(min(max(dropPos, 0), tr.doc.content.size), node)
         if tr.docChanged { editor.dispatch(tr.scrollIntoView()) }
+    }
+
+    /// Move an existing image node to `dropPos` (delete it from its source range,
+    /// then re-insert the same node at the mapped target). A drop inside its own
+    /// range is a no-op. Internal so the drag-to-reorder path can be tested.
+    func moveImage(_ dragged: (node: Node, from: Int, to: Int), to dropPos: Int) {
+        let tr = editor.state.tr
+        func clamp(_ p: Int) -> Int { min(max(p, 0), tr.doc.content.size) }
+        let from = clamp(min(dragged.from, dragged.to)), to = clamp(max(dragged.from, dragged.to))
+        let drop = clamp(dropPos)
+        guard from < to, !(drop >= from && drop <= to) else { return } // dropped on itself
+        guard (try? tr.delete(from, to)) != nil else { return }
+        let target = min(max(tr.mapping.map(drop), 0), tr.doc.content.size)
+        guard (try? tr.insert(target, dragged.node)) != nil else { return }
+        if tr.docChanged { editor.dispatch(tr.scrollIntoView()) }
+    }
+
+    /// Embed image bytes as a `data:` URL src (the fallback when no host handler).
+    static func dataURLAttrs(for data: Data, typeIdentifier: String?) -> Attrs {
+        let mime = typeIdentifier.flatMap { UTType($0)?.preferredMIMEType } ?? "image/png"
+        return ["src": .string("data:\(mime);base64," + data.base64EncodedString())]
     }
 }
 

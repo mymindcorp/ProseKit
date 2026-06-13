@@ -63,12 +63,70 @@ final class DragDropTests: XCTestCase {
         XCTAssertNoThrow(try editor.doc.check(), "document stays valid")
     }
 
+    /// Build a doc: paragraph "AB", then a paragraph holding a single image,
+    /// then paragraph "CD". The image node spans one position.
+    private func makeViewWithImage() throws -> (EditorTextView, from: Int, to: Int) {
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        let img = try s.node("image", ["src": .string("asset://pic")])
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            try s.node("paragraph", [:], content: Fragment.from([s.text("AB")])),
+            try s.node("paragraph", [:], content: Fragment.from([img])),
+            try s.node("paragraph", [:], content: Fragment.from([s.text("CD")])),
+        ])))
+        let view = EditorTextView(editor: editor)
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 400)
+        view.layoutIfNeeded()
+        // "AB" = positions 1,2 inside para (size 4: 0,A,B,3); image para opens at 4,
+        // image leaf at 5, closes at 6. So the image spans 5...6.
+        return (view, 5, 6)
+    }
+
+    private func imageSrcs(_ view: EditorTextView) -> [String] {
+        var srcs: [String] = []
+        view.editor.doc.descendants { node, _, _, _ in
+            if node.type.name == "image", let s = node.attrs["src"]?.stringValue { srcs.append(s) }
+            return true
+        }
+        return srcs
+    }
+
+    func testMoveImageForwardReinsertsSameNode() throws {
+        let (view, from, to) = try makeViewWithImage()
+        let node = view.editor.doc.nodeAt(from)!
+        XCTAssertEqual(node.type.name, "image")
+        view.moveImage((node: node, from: from, to: to), to: view.editor.doc.content.size)
+        XCTAssertEqual(imageSrcs(view), ["asset://pic"], "the same image node is moved, not duplicated")
+        // It should now sit after "CD" rather than between "AB" and "CD".
+        let lastText = view.editor.doc.textContent
+        XCTAssertEqual(lastText, "ABCD", "text is undisturbed; only the image moved")
+    }
+
+    func testMoveImageOntoItselfIsNoOp() throws {
+        let (view, from, to) = try makeViewWithImage()
+        let node = view.editor.doc.nodeAt(from)!
+        view.moveImage((node: node, from: from, to: to), to: from) // inside its own range
+        XCTAssertEqual(imageSrcs(view), ["asset://pic"], "still exactly one image")
+        XCTAssertNoThrow(try view.editor.doc.check())
+    }
+
+    func testImageAtFindsImageUnderPoint() throws {
+        let (view, from, _) = try makeViewWithImage()
+        // The caret rect at the image position gives a point on the image.
+        guard let rect = view.ensureLayout().caretRect(at: from) else {
+            return XCTFail("no caret rect for the image position")
+        }
+        let point = CGPoint(x: rect.midX + 2, y: rect.midY)
+        let hit = view.imageAt(point)
+        XCTAssertEqual(hit?.node.type.name, "image", "a point on the image resolves to the image node")
+    }
+
     func testDropImageInsertsAnImageNode() throws {
         let view = try makeView("ABCDEF")
         let png = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).image { c in
             UIColor.blue.setFill(); c.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
         }.pngData()!
-        view.dropImage(png, at: 3)
+        view.insertDroppedImage(png, typeIdentifier: "public.png", suggestedName: nil, at: 3)
         var foundImage = false
         view.editor.doc.descendants { node, _, _, _ in
             if node.type.name == "image", (node.attrs["src"]?.stringValue ?? "").hasPrefix("data:image/png") { foundImage = true }
