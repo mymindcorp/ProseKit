@@ -166,25 +166,46 @@ public enum HTMLParser {
         return false
     }
 
-    // Parse a single block-level element starting at `start`.
-    private static func parseBlock(_ tokens: [Token], _ start: Int, _ schema: Schema, _ config: HTMLConfig) -> (Node?, Int)? {
+    private static func one(_ node: Node?) -> [Node] { node.map { [$0] } ?? [] }
+
+    /// Wrap inline content as a textblock, but split it around any block-level
+    /// atoms (e.g. a block `image`) so each becomes its own sibling rather than an
+    /// invalid child of the textblock. With an inline-image schema nothing splits.
+    private static func textblockSplittingBlocks(_ inline: [Node], wrap: ([Node]) -> Node?) -> [Node] {
+        guard inline.contains(where: { $0.type.isBlock }) else {
+            return one(wrap(inline)) // no block atoms → a single (possibly empty) textblock
+        }
+        var out: [Node] = []
+        var run: [Node] = []
+        func flush() { if !run.isEmpty { out.append(contentsOf: one(wrap(run))); run = [] } }
+        for node in inline {
+            if node.type.isBlock { flush(); out.append(node) } else { run.append(node) }
+        }
+        flush()
+        return out
+    }
+
+    // Parse a single block-level element starting at `start`, yielding zero or
+    // more sibling nodes (an inline-context `<img>` in a block-image schema lifts
+    // out of its paragraph, so one element can produce several blocks).
+    private static func parseBlock(_ tokens: [Token], _ start: Int, _ schema: Schema, _ config: HTMLConfig) -> ([Node], Int)? {
         guard case let .open(tag, attrs, selfClosing) = tokens[start] else {
             // stray text at block level → wrap in a paragraph
             if case let .text(t) = tokens[start], !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                let para = try? schema.node("paragraph", [:], content: Fragment.from([schema.text(decodeEntities(t))])) {
-                return (para, start + 1)
+                return ([para], start + 1)
             }
-            return (nil, start + 1)
+            return ([], start + 1)
         }
         if tag == "hr" || (selfClosing && tag == "hr") {
-            return (try? schema.node("horizontalRule"), start + 1)
+            return (one(try? schema.node("horizontalRule")), start + 1)
         }
         if tag == "img" {
-            return (makeImage(attrs, schema), start + 1)
+            return (one(makeImage(attrs, schema)), start + 1)
         }
         // Unknown void/self-closing element at block level (e.g. a stray <input>
         // or <col>): skip it — it has no children to recurse into.
-        if selfClosing { return (nil, start + 1) }
+        if selfClosing { return ([], start + 1) }
         let nodeName = config.tagToNode[tag]
         // Find matching close tag.
         let end = matchingClose(tokens, start, tag)
@@ -192,17 +213,17 @@ public enum HTMLParser {
         case "heading":
             let level = Int(tag.dropFirst()) ?? 1
             let inline = parseInline(Array(tokens[(start + 1)..<end]), schema, config)
-            return (try? schema.node("heading", ["level": .int(level)], content: Fragment.from(inline)), end + 1)
+            return (textblockSplittingBlocks(inline) { try? schema.node("heading", ["level": .int(level)], content: Fragment.from($0)) }, end + 1)
         case "codeBlock":
             let text = innerText(tokens, start + 1, end)
             let content = text.isEmpty ? Fragment.empty : Fragment.from([schema.text(text)])
-            return (try? schema.node("codeBlock", [:], content: content), end + 1)
+            return (one(try? schema.node("codeBlock", [:], content: content)), end + 1)
         case "paragraph":
             let inline = parseInline(Array(tokens[(start + 1)..<end]), schema, config)
-            return (try? schema.node("paragraph", [:], content: Fragment.from(inline.isEmpty ? [] : inline)), end + 1)
+            return (textblockSplittingBlocks(inline) { try? schema.node("paragraph", [:], content: Fragment.from($0)) }, end + 1)
         case "bulletList", "orderedList":
             // ul/ol may actually be a task list (Tiptap data-type, or items with checkboxes).
-            return (parseList(tag, attrs, tokens, start, end, schema, config), end + 1)
+            return (one(parseList(tag, attrs, tokens, start, end, schema, config)), end + 1)
         case "tableCell", "tableHeader":
             let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
             var a: Attrs = [:]
@@ -210,23 +231,22 @@ public enum HTMLParser {
             if let rs = attrs["rowspan"].flatMap({ Int($0) }), rs != 1 { a["rowspan"] = .int(rs) }
             if let cw = parseColwidth(attrs) { a["colwidth"] = .array(cw.map { .int($0) }) }
             if let type = schema.nodes[nodeName!] {
-                if let n = try? type.create(a, content: Fragment.from(children)) { return (n, end + 1) }
-                if let filled = type.createAndFill(a, content: Fragment.from(children)) { return (filled, end + 1) }
+                if let n = try? type.create(a, content: Fragment.from(children)) { return ([n], end + 1) }
+                if let filled = type.createAndFill(a, content: Fragment.from(children)) { return ([filled], end + 1) }
             }
-            return (nil, end + 1)
+            return ([], end + 1)
         case "blockquote", "listItem", "table", "tableRow":
             let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
             let name = nodeName!
             if let type = schema.nodes[name] {
-                if let n = try? type.create([:], content: Fragment.from(children)) { return (n, end + 1) }
-                if let filled = type.createAndFill([:], content: Fragment.from(children)) { return (filled, end + 1) }
+                if let n = try? type.create([:], content: Fragment.from(children)) { return ([n], end + 1) }
+                if let filled = type.createAndFill([:], content: Fragment.from(children)) { return ([filled], end + 1) }
             }
-            return (nil, end + 1)
+            return ([], end + 1)
         default:
             // Unknown block: try its children as blocks.
             let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
-            if children.count == 1 { return (children[0], end + 1) }
-            return (nil, end + 1)
+            return (children, end + 1)
         }
     }
 
@@ -260,8 +280,8 @@ public enum HTMLParser {
                     i = e + 1; continue
                 }
             }
-            if let (node, next) = parseBlock(tokens, i, schema, config) {
-                if let node { result.append(node) }
+            if let (nodes, next) = parseBlock(tokens, i, schema, config) {
+                result.append(contentsOf: nodes)
                 i = next
             } else { i += 1 }
         }

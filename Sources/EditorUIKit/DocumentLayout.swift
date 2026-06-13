@@ -953,6 +953,25 @@ final class DocumentLayout {
         return block.docPos(forAttrIndex: attrIndex)
     }
 
+    /// The document position of a block-level `image` whose drawn rect (the image
+    /// itself, or its placeholder box) contains `point` — for starting a drag from
+    /// an image. Inline images live inside text blocks and are found via
+    /// `position(at:)` instead.
+    func blockImage(at point: CGPoint) -> Int? {
+        for e in entries where e.node.type.name == "image" {
+            for d in e.decorations {
+                let rect: CGRect?
+                switch d {
+                case let .image(_, r): rect = r
+                case let .stroke(r, _, _): rect = r
+                default: rect = nil
+                }
+                if let rect, rect.contains(point) { return e.docStart }
+            }
+        }
+        return nil
+    }
+
     /// Selection highlight rectangles for a document range.
     func selectionRects(from: Int, to: Int) -> [CGRect] {
         guard to > from, !blocks.isEmpty else { return [] }

@@ -2,11 +2,15 @@ import DocumentModel
 import EditorStateKit
 import EditorCommands
 
-/// An inline image node (a leaf atom) with `src`, `alt`, and `title`.
+/// An image node (a leaf atom) with `src`, `alt`, and `title`.
+///
+/// Block by default — each image takes up its own row. Pass `inline: true` for a
+/// schema whose documents place images within a line of text (the editor renders
+/// either mode; the only difference is whether an image can sit inside a textblock).
 public final class ImageExtension: NodeExtension {
     public let name = "image"
     public let inline: Bool
-    public init(inline: Bool = true) { self.inline = inline }
+    public init(inline: Bool = false) { self.inline = inline }
 
     public var nodeSpec: NodeSpec {
         NodeSpec(

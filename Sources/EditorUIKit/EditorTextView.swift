@@ -2126,7 +2126,13 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
     }
 
     /// The image node (and its document range) under a point, if one lands there.
+    /// Handles both block images (their own row) and inline images (within text).
     func imageAt(_ point: CGPoint) -> (node: Node, from: Int, to: Int)? {
+        // Block image: hit-test its drawn rect directly (it isn't in a text block).
+        if let start = ensureLayout().blockImage(at: point), let node = editor.doc.nodeAt(start) {
+            return (node, start, start + node.nodeSize)
+        }
+        // Inline image: resolve the nearest text position and look at its neighbors.
         guard let pos = ensureLayout().position(at: point) else { return nil }
         let p = min(max(pos, 0), editor.doc.content.size)
         let resolved = editor.doc.resolve(p)
@@ -2284,7 +2290,10 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
         let attrs = onImageDrop?(dropped) ?? Self.dataURLAttrs(for: data, typeIdentifier: typeIdentifier)
         guard let node = try? type.create(attrs) else { return }
         let tr = editor.state.tr
-        _ = try? tr.insert(min(max(dropPos, 0), tr.doc.content.size), node)
+        let at = min(max(dropPos, 0), tr.doc.content.size)
+        // replaceRangeWith places a block image at a valid block boundary
+        // (splitting the surrounding textblock); inline images insert in place.
+        _ = try? tr.replaceRangeWith(at, at, node)
         if tr.docChanged { editor.dispatch(tr.scrollIntoView()) }
     }
 
@@ -2299,7 +2308,8 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
         guard from < to, !(drop >= from && drop <= to) else { return } // dropped on itself
         guard (try? tr.delete(from, to)) != nil else { return }
         let target = min(max(tr.mapping.map(drop), 0), tr.doc.content.size)
-        guard (try? tr.insert(target, dragged.node)) != nil else { return }
+        // Re-insert at a valid block boundary (block image) or in place (inline).
+        guard (try? tr.replaceRangeWith(target, target, dragged.node)) != nil else { return }
         if tr.docChanged { editor.dispatch(tr.scrollIntoView()) }
     }
 

@@ -51,35 +51,36 @@ final class DragDropTests: XCTestCase {
         // move math out of range and trap. Must be crash-safe.
         let editor = try Editor(extensions: fullKit())
         let s = editor.schema
-        let img = try s.node("image", ["src": .string("x.png")])
+        // A wiki-link is an inline atom (images are block-level), so the selection's
+        // text length ("ab") still differs from its document-position span.
+        let atom = try s.node("wikiLink", ["target": .string("p"), "label": .string("L")])
         editor.setContent(try s.node("doc", [:], content: Fragment.from([
-            try s.node("paragraph", [:], content: Fragment.from([s.text("a"), img, s.text("b")])),
+            try s.node("paragraph", [:], content: Fragment.from([s.text("a"), atom, s.text("b")])),
         ])))
         let view = EditorTextView(editor: editor)
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
         view.layoutIfNeeded()
-        // The paragraph content spans positions 1...4 (a, image, b); the text is "ab".
+        // The paragraph content spans positions 1...4 (a, atom, b); the text is "ab".
         view.dropText("ab", at: editor.doc.content.size, movingFrom: (1, 4))
         XCTAssertNoThrow(try editor.doc.check(), "document stays valid")
     }
 
-    /// Build a doc: paragraph "AB", then a paragraph holding a single image,
-    /// then paragraph "CD". The image node spans one position.
+    /// Build a doc: paragraph "AB", then a block image, then paragraph "CD". The
+    /// image is a top-level block leaf (one position).
     private func makeViewWithImage() throws -> (EditorTextView, from: Int, to: Int) {
         let editor = try Editor(extensions: fullKit())
         let s = editor.schema
         let img = try s.node("image", ["src": .string("asset://pic")])
         editor.setContent(try s.node("doc", [:], content: Fragment.from([
             try s.node("paragraph", [:], content: Fragment.from([s.text("AB")])),
-            try s.node("paragraph", [:], content: Fragment.from([img])),
+            img,
             try s.node("paragraph", [:], content: Fragment.from([s.text("CD")])),
         ])))
         let view = EditorTextView(editor: editor)
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 400)
         view.layoutIfNeeded()
-        // "AB" = positions 1,2 inside para (size 4: 0,A,B,3); image para opens at 4,
-        // image leaf at 5, closes at 6. So the image spans 5...6.
-        return (view, 5, 6)
+        // Para "AB" occupies [0,4) (open,A,B,close); the image leaf sits at 4..5.
+        return (view, 4, 5)
     }
 
     private func imageSrcs(_ view: EditorTextView) -> [String] {
@@ -112,13 +113,18 @@ final class DragDropTests: XCTestCase {
 
     func testImageAtFindsImageUnderPoint() throws {
         let (view, from, _) = try makeViewWithImage()
-        // The caret rect at the image position gives a point on the image.
-        guard let rect = view.ensureLayout().caretRect(at: from) else {
-            return XCTFail("no caret rect for the image position")
+        // The block image draws on its own row; grab its drawn rect from the layout.
+        guard let entry = view.ensureLayout().entries.first(where: { $0.node.type.name == "image" }),
+              let rect = entry.decorations.compactMap({ d -> CGRect? in
+                  if case let .stroke(r, _, _) = d { return r } // placeholder box (no image hook)
+                  if case let .image(_, r) = d { return r }
+                  return nil
+              }).first else {
+            return XCTFail("no block image rect in the layout")
         }
-        let point = CGPoint(x: rect.midX + 2, y: rect.midY)
-        let hit = view.imageAt(point)
-        XCTAssertEqual(hit?.node.type.name, "image", "a point on the image resolves to the image node")
+        let hit = view.imageAt(CGPoint(x: rect.midX, y: rect.midY))
+        XCTAssertEqual(hit?.node.type.name, "image", "a point on the block image resolves to the image node")
+        XCTAssertEqual(hit?.from, from, "and to its document position")
     }
 
     func testDropImageInsertsAnImageNode() throws {

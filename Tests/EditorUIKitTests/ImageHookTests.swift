@@ -4,6 +4,7 @@ import UIKit
 import UniformTypeIdentifiers
 import DocumentModel
 import SchemaKit
+import EditorSerialization
 @testable import EditorUIKit
 
 /// The configurable hook that supplies image bytes for a node, falling back to a
@@ -18,9 +19,9 @@ final class ImageHookTests: XCTestCase {
 
     private func docWithImage() -> (Schema, Node) {
         let s = try! Editor(extensions: fullKit()).schema
+        // Images are block-level: the image is a top-level child of the document.
         let image = try! s.node("image", ["src": .string("asset://photo"), "alt": .string("pic")])
-        let para = try! s.node("paragraph", [:], content: Fragment.from([image]))
-        return (s, try! s.node("doc", [:], content: Fragment.from([para])))
+        return (s, try! s.node("doc", [:], content: Fragment.from([image])))
     }
 
     private func redPixels(of view: UIView) -> Int {
@@ -130,13 +131,23 @@ final class ImageHookTests: XCTestCase {
         XCTAssertEqual(receivedUTI, UTType.png.identifier, "the original image UTI is preserved")
     }
 
+    func testHTMLImageInParagraphLiftsToBlock() throws {
+        // Pasted/clipboard HTML often nests <img> inside a paragraph; with a
+        // block-image schema the parser lifts it out into a sibling block so the
+        // document stays valid (a textblock can't hold a block image).
+        let s = try Editor(extensions: fullKit()).schema
+        let doc = try HTMLParser.parse("<p>before<img src=\"a.png\" alt=\"x\">after</p>", schema: s)
+        var kinds: [String] = []
+        for i in 0..<doc.childCount { kinds.append(doc.child(i).type.name) }
+        XCTAssertEqual(kinds, ["paragraph", "image", "paragraph"], "the image splits the paragraph")
+        XCTAssertNoThrow(try doc.check(), "the lifted document is valid")
+    }
+
     func testEditorTextViewHonorsTheHook() throws {
         let editor = try Editor(extensions: fullKit())
         let s = editor.schema // build the doc against the editor's own schema
         let image = try s.node("image", ["src": .string("asset://photo"), "alt": .string("pic")])
-        editor.setContent(try s.node("doc", [:], content: Fragment.from([
-            try s.node("paragraph", [:], content: Fragment.from([image])),
-        ])))
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([image])))
         let png = redPNG()
         let view = EditorTextView(editor: editor)
         view.imageData = { node in node.type.name == "image" ? png : nil }
