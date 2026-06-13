@@ -23,7 +23,8 @@ public struct HTMLConfig: Sendable {
             "wikiLink": "a", "mention": "span",
         ]
         let markTags: [String: String] = [
-            "bold": "strong", "italic": "em", "strike": "s", "highlight": "mark", "code": "code", "link": "a",
+            "bold": "strong", "italic": "em", "strike": "s", "underline": "u",
+            "highlight": "mark", "code": "code", "link": "a",
         ]
         var tagToNode: [String: String] = [:]
         // taskList/taskItem also use ul/li but need a data-type to round-trip,
@@ -34,7 +35,8 @@ public struct HTMLConfig: Sendable {
         tagToNode["pre"] = "codeBlock"
         let tagToMark: [String: String] = [
             "strong": "bold", "b": "bold", "em": "italic", "i": "italic",
-            "s": "strike", "del": "strike", "strike": "strike", "mark": "highlight", "code": "code", "a": "link",
+            "s": "strike", "del": "strike", "strike": "strike", "u": "underline",
+            "mark": "highlight", "code": "code", "a": "link",
         ]
         return HTMLConfig(nodeTags: nodeTags, markTags: markTags, tagToNode: tagToNode, tagToMark: tagToMark)
     }()
