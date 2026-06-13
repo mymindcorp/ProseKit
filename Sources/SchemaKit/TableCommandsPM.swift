@@ -488,3 +488,25 @@ public func goToNextCell(_ direction: TableDirection) -> Command {
         return true
     }
 }
+
+/// Tab inside a table: move to the next cell, or — when already in the last
+/// cell — append a row and land in its first cell. Mirrors Apple Notes (and the
+/// prosemirror-tables demo), where tabbing off the end grows the table rather
+/// than escaping it.
+public let goToNextCellOrAddRow: Command = { state, dispatch, host in
+    // A next cell exists: ordinary forward navigation.
+    if goToNextCell(1)(state, dispatch, host) { return true }
+    // Otherwise we're in the last cell — append a row and select its first cell.
+    guard isInTable(state), let rect = selectedRect(state) else { return false }
+    if let dispatch {
+        let tr = addRow(state.tr, rect, rect.bottom)
+        // `addRow` inserts the new row at `rect.bottom`; recompute that position
+        // (start-of-table + every preceding row) to point at the new row's first
+        // cell, then select inside it the same way `goToNextCell` does.
+        var rowPos = rect.tableStart
+        for i in 0..<rect.bottom { rowPos += rect.table.child(i).nodeSize }
+        let resolved = tr.doc.resolve(rowPos + 1)
+        dispatch(tr.setSelection(TextSelection.between(resolved, moveCellForward(resolved))).scrollIntoView())
+    }
+    return true
+}
