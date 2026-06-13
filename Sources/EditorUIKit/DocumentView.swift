@@ -24,20 +24,53 @@ public final class DocumentView: UIView {
     public var onDocumentHeightChange: DocumentHeightHandler?
     /// Supplies raw image bytes for an image node; nil draws a placeholder.
     public var imageData: ImageDataProvider?
+    /// Resolves an image node to a loadable URL (relative paths, custom `asset://`
+    /// ids — it sees all the node's attrs). nil falls back to the node's `src` as
+    /// data:/http(s)/file/absolute path.
+    public var imageURLResolver: ImageURLResolver?
 
     private var layout: DocumentLayout?
     private var layoutWidth: CGFloat = 0
     private let blockCache = TextBlockLayoutCache()
     private var lastReportedHeight: CGFloat = -1
     private var hostImageCache: [Node: UIImage] = [:]
+    private var imageCache: [String: UIImage] = [:]
+    private var imageTasks: [String: Task<Void, Never>] = [:]
 
-    /// Resolve an image node via the host data hook (decoded + cached), else a
-    /// placeholder.
+    /// Resolve an image node to a drawable image: the host data hook first
+    /// (decoded + cached), then any image already loaded from its `src` URL.
+    /// Returns nil to draw a placeholder (the layout records the node so
+    /// `ensureLayout` kicks off an async load).
     private func resolveImage(_ node: Node) -> UIImage? {
         if let cached = hostImageCache[node] { return cached }
-        guard let data = imageData?(node), let image = UIImage(data: data) else { return nil }
-        hostImageCache[node] = image
-        return image
+        if let data = imageData?(node), let image = UIImage(data: data) {
+            hostImageCache[node] = image
+            return image
+        }
+        return imageCache[node.attrs["src"]?.stringValue ?? ""]
+    }
+
+    /// Asynchronously load any images the layout couldn't resolve from a cache,
+    /// then rebuild so they draw. Each node is resolved to a URL by the host
+    /// (seeing all its attrs); the cache is keyed by `src`.
+    private func loadPendingImages(_ nodes: [Node]) {
+        for node in nodes {
+            let src = node.attrs["src"]?.stringValue ?? ""
+            guard !src.isEmpty, imageCache[src] == nil, imageTasks[src] == nil,
+                  let url = resolveImageURL(node, resolver: imageURLResolver) else { continue }
+            imageTasks[src] = Task { [weak self] in
+                let image = await loadImage(from: url)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard let self else { return }
+                    self.imageTasks[src] = nil
+                    if let image {
+                        self.imageCache[src] = image
+                        self.invalidateLayout()
+                    }
+                }
+            }
+        }
     }
 
     public init(document: Node? = nil, theme: TextTheme = TextTheme()) {
@@ -76,6 +109,7 @@ public final class DocumentView: UIView {
                                blockCache: blockCache, previous: layout)
         layout = l
         layoutWidth = bounds.width
+        loadPendingImages(l.pendingImages)
         if l.height != lastReportedHeight {
             lastReportedHeight = l.height
             onDocumentHeightChange?(l.height)

@@ -52,6 +52,9 @@ open class EditorTextView: UIView, UIKeyInput {
     /// of its drawn rect (captured at drag start; the left edge doesn't move as
     /// the width changes, since images are left-aligned).
     private var imageResize: (pos: Int, leftX: CGFloat)?
+    /// Desktop hover: the block image under the pointer, whose resize handle is
+    /// revealed. nil on touch, where every image's handle shows.
+    private var hoveredImagePos: Int?
 
     /// Supplies the view used for each task-item checkbox. When nil, the editor
     /// uses `DefaultTaskCheckboxView` (circle + check, themed, animated). The
@@ -299,7 +302,7 @@ open class EditorTextView: UIView, UIKeyInput {
         layout = l
         lastLayoutWidth = bounds.width
         layoutVersion = docVersion
-        loadPendingImages(l.pendingImageSources)
+        loadPendingImages(l.pendingImages)
         if l.height != lastReportedHeight {
             lastReportedHeight = l.height
             onDocumentHeightChange?(l.height)
@@ -336,7 +339,7 @@ open class EditorTextView: UIView, UIKeyInput {
         let head = editor.state.selection.head
         guard layout.isEstimated(pos: head),
               layout.realize(aroundPos: head, viewportHeight: bounds.height) else { return }
-        loadPendingImages(layout.pendingImageSources)
+        loadPendingImages(layout.pendingImages)
         if layout.height != lastReportedHeight {
             lastReportedHeight = layout.height
             onDocumentHeightChange?(layout.height)
@@ -347,7 +350,7 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Typeset any estimated blocks that have scrolled near the viewport.
     private func realizeVisibleIfNeeded() {
         guard let layout, layout.hasEstimatedContent, layout.realize(window: realizeWindow()) else { return }
-        loadPendingImages(layout.pendingImageSources)
+        loadPendingImages(layout.pendingImages)
         if layout.height != lastReportedHeight {
             lastReportedHeight = layout.height
             onDocumentHeightChange?(layout.height)
@@ -356,10 +359,13 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     /// Asynchronously load any images the layout couldn't find in the cache,
-    /// then rebuild so they draw at their intrinsic size.
-    private func loadPendingImages(_ sources: [String]) {
-        for src in sources where imageCache[src] == nil && imageTasks[src] == nil {
-            guard let url = imageURL(for: src) else { continue }
+    /// then rebuild so they draw at their intrinsic size. Each node is resolved
+    /// to a URL by the host (seeing all its attrs); the cache is keyed by `src`.
+    private func loadPendingImages(_ nodes: [Node]) {
+        for node in nodes {
+            let src = node.attrs["src"]?.stringValue ?? ""
+            guard !src.isEmpty, imageCache[src] == nil, imageTasks[src] == nil,
+                  let url = resolveImageURL(node, resolver: imageURLResolver) else { continue }
             imageTasks[src] = Task { [weak self] in
                 let image = await loadImage(from: url)
                 guard !Task.isCancelled else { return }
@@ -375,17 +381,11 @@ open class EditorTextView: UIView, UIKeyInput {
         }
     }
 
-    private func imageURL(for src: String) -> URL? {
-        // The host's resolver wins (relative paths, custom asset ids).
-        if let resolved = imageURLResolver?(src) { return resolved }
-        if src.hasPrefix("data:"), let url = URL(string: src) { return url }
-        if let url = URL(string: src), let scheme = url.scheme, ["http", "https", "file"].contains(scheme) { return url }
-        if FileManager.default.fileExists(atPath: src) { return URL(fileURLWithPath: src) }
-        return nil
+    /// Test hook: the resolved load URL for an image with the given `src`.
+    func imageURLForTesting(_ src: String) -> URL? {
+        guard let node = try? editor.schema.node("image", ["src": .string(src)]) else { return nil }
+        return resolveImageURL(node, resolver: imageURLResolver)
     }
-
-    /// Test hook: the resolved load URL for an image `src`.
-    func imageURLForTesting(_ src: String) -> URL? { imageURL(for: src) }
 
     open override func layoutSubviews() {
         super.layoutSubviews()
@@ -556,7 +556,7 @@ open class EditorTextView: UIView, UIKeyInput {
         if imageResizingEnabled {
             for (pos, rect) in l.imageRects {
                 let handle = imageResizeHandleRect(for: rect)
-                guard onScreen(handle) else { continue }
+                guard imageHandleVisible(pos), onScreen(handle) else { continue }
                 let active = imageResize?.pos == pos
                 let grip = handle.insetBy(dx: 2, dy: 2)
                 let path = UIBezierPath(roundedRect: grip, cornerRadius: 2).cgPath
@@ -1288,6 +1288,26 @@ open class EditorTextView: UIView, UIKeyInput {
         return nil
     }
 
+    /// Note the pointer's position (desktop) so the hovered image reveals its
+    /// resize handle. Called from the pointer interaction as the cursor moves.
+    func updateImageHover(at viewPoint: CGPoint) {
+        guard imageResizingEnabled else { return }
+        usesPointer = true
+        let p = docPoint(viewPoint)
+        let pos = ensureLayout().imageRects.first { $0.rect.contains(p) }?.pos
+        if pos != hoveredImagePos { hoveredImagePos = pos; setNeedsDisplay() }
+    }
+
+    /// Whether the resize handle for the image at `pos` should be visible now:
+    /// on touch every image shows one; on desktop only the hovered (or actively
+    /// resized) image does.
+    private func imageHandleVisible(_ pos: Int) -> Bool {
+        !usesPointer || hoveredImagePos == pos || imageResize?.pos == pos
+    }
+
+    /// Test hook: whether the image at `pos` currently draws its resize handle.
+    func imageHandleVisibleForTesting(_ pos: Int) -> Bool { imageHandleVisible(pos) }
+
     // The resize pan, gated by the gesture delegate to begin only on an image's
     // resize handle. Each `.changed` commits the new width; the commits land
     // within one undo group (they fall inside the history grouping window), so a
@@ -1387,6 +1407,7 @@ open class EditorTextView: UIView, UIKeyInput {
         case columnBorder(CGRect)
         case link(CGRect)
         case blockHandle(CGRect)
+        case imageHandle(CGRect)
         case text
     }
 
@@ -1396,6 +1417,11 @@ open class EditorTextView: UIView, UIKeyInput {
         // A block drag handle (in the left gutter) takes priority.
         if let i = blockHandleHit(at: viewPoint), let r = blockHandleRect(forEntryAt: i) {
             return .blockHandle(r.offsetBy(dx: 0, dy: -contentOffsetY))
+        }
+        // An image resize handle (bottom-right corner).
+        if let hit = imageResizeHit(at: viewPoint) {
+            let r = imageResizeHandleRect(for: hit.rect)
+            return .imageHandle(r.offsetBy(dx: 0, dy: -contentOffsetY))
         }
         // Checkboxes are their own subviews (with their own pointer hover).
         if let hit = columnBorderHit(at: point) {
@@ -2410,8 +2436,9 @@ extension EditorTextView: UIPointerInteractionDelegate {
     public func pointerInteraction(_ interaction: UIPointerInteraction,
                                    regionFor request: UIPointerRegionRequest,
                                    defaultRegion: UIPointerRegion) -> UIPointerRegion? {
-        // Track the pointer so the hovered block reveals its drag handle.
+        // Track the pointer so the hovered block / image reveals its handle.
         updateBlockHover(at: request.location)
+        updateImageHover(at: request.location)
         switch pointerTarget(at: request.location) {
         case .columnBorder(let rect):
             return UIPointerRegion(rect: rect, identifier: "columnBorder")
@@ -2419,6 +2446,8 @@ extension EditorTextView: UIPointerInteractionDelegate {
             return UIPointerRegion(rect: rect, identifier: "link")
         case .blockHandle(let rect):
             return UIPointerRegion(rect: rect, identifier: "blockHandle")
+        case .imageHandle(let rect):
+            return UIPointerRegion(rect: rect, identifier: "imageHandle")
         case .text:
             return defaultRegion
         }
@@ -2437,6 +2466,9 @@ extension EditorTextView: UIPointerInteractionDelegate {
         case "blockHandle":
             // A highlight over the grip — its "drag to reorder" affordance.
             return UIPointerStyle(shape: .roundedRect(region.rect.insetBy(dx: -3, dy: -2), radius: 4))
+        case "imageHandle":
+            // A highlight over the corner grip — its "drag to resize" affordance.
+            return UIPointerStyle(shape: .roundedRect(region.rect.insetBy(dx: -3, dy: -3), radius: 4))
         default:
             // Text: the standard I-beam.
             return UIPointerStyle(shape: .verticalBeam(length: theme.bodyFont.lineHeight + 4))
@@ -2462,9 +2494,22 @@ extension EditorTextView: UIPointerInteractionDelegate {
     }
 }
 
+/// Resolve an image node to a loadable URL: the host resolver first (it sees the
+/// whole node's attributes), then the node's `src` as data:/http(s)/file/
+/// absolute-path. Shared by the editable `EditorTextView` and read-only
+/// `DocumentView`.
+func resolveImageURL(_ node: Node, resolver: ImageURLResolver?) -> URL? {
+    if let resolved = resolver?(node) { return resolved }
+    let src = node.attrs["src"]?.stringValue ?? ""
+    if src.hasPrefix("data:"), let url = URL(string: src) { return url }
+    if let url = URL(string: src), let scheme = url.scheme, ["http", "https", "file"].contains(scheme) { return url }
+    if FileManager.default.fileExists(atPath: src) { return URL(fileURLWithPath: src) }
+    return nil
+}
+
 /// Load an image from a data:, file:, or http(s) URL. Nonisolated so it can run
 /// off the main actor.
-private func loadImage(from url: URL) async -> UIImage? {
+func loadImage(from url: URL) async -> UIImage? {
     if url.scheme == "data" {
         let string = url.absoluteString
         guard let comma = string.firstIndex(of: ",") else { return nil }
