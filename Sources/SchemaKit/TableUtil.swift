@@ -87,7 +87,7 @@ func moveCellForward(_ pos: ResolvedPos) -> ResolvedPos {
     pos.node(0).resolve(pos.pos + (pos.nodeAfter?.nodeSize ?? 0))
 }
 
-func inSameTable(_ a: ResolvedPos, _ b: ResolvedPos) -> Bool {
+public func inSameTable(_ a: ResolvedPos, _ b: ResolvedPos) -> Bool {
     a.depth == b.depth && a.pos >= b.start(-1) && a.pos <= b.end(-1)
 }
 

@@ -77,7 +77,7 @@ final class MentionSuggestionSource: SuggestionSource {
         // Capture the `@` range now (a tap can clear the live suggestion).
         let from = suggestion.from, to = suggestion.to
         return provider(query).map { id in
-            SuggestionEntry(title: "@" + id) { $0.acceptMentionSuggestion(id: id, from: from, to: to) }
+            SuggestionEntry(title: "@" + id, icon: "person.circle") { $0.acceptMentionSuggestion(id: id, from: from, to: to) }
         }
     }
 }

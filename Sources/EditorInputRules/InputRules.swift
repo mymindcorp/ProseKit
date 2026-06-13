@@ -67,7 +67,9 @@ private func run(_ state: EditorState, _ from: Int, _ to: Int, _ text: String, _
         let matchLen = (groups[0] ?? "").count
         let start = from - (matchLen - text.count)
         if let tr = rule.handler(state, groups, start, to) {
-            dispatch?(tr.setMeta("applyInputRule", (from: start, to: to, text: text)))
+            // Store the TYPED range (not the match start): undoInputRule inverts
+            // the steps and then re-inserts the typed text at this range.
+            dispatch?(tr.setMeta("applyInputRule", (from: from, to: to, text: text)))
             return true
         }
     }

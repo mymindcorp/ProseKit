@@ -28,8 +28,23 @@ open class EditorTextView: UIView, UIKeyInput {
     private var blinkTimer: Timer?
     /// Native selection UI (loupe, handles, edit menu, tap-to-place caret).
     private var textInteraction: UITextInteraction?
-    private weak var checkboxRecognizer: UIGestureRecognizer?
     private weak var columnResizeRecognizer: UIGestureRecognizer?
+    private weak var linkTapRecognizer: UIGestureRecognizer?
+
+    /// Supplies the view used for each task-item checkbox. When nil, the editor
+    /// uses `DefaultTaskCheckboxView` (circle + check, themed, animated). The
+    /// editor positions and recycles the returned views as items scroll; your
+    /// factory should return a fresh, unconfigured view each call.
+    public var checkboxViewProvider: (() -> TaskCheckboxView)? {
+        didSet { discardCheckboxViews(); setNeedsLayout() }
+    }
+    private var activeCheckboxViews: [(pos: Int, view: TaskCheckboxView)] = []
+    private var checkboxViewPool: [TaskCheckboxView] = []
+
+    /// Called when a link is activated (Cmd-click on macOS / iPad). Defaults to
+    /// opening the URL with the system; set it to handle links yourself (e.g.
+    /// follow a wiki-link in-app, or confirm before leaving).
+    public var onOpenLink: ((URL) -> Void)?
     /// The document range being dragged (set while a local drag we started is in
     /// flight), so a drop back into this document moves rather than copies.
     private var dragSourceRange: (from: Int, to: Int)?
@@ -71,11 +86,11 @@ open class EditorTextView: UIView, UIKeyInput {
         // task-list checkboxes and dragging table column borders. Each is gated
         // (via the gesture delegate) to begin only on its target, so ordinary
         // taps and selection drags fall through to UITextInteraction.
-        let checkboxTap = UITapGestureRecognizer(target: self, action: #selector(handleCheckboxTap(_:)))
         let columnResize = UIPanGestureRecognizer(target: self, action: #selector(handleMouseDrag(_:)))
-        checkboxRecognizer = checkboxTap
+        let linkTap = UITapGestureRecognizer(target: self, action: #selector(handleLinkTap(_:)))
         columnResizeRecognizer = columnResize
-        for recognizer in [checkboxTap, columnResize] as [UIGestureRecognizer] {
+        linkTapRecognizer = linkTap
+        for recognizer in [columnResize, linkTap] as [UIGestureRecognizer] {
             recognizer.delegate = self
             recognizer.cancelsTouchesInView = false
             addGestureRecognizer(recognizer)
@@ -104,7 +119,7 @@ open class EditorTextView: UIView, UIKeyInput {
     public var contentOffsetY: CGFloat = 0 {
         // Scrolling only repositions the caret layer; it must NOT reveal the
         // caret (that would scroll back to the cursor and fight the user).
-        didSet { if oldValue != contentOffsetY { realizeVisibleIfNeeded(); setNeedsDisplay(); positionCaretLayer(); updateSuggestionPopup(); notifySelectionGeometryChanged() } }
+        didSet { if oldValue != contentOffsetY { realizeVisibleIfNeeded(); setNeedsDisplay(); positionCaretLayer(); syncCheckboxViews(); updateSuggestionPopup(); notifySelectionGeometryChanged() } }
     }
     /// The full document height; the host uses it as the scroll content height.
     public var documentHeight: CGFloat { ensureLayout().height }
@@ -141,6 +156,9 @@ open class EditorTextView: UIView, UIKeyInput {
         setNeedsDisplay()
         invalidateIntrinsicContentSize()
         updateCaret()
+        // Checkbox views track the document; reposition/re-sync after the
+        // deferred layout rebuild (keeps the per-keystroke layout lazy).
+        setNeedsLayout()
     }
 
     /// Hook to supply the raw image bytes for an image node (e.g. from the host's
@@ -305,6 +323,7 @@ open class EditorTextView: UIView, UIKeyInput {
     open override func layoutSubviews() {
         super.layoutSubviews()
         if lastLayoutWidth != bounds.width { setNeedsRebuild() }
+        syncCheckboxViews()
     }
 
     /// Re-lay-out when Dynamic Type changes, via the modern trait-change API.
@@ -344,10 +363,16 @@ open class EditorTextView: UIView, UIKeyInput {
         // Plugin (e.g. search highlight) backgrounds.
         let decorations = gatherDecorations()
         for deco in decorations where deco.kind == .inline || deco.kind == .node {
-            // Explicit background attribute, else a known decoration class (the
+            // Suggested insertions are tinted by their author; otherwise an
+            // explicit background attribute, else a known decoration class (the
             // ported search/table plugins emit upstream's class names only).
-            let color = deco.attributes["background"].flatMap { UIColor(hex: $0) }
-                ?? Self.decorationClassColor(deco.attributes["class"])
+            let color: UIColor?
+            if deco.attributes["class"] == "insertion" {
+                color = Self.authorColor(deco.attributes["data-author"]).withAlphaComponent(0.20)
+            } else {
+                color = deco.attributes["background"].flatMap { UIColor(hex: $0) }
+                    ?? Self.decorationClassColor(deco.attributes["class"])
+            }
             guard let color else { continue }
             ctx.setFillColor(color.cgColor)
             if deco.kind == .node {
@@ -366,16 +391,17 @@ open class EditorTextView: UIView, UIKeyInput {
             guard var text = deco.attributes["data-text"], !text.isEmpty else { continue }
             if text.count > 40 { text = String(text.prefix(40)) + "…" }
             guard let caret = l.caretRect(at: deco.from), onScreen(caret) else { continue }
+            let color = Self.authorColor(deco.attributes["data-author"])
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: UIFont.systemFont(ofSize: theme.bodyFont.pointSize * 0.75),
-                .foregroundColor: UIColor.systemRed,
+                .foregroundColor: color,
                 .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                .strikethroughColor: UIColor.systemRed,
+                .strikethroughColor: color,
             ]
             let ns = NSAttributedString(string: text, attributes: attrs)
             let size = ns.size()
             let origin = CGPoint(x: caret.minX, y: caret.minY - size.height + 2)
-            ctx.setFillColor(UIColor.systemRed.withAlphaComponent(0.08).cgColor)
+            ctx.setFillColor(color.withAlphaComponent(0.08).cgColor)
             ctx.fill(CGRect(x: origin.x - 2, y: origin.y - 1, width: size.width + 4, height: size.height + 2))
             ns.draw(at: origin)
         }
@@ -785,14 +811,17 @@ open class EditorTextView: UIView, UIKeyInput {
             return p
         }()
         activeEntries = entries
-        popup.setItems(entries.map(\.title))
+        popup.setItems(entries.map { SuggestionPopupView.Item(title: $0.title, subtitle: $0.subtitle, icon: $0.icon) })
         // Position just below the caret, in view (viewport) coordinates.
         let caret = (ensureLayout().caretRect(at: min(pos, editor.doc.content.size)) ?? .zero)
             .offsetBy(dx: 0, dy: -contentOffsetY)
-        let size = popup.systemLayoutSizeFitting(CGSize(width: 260, height: 0),
-                                                 withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
+        let size = popup.fittingSize()
         let x = min(max(caret.minX, 4), max(4, bounds.width - size.width - 4))
-        popup.frame = CGRect(x: x, y: caret.maxY + 4, width: size.width, height: size.height)
+        // Flip above the caret if it would overflow the bottom edge.
+        let below = caret.maxY + 4
+        let y = (below + size.height > bounds.height - 4 && caret.minY - size.height - 4 > 0)
+            ? caret.minY - size.height - 4 : below
+        popup.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
     }
 
     private func hideSuggestion() {
@@ -803,7 +832,7 @@ open class EditorTextView: UIView, UIKeyInput {
 
     /// The titles currently shown in the suggestion popup (nil when hidden).
     /// For tests/inspection.
-    var suggestionTitles: [String]? { suggestionPopup?.items }
+    var suggestionTitles: [String]? { suggestionPopup?.items.map(\.title) }
 
     /// Apply the highlighted suggestion (Enter / Tab / tap).
     private func acceptSuggestion() {
@@ -878,16 +907,162 @@ open class EditorTextView: UIView, UIKeyInput {
         findBar?.setCount(current: editor.currentSearchMatchIndex, total: editor.searchMatches.count)
     }
 
-    /// Toggle a task-item checkbox. Gated by the gesture delegate to begin only
-    /// when the tap lands on a checkbox (otherwise UITextInteraction places the
-    /// caret).
-    @objc private func handleCheckboxTap(_ gesture: UITapGestureRecognizer) {
+    // MARK: - Task-item checkbox views
+
+    private func makeCheckboxView() -> TaskCheckboxView {
+        if let view = checkboxViewProvider?() { return view }
+        let view = DefaultTaskCheckboxView(frame: .zero)
+        view.theme = theme
+        return view
+    }
+
+    /// Position a recycled checkbox view over every visible task item, syncing
+    /// its checked state and toggle action. Off-screen views are parked in a
+    /// small reuse pool. Called on layout, scroll, and document change.
+    ///
+    /// Views are reused IN ORDER: the i-th visible checkbox keeps the i-th
+    /// active view across syncs. A toggle (order unchanged) touches only the
+    /// toggled view; a deleted row shifts the remaining views up by one rather
+    /// than recreating them. Combined with the checkbox view's instant
+    /// (non-animated) state updates, neither flashes the row.
+    func syncCheckboxViews() {
+        guard window != nil || !activeCheckboxViews.isEmpty || !ensureLayout().checkboxes.isEmpty else { return }
+        let l = ensureLayout()
+        let lo = contentOffsetY - 60, hi = contentOffsetY + max(bounds.height, 1) + 60
+        let visible = l.checkboxes.filter { $0.rect.maxY >= lo && $0.rect.minY <= hi }
+
+        var newActive: [(pos: Int, view: TaskCheckboxView)] = []
+        for (i, box) in visible.enumerated() {
+            let view: TaskCheckboxView
+            if i < activeCheckboxViews.count {
+                view = activeCheckboxViews[i].view
+            } else {
+                view = checkboxViewPool.popLast() ?? makeCheckboxView()
+            }
+            if view.superview !== self { addSubview(view) }
+            view.isHidden = false
+            view.frame = box.rect.offsetBy(dx: 0, dy: -contentOffsetY)
+            view.isChecked = box.checked // silent sync (setter is a no-op if unchanged)
+            let pos = box.pos
+            view.onToggle = { [weak self] in self?.toggleCheckbox(at: pos) }
+            newActive.append((pos, view))
+        }
+        // Park the surplus views (fewer items than before).
+        if activeCheckboxViews.count > visible.count {
+            for entry in activeCheckboxViews[visible.count...] {
+                entry.view.isHidden = true
+                if checkboxViewPool.count < 12 { checkboxViewPool.append(entry.view) } else { entry.view.removeFromSuperview() }
+            }
+        }
+        activeCheckboxViews = newActive
+    }
+
+    /// Remove all checkbox views (e.g. when the provider changes).
+    private func discardCheckboxViews() {
+        for entry in activeCheckboxViews { entry.view.removeFromSuperview() }
+        for view in checkboxViewPool { view.removeFromSuperview() }
+        activeCheckboxViews.removeAll()
+        checkboxViewPool.removeAll()
+    }
+
+    /// Flip a task item's `checked` attribute (the checkbox view's toggle
+    /// action). The new state flows back to the view via `syncCheckboxViews`.
+    private func toggleCheckbox(at pos: Int) {
         if !isFirstResponder { becomeFirstResponder() }
-        let point = docPoint(gesture.location(in: self))
-        guard let box = ensureLayout().checkbox(at: point) else { return }
-        if let tr = try? editor.state.tr.setNodeAttribute(box.pos, "checked", .bool(!box.checked)) {
+        let checked = editor.doc.nodeAt(pos)?.attrs["checked"]?.boolValue ?? false
+        if let tr = try? editor.state.tr.setNodeAttribute(pos, "checked", .bool(!checked)) {
             editor.dispatch(tr)
         }
+    }
+
+    /// Open a link the pointer activated. Gated to begin only on a Cmd-held
+    /// click over a link (so ordinary taps still place the caret natively).
+    @objc private func handleLinkTap(_ gesture: UITapGestureRecognizer) {
+        let point = docPoint(gesture.location(in: self))
+        guard let pos = ensureLayout().position(at: point) else { return }
+        activateLink(at: pos)
+    }
+
+    /// Open the link at `docPos`, via `onOpenLink` if set, else the system.
+    func activateLink(at docPos: Int) {
+        guard let link = linkInfo(at: docPos), let url = URL(string: link.href) else { return }
+        if let onOpenLink {
+            onOpenLink(url)
+        } else if UIApplication.shared.canOpenURL(url) {
+            UIApplication.shared.open(url)
+        }
+    }
+
+    /// Test hook: drive link activation by document position.
+    func activateLinkForTesting(at docPos: Int) { activateLink(at: docPos) }
+
+    // MARK: - Link editing (Mod-K / menu)
+
+    private var linkPopup: LinkPopupView?
+
+    /// The range a link command should target and its current href: the
+    /// selection (if any) or, for a collapsed caret inside a link, that link's
+    /// full range. Nil when there's nothing to link.
+    func currentLinkTarget() -> (from: Int, to: Int, href: String?)? {
+        let sel = editor.state.selection
+        if !sel.empty { return (sel.from, sel.to, linkInfo(at: sel.from)?.href) }
+        if let link = linkInfo(at: sel.head) { return (link.from, link.to, link.href) }
+        return nil
+    }
+
+    /// Whether a link can be added/edited at the current selection.
+    var canEditLink: Bool { currentLinkTarget() != nil }
+
+    /// Show the link popover for the current selection (or the link under the
+    /// caret). No-op when there's nothing to link.
+    func openLinkEditor() {
+        guard editor.schema.marks["link"] != nil, let target = currentLinkTarget() else { return }
+        linkPopup?.removeFromSuperview()
+        let popup = LinkPopupView(theme: theme, initialURL: target.href, showRemove: target.href != nil)
+        popup.onSubmit = { [weak self] url in self?.applyLink(url, from: target.from, to: target.to) }
+        popup.onCancel = { [weak self] in self?.dismissLinkEditor() }
+        addSubview(popup)
+        linkPopup = popup
+        let caret = (ensureLayout().caretRect(at: min(target.from, editor.doc.content.size)) ?? .zero)
+            .offsetBy(dx: 0, dy: -contentOffsetY)
+        let size = popup.systemLayoutSizeFitting(CGSize(width: 320, height: 0),
+                                                 withHorizontalFittingPriority: .required,
+                                                 verticalFittingPriority: .fittingSizeLevel)
+        let x = min(max(caret.minX, 4), max(4, bounds.width - size.width - 4))
+        popup.frame = CGRect(x: x, y: caret.maxY + 6, width: size.width, height: size.height)
+        popup.focus()
+    }
+
+    private func applyLink(_ url: String, from: Int, to: Int) {
+        defer { dismissLinkEditor() }
+        guard let linkType = editor.schema.marks["link"], to > from else { return }
+        // Re-select the captured range (the popover's field stole the selection),
+        // then add or remove the link.
+        let state = editor.state
+        let sel = TextSelection.create(state.doc, from, min(to, state.doc.content.size))
+        let withSel = state.tr.setSelection(sel)
+        editor.dispatch(withSel)
+        if url.isEmpty {
+            _ = editor.run(unsetLink(linkType))
+        } else {
+            _ = editor.run(setLink(linkType, href: url))
+        }
+    }
+
+    private func dismissLinkEditor() {
+        linkPopup?.removeFromSuperview()
+        linkPopup = nil
+        becomeFirstResponder()
+    }
+
+    /// Test hook: apply (or, with an empty URL, remove) a link over a range.
+    func applyLinkForTesting(_ url: String, from: Int, to: Int) { applyLink(url, from: from, to: to) }
+    /// Test hook: whether the link popover is showing.
+    var isLinkEditorVisible: Bool { linkPopup != nil }
+
+    /// Whether `gesture` is a Cmd-held click (the macOS/iPad open-link chord).
+    private func isCommandClick(_ gesture: UIGestureRecognizer) -> Bool {
+        gesture.modifierFlags.contains(.command)
     }
 
     // The column-resize pan, gated by the gesture delegate to begin only on a
@@ -908,8 +1083,11 @@ open class EditorTextView: UIView, UIKeyInput {
     /// in the class body — it overrides `UIView`'s method.)
     open override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
         let point = docPoint(gesture.location(in: self))
-        if gesture === checkboxRecognizer { return ensureLayout().checkbox(at: point) != nil }
         if gesture === columnResizeRecognizer { return columnBorderHit(at: point) != nil }
+        if gesture === linkTapRecognizer {
+            guard isCommandClick(gesture), let pos = ensureLayout().position(at: point) else { return false }
+            return linkInfo(at: pos) != nil
+        }
         return super.gestureRecognizerShouldBegin(gesture)
     }
 
@@ -952,26 +1130,66 @@ open class EditorTextView: UIView, UIKeyInput {
     /// What the pointer is over, for cursor styling. Rects are in viewport
     /// coordinates (the pointer APIs work in view space, layout in doc space).
     enum PointerTarget: Equatable {
-        case checkbox(CGRect)
         case columnBorder(CGRect)
+        case link(CGRect)
         case text
     }
 
     func pointerTarget(at viewPoint: CGPoint) -> PointerTarget {
         let point = docPoint(viewPoint)
         let l = ensureLayout()
-        if let box = l.checkboxes.first(where: { $0.rect.contains(point) }) {
-            // The stored rect is padded for touch; style the visual box.
-            let visual = box.rect.insetBy(dx: 6, dy: 6).offsetBy(dx: 0, dy: -contentOffsetY)
-            return .checkbox(visual)
-        }
+        // Checkboxes are their own subviews (with their own pointer hover).
         if let hit = columnBorderHit(at: point) {
             let x = hit.table.borderX(after: hit.leftColumn)
             let rect = CGRect(x: x - 6, y: hit.table.top - contentOffsetY,
                               width: 12, height: hit.table.bottom - hit.table.top)
             return .columnBorder(rect)
         }
+        if let pos = l.position(at: point), let link = linkInfo(at: pos) {
+            // Union the link's selection rects (it may wrap lines) into one
+            // hover region; clamp to the line under the pointer if it spans.
+            let rects = l.selectionRects(from: link.from, to: link.to)
+                .filter { $0.minY - contentOffsetY <= viewPoint.y && viewPoint.y <= $0.maxY - contentOffsetY }
+            if let rect = (rects.first ?? l.selectionRects(from: link.from, to: link.to).first) {
+                return .link(rect.offsetBy(dx: 0, dy: -contentOffsetY))
+            }
+        }
         return .text
+    }
+
+    /// The link mark covering `docPos`: its full contiguous range and href, or
+    /// nil if no link is there. The range spans adjacent inline children that
+    /// share the same href within the textblock.
+    func linkInfo(at docPos: Int) -> (from: Int, to: Int, href: String)? {
+        guard let linkType = editor.schema.marks["link"] else { return nil }
+        let size = editor.doc.content.size
+        let pos = min(max(docPos, 0), size)
+        let resolved = editor.doc.resolve(pos)
+        let parent = resolved.parent
+        guard parent.isTextblock else { return nil }
+        let blockStart = resolved.start()
+
+        // The href of each inline child, indexed by child, with its doc range.
+        func href(_ child: Node) -> String? {
+            child.marks.first(where: { $0.type === linkType })?.attrs["href"]?.stringValue
+        }
+        var ranges: [(from: Int, to: Int, href: String?)] = []
+        var offset = 0
+        for i in 0..<parent.childCount {
+            let child = parent.child(i)
+            ranges.append((blockStart + offset, blockStart + offset + child.nodeSize, href(child)))
+            offset += child.nodeSize
+        }
+        // The child the position falls in (prefer the one ending at pos when
+        // the caret sits on a boundary, matching mark inclusiveness).
+        guard let idx = ranges.firstIndex(where: { pos >= $0.from && pos < $0.to })
+            ?? ranges.firstIndex(where: { pos == $0.to }),
+            let target = ranges[idx].href, !target.isEmpty else { return nil }
+
+        var lo = idx, hi = idx
+        while lo > 0, ranges[lo - 1].href == target { lo -= 1 }
+        while hi + 1 < ranges.count, ranges[hi + 1].href == target { hi += 1 }
+        return (ranges[lo].from, ranges[hi].to, target)
     }
 
     func columnBorderHit(at point: CGPoint) -> (table: DocumentLayout.TableInfo, leftColumn: Int)? {
@@ -1028,6 +1246,21 @@ open class EditorTextView: UIView, UIKeyInput {
         case "insertion": return UIColor.systemGreen.withAlphaComponent(0.18)
         default: return nil
         }
+    }
+
+    /// A stable, distinct color per suggestion author (track changes). The
+    /// hash is deterministic across processes — Swift's `String.hashValue` is
+    /// per-process seeded, which would make a peer's color flicker between
+    /// launches — so we FNV-1a the UTF-8 bytes ourselves.
+    static func authorColor(_ author: String?) -> UIColor {
+        let palette = [
+            "#1E88E5", "#43A047", "#E53935", "#8E24AA",
+            "#FB8C00", "#00897B", "#C0CA33", "#D81B60",
+        ].map { UIColor(hex: $0)! }
+        guard let author, !author.isEmpty else { return palette[0] }
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        for byte in author.utf8 { hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211 }
+        return palette[Int(hash % UInt64(palette.count))]
     }
 
     // MARK: - UIKeyInput
@@ -1101,12 +1334,42 @@ open class EditorTextView: UIView, UIKeyInput {
             return UIPasteboard.general.hasStrings
         case #selector(selectAll(_:)):
             return editor.doc.content.size > 0
+        case #selector(formatBold(_:)), #selector(formatItalic(_:)), #selector(formatUnderline(_:)),
+             #selector(toggleHighlightAction(_:)):
+            return !editor.state.selection.empty
+        case #selector(addOrEditLink(_:)):
+            return canEditLink
         default:
             return super.canPerformAction(action, withSender: sender)
         }
     }
 
     open override func copy(_ sender: Any?) { writeSelectionToPasteboard() }
+
+    // Formatting actions, dispatched from the app's toolbar / Format menu.
+    // NOTE: these are deliberately NOT the system selectors `toggleBoldface:`/
+    // `toggleItalics:`/`toggleUnderline:` — implementing those makes Catalyst
+    // auto-inject the Font/Color menu (which this editor can't honor). Using
+    // custom names keeps formatting under our control, in the toolbar.
+    @objc func formatBold(_ sender: Any?) { _ = editor.run("toggleBold") }
+    @objc func formatItalic(_ sender: Any?) { _ = editor.run("toggleItalic") }
+    @objc func formatUnderline(_ sender: Any?) { _ = editor.run("toggleUnderline") }
+
+    /// Edit-menu / Cmd-K entry point for linking the selection.
+    @objc func addOrEditLink(_ sender: Any?) { openLinkEditor() }
+
+    /// Highlight the selection (right-click / Format menu / Mod-Shift-H).
+    @objc func toggleHighlightAction(_ sender: Any?) { _ = editor.run("toggleHighlight") }
+
+    /// The supported formatting actions, for a host to build its menu from.
+    /// Each routes through the responder chain to the focused editor.
+    public static let formatMenuActions: [(title: String, action: Selector)] = [
+        ("Bold", #selector(formatBold(_:))),
+        ("Italic", #selector(formatItalic(_:))),
+        ("Underline", #selector(formatUnderline(_:))),
+        ("Highlight", #selector(toggleHighlightAction(_:))),
+        ("Add Link…", #selector(addOrEditLink(_:))),
+    ]
 
     open override func cut(_ sender: Any?) {
         writeSelectionToPasteboard()
@@ -1115,6 +1378,9 @@ open class EditorTextView: UIView, UIKeyInput {
 
     open override func paste(_ sender: Any?) {
         let pb = UIPasteboard.general
+        // Pasting a bare URL over selected text links the selection instead of
+        // replacing it (the common "select text, paste link" gesture).
+        if pasteURLOverSelection(pb) { return }
         if let data = pb.data(forPasteboardType: "public.html"),
            let html = String(data: data, encoding: .utf8),
            let doc = try? HTMLParser.parse(html, schema: editor.schema) {
@@ -1134,6 +1400,33 @@ open class EditorTextView: UIView, UIKeyInput {
                 pastePlainText(string)
             }
         }
+    }
+
+    /// If the pasteboard is a single URL and there's a non-empty selection,
+    /// link the selection rather than replacing it. Returns whether it handled
+    /// the paste.
+    func pasteURLOverSelection(_ pb: UIPasteboard) -> Bool {
+        let sel = editor.state.selection
+        guard !sel.empty, let linkType = editor.schema.marks["link"] else { return false }
+        // Only when the pasteboard is purely a URL (a copied link), not rich
+        // content that happens to contain one.
+        guard !pb.contains(pasteboardTypes: ["public.html", "public.rtf", "public.rtfd",
+                                             "com.apple.flat-rtfd", "com.apple.notes.richtext"]),
+              let raw = pb.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+              isSingleURL(raw) else { return false }
+        let href = (raw.contains("://") || raw.hasPrefix("mailto:")) ? raw : "https://" + raw
+        _ = editor.run(setLink(linkType, href: href))
+        return true
+    }
+
+    /// Whether `string` is a single URL token (one word, with a scheme or a
+    /// www./domain-like shape).
+    private func isSingleURL(_ string: String) -> Bool {
+        guard !string.isEmpty, !string.contains(where: { $0.isWhitespace || $0.isNewline }) else { return false }
+        if string.hasPrefix("http://") || string.hasPrefix("https://") || string.hasPrefix("mailto:") { return true }
+        // Bare domain like "example.com/x": a dot, no scheme, looks host-ish.
+        return string.hasPrefix("www.") || (string.contains(".") && !string.contains("://"))
+            && string.range(of: "^[A-Za-z0-9.-]+\\.[A-Za-z]{2,}(/.*)?$", options: .regularExpression) != nil
     }
 
     /// Build a document from the pasteboard's rich-text flavors. Best case:
@@ -1306,6 +1599,11 @@ open class EditorTextView: UIView, UIKeyInput {
         find.wantsPriorityOverSystemBehavior = true
         find.discoverabilityTitle = "Find"
         commands.append(find)
+        // Add / edit a link.
+        let link = UIKeyCommand(input: "k", modifierFlags: .command, action: #selector(addOrEditLink(_:)))
+        link.wantsPriorityOverSystemBehavior = true
+        link.discoverabilityTitle = "Add Link"
+        commands.append(link)
         commands.append(UIKeyCommand(input: "g", modifierFlags: .command, action: #selector(handleFindNextCommand)))
         commands.append(UIKeyCommand(input: "g", modifierFlags: [.command, .shift], action: #selector(handleFindPreviousCommand)))
         return commands
@@ -1407,6 +1705,7 @@ open class EditorTextView: UIView, UIKeyInput {
             return runKey("Escape")
         default:
             let stroke = keyStroke(from: key)
+            if stroke == "Mod-k" { openLinkEditor(); return true }
             if !stroke.isEmpty { return runKey(stroke) }
             return false
         }
@@ -1698,10 +1997,10 @@ extension EditorTextView: UIPointerInteractionDelegate {
                                    regionFor request: UIPointerRegionRequest,
                                    defaultRegion: UIPointerRegion) -> UIPointerRegion? {
         switch pointerTarget(at: request.location) {
-        case .checkbox(let rect):
-            return UIPointerRegion(rect: rect, identifier: "checkbox")
         case .columnBorder(let rect):
             return UIPointerRegion(rect: rect, identifier: "columnBorder")
+        case .link(let rect):
+            return UIPointerRegion(rect: rect, identifier: "link")
         case .text:
             return defaultRegion
         }
@@ -1710,13 +2009,13 @@ extension EditorTextView: UIPointerInteractionDelegate {
     public func pointerInteraction(_ interaction: UIPointerInteraction,
                                    styleFor region: UIPointerRegion) -> UIPointerStyle? {
         switch region.identifier as? String {
-        case "checkbox":
-            // The cursor morphs into a rounded highlight over the box — the
-            // platform's "this is clickable" affordance.
-            return UIPointerStyle(shape: .roundedRect(region.rect.insetBy(dx: -3, dy: -3),
-                                                      radius: region.rect.height * 0.35))
         case "columnBorder":
             return UIPointerStyle(shape: .path(Self.columnResizeCursorPath()))
+        case "link":
+            // A rounded highlight over the link text — its "Cmd-click to open"
+            // affordance (the I-beam still serves caret placement on a plain
+            // click). The region rect is in view coordinates.
+            return UIPointerStyle(shape: .roundedRect(region.rect.insetBy(dx: -2, dy: -1), radius: 4))
         default:
             // Text: the standard I-beam.
             return UIPointerStyle(shape: .verticalBeam(length: theme.bodyFont.lineHeight + 4))

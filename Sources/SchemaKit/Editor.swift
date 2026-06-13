@@ -13,6 +13,9 @@ public final class Editor {
     public private(set) var state: EditorState
     /// Called after every state update.
     public var onChange: ((EditorState) -> Void)?
+    /// Called for every applied transaction, before `onChange`. Gives views
+    /// access to the transaction's mapping (e.g. to shift cached overlays).
+    public var onTransaction: ((Transaction) -> Void)?
     /// Optional host for view-dependent command behaviour.
     public weak var host: AnyObject?
 
@@ -61,6 +64,7 @@ public final class Editor {
         if tr.time == 0 { tr.time = Date().timeIntervalSince1970 * 1000 }
         if tr.docChanged { docRevision &+= 1 }
         state = state.apply(tr)
+        onTransaction?(tr)
         onChange?(state)
     }
 
@@ -89,12 +93,14 @@ public final class Editor {
         var working = state
         var any = false
         var changedDoc = false
+        var applied: [Transaction] = []
         for command in commands {
             var produced: Transaction? = nil
             let did = command(working, { produced = $0 }, host as? CommandHost)
             if did, let tr = produced {
                 if tr.docChanged { changedDoc = true }
                 working = working.apply(tr)
+                applied.append(tr)
                 any = true
             } else if !did {
                 return false
@@ -103,6 +109,7 @@ public final class Editor {
         if any {
             if changedDoc { docRevision &+= 1 }
             state = working
+            for tr in applied { onTransaction?(tr) }
             onChange?(state)
         }
         return true

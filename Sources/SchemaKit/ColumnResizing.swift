@@ -105,10 +105,8 @@ public func handleDecorations(_ state: EditorState, _ cell: Int) -> DecorationSe
             let cellPos = map.map[index]
             let pos = start + cellPos + table.nodeAt(cellPos)!.nodeSize - 1
             if columnResizingKey.getState(state)?.dragging != nil {
-                // Upstream uses a node decoration; this Decoration model has
-                // inline/widget kinds, so highlight the cell's range inline.
-                decorations.append(.inline(start + cellPos, start + cellPos + table.nodeAt(cellPos)!.nodeSize,
-                                           ["class": "column-resize-dragging"]))
+                decorations.append(.node(start + cellPos, start + cellPos + table.nodeAt(cellPos)!.nodeSize,
+                                         ["class": "column-resize-dragging"]))
             }
             decorations.append(.widget(pos, ["class": "column-resize-handle"]))
         }

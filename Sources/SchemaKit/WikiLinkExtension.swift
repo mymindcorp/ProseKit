@@ -102,7 +102,7 @@ final class WikiLinkSuggestionSource: SuggestionSource {
         // Capture the `[[` range now (a tap can clear the live suggestion).
         let from = suggestion.from, to = suggestion.to
         return provider(query).map { target in
-            SuggestionEntry(title: target) { $0.acceptWikiLinkSuggestion(target: target, from: from, to: to) }
+            SuggestionEntry(title: target, icon: "doc.text") { $0.acceptWikiLinkSuggestion(target: target, from: from, to: to) }
         }
     }
 }

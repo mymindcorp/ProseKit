@@ -11,7 +11,27 @@ public func toggleList(_ listType: NodeType, _ itemType: NodeType) -> Command {
         if isNodeActive(state, listType) {
             return liftListItem(itemType)(state, dispatch, host)
         }
-        return wrapInList(listType)(state, dispatch, host)
+        // Directly wrappable (e.g. a paragraph) → wrap as usual.
+        if wrapInList(listType)(state, nil, host) {
+            return wrapInList(listType)(state, dispatch, host)
+        }
+        // Not directly wrappable: the current block can't be the list item's
+        // first child — a heading, say, since the item's content requires a
+        // leading paragraph. Convert the selected textblock(s) to paragraphs
+        // first, then wrap, composing both into one undoable transaction.
+        guard let paragraph = listType.schema.nodes["paragraph"] else { return false }
+        var convertTr: Transaction?
+        guard setBlockType(paragraph)(state, { convertTr = $0 }, host), let convert = convertTr else { return false }
+        let converted = state.apply(convert)
+        var wrapTr: Transaction?
+        guard wrapInList(listType)(converted, { wrapTr = $0 }, host), let wrap = wrapTr else { return false }
+        if let dispatch {
+            let tr = state.tr
+            for step in convert.steps { _ = try? tr.step(step) }
+            for step in wrap.steps { _ = try? tr.step(step) }
+            dispatch(tr.scrollIntoView())
+        }
+        return true
     }
 }
 
@@ -123,6 +143,10 @@ public func splitListItem(_ itemType: NodeType, _ itemAttrs: Attrs? = nil) -> Co
         var types: [NodeTypeWithAttrs?]? = nil
         if let nextType {
             types = [itemAttrs != nil ? NodeTypeWithAttrs(itemType, itemAttrs!) : nil, NodeTypeWithAttrs(nextType)]
+        } else if let itemAttrs {
+            // Splitting mid-text: still force the new (lower) item's attrs
+            // (e.g. a task split in the middle starts unchecked).
+            types = [NodeTypeWithAttrs(itemType, itemAttrs), nil]
         }
         let splitPos = from.pos
         if !canSplit(tr.doc, splitPos, 2, types) { return false }

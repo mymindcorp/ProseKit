@@ -36,6 +36,9 @@ public final class Transaction: Transform {
     public private(set) var selectionSet = false
     /// Whether stored marks were explicitly updated.
     public var storedMarksSet: Bool { updatedMarks }
+    /// True when this transaction carries no metadata and can hence be safely
+    /// extended (upstream's `isGeneric` — it is about meta, not selection).
+    public var isGeneric: Bool { meta.isEmpty }
 
     public override func addStep(_ step: Step, _ doc: Node) {
         super.addStep(step, doc)

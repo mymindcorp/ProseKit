@@ -17,10 +17,14 @@ public struct SuggestionContext: Equatable {
 public struct SuggestionEntry {
     public var title: String
     public var subtitle: String?
+    /// An optional SF Symbol name shown as a leading glyph (the renderer falls
+    /// back to a generic icon when nil).
+    public var icon: String?
     public var apply: (Editor) -> Void
-    public init(title: String, subtitle: String? = nil, apply: @escaping (Editor) -> Void) {
+    public init(title: String, subtitle: String? = nil, icon: String? = nil, apply: @escaping (Editor) -> Void) {
         self.title = title
         self.subtitle = subtitle
+        self.icon = icon
         self.apply = apply
     }
 }

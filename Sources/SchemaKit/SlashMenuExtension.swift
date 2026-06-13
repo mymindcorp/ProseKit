@@ -9,10 +9,16 @@ public struct SlashCommandItem: Sendable, Equatable {
     public var title: String
     public var keywords: [String]
     public var command: String
-    public init(title: String, keywords: [String] = [], command: String) {
+    /// An SF Symbol name shown as the row's leading glyph.
+    public var icon: String?
+    /// A short description shown under the title.
+    public var subtitle: String?
+    public init(title: String, keywords: [String] = [], command: String, icon: String? = nil, subtitle: String? = nil) {
         self.title = title
         self.keywords = keywords
         self.command = command
+        self.icon = icon
+        self.subtitle = subtitle
     }
 
     /// Whether this item matches the typed query (over title + keywords).
@@ -76,7 +82,9 @@ final class SlashSuggestionSource: SuggestionSource {
         // (and clear the live `slashMenu`) before the command runs.
         let from = menu.from, to = menu.to
         return commands.filter { $0.matches(query) }.map { item in
-            SuggestionEntry(title: item.title) { $0.applySlashCommand(item, from: from, to: to) }
+            SuggestionEntry(title: item.title, subtitle: item.subtitle, icon: item.icon) {
+                $0.applySlashCommand(item, from: from, to: to)
+            }
         }
     }
 }
@@ -105,15 +113,15 @@ private func computeSlashMenu(_ state: EditorState, atLineStart: Bool) -> SlashM
 /// those whose command is registered for the active schema.
 public func defaultSlashCommands() -> [SlashCommandItem] {
     [
-        SlashCommandItem(title: "Heading 1", keywords: ["h1", "title", "big"], command: "toggleHeading1"),
-        SlashCommandItem(title: "Heading 2", keywords: ["h2"], command: "toggleHeading2"),
-        SlashCommandItem(title: "Heading 3", keywords: ["h3"], command: "toggleHeading3"),
-        SlashCommandItem(title: "Bullet List", keywords: ["ul", "unordered", "bullet", "list"], command: "toggleBulletList"),
-        SlashCommandItem(title: "Numbered List", keywords: ["ol", "ordered", "number", "list"], command: "toggleOrderedList"),
-        SlashCommandItem(title: "Task List", keywords: ["todo", "checkbox", "check"], command: "toggleTaskList"),
-        SlashCommandItem(title: "Quote", keywords: ["blockquote", "citation"], command: "toggleBlockquote"),
-        SlashCommandItem(title: "Code Block", keywords: ["code", "pre", "snippet"], command: "toggleCodeBlock"),
-        SlashCommandItem(title: "Divider", keywords: ["hr", "rule", "separator", "line"], command: "setHorizontalRule"),
+        SlashCommandItem(title: "Heading 1", keywords: ["h1", "title", "big"], command: "toggleHeading1", icon: "textformat.size.larger", subtitle: "Big section heading"),
+        SlashCommandItem(title: "Heading 2", keywords: ["h2"], command: "toggleHeading2", icon: "textformat.size", subtitle: "Medium heading"),
+        SlashCommandItem(title: "Heading 3", keywords: ["h3"], command: "toggleHeading3", icon: "textformat.size.smaller", subtitle: "Small heading"),
+        SlashCommandItem(title: "Bullet List", keywords: ["ul", "unordered", "bullet", "list"], command: "toggleBulletList", icon: "list.bullet", subtitle: "A simple bulleted list"),
+        SlashCommandItem(title: "Numbered List", keywords: ["ol", "ordered", "number", "list"], command: "toggleOrderedList", icon: "list.number", subtitle: "A numbered list"),
+        SlashCommandItem(title: "Task List", keywords: ["todo", "checkbox", "check"], command: "toggleTaskList", icon: "checklist", subtitle: "Track tasks with checkboxes"),
+        SlashCommandItem(title: "Quote", keywords: ["blockquote", "citation"], command: "toggleBlockquote", icon: "text.quote", subtitle: "Capture a quotation"),
+        SlashCommandItem(title: "Code Block", keywords: ["code", "pre", "snippet"], command: "toggleCodeBlock", icon: "chevron.left.forwardslash.chevron.right", subtitle: "A formatted code snippet"),
+        SlashCommandItem(title: "Divider", keywords: ["hr", "rule", "separator", "line"], command: "setHorizontalRule", icon: "minus", subtitle: "A horizontal rule"),
     ]
 }
 

@@ -41,7 +41,9 @@ public final class TaskItemExtension: NodeExtension {
     public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
         guard let item = ctx.nodeType else { return [:] }
         return [
-            "Enter": splitListItem(item),
+            // A task created by splitting (Enter) always starts unchecked,
+            // never inheriting the current item's checked state.
+            "Enter": splitListItem(item, ["checked": .bool(false)]),
             "Tab": sinkListItem(item),
             "Shift-Tab": liftListItem(item),
         ]

@@ -123,6 +123,8 @@ public struct TextTheme: Sendable {
                 attrs[.foregroundColor] = codeColor
             case "strike":
                 attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            case "underline":
+                attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
             case "link":
                 attrs[.foregroundColor] = linkColor
                 attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue

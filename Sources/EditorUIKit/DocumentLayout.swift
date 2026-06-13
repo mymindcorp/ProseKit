@@ -149,6 +149,9 @@ final class DocumentLayout {
     /// Tappable task-item checkboxes: their hit rect, the task item's document
     /// position, and current checked state.
     private(set) var checkboxes: [(rect: CGRect, pos: Int, checked: Bool)] = []
+    /// Highlight-mark ranges (document positions) and their colors, drawn as a
+    /// background behind the text (CoreText ignores `.backgroundColor`).
+    private(set) var highlights: [(from: Int, to: Int, color: UIColor)] = []
     /// Laid-out tables, for column-border hit-testing and resize.
     struct TableInfo {
         let tablePos: Int
@@ -179,6 +182,7 @@ final class DocumentLayout {
         let blocks: [TextBlock]
         let decorations: [DecorationItem]
         let checkboxes: [(rect: CGRect, pos: Int, checked: Bool)]
+        let highlights: [(from: Int, to: Int, color: UIColor)]
         let tables: [TableInfo]
         /// When true this child's height is an estimate and it hasn't been
         /// typeset — it carries no blocks/decorations. Realized on demand when it
@@ -269,16 +273,18 @@ final class DocumentLayout {
     /// Lay out one top-level child at `y`, returning its positioned output.
     private func layoutTopChild(_ child: Node, docPos: Int, x: CGFloat, width: CGFloat, y: inout CGFloat, isFirst: Bool) -> TopEntry {
         let topY = y
-        let (b0, d0, c0, t0) = (blocks.count, decorations.count, checkboxes.count, tables.count)
+        let (b0, d0, c0, h0, t0) = (blocks.count, decorations.count, checkboxes.count, highlights.count, tables.count)
         y += theme.spacingBefore(child, isFirst: isFirst)
         y = layoutBlock(child, docPos: docPos, x: x, width: width, y: y)
         return TopEntry(node: child, docStart: docPos, topY: topY, height: y - topY,
                         blocks: Array(blocks[b0...]), decorations: Array(decorations[d0...]),
-                        checkboxes: Array(checkboxes[c0...]), tables: Array(tables[t0...]))
+                        checkboxes: Array(checkboxes[c0...]), highlights: Array(highlights[h0...]),
+                        tables: Array(tables[t0...]))
     }
 
     private func append(_ e: TopEntry) {
-        blocks += e.blocks; decorations += e.decorations; checkboxes += e.checkboxes; tables += e.tables
+        blocks += e.blocks; decorations += e.decorations; checkboxes += e.checkboxes
+        highlights += e.highlights; tables += e.tables
     }
 
     private func shiftEntry(_ e: TopEntry, dPos: Int, dy: CGFloat) -> TopEntry {
@@ -509,16 +515,9 @@ final class DocumentLayout {
             let checked = item.attrs["checked"]?.boolValue ?? false
             y += theme.spacingBefore(item, isFirst: i == 0)
             let boxRect = CGRect(x: x + theme.listIndent - boxSize - 8, y: y + 1, width: boxSize, height: boxSize)
-            // Checkbox: circles in both states (the platform's task idiom) —
-            // a solid accent circle with a white check when checked, a soft
-            // outline circle when not.
-            let box = boxRect.insetBy(dx: 1, dy: 1)
-            if checked {
-                decorations.append(.roundedFill(box, theme.caretColor, box.height / 2))
-                decorations.append(.checkmark(box, .white, 2))
-            } else {
-                decorations.append(.roundedStroke(box, theme.quoteBarColor, 1.5, box.height / 2))
-            }
+            // The checkbox itself is a managed UIView (see EditorTextView's
+            // checkbox-view recycling) positioned over this rect — the layout
+            // only reserves its (touch-padded) box for positioning + hit-test.
             checkboxes.append((rect: boxRect.insetBy(dx: -6, dy: -6), pos: pos, checked: checked))
             y = layoutFragment(item.content, docPos: pos + 1, x: x + theme.listIndent, width: width - theme.listIndent, y: y, isFirst: true)
             pos += item.nodeSize
@@ -791,24 +790,28 @@ final class DocumentLayout {
         return target.block.docPos(forAttrIndex: attr)
     }
 
-    /// The block directly above/below `block` at `preferredX` — i.e. the next
-    /// block in flow, but for side-by-side table cells the one in the **same
-    /// column** (whose x-range straddles `preferredX`), not the next cell in the
-    /// row. Falls back to the vertically-nearest block when none share the column.
+    /// The block directly above/below `block` at `preferredX`. For normal
+    /// stacked flow this is simply the vertically-nearest block in the travel
+    /// direction (so short list items / paragraphs are never skipped). The
+    /// same-column preference applies ONLY within that nearest vertical level —
+    /// i.e. side-by-side table cells in one row — where we pick the cell whose
+    /// x-range straddles `preferredX` instead of the nearest one by x.
     private func neighbourBlock(below: Bool, of block: TextBlock, preferredX: CGFloat) -> TextBlock? {
         let cur = block.frame
         func yGap(_ f: CGRect) -> CGFloat { below ? f.minY - cur.maxY : cur.minY - f.maxY }
-        var inColumn: TextBlock?  // straddles preferredX, nearest in y
-        var nearest: TextBlock?   // nearest in y, any x
-        for b in blocks where !b.lines.isEmpty {
-            guard below ? (b.frame.minY >= cur.maxY - 0.5) : (b.frame.maxY <= cur.minY + 0.5) else { continue }
-            if nearest == nil || yGap(b.frame) < yGap(nearest!.frame) { nearest = b }
-            if b.frame.minX - 0.5 <= preferredX, preferredX <= b.frame.maxX + 0.5,
-               inColumn == nil || yGap(b.frame) < yGap(inColumn!.frame) {
-                inColumn = b
-            }
+        let candidates = blocks.filter { b in
+            !b.lines.isEmpty && (below ? b.frame.minY >= cur.maxY - 0.5 : b.frame.maxY <= cur.minY + 0.5)
         }
-        return inColumn ?? nearest
+        guard let minGap = candidates.map({ yGap($0.frame) }).min() else { return nil }
+        // The nearest "row": blocks essentially at the same vertical level
+        // (one element for stacked flow; several for a table row).
+        let row = candidates.filter { yGap($0.frame) <= minGap + 1 }
+        // Within the row, prefer the block straddling the caret column; else the
+        // one nearest the column in x.
+        if let inColumn = row.first(where: { $0.frame.minX - 0.5 <= preferredX && preferredX <= $0.frame.maxX + 0.5 }) {
+            return inColumn
+        }
+        return row.min(by: { abs($0.frame.midX - preferredX) < abs($1.frame.midX - preferredX) })
     }
 
     /// The document position at the start or end of the *visual* line that
