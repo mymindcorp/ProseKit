@@ -498,16 +498,20 @@ final class DocumentLayout {
             return lineY + 9
         case "image":
             let src = node.attrs["src"]?.stringValue ?? ""
+            // An explicit width attr (drag-to-resize) wins, always capped to the
+            // content area; otherwise fall back to the natural width.
+            let attrWidth = node.attrs["width"]?.intValue.map { CGFloat($0) }
             if let image = imageProvider(node) {
-                // Scale to fit the content width, preserving aspect ratio.
-                let maxWidth = min(width, image.size.width)
-                let scale = image.size.width > 0 ? maxWidth / image.size.width : 1
-                let size = CGSize(width: maxWidth, height: image.size.height * scale)
+                let target = attrWidth ?? image.size.width
+                let displayWidth = min(max(target, 1), width)
+                let scale = image.size.width > 0 ? displayWidth / image.size.width : 1
+                let size = CGSize(width: displayWidth, height: image.size.height * scale)
                 decorations.append(.image(image, CGRect(x: x, y: y, width: size.width, height: size.height)))
                 return y + size.height
             }
             let h: CGFloat = 120
-            decorations.append(.stroke(CGRect(x: x, y: y, width: min(width, 200), height: h), theme.quoteBarColor, 1))
+            let displayWidth = min(max(attrWidth ?? 200, 1), width)
+            decorations.append(.stroke(CGRect(x: x, y: y, width: displayWidth, height: h), theme.quoteBarColor, 1))
             let alt = node.attrs["alt"]?.stringValue ?? src
             decorations.append(.text("🖼 \(alt)", CGPoint(x: x + 8, y: y + 8), [.font: theme.bodyFont, .foregroundColor: theme.codeColor]))
             if !src.isEmpty { pendingImageSources.append(src) }
@@ -953,21 +957,35 @@ final class DocumentLayout {
         return block.docPos(forAttrIndex: attrIndex)
     }
 
+    /// The width of the text/content column (the page width minus its insets) —
+    /// the maximum an image may be resized to.
+    var contentWidth: CGFloat { width - theme.pageInsets.left - theme.pageInsets.right }
+
+    /// The drawn rect of a block-level `image` (the image itself, or its
+    /// placeholder box), if any, in document coordinates.
+    private func blockImageRect(_ e: TopEntry) -> CGRect? {
+        for d in e.decorations {
+            if case let .image(_, r) = d { return r }
+            if case let .stroke(r, _, _) = d { return r }
+        }
+        return nil
+    }
+
+    /// Block image draw rects paired with their document positions — for drawing
+    /// and hit-testing resize handles.
+    var imageRects: [(pos: Int, rect: CGRect)] {
+        entries.compactMap { e in
+            e.node.type.name == "image" ? blockImageRect(e).map { (e.docStart, $0) } : nil
+        }
+    }
+
     /// The document position of a block-level `image` whose drawn rect (the image
     /// itself, or its placeholder box) contains `point` — for starting a drag from
     /// an image. Inline images live inside text blocks and are found via
     /// `position(at:)` instead.
     func blockImage(at point: CGPoint) -> Int? {
         for e in entries where e.node.type.name == "image" {
-            for d in e.decorations {
-                let rect: CGRect?
-                switch d {
-                case let .image(_, r): rect = r
-                case let .stroke(r, _, _): rect = r
-                default: rect = nil
-                }
-                if let rect, rect.contains(point) { return e.docStart }
-            }
+            if let rect = blockImageRect(e), rect.contains(point) { return e.docStart }
         }
         return nil
     }

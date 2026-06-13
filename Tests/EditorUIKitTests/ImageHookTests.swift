@@ -131,6 +131,69 @@ final class ImageHookTests: XCTestCase {
         XCTAssertEqual(receivedUTI, UTType.png.identifier, "the original image UTI is preserved")
     }
 
+    private func imageWidth(_ view: EditorTextView) -> Int? {
+        var w: Int?
+        view.editor.doc.descendants { node, _, _, _ in
+            if node.type.name == "image" { w = node.attrs["width"]?.intValue }
+            return true
+        }
+        return w
+    }
+
+    /// Build an editable view with a single block image (loaded via imageData).
+    private func imageEditorView(width: Int? = nil) throws -> EditorTextView {
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        var attrs: Attrs = ["src": .string("asset://photo")]
+        if let width { attrs["width"] = .int(width) }
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([try s.node("image", attrs)])))
+        let view = EditorTextView(editor: editor)
+        view.imageData = { _ in self.redPNG() } // 24×24
+        view.frame = CGRect(x: 0, y: 0, width: 400, height: 400)
+        view.layoutIfNeeded()
+        return view
+    }
+
+    func testImageRendersAtWidthAttr() throws {
+        let view = try imageEditorView(width: 120)
+        let rects = view.ensureLayout().imageRects
+        XCTAssertEqual(rects.count, 1)
+        XCTAssertEqual(rects.first?.rect.width ?? 0, 120, accuracy: 0.5, "the width attr drives the drawn width")
+        // Aspect ratio preserved (24×24 source → square).
+        XCTAssertEqual(rects.first?.rect.height ?? 0, 120, accuracy: 0.5)
+    }
+
+    func testSetImageWidthClampsAndUpdatesAttr() throws {
+        let view = try imageEditorView()
+        let pos = 0 // the image is the document's first child
+        view.setImageWidth(pos, to: 150)
+        XCTAssertEqual(imageWidth(view), 150, "a normal resize sets the width attr")
+        view.setImageWidth(pos, to: 5)
+        XCTAssertEqual(imageWidth(view), 40, "below the minimum, width clamps to 40")
+        let maxW = Int(view.ensureLayout().contentWidth.rounded())
+        view.setImageWidth(pos, to: 99_999)
+        XCTAssertEqual(imageWidth(view), maxW, "above the content width, width clamps to it")
+    }
+
+    func testImageWidthRoundTripsThroughHTML() throws {
+        let s = try Editor(extensions: fullKit()).schema
+        let img = try s.node("image", ["src": .string("a.png"), "width": .int(180)])
+        let doc = try s.node("doc", [:], content: Fragment.from([img]))
+        let html = HTMLSerializer.serialize(doc)
+        XCTAssertTrue(html.contains("width=\"180\""), "serialized HTML carries the width")
+        let back = try HTMLParser.parse(html, schema: s)
+        XCTAssertEqual(imageWidthOf(back), 180, "width survives a round-trip")
+    }
+
+    private func imageWidthOf(_ doc: Node) -> Int? {
+        var w: Int?
+        doc.descendants { node, _, _, _ in
+            if node.type.name == "image" { w = node.attrs["width"]?.intValue }
+            return true
+        }
+        return w
+    }
+
     func testHTMLImageInParagraphLiftsToBlock() throws {
         // Pasted/clipboard HTML often nests <img> inside a paragraph; with a
         // block-image schema the parser lifts it out into a sibling block so the

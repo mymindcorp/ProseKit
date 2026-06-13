@@ -21,6 +21,9 @@ public final class ImageExtension: NodeExtension {
                 "src": AttributeSpec(),
                 "alt": AttributeSpec(default: .null),
                 "title": AttributeSpec(default: .null),
+                // Displayed width in points; null renders at the natural width
+                // (capped to the content area). Set by drag-to-resize.
+                "width": AttributeSpec(default: .null),
             ],
             draggable: true)
     }

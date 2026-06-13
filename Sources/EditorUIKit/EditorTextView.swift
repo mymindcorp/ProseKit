@@ -32,6 +32,7 @@ open class EditorTextView: UIView, UIKeyInput {
     private weak var columnResizeRecognizer: UIGestureRecognizer?
     private weak var linkTapRecognizer: UIGestureRecognizer?
     private weak var blockDragRecognizer: UIGestureRecognizer?
+    private weak var imageResizeRecognizer: UIGestureRecognizer?
 
     /// When true, each top-level block shows a drag handle in the left gutter
     /// that reorders the block by dragging. Off by default.
@@ -43,6 +44,14 @@ open class EditorTextView: UIView, UIKeyInput {
     /// pointer is seen, switching from always-on to hover-reveal handles.
     private var hoveredBlockIndex: Int?
     private var usesPointer = false
+
+    /// When true (the default), each block image shows a resize handle at its
+    /// bottom-right corner; dragging it sets the image's `width` attribute.
+    public var imageResizingEnabled = true { didSet { setNeedsDisplay() } }
+    /// In-progress image resize: the image's document position and the left edge
+    /// of its drawn rect (captured at drag start; the left edge doesn't move as
+    /// the width changes, since images are left-aligned).
+    private var imageResize: (pos: Int, leftX: CGFloat)?
 
     /// Supplies the view used for each task-item checkbox. When nil, the editor
     /// uses `DefaultTaskCheckboxView` (circle + check, themed, animated). The
@@ -107,6 +116,7 @@ open class EditorTextView: UIView, UIKeyInput {
         let columnResize = UIPanGestureRecognizer(target: self, action: #selector(handleMouseDrag(_:)))
         let linkTap = UITapGestureRecognizer(target: self, action: #selector(handleLinkTap(_:)))
         let blockDrag = UIPanGestureRecognizer(target: self, action: #selector(handleBlockDrag(_:)))
+        let imageResize = UIPanGestureRecognizer(target: self, action: #selector(handleImageResize(_:)))
         // Triple-tap selects the whole paragraph (UITextInteraction only does
         // caret/word) — matching Notes and other rich editors.
         let tripleTap = UITapGestureRecognizer(target: self, action: #selector(handleTripleTap(_:)))
@@ -114,7 +124,8 @@ open class EditorTextView: UIView, UIKeyInput {
         columnResizeRecognizer = columnResize
         linkTapRecognizer = linkTap
         blockDragRecognizer = blockDrag
-        for recognizer in [columnResize, linkTap, blockDrag, tripleTap] as [UIGestureRecognizer] {
+        imageResizeRecognizer = imageResize
+        for recognizer in [columnResize, linkTap, blockDrag, imageResize, tripleTap] as [UIGestureRecognizer] {
             recognizer.delegate = self
             recognizer.cancelsTouchesInView = false
             addGestureRecognizer(recognizer)
@@ -538,6 +549,22 @@ open class EditorTextView: UIView, UIKeyInput {
                     : (entries.last.map { $0.topY + $0.height } ?? 0)
                 ctx.setFillColor(theme.caretColor.cgColor)
                 ctx.fill(CGRect(x: theme.pageInsets.left, y: y - 1, width: max(bounds.width, 1) - theme.pageInsets.left * 2, height: 2))
+            }
+        }
+
+        // Image resize handles: a grip at each block image's bottom-right corner.
+        if imageResizingEnabled {
+            for (pos, rect) in l.imageRects {
+                let handle = imageResizeHandleRect(for: rect)
+                guard onScreen(handle) else { continue }
+                let active = imageResize?.pos == pos
+                let grip = handle.insetBy(dx: 2, dy: 2)
+                let path = UIBezierPath(roundedRect: grip, cornerRadius: 2).cgPath
+                ctx.setFillColor(UIColor.systemBackground.withAlphaComponent(0.9).cgColor)
+                ctx.addPath(path); ctx.fillPath()
+                ctx.setStrokeColor(theme.caretColor.withAlphaComponent(active ? 1 : 0.7).cgColor)
+                ctx.setLineWidth(active ? 2 : 1.5)
+                ctx.addPath(path); ctx.strokePath()
             }
         }
         ctx.restoreGState()
@@ -1241,6 +1268,55 @@ open class EditorTextView: UIView, UIKeyInput {
         _ = editor.run(moveBlock(sourceIndex, targetIndex))
     }
 
+    // MARK: - Image resize
+
+    /// The resize handle's rect (document coords) for a block image drawn at
+    /// `rect` — a small grip at its bottom-right corner.
+    private func imageResizeHandleRect(for rect: CGRect) -> CGRect {
+        let s: CGFloat = 14
+        return CGRect(x: rect.maxX - s, y: rect.maxY - s, width: s, height: s)
+    }
+
+    /// The image position + drawn rect whose resize handle contains `viewPoint`.
+    func imageResizeHit(at viewPoint: CGPoint) -> (pos: Int, rect: CGRect)? {
+        guard imageResizingEnabled else { return nil }
+        let p = docPoint(viewPoint)
+        for (pos, rect) in ensureLayout().imageRects
+        where imageResizeHandleRect(for: rect).insetBy(dx: -8, dy: -8).contains(p) {
+            return (pos, rect)
+        }
+        return nil
+    }
+
+    // The resize pan, gated by the gesture delegate to begin only on an image's
+    // resize handle. Each `.changed` commits the new width; the commits land
+    // within one undo group (they fall inside the history grouping window), so a
+    // single undo restores the pre-drag width.
+    @objc private func handleImageResize(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            guard let hit = imageResizeHit(at: gesture.location(in: self)) else { return }
+            imageResize = (hit.pos, hit.rect.minX)
+        case .changed:
+            guard let r = imageResize else { return }
+            setImageWidth(r.pos, to: docPoint(gesture.location(in: self)).x - r.leftX)
+        case .ended, .cancelled, .failed:
+            imageResize = nil
+        default:
+            break
+        }
+    }
+
+    /// Set the `width` attr of the image at `pos`, clamped to [40, content width].
+    /// Internal so the resize gesture can be exercised in tests.
+    func setImageWidth(_ pos: Int, to width: CGFloat) {
+        let clamped = max(40, min(width, ensureLayout().contentWidth))
+        guard let node = editor.doc.nodeAt(pos), node.type.name == "image" else { return }
+        if let tr = try? editor.state.tr.setNodeAttribute(pos, "width", .int(Int(clamped.rounded()))) {
+            editor.dispatch(tr)
+        }
+    }
+
     // The column-resize pan, gated by the gesture delegate to begin only on a
     // table column border. Caret placement and text selection are handled
     // natively by UITextInteraction.
@@ -1261,6 +1337,7 @@ open class EditorTextView: UIView, UIKeyInput {
         let point = docPoint(gesture.location(in: self))
         if gesture === columnResizeRecognizer { return columnBorderHit(at: point) != nil }
         if gesture === blockDragRecognizer { return blockHandleHit(at: gesture.location(in: self)) != nil }
+        if gesture === imageResizeRecognizer { return imageResizeHit(at: gesture.location(in: self)) != nil }
         if gesture === linkTapRecognizer {
             guard isCommandClick(gesture), let pos = ensureLayout().position(at: point) else { return false }
             return linkInfo(at: pos) != nil
@@ -2107,6 +2184,8 @@ open class EditorTextView: UIView, UIKeyInput {
 extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
     public func dragInteraction(_ interaction: UIDragInteraction, itemsForBeginning session: any UIDragSession) -> [UIDragItem] {
         let start = docPoint(session.location(in: self))
+        // A drag starting on an image's resize handle resizes it, not reorders it.
+        if imageResizeHit(at: session.location(in: self)) != nil { return [] }
         // Grabbing an existing image starts a drag of that node (move within the
         // document; its bytes are offered to other apps).
         if let img = imageAt(start) { return [imageDragItem(for: img)] }
