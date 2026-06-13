@@ -126,6 +126,8 @@ final class TextBlockLayoutCache {
         entries[Self.key(node, width)] = Entry(node: node, block: block, generation: generation)
     }
     func beginPass() { generation += 1 }
+    /// Drop everything (e.g. when the syntax highlighter changes).
+    func clear() { entries.removeAll() }
     /// Eviction is deliberately rare: a keystroke pass touches one block and
     /// must not churn the rest of the cache (incremental layout reuses whole
     /// entries without consulting it, so "unused this pass" means nothing).
@@ -170,6 +172,11 @@ final class DocumentLayout {
     /// decoded `data:` URL). Returns nil to draw a placeholder.
     private let imageProvider: (Node) -> UIImage?
     private let blockCache: TextBlockLayoutCache?
+    /// Optional host hook to color code-block text (nil = plain monospaced).
+    private let syntaxHighlighter: SyntaxHighlighter?
+    /// Optional host hook returning a badge label (e.g. detected language) for a
+    /// code block, given its text and `language` attribute. Nil = no badge.
+    private let codeLanguageLabel: ((String, String?) -> String?)?
 
     /// One top-level child's fully-positioned output. Kept so an edit can reuse
     /// the unchanged blocks (prefix as-is, suffix shifted) instead of re-laying
@@ -196,11 +203,14 @@ final class DocumentLayout {
 
     init(doc: Node, width: CGFloat, theme: TextTheme, imageProvider: @escaping (Node) -> UIImage? = { _ in nil },
          blockCache: TextBlockLayoutCache? = nil, previous: DocumentLayout? = nil,
-         realizeWindow: ClosedRange<CGFloat>? = nil) {
+         realizeWindow: ClosedRange<CGFloat>? = nil, syntaxHighlighter: SyntaxHighlighter? = nil,
+         codeLanguageLabel: ((String, String?) -> String?)? = nil) {
         self.theme = theme
         self.width = width
         self.imageProvider = imageProvider
         self.blockCache = blockCache
+        self.syntaxHighlighter = syntaxHighlighter
+        self.codeLanguageLabel = codeLanguageLabel
         blockCache?.beginPass()
         let contentWidth = width - theme.pageInsets.left - theme.pageInsets.right
         let x = theme.pageInsets.left
@@ -289,11 +299,15 @@ final class DocumentLayout {
 
     private func shiftEntry(_ e: TopEntry, dPos: Int, dy: CGFloat) -> TopEntry {
         guard dPos != 0 || dy != 0 else { return e }
+        // Estimated (off-screen) entries carry no sub-arrays — the common case in
+        // a long document. Reuse the (empty) arrays instead of `.map`-ing them,
+        // so shifting the suffix past an edit is allocation-free per entry.
         return TopEntry(node: e.node, docStart: e.docStart + dPos, topY: e.topY + dy, height: e.height,
-                        blocks: e.blocks.map { shiftBlock($0, dPos: dPos, dy: dy) },
-                        decorations: e.decorations.map { shiftDeco($0, dy: dy) },
-                        checkboxes: e.checkboxes.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos, checked: $0.checked) },
-                        tables: e.tables.map { TableInfo(tablePos: $0.tablePos + dPos, originX: $0.originX, widths: $0.widths, top: $0.top + dy, bottom: $0.bottom + dy) },
+                        blocks: e.blocks.isEmpty ? e.blocks : e.blocks.map { shiftBlock($0, dPos: dPos, dy: dy) },
+                        decorations: e.decorations.isEmpty ? e.decorations : e.decorations.map { shiftDeco($0, dy: dy) },
+                        checkboxes: e.checkboxes.isEmpty ? e.checkboxes : e.checkboxes.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos, checked: $0.checked) },
+                        highlights: e.highlights.isEmpty ? e.highlights : e.highlights.map { (from: $0.from + dPos, to: $0.to + dPos, color: $0.color) },
+                        tables: e.tables.isEmpty ? e.tables : e.tables.map { TableInfo(tablePos: $0.tablePos + dPos, originX: $0.originX, widths: $0.widths, top: $0.top + dy, bottom: $0.bottom + dy) },
                         estimated: e.estimated)
     }
 
@@ -316,7 +330,7 @@ final class DocumentLayout {
                 let topY = y
                 y += estimated
                 entries.append(TopEntry(node: child, docStart: pos, topY: topY, height: estimated,
-                                        blocks: [], decorations: [], checkboxes: [], tables: [], estimated: true))
+                                        blocks: [], decorations: [], checkboxes: [], highlights: [], tables: [], estimated: true))
             }
             pos += child.nodeSize
         }
@@ -352,7 +366,7 @@ final class DocumentLayout {
         guard hit else { return false }
 
         let old = entries
-        entries = []; blocks = []; decorations = []; checkboxes = []; tables = []; pendingImageSources = []
+        entries = []; blocks = []; decorations = []; checkboxes = []; highlights = []; tables = []; pendingImageSources = []
         let x = theme.pageInsets.left
         let contentWidth = width - theme.pageInsets.left - theme.pageInsets.right
         var y = theme.pageInsets.top
@@ -361,7 +375,7 @@ final class DocumentLayout {
                 entries.append(layoutTopChild(e.node, docPos: e.docStart, x: x, width: contentWidth, y: &y, isFirst: i == 0))
             } else if e.estimated {
                 entries.append(TopEntry(node: e.node, docStart: e.docStart, topY: y, height: e.height,
-                                        blocks: [], decorations: [], checkboxes: [], tables: [], estimated: true))
+                                        blocks: [], decorations: [], checkboxes: [], highlights: [], tables: [], estimated: true))
                 y += e.height
             } else {
                 let shifted = shiftEntry(e, dPos: 0, dy: y - e.topY)
@@ -441,9 +455,29 @@ final class DocumentLayout {
         return y
     }
 
+    /// A small language badge at the top-right of a code block, when the host's
+    /// `codeLanguageLabel` hook returns a label.
+    private func addCodeLanguageBadge(_ node: Node, blockFrame: CGRect?) {
+        guard let codeLanguageLabel, let frame = blockFrame,
+              let label = codeLanguageLabel(node.textContent, node.attrs["language"]?.stringValue),
+              !label.isEmpty else { return }
+        let font = UIFont.systemFont(ofSize: max(10, theme.monoFont.pointSize - 3), weight: .medium)
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: theme.codeColor]
+        let textSize = (label as NSString).size(withAttributes: attrs)
+        let padX: CGFloat = 6, padY: CGFloat = 2
+        let badge = CGRect(x: frame.maxX - textSize.width - padX * 2, y: frame.minY,
+                           width: textSize.width + padX * 2, height: textSize.height + padY * 2)
+        decorations.append(.roundedFill(badge, theme.quoteBarColor.withAlphaComponent(0.25), 4))
+        decorations.append(.text(label, CGPoint(x: badge.minX + padX, y: badge.minY + padY), attrs))
+    }
+
     private func layoutBlock(_ node: Node, docPos: Int, x: CGFloat, width: CGFloat, y: CGFloat) -> CGFloat {
         switch node.type.name {
-        case "paragraph", "heading", "codeBlock":
+        case "codeBlock":
+            let endY = layoutTextBlock(node, docPos: docPos, x: x, width: width, y: y)
+            addCodeLanguageBadge(node, blockFrame: blocks.last?.frame)
+            return endY
+        case "paragraph", "heading":
             return layoutTextBlock(node, docPos: docPos, x: x, width: width, y: y)
         case "blockquote":
             let barX = x
@@ -654,11 +688,19 @@ final class DocumentLayout {
 
         let typesetter = CTTypesetterCreateWithAttributedString(base as CFAttributedString)
         let length = base.length
+        let nsString = base.string as NSString
+        // CTTypesetterSuggestLineBreak wraps by WIDTH only — it doesn't stop at
+        // hard line breaks (a code block's "\n", or a hard-break " "). So
+        // cap each line at the first mandatory break within the suggested span.
+        let hardBreaks = CharacterSet(charactersIn: "\n\r\u{2028}\u{2029}")
         var lines: [LineLayout] = []
         var lineStart = 0
         var lineY: CGFloat = 0
         while lineStart < length {
-            let count = CTTypesetterSuggestLineBreak(typesetter, lineStart, Double(width))
+            var count = CTTypesetterSuggestLineBreak(typesetter, lineStart, Double(width))
+            if count <= 0 { count = length - lineStart }
+            let br = nsString.rangeOfCharacter(from: hardBreaks, range: NSRange(location: lineStart, length: count))
+            if br.location != NSNotFound { count = br.location - lineStart + 1 }
             let ctLine = CTTypesetterCreateLine(typesetter, CFRangeMake(lineStart, count))
             var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
             CTLineGetTypographicBounds(ctLine, &ascent, &descent, &leading)
@@ -671,6 +713,17 @@ final class DocumentLayout {
             lineY += lineHeight
             lineStart += count
             if count == 0 { break }
+        }
+        // If the text ends with a hard break, add a trailing empty line so the
+        // caret has somewhere to sit on the new (blank) line.
+        if length > 0, let last = Unicode.Scalar(nsString.character(at: length - 1)), hardBreaks.contains(last) {
+            let font = theme.blockFont(node)
+            let ascent = font.ascender, descent = -font.descender
+            let lineHeight = ascent + descent + theme.lineSpacing
+            let empty = CTLineCreateWithAttributedString(NSAttributedString(string: "", attributes: [.font: font]))
+            lines.append(LineLayout(ctLine: empty, baselineOrigin: CGPoint(x: 0, y: lineY + ascent),
+                                    stringRange: NSRange(location: length, length: 0), height: lineHeight, ascent: ascent))
+            lineY += lineHeight
         }
         return LocalTextBlock(lines: lines, segments: segments, attributed: base, height: lineY, imageAtoms: imageAtoms)
     }
@@ -686,6 +739,12 @@ final class DocumentLayout {
             let attrs = node.type.name == "codeBlock"
                 ? [NSAttributedString.Key.font: theme.monoFont, .foregroundColor: theme.textColor]
                 : theme.attributes(for: marks, baseFont: blockFont)
+            // Highlight marks paint a background behind the run (drawn separately
+            // since CoreText ignores `.backgroundColor`).
+            if let mark = marks.first(where: { $0.type.name == "highlight" }), !text.isEmpty {
+                highlights.append((from: docPos, to: docPos + text.count,
+                                   color: theme.highlightColor(mark.attrs["color"]?.stringValue)))
+            }
             let attrStart = result.length
             result.append(NSAttributedString(string: text, attributes: attrs))
             let len = (text as NSString).length
@@ -731,10 +790,43 @@ final class DocumentLayout {
                 }
             }
         }
+        // Code-block syntax highlighting: apply the host's tokens over the
+        // monospaced base. Token ranges are grapheme offsets into the code text.
+        if node.type.name == "codeBlock", let highlighter = syntaxHighlighter, result.length > 0 {
+            let code = result.string
+            for token in highlighter(code, node.attrs["language"]?.stringValue) {
+                guard let lo = code.index(code.startIndex, offsetBy: token.range.lowerBound, limitedBy: code.endIndex),
+                      let hi = code.index(code.startIndex, offsetBy: token.range.upperBound, limitedBy: code.endIndex),
+                      lo < hi else { continue }
+                let nsRange = NSRange(lo..<hi, in: code)
+                if let color = token.color { result.addAttribute(.foregroundColor, value: color, range: nsRange) }
+                if token.bold || token.italic {
+                    var traits: UIFontDescriptor.SymbolicTraits = []
+                    if token.bold { traits.insert(.traitBold) }
+                    if token.italic { traits.insert(.traitItalic) }
+                    if let descriptor = theme.monoFont.fontDescriptor.withSymbolicTraits(traits) {
+                        result.addAttribute(.font, value: UIFont(descriptor: descriptor, size: theme.monoFont.pointSize), range: nsRange)
+                    }
+                }
+            }
+        }
         return (result, segments, imageAtoms)
     }
 
     // MARK: - Geometry queries
+
+    /// The index of the line that owns `attrIndex` as a caret position. At a
+    /// boundary shared by two lines (right after a soft wrap or a hard "\n"), the
+    /// LATER line wins, so the caret sits at the start of the new line rather
+    /// than the end of the previous one.
+    private func lineIndex(_ block: TextBlock, _ attrIndex: Int) -> Int? {
+        var found: Int?
+        for (i, line) in block.lines.enumerated()
+        where line.stringRange.location <= attrIndex && attrIndex <= line.stringRange.location + line.stringRange.length {
+            found = i
+        }
+        return found ?? (block.lines.isEmpty ? nil : block.lines.count - 1)
+    }
 
     /// The caret rectangle for a document position, or nil if not in a text block.
     func caretRect(at pos: Int) -> CGRect? {
@@ -746,7 +838,7 @@ final class DocumentLayout {
             return nil
         }
         let attrIndex = block.attrIndex(forDocPos: pos)
-        let line = block.lines.first { NSLocationInRange(attrIndex, $0.stringRange) || attrIndex == $0.stringRange.location + $0.stringRange.length } ?? block.lines.last
+        let line = lineIndex(block, attrIndex).map { block.lines[$0] } ?? block.lines.last
         guard let line else {
             return CGRect(x: block.frame.minX, y: block.frame.minY, width: 2, height: block.frame.height)
         }
@@ -766,9 +858,7 @@ final class DocumentLayout {
         guard let bi = blockIndex(containing: pos) else { return nil }
         let block = blocks[bi]
         let attrIndex = block.attrIndex(forDocPos: pos)
-        guard let li = block.lines.firstIndex(where: {
-            NSLocationInRange(attrIndex, $0.stringRange) || attrIndex == $0.stringRange.location + $0.stringRange.length
-        }) else { return nil }
+        guard let li = lineIndex(block, attrIndex) else { return nil }
 
         var target: (block: TextBlock, line: LineLayout)?
         if up {
@@ -786,7 +876,16 @@ final class DocumentLayout {
         }
         guard let target else { return nil }
         let relative = CGPoint(x: preferredX - target.line.baselineOrigin.x, y: 0)
-        let attr = CTLineGetStringIndexForPosition(target.line.ctLine, relative)
+        var attr = CTLineGetStringIndexForPosition(target.line.ctLine, relative)
+        // The target line's range includes a trailing hard break ("\n"); the
+        // index AFTER it is the NEXT line's start, which would bounce the caret
+        // straight back (the "stuck" arrow). Clamp to before that break.
+        let lineEnd = target.line.stringRange.location + target.line.stringRange.length
+        if attr >= lineEnd, lineEnd > target.line.stringRange.location,
+           let scalar = Unicode.Scalar((target.block.attributed.string as NSString).character(at: lineEnd - 1)),
+           CharacterSet(charactersIn: "\n\r\u{2028}\u{2029}").contains(scalar) {
+            attr = lineEnd - 1
+        }
         return target.block.docPos(forAttrIndex: attr)
     }
 
@@ -819,10 +918,16 @@ final class DocumentLayout {
     func lineBoundary(from pos: Int, toEnd: Bool) -> Int? {
         guard let block = blockContaining(pos) else { return nil }
         let attrIndex = block.attrIndex(forDocPos: pos)
-        guard let line = block.lines.first(where: {
-            NSLocationInRange(attrIndex, $0.stringRange) || attrIndex == $0.stringRange.location + $0.stringRange.length
-        }) else { return nil }
-        let targetAttr = toEnd ? line.stringRange.location + line.stringRange.length : line.stringRange.location
+        guard let li = lineIndex(block, attrIndex) else { return nil }
+        let line = block.lines[li]
+        var end = line.stringRange.location + line.stringRange.length
+        // Don't let "end of line" land past a trailing hard break.
+        if toEnd, end > line.stringRange.location,
+           let scalar = Unicode.Scalar((block.attributed.string as NSString).character(at: end - 1)),
+           CharacterSet(charactersIn: "\n\r\u{2028}\u{2029}").contains(scalar) {
+            end -= 1
+        }
+        let targetAttr = toEnd ? end : line.stringRange.location
         return block.docPos(forAttrIndex: targetAttr)
     }
 
@@ -893,7 +998,7 @@ final class DocumentLayout {
         return nil
     }
 
-    private func blockContaining(_ pos: Int) -> TextBlock? {
+    func blockContaining(_ pos: Int) -> TextBlock? {
         blockIndex(containing: pos).map { blocks[$0] }
     }
 
@@ -951,6 +1056,14 @@ final class DocumentLayout {
                 path.lineJoinStyle = .round
                 color.setStroke()
                 path.stroke()
+            }
+        }
+        // Highlight-mark backgrounds, behind the text (CoreText won't draw them).
+        for highlight in highlights {
+            for rect in selectionRects(from: highlight.from, to: highlight.to) where visible(rect.minY, rect.maxY) {
+                let r = rect.insetBy(dx: -1, dy: -1)
+                highlight.color.setFill()
+                UIBezierPath(roundedRect: r, cornerRadius: 3).fill()
             }
         }
         // Text blocks via CoreText.
