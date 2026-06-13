@@ -87,22 +87,55 @@ struct LocalTextBlock {
 /// Caches typeset blocks by (node, width). Mark-and-sweep keeps it bounded to
 /// the blocks used in the most recent layout.
 final class TextBlockLayoutCache {
-    private struct Key: Hashable { let node: Node; let width: CGFloat }
-    private var entries: [Key: LocalTextBlock] = [:]
-    private var used: Set<Key> = []
+    /// Identity-keyed: the content array's buffer address stands in for the
+    /// (expensive-to-hash) subtree, so lookups are O(1) instead of O(text).
+    /// Sound because the entry's value retains the node — a live entry's
+    /// buffer can't be freed and its address recycled. Type/attrs/marks still
+    /// participate: they affect layout without changing the content buffer.
+    private struct Key: Hashable {
+        let type: ObjectIdentifier
+        let attrs: Attrs
+        let marks: [Mark]
+        let buffer: UInt
+        let width: CGFloat
+    }
+    private struct Entry {
+        let node: Node // retains the keyed buffer
+        let block: LocalTextBlock
+        var generation: Int
+    }
+    private var entries: [Key: Entry] = [:]
+    private var generation = 0
+
+    var debugEntryCount: Int { entries.count }
+
+    private static func key(_ node: Node, _ width: CGFloat) -> Key {
+        let buffer = node.content.content.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
+        return Key(type: ObjectIdentifier(node.type), attrs: node.attrs, marks: node.marks,
+                   buffer: buffer, width: width)
+    }
 
     func lookup(_ node: Node, width: CGFloat) -> LocalTextBlock? {
-        let key = Key(node: node, width: width)
-        if let entry = entries[key] { used.insert(key); return entry }
-        return nil
+        let key = Self.key(node, width)
+        guard var entry = entries[key] else { return nil }
+        entry.generation = generation
+        entries[key] = entry
+        return entry.block
     }
     func store(_ node: Node, width: CGFloat, _ block: LocalTextBlock) {
-        let key = Key(node: node, width: width)
-        entries[key] = block
-        used.insert(key)
+        entries[Self.key(node, width)] = Entry(node: node, block: block, generation: generation)
     }
-    func beginPass() { used.removeAll(keepingCapacity: true) }
-    func endPass() { entries = entries.filter { used.contains($0.key) } }
+    func beginPass() { generation += 1 }
+    /// Eviction is deliberately rare: a keystroke pass touches one block and
+    /// must not churn the rest of the cache (incremental layout reuses whole
+    /// entries without consulting it, so "unused this pass" means nothing).
+    /// Only when the cache outgrows a generous cap, drop the older half.
+    func endPass() {
+        guard entries.count > 4096 else { return }
+        let generations = entries.values.map(\.generation).sorted()
+        let threshold = generations[generations.count / 2]
+        entries = entries.filter { $0.value.generation >= threshold }
+    }
 }
 
 /// Lays out a document into text blocks + decorations using CoreText, and
@@ -476,21 +509,32 @@ final class DocumentLayout {
             let checked = item.attrs["checked"]?.boolValue ?? false
             y += theme.spacingBefore(item, isFirst: i == 0)
             let boxRect = CGRect(x: x + theme.listIndent - boxSize - 8, y: y + 1, width: boxSize, height: boxSize)
-            // Checkbox: checked is a solid accent rounded square with a white
-            // check; unchecked a soft rounded outline.
+            // Checkbox: circles in both states (the platform's task idiom) —
+            // a solid accent circle with a white check when checked, a soft
+            // outline circle when not.
             let box = boxRect.insetBy(dx: 1, dy: 1)
-            let radius = box.height * 0.3
             if checked {
-                decorations.append(.roundedFill(box, theme.caretColor, radius))
+                decorations.append(.roundedFill(box, theme.caretColor, box.height / 2))
                 decorations.append(.checkmark(box, .white, 2))
             } else {
-                decorations.append(.roundedStroke(box, theme.quoteBarColor, 1.5, radius))
+                decorations.append(.roundedStroke(box, theme.quoteBarColor, 1.5, box.height / 2))
             }
             checkboxes.append((rect: boxRect.insetBy(dx: -6, dy: -6), pos: pos, checked: checked))
             y = layoutFragment(item.content, docPos: pos + 1, x: x + theme.listIndent, width: width - theme.listIndent, y: y, isFirst: true)
             pos += item.nodeSize
         }
         return y
+    }
+
+    /// The checkmark glyph for a checkbox of the given rect — shared between
+    /// the canvas drawing and the view's check-on animation so the animated
+    /// stroke and the final drawn glyph are pixel-identical.
+    static func checkmarkPath(in rect: CGRect) -> UIBezierPath {
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: rect.minX + rect.width * 0.22, y: rect.minY + rect.height * 0.54))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.42, y: rect.minY + rect.height * 0.74))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.78, y: rect.minY + rect.height * 0.28))
+        return path
     }
 
     /// The task-item position whose checkbox contains the point, if any.
@@ -898,10 +942,7 @@ final class DocumentLayout {
                 path.stroke()
             case let .checkmark(rect, color, w):
                 guard visible(rect.minY, rect.maxY) else { continue }
-                let path = UIBezierPath()
-                path.move(to: CGPoint(x: rect.minX + rect.width * 0.22, y: rect.minY + rect.height * 0.54))
-                path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.42, y: rect.minY + rect.height * 0.74))
-                path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.78, y: rect.minY + rect.height * 0.28))
+                let path = Self.checkmarkPath(in: rect)
                 path.lineWidth = w
                 path.lineCapStyle = .round
                 path.lineJoinStyle = .round
