@@ -211,6 +211,36 @@ func registerPMCollabTests() {
         try s.conv(doc(p("ae")))
     }
 
+    test("PM collab fuzz: random typing/undo/redo/delays stay convergent") {
+        var rngState: UInt64 = 0xC0FF_EE00
+        func rnd(_ n: Int) -> Int {
+            rngState ^= rngState << 13; rngState ^= rngState >> 7; rngState ^= rngState << 17
+            return Int(rngState % UInt64(max(1, n)))
+        }
+        let words = ["a", "b", "cd", "x ", "yz"]
+        for round in 0..<25 {
+            let s = DummyServer()
+            for _ in 0..<20 {
+                let n = rnd(2)
+                switch rnd(6) {
+                case 0, 1, 2:
+                    s.type(n, words[rnd(words.count)])
+                case 3:
+                    s.undo(n)
+                case 4:
+                    s.redo(n)
+                default:
+                    s.delay(n) {
+                        s.type(n, words[rnd(words.count)])
+                        s.type(1 - n, words[rnd(words.count)])
+                    }
+                }
+            }
+            for _ in 0..<3 { for i in 0..<2 { s.broadcast(i) } }
+            try expectEqual(s.states[0].doc, s.states[1].doc, "round \(round)")
+        }
+    }
+
     test("PM collab: can undo simultaneous typing") {
         let s = DummyServer(doc(p("A"), p("B")))
         s.update(0, sel(2))

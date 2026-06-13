@@ -46,6 +46,66 @@ private func find(_ d: TaggedNode, _ build: @escaping (Transform) -> Void, _ exp
     try find(d, [build], expected, detailed: detailed)
 }
 
+func registerChangesetFuzzTests() {
+    test("changeset fuzz: invariants hold under random edit sequences") {
+        var rngState: UInt64 = 0x9E37_79B9_7F4A_7C15
+        func rnd(_ n: Int) -> Int {
+            rngState ^= rngState << 13; rngState ^= rngState >> 7; rngState ^= rngState << 17
+            return Int(rngState % UInt64(max(1, n)))
+        }
+        let letters = Array("abcdefgh")
+        func rndText() -> String { String((0...rnd(3)).map { _ in letters[rnd(letters.count)] }) }
+
+        for round in 0..<80 {
+            var curDoc = doc(p("abcdefghij")).node
+            var set = ChangeSet<Int>.create(curDoc)
+            for batch in 0..<10 {
+                let tr = Transform(curDoc)
+                for _ in 0...rnd(3) {
+                    let size = tr.doc.content.size
+                    guard size >= 3 else { break }
+                    switch rnd(3) {
+                    case 0:
+                        _ = try? tr.insert(1 + rnd(size - 1), basicSchema.text(rndText()))
+                    case 1:
+                        let a = 1 + rnd(size - 2)
+                        let b = min(size - 1, a + 1 + rnd(3))
+                        if b > a { _ = try? tr.delete(a, b) }
+                    default:
+                        let a = 1 + rnd(size - 2)
+                        let b = min(size - 1, a + 1 + rnd(2))
+                        if b > a { _ = try? tr.replaceWith(a, b, basicSchema.text(rndText())) }
+                    }
+                }
+                guard !tr.steps.isEmpty else { continue }
+                set = set.addSteps(tr.doc, tr.mapping.maps, batch)
+                curDoc = tr.doc
+
+                // Structural invariants (seed-reproducible on failure).
+                let ctx = "round \(round) batch \(batch)"
+                var lastToA = 0, lastToB = 0
+                for ch in set.changes {
+                    try expect(ch.fromA <= ch.toA && ch.fromB <= ch.toB, "inverted range \(ctx)")
+                    try expect(ch.fromA >= lastToA && ch.fromB >= lastToB, "out of order \(ctx)")
+                    lastToA = ch.toA; lastToB = ch.toB
+                    try expectEqual(ch.deleted.reduce(0) { $0 + $1.length }, ch.toA - ch.fromA, "deleted spans \(ctx)")
+                    try expectEqual(ch.inserted.reduce(0) { $0 + $1.length }, ch.toB - ch.fromB, "inserted spans \(ctx)")
+                    try expect(ch.toA <= set.startDoc.content.size, "A out of doc \(ctx)")
+                    try expect(ch.toB <= curDoc.content.size, "B out of doc \(ctx)")
+                }
+                // Simplify must keep ranges ordered with consistent span sums.
+                var lastB = 0
+                for ch in simplifyChanges(set.changes, curDoc) {
+                    try expect(ch.fromB >= lastB, "simplify order \(ctx)")
+                    lastB = ch.toB
+                    try expectEqual(ch.deleted.reduce(0) { $0 + $1.length }, ch.toA - ch.fromA, "simplify deleted \(ctx)")
+                    try expectEqual(ch.inserted.reduce(0) { $0 + $1.length }, ch.toB - ch.fromB, "simplify inserted \(ctx)")
+                }
+            }
+        }
+    }
+}
+
 func registerPMChangesTests() {
     test("PM changeset: finds a single insertion") {
         try find(doc(p("hello")), { tr in _ = try? tr.insert(3, t("XY")) }, "[[3,3,3,5]]")
@@ -494,6 +554,7 @@ func registerPMChangedRangeTests() {
 }
 
 registerPMChangesTests()
+registerChangesetFuzzTests()
 registerPMMergeTests()
 registerPMDiffTests()
 registerPMSimplifyTests()

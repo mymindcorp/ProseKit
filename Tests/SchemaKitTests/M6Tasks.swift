@@ -55,11 +55,65 @@ func registerTaskTests() {
             if let h = plugin.props?.handleKeyDown, h("Enter", editor.state, { editor.dispatch($0) }) { handled = true; break }
         }
         try expect(handled)
-        var items = 0
+        var checkedStates: [Bool] = []
         editor.doc.descendants { node, _, _, _ in
-            if node.type.name == "taskItem" { items += 1 }
+            if node.type.name == "taskItem" { checkedStates.append(node.attrs["checked"]?.boolValue ?? false) }
             return true
         }
-        try expect(items >= 2, "expected >= 2 task items, got \(items)")
+        try expect(checkedStates.count >= 2, "expected >= 2 task items, got \(checkedStates.count)")
+        // The original stays checked; the newly split item is unchecked.
+        try expectEqual(checkedStates[0], true)
+        try expectEqual(checkedStates[1], false, "a new task created by Enter must be unchecked")
+    }
+
+    test("toggleTaskList works inside a heading (converts to a task item)") {
+        let editor = try Editor(extensions: fullKit())
+        try type(editor, "Title")
+        _ = editor.run("toggleHeading1") // make it a heading
+        try expect(editor.isActive(node: "heading"))
+        try expect(editor.run("toggleTaskList"), "toggleTaskList must apply inside a heading")
+        try expect(editor.isActive(node: "taskItem"), "now inside a task item")
+        // The heading became a paragraph inside the task item; text preserved.
+        try expectEqual(editor.doc.textContent, "Title")
+        var hasHeading = false
+        editor.doc.descendants { node, _, _, _ in
+            if node.type.name == "heading" { hasHeading = true }
+            return true
+        }
+        try expect(!hasHeading, "the heading was converted to a paragraph")
+    }
+
+    test("toggleBulletList also works inside a heading") {
+        let editor = try Editor(extensions: fullKit())
+        try type(editor, "Title")
+        _ = editor.run("toggleHeading1")
+        try expect(editor.run("toggleBulletList"))
+        try expect(editor.isActive(node: "listItem"))
+        try expectEqual(editor.doc.textContent, "Title")
+    }
+
+    test("Enter mid-text in a checked task makes the lower item unchecked") {
+        let editor = try Editor(extensions: fullKit())
+        try type(editor, "abcdef")
+        _ = editor.run("toggleTaskList")
+        _ = editor.run("toggleTaskChecked")
+        // Cursor in the middle of the text.
+        var textStart = 0
+        editor.doc.descendants { node, pos, _, _ in
+            if node.isText { textStart = pos }
+            return true
+        }
+        select(editor, textStart + 3, textStart + 3)
+        for plugin in editor.state.plugins {
+            if let h = plugin.props?.handleKeyDown, h("Enter", editor.state, { editor.dispatch($0) }) { break }
+        }
+        var checkedStates: [Bool] = []
+        editor.doc.descendants { node, _, _, _ in
+            if node.type.name == "taskItem" { checkedStates.append(node.attrs["checked"]?.boolValue ?? false) }
+            return true
+        }
+        try expectEqual(checkedStates.count, 2)
+        try expectEqual(checkedStates[0], true)
+        try expectEqual(checkedStates[1], false, "the lower (new) item is unchecked")
     }
 }

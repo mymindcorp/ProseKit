@@ -138,6 +138,71 @@ test("splitListItem on Enter inside a list creates a new item") {
     try expect(listItems >= 2, "expected at least two list items, got \(listItems)")
 }
 
+test("undoInputRule: Backspace right after an input rule reverts it") {
+    let editor = try makeEditor()
+    try type(editor, "#")
+    try expect(textInput(editor, at: 2, " "))
+    try expect(editor.isActive(node: "heading"))
+    try expect(key(editor, "Backspace"))
+    try expect(editor.isActive(node: "paragraph"))
+    try expectEqual(editor.doc.textContent, "# ")
+    // The rule state is consumed: a second Backspace must not revert again.
+    // (Character deletion itself is the view's deleteBackward, not the keymap.)
+    _ = key(editor, "Backspace")
+    try expectEqual(editor.doc.textContent, "# ")
+    try expect(editor.isActive(node: "paragraph"))
+}
+
+test("underline: toggleUnderline applies the mark") {
+    let editor = try makeEditor()
+    try type(editor, "hello")
+    select(editor, 1, 6)
+    try expect(editor.run("toggleUnderline"))
+    try expect(editor.isActive(mark: "underline"))
+    try expect(key(editor, "Mod-u")) // toggles back off
+    try expect(!editor.isActive(mark: "underline"))
+}
+
+test("autolink: typing a space after a URL links it") {
+    let editor = try makeEditor()
+    try type(editor, "see https://x.dev")
+    try expect(textInput(editor, at: editor.state.selection.head, " "))
+    try expectEqual(editor.doc.textContent, "see https://x.dev ")
+    try expect(editor.doc.rangeHasMark(5, 18, editor.schema.marks["link"]!))
+    try expectEqual(editor.doc.nodeAt(5)?.marks.first?.attrs["href"]?.stringValue, "https://x.dev")
+    // The typed space is not part of the link (the mark is inclusive: false).
+    try expect(!editor.doc.rangeHasMark(18, 19, editor.schema.marks["link"]!))
+}
+
+test("autolink: www URLs get an https href") {
+    let editor = try makeEditor()
+    try type(editor, "www.x.com")
+    try expect(textInput(editor, at: editor.state.selection.head, " "))
+    try expectEqual(editor.doc.nodeAt(1)?.marks.first?.attrs["href"]?.stringValue, "https://www.x.com")
+}
+
+test("mention: @ query is tracked and accepting replaces it with a mention node") {
+    let editor = try Editor(extensions: fullKit(mentionSuggestions: { q in
+        ["jose", "jane"].filter { $0.hasPrefix(q) }
+    }))
+    try type(editor, "hi @jo")
+    try expectEqual(editor.mentionSuggestion?.query, "jo")
+    try expect(editor.acceptMentionSuggestion(id: "jose"))
+    var mention: Node?
+    editor.doc.descendants { n, _, _, _ in
+        if n.type.name == "mention" { mention = n }
+        return true
+    }
+    try expectEqual(mention?.attrs["id"]?.stringValue, "jose")
+    try expect(editor.mentionSuggestion == nil) // query consumed
+}
+
+test("mention: @ mid-word doesn't trigger") {
+    let editor = try Editor(extensions: fullKit(mentionSuggestions: { _ in [] }))
+    try type(editor, "user@host")
+    try expect(editor.mentionSuggestion == nil)
+}
+
 registerM5Tests()
 registerTaskTests()
 registerTypographyTests()
@@ -152,6 +217,8 @@ registerFuzzTests()
 registerPMListTests(); registerPMTableMapTests(); registerPMTableCommandsTests(); registerPMCellCopyPasteTests(); registerPMTableExtraTests()
 registerPMTableMoveTests()
 registerPMColumnResizingTests()
+registerSuggestionModeTests()
+registerPolishCoverageTests()
 
 // Shared builders for the checklist-import tests below.
 private let clSchema = try! makeFullEditor().schema

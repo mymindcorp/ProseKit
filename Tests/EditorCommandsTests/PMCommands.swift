@@ -168,4 +168,88 @@ func registerPMCommandsTests() {
         _ = toggleMark(mk("em"))(state, { tr in state = state.apply(tr) }, nil)
         try expectEqual(state.storedMarks?.count, 1)
     }
+
+    // MARK: joinTextblockBackward / joinTextblockForward
+    c("joinTextblockBackward: can join paragraphs") {
+        try run(doc(p("hi"), p("<a>there")), joinTextblockBackward, doc(p("hi<a>there")))
+    }
+    c("joinTextblockBackward: can join if second block is wrapped") {
+        try run(doc(p("hi"), ul(li(p("<a>there")))), joinTextblockBackward, doc(p("hi<a>there")))
+    }
+    c("joinTextblockBackward: can join if first block is wrapped") {
+        try run(doc(blockquote(p("hi")), p("<a>there")), joinTextblockBackward, doc(blockquote(p("hi<a>there"))))
+    }
+    c("joinTextblockBackward: does nothing at start of doc") {
+        try run(doc(p("<a>foo")), joinTextblockBackward, nil)
+    }
+    c("joinTextblockBackward: can join if inside a nested block") {
+        try run(doc(blockquote(blockquote(p("hi")), p("<a>there"))), joinTextblockBackward,
+                doc(blockquote(blockquote(p("hi<a>there")))))
+    }
+    c("joinTextblockForward: can join paragraphs") {
+        try run(doc(p("hi<a>"), p("there")), joinTextblockForward, doc(p("hi<a>there")))
+    }
+    c("joinTextblockForward: can join if second block is wrapped") {
+        try run(doc(p("hi<a>"), ul(li(p("there")))), joinTextblockForward, doc(p("hi<a>there")))
+    }
+    c("joinTextblockForward: can join if first block is wrapped") {
+        try run(doc(blockquote(p("hi<a>")), p("there")), joinTextblockForward, doc(blockquote(p("hi<a>there"))))
+    }
+    c("joinTextblockForward: does nothing at end of doc") {
+        try run(doc(p("foo<a>")), joinTextblockForward, nil)
+    }
+
+    // MARK: splitBlockKeepMarks
+    c("splitBlockKeepMarks: keeps marks when used after marked text") {
+        var state = mkState(doc(p(strong("foo<a>"), "bar")))
+        _ = splitBlockKeepMarks(state, { tr in state = state.apply(tr) }, nil)
+        try expectEqual(state.storedMarks?.count, 1)
+    }
+    c("splitBlockKeepMarks: preserves the stored marks") {
+        var state = mkState(doc(p(em("foo<a>"))))
+        _ = toggleMark(mk("strong"))(state, { tr in state = state.apply(tr) }, nil)
+        _ = splitBlockKeepMarks(state, { tr in state = state.apply(tr) }, nil)
+        try expectEqual(state.storedMarks?.count, 2)
+    }
+
+    // MARK: selectTextblockStart / selectTextblockEnd
+    c("selectTextblockStart/End: can move the cursor when the selection is empty") {
+        try run(doc(p("one <a>two")), selectTextblockStart, doc(p("<a>one two")))
+        try run(doc(p("one <a>two")), selectTextblockEnd, doc(p("one two<a>")))
+    }
+    c("selectTextblockStart/End: can move the cursor when the selection is not empty") {
+        try run(doc(p("one <a>two<b>")), selectTextblockStart, doc(p("<a>one two")))
+        try run(doc(p("one <a>two<b>")), selectTextblockEnd, doc(p("one two<a>")))
+    }
+    c("selectTextblockStart/End: can move the cursor across multiple text blocks") {
+        try run(doc(p("one <a>two"), p("three<b> four")), selectTextblockStart, doc(p("<a>one two"), p("three four")))
+        try run(doc(p("one <a>two"), p("three<b> four")), selectTextblockEnd, doc(p("one two"), p("three four<a>")))
+    }
+
+    // MARK: autoJoin
+    c("autoJoin: joins lists when deleting a paragraph between them") {
+        try run(doc(ul(li(p("a"))), "<a>", p("b"), ul(li(p("c")))),
+                autoJoin(deleteSelection, ["bullet_list"]),
+                doc(ul(li(p("a")), li(p("c")))))
+    }
+    c("autoJoin: doesn't join lists when deleting an item inside of them") {
+        try run(doc(ul(li(p("a")), "<a>", li(p("b"))), ul(li(p("c")))),
+                autoJoin(deleteSelection, ["bullet_list"]),
+                doc(ul(li(p("a"))), ul(li(p("c")))))
+    }
+    c("autoJoin: joins lists when wrapping a paragraph after them in a list") {
+        try run(doc(ul(li(p("a"))), p("b<a>")),
+                autoJoin(wrapIn(bq("bullet_list")), ["bullet_list"]),
+                doc(ul(li(p("a")), li(p("b")))))
+    }
+    c("autoJoin: joins lists when wrapping a paragraph between them in a list") {
+        try run(doc(ul(li(p("a"))), p("b<a>"), ul(li(p("c")))),
+                autoJoin(wrapIn(bq("bullet_list")), ["bullet_list"]),
+                doc(ul(li(p("a")), li(p("b")), li(p("c")))))
+    }
+    c("autoJoin: joins lists when lifting a list between them") {
+        try run(doc(ul(li(p("a"))), blockquote("<a>", ul(li(p("b")))), ul(li(p("c")))),
+                autoJoin(lift, ["bullet_list"]),
+                doc(ul(li(p("a")), li(p("b")), li(p("c")))))
+    }
 }

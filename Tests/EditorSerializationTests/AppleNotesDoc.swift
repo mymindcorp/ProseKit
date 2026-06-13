@@ -155,9 +155,21 @@ func registerAppleNotesDocTests() {
                         doc(p("hi")))
         // A note that is only blank lines trims to nothing → nil.
         try expect(AppleNotesPasteboard.parseNoteDocument(noteProto("\n\n", [runProto(2)]), schema: schema) == nil)
-        // Underline run in a schema without an "underline" mark degrades to plain.
+        // Underline runs map to the underline mark (the schema has one now).
         try expectEqual(AppleNotesPasteboard.parseNoteDocument(noteProto("u\n", [runProto(2, underline: true)]), schema: schema),
-                        doc(p("u")))
+                        doc(p(schema.text("u", [schema.mark("underline")]))))
+        // And degrade to plain in a schema without the mark.
+        let bare: Schema = {
+            let nodes: [(String, NodeSpec)] = [
+                ("doc", NodeSpec(content: "block+")),
+                ("paragraph", NodeSpec(content: "inline*", group: "block")),
+                ("text", NodeSpec(group: "inline")),
+            ]
+            return try! Schema(nodes: nodes, marks: [], topNode: "doc")
+        }()
+        let plain = AppleNotesPasteboard.parseNoteDocument(noteProto("u\n", [runProto(2, underline: true)]), schema: bare)
+        try expectEqual(plain?.textContent, "u")
+        try expectEqual(plain?.child(0).child(0).marks.count, 0)
     }
 
     test("Notes proto fuzz: random, truncated, and bit-flipped inputs never crash") {

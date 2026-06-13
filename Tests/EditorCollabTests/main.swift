@@ -151,6 +151,52 @@ test("collab: steps are JSON-codable for transport") {
     }
 }
 
+test("collab fuzz: random concurrent edits converge (2 and 3 peers)") {
+    let letters = Array("abcdefgh")
+    for peerCount in [2, 3] {
+        var rngState: UInt64 = 0xDEAD_BEEF &+ UInt64(peerCount)
+        func rnd(_ n: Int) -> Int {
+            rngState ^= rngState << 13; rngState ^= rngState >> 7; rngState ^= rngState << 17
+            return Int(rngState % UInt64(max(1, n)))
+        }
+        for round in 0..<40 {
+            let d = startDoc()
+            let authority = Authority(d)
+            let peers = (0..<peerCount).map { Peer(d, clientID: $0 + 1, authority: authority) }
+            for _ in 0..<25 {
+                let peer = peers[rnd(peerCount)]
+                let size = peer.state.doc.content.size
+                switch rnd(4) {
+                case 0, 1:
+                    let text = String((0...rnd(2)).map { _ in letters[rnd(letters.count)] })
+                    let tr = peer.state.tr
+                    if (try? tr.insertText(text, 1 + rnd(max(1, size - 1)))) != nil {
+                        peer.state = peer.state.apply(tr)
+                    }
+                case 2:
+                    if size > 3 {
+                        let a = 1 + rnd(size - 2)
+                        let b = min(size - 1, a + 1 + rnd(2))
+                        if b > a {
+                            let tr = peer.state.tr
+                            if (try? tr.delete(a, b)) != nil { peer.state = peer.state.apply(tr) }
+                        }
+                    }
+                default:
+                    peer.sync()
+                }
+            }
+            // Settle: each full pass confirms at least one peer's pending steps.
+            for _ in 0..<(peerCount + 3) { for peer in peers { peer.sync() } }
+            for (i, peer) in peers.enumerated() {
+                try expectEqual(peer.state.doc, authority.doc, "peer \(i) diverged (round \(round), \(peerCount) peers)")
+                try expectEqual(getVersion(peer.state), authority.version, "version (round \(round))")
+                try expectNil(sendableSteps(peer.state))
+            }
+        }
+    }
+}
+
 registerPMRebaseTests()
 registerPMCollabTests()
 

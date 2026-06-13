@@ -24,6 +24,7 @@ let schema: Schema = {
         ("hardBreak", NodeSpec(group: "inline", inline: true)),
         ("image", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["src": AttributeSpec(), "alt": AttributeSpec(default: .null), "title": AttributeSpec(default: .null)])),
         ("wikiLink", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["target": AttributeSpec(), "label": AttributeSpec(default: .null)], leafText: { $0.attrs["label"]?.stringValue ?? $0.attrs["target"]?.stringValue ?? "" })),
+        ("mention", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["id": AttributeSpec(), "label": AttributeSpec(default: .null)], leafText: { "@" + ($0.attrs["label"]?.stringValue ?? $0.attrs["id"]?.stringValue ?? "") })),
         ("bulletList", NodeSpec(content: "listItem+", group: "block")),
         ("orderedList", NodeSpec(content: "listItem+", group: "block", attrs: ["order": AttributeSpec(default: .int(1))])),
         ("listItem", NodeSpec(content: "paragraph block*", defining: true)),
@@ -36,6 +37,7 @@ let schema: Schema = {
     ]
     let marks: [(String, MarkSpec)] = [
         ("bold", MarkSpec()), ("italic", MarkSpec()), ("strike", MarkSpec()), ("highlight", MarkSpec()),
+        ("underline", MarkSpec()),
         ("code", MarkSpec(excludes: "_")),
         ("link", MarkSpec(attrs: ["href": AttributeSpec(), "title": AttributeSpec(default: .null)], inclusive: false)),
     ]
@@ -106,6 +108,21 @@ test("HTML highlight round-trip (<mark>)") {
     try expect(html.contains("<mark>lit</mark>"), "expected <mark> tag, got: \(html)")
     let back = try HTMLParser.parse(html, schema: schema)
     try expectEqual(back, d)
+}
+
+test("HTML underline round-trip (<u>)") {
+    let d = doc(p(t("a "), schema.text("u", [schema.mark("underline")])))
+    let html = HTMLSerializer.serialize(d)
+    try expect(html.contains("<u>u</u>"), "got: \(html)")
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+}
+
+test("HTML mention round-trip (span data-mention)") {
+    let m = node("mention", ["id": .string("jose"), "label": .string("José")])
+    let d = doc(p(t("hi "), m))
+    let html = HTMLSerializer.serialize(d)
+    try expect(html.contains("data-mention=\"jose\""), "got: \(html)")
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
 }
 
 test("HTML wikiLink round-trip") {
@@ -358,6 +375,73 @@ test("Markdown code fence round-trip") {
     let md = MarkdownSerializer.serialize(d)
     let back = try MarkdownParser.parse(md, schema: schema)
     try expectEqual(back, d)
+}
+
+test("property: random docs round-trip through HTML and JSON") {
+    var rngState: UInt64 = 0xFEED_FACE
+    func rnd(_ n: Int) -> Int {
+        rngState ^= rngState << 13; rngState ^= rngState >> 7; rngState ^= rngState << 17
+        return Int(rngState % UInt64(max(1, n)))
+    }
+    let words = ["one", "two&", "a<b", "x>y", "hé", "longer word"]
+    func rndText() -> String {
+        (0...rnd(2)).map { _ in words[rnd(words.count)] }.joined(separator: " ")
+    }
+    func rndMarks() -> [Mark] {
+        // code excludes everything else; otherwise a random subset.
+        if rnd(8) == 0 { return [schema.mark("code")] }
+        var marks: [Mark] = []
+        if rnd(3) == 0 { marks.append(schema.mark("bold")) }
+        if rnd(3) == 0 { marks.append(schema.mark("italic")) }
+        if rnd(4) == 0 { marks.append(schema.mark("strike")) }
+        if rnd(4) == 0 { marks.append(schema.mark("underline")) }
+        if rnd(4) == 0 { marks.append(schema.mark("highlight")) }
+        if rnd(5) == 0 { marks.append(schema.mark("link", ["href": .string("https://x.dev/\(rnd(100))")])) }
+        return marks
+    }
+    func rndInline() -> [Node] {
+        var out: [Node] = []
+        for _ in 0...rnd(2) {
+            switch rnd(8) {
+            case 0: out.append(node("image", ["src": .string("img\(rnd(9)).png"), "alt": .string("alt")]))
+            case 1: out.append(node("wikiLink", ["target": .string("Page\(rnd(9))"), "label": .string("L\(rnd(9))")]))
+            case 2: out.append(node("mention", ["id": .string("id\(rnd(9))"), "label": .string("M\(rnd(9))")]))
+            case 3: out.append(node("hardBreak"))
+            default: out.append(schema.text(rndText(), rndMarks()))
+            }
+        }
+        return out
+    }
+    func rndPara() -> Node { node("paragraph", [:], rndInline()) }
+    func rndBlock(_ depth: Int) -> Node {
+        switch rnd(depth > 0 ? 8 : 6) {
+        case 0: return node("heading", ["level": .int(1 + rnd(6))], [schema.text(rndText())])
+        case 1: return node("codeBlock", [:], [schema.text(rndText())])
+        case 2: return node("horizontalRule")
+        case 3: return node("bulletList", [:], (0...rnd(2)).map { _ in
+            node("listItem", [:], [rndPara()])
+        })
+        case 4: return node("taskList", [:], (0...rnd(2)).map { _ in
+            node("taskItem", ["checked": .bool(rnd(2) == 0)], [rndPara()])
+        })
+        case 5: return rndPara()
+        case 6: return node("blockquote", [:], (0...rnd(1)).map { _ in rndBlock(depth - 1) })
+        default: return node("table", [:], (0...rnd(1)).map { _ in
+            node("tableRow", [:], (0...1).map { _ in node("tableCell", [:], [rndPara()]) })
+        })
+        }
+    }
+
+    for round in 0..<60 {
+        let d = node("doc", [:], (0...rnd(3)).map { _ in rndBlock(2) })
+        // HTML round-trip.
+        let html = HTMLSerializer.serialize(d)
+        let viaHTML = try HTMLParser.parse(html, schema: schema)
+        try expectEqual(viaHTML, d, "HTML round \(round): \(html)")
+        // JSON round-trip.
+        let json = try DocumentJSON.string(d)
+        try expectEqual(try DocumentJSON.decode(schema, json), d, "JSON round \(round)")
+    }
 }
 
 registerProseTests()

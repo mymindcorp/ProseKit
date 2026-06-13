@@ -240,6 +240,23 @@ test("DecorationSet removingClass filters by class") {
     try expectEqual(set.removingClass("search").decorations.count, 1)
 }
 
+test("node decorations map with their node and drop when it is deleted") {
+    let d = B.doc(B.p("ab"), B.p("cd"))
+    // Decorate the second paragraph (node span 4..8).
+    let set = DecorationSet([.node(4, 8, ["class": "changed"])])
+    // An insertion before it shifts the decoration.
+    let state = freshState(d)
+    let tr = state.tr
+    try tr.insertText("x", 1)
+    let shifted = set.map(tr.mapping)
+    try expectEqual(shifted.decorations.first?.from, 5)
+    try expectEqual(shifted.decorations.first?.to, 9)
+    // Deleting the node drops the decoration.
+    let tr2 = state.tr
+    try tr2.delete(4, 8)
+    try expectEqual(set.map(tr2.mapping).decorations.count, 0)
+}
+
 // MARK: - Search
 
 test("SearchQuery finds occurrences as document positions") {
