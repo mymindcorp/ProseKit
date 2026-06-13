@@ -115,7 +115,11 @@ func exitToParagraph(_ blockType: NodeType, _ paragraphType: NodeType) -> Comman
 public final class CodeBlockExtension: NodeExtension {
     public let name = "codeBlock"
     public init() {}
-    public var nodeSpec: NodeSpec { NodeSpec(content: "text*", marks: "", group: "block", code: true, defining: true) }
+    public var nodeSpec: NodeSpec {
+        // `language` is consumed by the renderer's syntax-highlighting hook.
+        NodeSpec(content: "text*", marks: "", group: "block",
+                 attrs: ["language": AttributeSpec(default: .null)], code: true, defining: true)
+    }
     public var html: HTMLSpec { HTMLSpec(tag: "pre") }
     public func commands(_ ctx: ExtensionContext) -> [String: Command] {
         guard let type = ctx.nodeType, let para = ctx.schema.nodes["paragraph"] else { return [:] }
@@ -343,7 +347,9 @@ public final class UnderlineExtension: MarkExtension {
 public final class HighlightExtension: MarkExtension {
     public let name = "highlight"
     public init() {}
-    public var markSpec: MarkSpec { MarkSpec() }
+    /// `color` is a named highlight style (e.g. "yellow", "green"); nil uses the
+    /// theme's default highlight color.
+    public var markSpec: MarkSpec { MarkSpec(attrs: ["color": AttributeSpec(default: .null)]) }
     public var html: HTMLSpec { HTMLSpec(tag: "mark") }
     public func commands(_ ctx: ExtensionContext) -> [String: Command] {
         guard let type = ctx.markType else { return [:] }
@@ -356,6 +362,24 @@ public final class HighlightExtension: MarkExtension {
     public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
         guard let type = ctx.markType else { return [] }
         return [markInputRule("(?:==)([^=]+)(?:==)$", type)]
+    }
+}
+
+/// Apply a highlight of a specific named color over the selection (replacing any
+/// existing highlight there).
+public func setHighlight(_ markType: MarkType, color: String?) -> Command {
+    { state, dispatch, _ in
+        let sel = state.selection
+        if sel.empty { return false }
+        if let dispatch {
+            let tr = state.tr
+            _ = try? tr.removeMark(sel.from, sel.to, markType)
+            var attrs: Attrs = [:]
+            if let color { attrs["color"] = .string(color) }
+            _ = try? tr.addMark(sel.from, sel.to, markType.create(attrs))
+            dispatch(tr.scrollIntoView())
+        }
+        return true
     }
 }
 
