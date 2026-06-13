@@ -185,11 +185,13 @@ final class UITextInputTests: XCTestCase {
         let withSelection = delegate.selectionChanges
         view.contentOffsetY = 120
         XCTAssertGreaterThan(delegate.selectionChanges, withSelection, "scroll with a selection re-syncs geometry")
-        // A collapsed caret rides the caret layer; no need to spam the delegate.
+        // A collapsed caret must re-sync too: the system draws its OWN native
+        // caret from this geometry, which otherwise strands a second, motionless
+        // cursor on scroll (we draw our caret layer; the system draws another).
         view.editor.dispatch(view.editor.state.tr.setSelection(TextSelection.create(view.editor.doc, 3)))
         let withCaret = delegate.selectionChanges
         view.contentOffsetY = 240
-        XCTAssertEqual(delegate.selectionChanges, withCaret, "scroll with only a caret does not re-sync")
+        XCTAssertGreaterThan(delegate.selectionChanges, withCaret, "scroll with a caret re-syncs the native caret")
     }
 
     func testTypingDoesNotEchoSelectionNotifications() throws {

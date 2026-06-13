@@ -36,5 +36,28 @@ final class ScrollingTests: XCTestCase {
         view.contentOffsetY = 600
         XCTAssertEqual(scroll.contentOffset.y, 600, accuracy: 0.5, "scrolling must not snap back to the caret")
     }
+
+    func testCaretTracksScrollOffset() throws {
+        let editor = try Editor(extensions: fullKit())
+        let paras = (0..<80).map { i in
+            try! editor.schema.node("paragraph", [:], content: Fragment.from([editor.schema.text("paragraph \(i)")]))
+        }
+        editor.setContent(try! editor.schema.node("doc", [:], content: Fragment.from(paras)))
+
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 400))
+        let view = EditorTextView(editor: editor)
+        view.frame = window.bounds
+        window.addSubview(view)
+        window.makeKeyAndVisible()
+        XCTAssertTrue(view.becomeFirstResponder())
+
+        view.editor.dispatch(view.editor.state.tr.setSelection(TextSelection.create(view.editor.doc, 1)))
+        let before = try XCTUnwrap(view.caretViewRectForTesting)
+        // Scroll down 200pt; the caret (in viewport coords) must move up 200pt.
+        view.contentOffsetY = 200
+        let after = try XCTUnwrap(view.caretViewRectForTesting)
+        XCTAssertEqual(after.minY, before.minY - 200, accuracy: 1, "caret follows the scroll")
+    }
+
 }
 #endif

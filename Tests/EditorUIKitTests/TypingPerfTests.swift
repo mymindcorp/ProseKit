@@ -25,6 +25,28 @@ final class TypingPerfTests: XCTestCase {
         return try! s.node("doc", [:], content: Fragment.from(paras))
     }
 
+    /// Diagnostic: keystroke cost in the long-view (lazy window) path at several
+    /// document sizes, editing NEAR THE TOP (worst case: a large suffix to shift).
+    func testLongViewKeystrokeScaling() {
+        let theme = TextTheme()
+        for n in [1000, 4000, 8000] {
+            let (s, doc) = bigDoc(n)
+            let cache = TextBlockLayoutCache()
+            var previous = DocumentLayout(doc: doc, width: 390, theme: theme,
+                                          blockCache: cache, realizeWindow: 0 ... 900)
+            var current = doc
+            var times: [Double] = []
+            for round in 0 ..< 5 {
+                current = editing(s, current, para: 2, text: "edit \(round)")
+                let t = CFAbsoluteTimeGetCurrent()
+                previous = DocumentLayout(doc: current, width: 390, theme: theme,
+                                          blockCache: cache, previous: previous, realizeWindow: 0 ... 900)
+                times.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
+            }
+            print("LONGVIEW n=\(n) keystroke(min)=\(String(format: "%.2f", times.min()!))ms realizedBlocks=\(previous.blocks.count)")
+        }
+    }
+
     func testKeystrokeLayoutIsIncrementalAndCacheSurvives() {
         let (s, doc) = bigDoc(800)
         let cache = TextBlockLayoutCache()

@@ -27,6 +27,34 @@ test("deleteSelection removes the selected range") {
     try expectEqual(out!.doc, B.doc(B.p("")))
 }
 
+test("moveBlock moves a top-level block down") {
+    let state = B.state(B.doc(B.p("A"), B.p("B"), B.p("C")))
+    let out = apply(moveBlock(0, 3), state) // A to the end
+    try expectNotNil(out)
+    try expectEqual(out!.doc, B.doc(B.p("B"), B.p("C"), B.p("A")))
+}
+
+test("moveBlock moves a top-level block up") {
+    let state = B.state(B.doc(B.p("A"), B.p("B"), B.p("C")))
+    let out = apply(moveBlock(2, 0), state) // C to the front
+    try expectNotNil(out)
+    try expectEqual(out!.doc, B.doc(B.p("C"), B.p("A"), B.p("B")))
+}
+
+test("moveBlock into the middle") {
+    let state = B.state(B.doc(B.p("A"), B.p("B"), B.p("C"), B.p("D")))
+    let out = apply(moveBlock(3, 1), state) // D before B
+    try expectNotNil(out)
+    try expectEqual(out!.doc, B.doc(B.p("A"), B.p("D"), B.p("B"), B.p("C")))
+}
+
+test("moveBlock is a no-op for adjacent gaps") {
+    let state = B.state(B.doc(B.p("A"), B.p("B"), B.p("C")))
+    try expectNil(apply(moveBlock(1, 1), state)) // gap before itself
+    try expectNil(apply(moveBlock(1, 2), state)) // gap right after itself
+    try expectNil(apply(moveBlock(5, 0), state)) // out of range
+}
+
 test("joinBackward merges paragraph into previous") {
     let state = B.state(B.doc(B.p("foo"), B.p("bar")), anchor: 6) // cursor at start of "bar"
     let out = apply(joinBackward, state)

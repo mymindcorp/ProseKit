@@ -120,6 +120,29 @@ func registerPolishCoverageTests() {
         try expect(!editor.run(unsetLink(linkType)))
     }
 
+    test("setHighlight applies a named color; toggleHighlight uses the default") {
+        let editor = try fullEditor()
+        try type(editor, "hello world")
+        let hl = editor.schema.marks["highlight"]!
+        select(editor, 1, 6)
+        try expect(editor.run(setHighlight(hl, color: "green")))
+        var color: String? = "unset"
+        editor.doc.nodesBetween(1, 6, { node, _, _, _ in
+            if let m = node.marks.first(where: { $0.type === hl }) { color = m.attrs["color"]?.stringValue }
+            return true
+        })
+        try expectEqual(color, "green")
+        // Plain toggleHighlight elsewhere leaves color nil (theme default).
+        select(editor, 7, 12)
+        try expect(editor.run("toggleHighlight"))
+        var defColor: String? = "unset"
+        editor.doc.nodesBetween(7, 12, { node, _, _, _ in
+            if let m = node.marks.first(where: { $0.type === hl }) { defColor = m.attrs["color"]?.stringValue }
+            return true
+        })
+        try expectNil(defColor)
+    }
+
     test("autolink input rule still fires in a paragraph (control)") {
         let editor = try fullEditor()
         let s = editor.schema
