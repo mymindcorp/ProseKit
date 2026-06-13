@@ -51,6 +51,25 @@ public struct TextTheme: Sendable {
     public var quoteBarColor: UIColor = .separator
     public var caretColor: UIColor = .tintColor
     public var selectionColor: UIColor = UIColor.tintColor.withAlphaComponent(0.25)
+    /// Highlight-mark background colors by name (the `color` attribute). The
+    /// default (nil/unknown name) is the first entry. Tuned with alpha so dark
+    /// text stays legible in light and dark mode.
+    public var highlightColors: [String: UIColor] = [
+        "yellow": UIColor.systemYellow.withAlphaComponent(0.40),
+        "green": UIColor.systemGreen.withAlphaComponent(0.35),
+        "blue": UIColor.systemBlue.withAlphaComponent(0.30),
+        "pink": UIColor.systemPink.withAlphaComponent(0.30),
+        "orange": UIColor.systemOrange.withAlphaComponent(0.35),
+        "purple": UIColor.systemPurple.withAlphaComponent(0.30),
+    ]
+    public var defaultHighlightColorName = "yellow"
+
+    /// The background color for a highlight mark with the given `color` name
+    /// (falling back to the default highlight color).
+    public func highlightColor(_ name: String?) -> UIColor {
+        if let name, let color = highlightColors[name] { return color }
+        return highlightColors[defaultHighlightColorName] ?? UIColor.systemYellow.withAlphaComponent(0.40)
+    }
     /// Background of the suggestion popup (slash menu / wiki-link menu).
     public var popupBackground: UIColor = .secondarySystemBackground
     public var pageInsets = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
