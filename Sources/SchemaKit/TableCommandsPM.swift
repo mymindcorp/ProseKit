@@ -152,7 +152,9 @@ public func addRow(_ tr: Transaction, _ rect: SelectedRect, _ row: Int) -> Trans
         col += 1; index += 1
     }
     let rowType = tableNodeTypes(table.type.schema)["row"]!
-    _ = try? tr.insert(rowPos, try! rowType.create([:], content: Fragment.from(cells)))
+    if let row = try? rowType.create([:], content: Fragment.from(cells)) {
+        _ = try? tr.insert(rowPos, row)
+    }
     return tr
 }
 
@@ -191,9 +193,10 @@ func removeRow(_ tr: Transaction, _ rect: SelectedRect, _ row: Int) {
             let cell = table.nodeAt(pos)!
             var attrs = cell.attrs
             attrs["rowspan"] = .int((attrs["rowspan"]?.intValue ?? 1) - 1)
-            let copy = try! cell.type.create(attrs, content: cell.content)
-            let newPos = map.positionAt(row + 1, col, table)
-            _ = try? tr.insert(tr.mapping.slice(mapFrom).map(tableStart + newPos), copy)
+            if let copy = try? cell.type.create(attrs, content: cell.content) {
+                let newPos = map.positionAt(row + 1, col, table)
+                _ = try? tr.insert(tr.mapping.slice(mapFrom).map(tableStart + newPos), copy)
+            }
             col += (cell.attrs["colspan"]?.intValue ?? 1) - 1
         }
     }

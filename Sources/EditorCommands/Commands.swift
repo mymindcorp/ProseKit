@@ -101,7 +101,7 @@ public let joinBackward: Command = { state, dispatch, host in
     guard let cut = findCutBefore(cursor) else {
         // At the start of the document or an isolating boundary — try lift.
         guard let range = cursor.blockRange(), let target = liftTarget(range) else { return false }
-        if let dispatch { dispatch(try! state.tr.lift(range, target).scrollIntoView()) }
+        if let dispatch, let tr = try? state.tr.lift(range, target) { dispatch(tr.scrollIntoView()) }
         return true
     }
     let before = cut.nodeBefore
@@ -111,8 +111,7 @@ public let joinBackward: Command = { state, dispatch, host in
         while true {
             if let delStep = replaceStep(state.doc, cursor.before(depth), cursor.after(depth), .empty) as? ReplaceStep,
                delStep.slice.size < delStep.to - delStep.from {
-                if let dispatch {
-                    let tr = try! state.tr.step(delStep)
+                if let dispatch, let tr = try? state.tr.step(delStep) {
                     let mapped = tr.mapping.map(cut.pos, -1)
                     if textblockAt(before, "end") {
                         tr.setSelection(Selection.findFrom(tr.doc.resolve(mapped), -1) ?? Selection.atStart(tr.doc))
@@ -128,7 +127,7 @@ public let joinBackward: Command = { state, dispatch, host in
         }
     }
     if let before, before.isAtom, cut.depth == cursor.depth - 1 {
-        if let dispatch { dispatch(try! state.tr.delete(cut.pos - before.nodeSize, cut.pos).scrollIntoView()) }
+        if let dispatch, let tr = try? state.tr.delete(cut.pos - before.nodeSize, cut.pos) { dispatch(tr.scrollIntoView()) }
         return true
     }
     return false
@@ -143,12 +142,12 @@ public let joinForward: Command = { state, dispatch, host in
     if cursor.parent.content.size == 0, let after, (textblockAt(after, "start") || NodeSelection.isSelectable(after)) {
         if let delStep = replaceStep(state.doc, cursor.before(cursor.depth), cursor.after(cursor.depth), .empty) as? ReplaceStep,
            delStep.slice.size < delStep.to - delStep.from {
-            if let dispatch { dispatch(try! state.tr.step(delStep).scrollIntoView()) }
+            if let dispatch, let tr = try? state.tr.step(delStep) { dispatch(tr.scrollIntoView()) }
             return true
         }
     }
     if let after, after.isAtom, cut.depth == cursor.depth - 1 {
-        if let dispatch { dispatch(try! state.tr.delete(cut.pos, cut.pos + after.nodeSize).scrollIntoView()) }
+        if let dispatch, let tr = try? state.tr.delete(cut.pos, cut.pos + after.nodeSize) { dispatch(tr.scrollIntoView()) }
         return true
     }
     return false
@@ -158,7 +157,7 @@ private func joinMaybeClear(_ state: EditorState, _ pos: ResolvedPos, _ dispatch
     guard let before = pos.nodeBefore, let after = pos.nodeAfter, before.type.compatibleContent(after.type) else { return false }
     let index = pos.index()
     if before.content.size == 0 && pos.parent.canReplace(index - 1, index) {
-        if let dispatch { dispatch(try! state.tr.delete(pos.pos - before.nodeSize, pos.pos).scrollIntoView()) }
+        if let dispatch, let tr = try? state.tr.delete(pos.pos - before.nodeSize, pos.pos) { dispatch(tr.scrollIntoView()) }
         return true
     }
     if !pos.parent.canReplace(index, index + 1) || !(after.isTextblock || canJoin(state.doc, pos.pos)) {
@@ -188,7 +187,10 @@ private func deleteBarrier(_ state: EditorState, _ cut: ResolvedPos, _ dispatch:
             let end = cut.pos + after.nodeSize
             var wrap = Fragment.empty
             var i = conn.count - 1
-            while i >= 0 { wrap = Fragment.from(try! conn[i].create(content: wrap)); i -= 1 }
+            while i >= 0 {
+                guard let node = try? conn[i].create(content: wrap) else { return true }
+                wrap = Fragment.from(node); i -= 1
+            }
             wrap = Fragment.from(before.copy(content: wrap))
             let tr = state.tr
             _ = try? tr.step(ReplaceAroundStep(cut.pos - 1, end, cut.pos, end,
@@ -205,7 +207,7 @@ private func deleteBarrier(_ state: EditorState, _ cut: ResolvedPos, _ dispatch:
     let selAfter = (after.type.spec.isolating || (dir > 0 && isolated)) ? nil : Selection.findFrom(cut, 1)
     if let selAfter, let range = selAfter.resolvedFrom.blockRange(selAfter.resolvedTo),
        let target = liftTarget(range), target >= cut.depth {
-        if let dispatch { dispatch(try! state.tr.lift(range, target).scrollIntoView()) }
+        if let dispatch, let tr = try? state.tr.lift(range, target) { dispatch(tr.scrollIntoView()) }
         return true
     }
     // Try merging the after textblock into the end of the before block.
@@ -233,7 +235,7 @@ private func deleteBarrier(_ state: EditorState, _ cut: ResolvedPos, _ dispatch:
                 let step = ReplaceAroundStep(cut.pos - wrap.count, cut.pos + after.nodeSize,
                                              cut.pos + afterDepth, cut.pos + after.nodeSize - afterDepth,
                                              Slice(content: end, openStart: wrap.count, openEnd: 0), 0, structure: true)
-                dispatch(try! state.tr.step(step).scrollIntoView())
+                if let tr = try? state.tr.step(step) { dispatch(tr.scrollIntoView()) }
             }
             return true
         }
@@ -298,8 +300,7 @@ private func joinUpCommand(_ state: EditorState, _ dispatch: Dispatch?) -> Bool 
         point = joinPoint(state.doc, sel.from, -1)
     }
     guard let p = point else { return false }
-    if let dispatch {
-        let tr = try! state.tr.join(p)
+    if let dispatch, let tr = try? state.tr.join(p) {
         if nodeSel != nil { tr.setSelection(NodeSelection.create(tr.doc, p - state.doc.resolve(p).nodeBefore!.nodeSize)) }
         dispatch(tr.scrollIntoView())
     }
@@ -320,7 +321,7 @@ public let joinDown: Command = { state, dispatch, _ in
         point = joinPoint(state.doc, sel.to, 1)
     }
     guard let p = point else { return false }
-    if let dispatch { dispatch(try! state.tr.join(p).scrollIntoView()) }
+    if let dispatch, let tr = try? state.tr.join(p) { dispatch(tr.scrollIntoView()) }
     return true
 }
 
@@ -328,7 +329,7 @@ public let joinDown: Command = { state, dispatch, _ in
 public let lift: Command = { state, dispatch, _ in
     let sel = state.selection
     guard let range = sel.resolvedFrom.blockRange(sel.resolvedTo), let target = liftTarget(range) else { return false }
-    if let dispatch { dispatch(try! state.tr.lift(range, target).scrollIntoView()) }
+    if let dispatch, let tr = try? state.tr.lift(range, target) { dispatch(tr.scrollIntoView()) }
     return true
 }
 
@@ -340,7 +341,7 @@ public let newlineInCode: Command = { state, dispatch, _ in
     let head = state.selection.resolvedHead
     let anchor = state.selection.resolvedAnchor
     guard head.parent.type.spec.code, head.sameParent(anchor) else { return false }
-    if let dispatch { dispatch(try! state.tr.insertText("\n").scrollIntoView()) }
+    if let dispatch, let tr = try? state.tr.insertText("\n") { dispatch(tr.scrollIntoView()) }
     return true
 }
 
@@ -397,12 +398,12 @@ public let liftEmptyBlock: Command = { state, dispatch, _ in
     if cursor.depth > 1, cursor.after() != cursor.end(cursor.depth - 1) {
         let before = cursor.before()
         if canSplit(state.doc, before) {
-            if let dispatch { dispatch(try! state.tr.split(before).scrollIntoView()) }
+            if let dispatch, let tr = try? state.tr.split(before) { dispatch(tr.scrollIntoView()) }
             return true
         }
     }
     guard let range = cursor.blockRange(), let target = liftTarget(range) else { return false }
-    if let dispatch { dispatch(try! state.tr.lift(range, target).scrollIntoView()) }
+    if let dispatch, let tr = try? state.tr.lift(range, target) { dispatch(tr.scrollIntoView()) }
     return true
 }
 
@@ -416,7 +417,7 @@ public func splitBlockAs(_ splitNode: (@Sendable (_ node: Node, _ atEnd: Bool) -
         let from = sel.resolvedFrom, to = sel.resolvedTo
         if sel is NodeSelection, (sel as! NodeSelection).node.isBlock {
             guard from.parentOffset > 0, canSplit(state.doc, from.pos) else { return false }
-            if let dispatch { dispatch(try! state.tr.split(from.pos).scrollIntoView()) }
+            if let dispatch, let tr = try? state.tr.split(from.pos) { dispatch(tr.scrollIntoView()) }
             return true
         }
         if !from.parent.isBlock { return false }
@@ -538,7 +539,7 @@ public func wrapIn(_ nodeType: NodeType, _ attrs: Attrs = [:]) -> Command {
         let sel = state.selection
         guard let range = sel.resolvedFrom.blockRange(sel.resolvedTo),
               let wrappers = findWrappingForRange(range, nodeType, attrs) else { return false }
-        if let dispatch { dispatch(try! state.tr.wrap(range, wrappers).scrollIntoView()) }
+        if let dispatch, let tr = try? state.tr.wrap(range, wrappers) { dispatch(tr.scrollIntoView()) }
         return true
     }
 }

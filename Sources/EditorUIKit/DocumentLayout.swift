@@ -167,7 +167,9 @@ final class DocumentLayout {
     private(set) var tables: [TableInfo] = []
     /// Image sources referenced by the document that the provider didn't have
     /// cached — the view loads these and rebuilds.
-    private(set) var pendingImageSources: [String] = []
+    /// Image nodes whose drawable couldn't be resolved from a cache — the host
+    /// resolves each (it sees all the node's attrs, not just `src`) and loads it.
+    private(set) var pendingImages: [Node] = []
     /// Resolves an image node to a drawable image (host data hook, cache, or a
     /// decoded `data:` URL). Returns nil to draw a placeholder.
     private let imageProvider: (Node) -> UIImage?
@@ -366,7 +368,7 @@ final class DocumentLayout {
         guard hit else { return false }
 
         let old = entries
-        entries = []; blocks = []; decorations = []; checkboxes = []; highlights = []; tables = []; pendingImageSources = []
+        entries = []; blocks = []; decorations = []; checkboxes = []; highlights = []; tables = []; pendingImages = []
         let x = theme.pageInsets.left
         let contentWidth = width - theme.pageInsets.left - theme.pageInsets.right
         var y = theme.pageInsets.top
@@ -514,7 +516,7 @@ final class DocumentLayout {
             decorations.append(.stroke(CGRect(x: x, y: y, width: displayWidth, height: h), theme.quoteBarColor, 1))
             let alt = node.attrs["alt"]?.stringValue ?? src
             decorations.append(.text("🖼 \(alt)", CGPoint(x: x + 8, y: y + 8), [.font: theme.bodyFont, .foregroundColor: theme.codeColor]))
-            if !src.isEmpty { pendingImageSources.append(src) }
+            if !src.isEmpty { pendingImages.append(node) }
             return y + h
         case "table":
             return layoutTable(node, docPos: docPos, x: x, width: width, y: y)
@@ -790,7 +792,7 @@ final class DocumentLayout {
                 segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: (display as NSString).length, text: nil))
                 docPos += 1
                 if child.type.name == "image", let src = child.attrs["src"]?.stringValue, !src.isEmpty {
-                    pendingImageSources.append(src)
+                    pendingImages.append(child)
                 }
             }
         }

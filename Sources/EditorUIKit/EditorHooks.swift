@@ -47,9 +47,10 @@ public struct DroppedImage: Sendable {
 /// back to the built-in behavior (embed the bytes as a `data:` URL).
 public typealias ImageDropHandler = (_ image: DroppedImage) -> Attrs?
 
-/// Resolves an image node's `src` (as written in the document) to a URL the
-/// renderer can load — e.g. mapping a relative path or a custom `asset://` id to
-/// a file URL. Return nil to let the built-in resolver handle `data:`, http(s),
-/// `file:`, and absolute filesystem paths.
-public typealias ImageURLResolver = (_ src: String) -> URL?
+/// Resolves an image node to a URL the renderer can load — e.g. mapping a
+/// relative path or a custom `asset://` id to a file URL. Receives the whole
+/// node, so it can decide from any attribute (`src`, `width`, custom ids), not
+/// just `src`. Return nil to let the built-in resolver handle `data:`, http(s),
+/// `file:`, and absolute filesystem paths (from the node's `src`).
+public typealias ImageURLResolver = (_ image: Node) -> URL?
 #endif

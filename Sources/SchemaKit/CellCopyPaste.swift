@@ -135,18 +135,18 @@ private func growTable(_ tr: Transaction, _ map: TableMap, _ table: Node, _ star
     let types = tableNodeTypes(tr.doc.type.schema)
     var empty: Node?
     var emptyHead: Node?
+    // Lazily build (and cache) a blank body/header cell; nil if the schema can't
+    // fill one, in which case the caller simply skips growing that dimension.
+    func cell() -> Node? { if empty == nil { empty = types["cell"]?.createAndFill() }; return empty }
+    func headerCell() -> Node? { if emptyHead == nil { emptyHead = types["header_cell"]?.createAndFill() }; return emptyHead }
     if width > map.width {
         var rowEnd = 0
         for row in 0..<map.height {
             let rowNode = table.child(row)
             rowEnd += rowNode.nodeSize
+            let isBodyCell = rowNode.lastChild == nil || rowNode.lastChild?.type === types["cell"]
+            guard let add = isBodyCell ? cell() : headerCell() else { continue }
             var cells: [Node] = []
-            let add: Node
-            if rowNode.lastChild == nil || rowNode.lastChild?.type === types["cell"] {
-                add = empty ?? { let n = types["cell"]!.createAndFill()!; empty = n; return n }()
-            } else {
-                add = emptyHead ?? { let n = types["header_cell"]!.createAndFill()!; emptyHead = n; return n }()
-            }
             for _ in map.width..<width { cells.append(add) }
             _ = try? tr.insert(tr.mapping.slice(mapFrom).map(rowEnd - 1 + start), Fragment.from(cells))
         }
@@ -156,15 +156,16 @@ private func growTable(_ tr: Transaction, _ map: TableMap, _ table: Node, _ star
         let startIndex = (map.height - 1) * map.width
         for i in 0..<max(map.width, width) {
             let header = i >= map.width ? false : (table.nodeAt(map.map[startIndex + i])?.type === types["header_cell"])
-            if header { cells.append(emptyHead ?? { let n = types["header_cell"]!.createAndFill()!; emptyHead = n; return n }()) }
-            else { cells.append(empty ?? { let n = types["cell"]!.createAndFill()!; empty = n; return n }()) }
+            guard let made = header ? headerCell() : cell() else { continue }
+            cells.append(made)
         }
-        let emptyRow = try! types["row"]!.create([:], content: Fragment.from(cells))
-        var rows: [Node] = []
-        for _ in map.height..<height { rows.append(emptyRow) }
-        // NB: append at the end of the table content (tableStart-relative), not the
-        // map index used above for the header check.
-        _ = try? tr.insert(tr.mapping.slice(mapFrom).map(start + table.nodeSize - 2), Fragment.from(rows))
+        if let rowType = types["row"], let emptyRow = try? rowType.create([:], content: Fragment.from(cells)) {
+            var rows: [Node] = []
+            for _ in map.height..<height { rows.append(emptyRow) }
+            // NB: append at the end of the table content (tableStart-relative), not
+            // the map index used above for the header check.
+            _ = try? tr.insert(tr.mapping.slice(mapFrom).map(start + table.nodeSize - 2), Fragment.from(rows))
+        }
     }
     return empty != nil || emptyHead != nil
 }

@@ -13,6 +13,8 @@ public struct InputRule: Sendable {
     let inCode: Bool
 
     public init(_ pattern: String, inCode: Bool = false, handler: @escaping @Sendable (_ state: EditorState, _ match: [String?], _ start: Int, _ end: Int) -> Transaction?) {
+        // The pattern is an authored constant; a malformed one is a programmer
+        // error (fail fast here rather than silently disabling the rule).
         self.regex = try! NSRegularExpression(pattern: pattern)
         self.handler = handler
         self.inCode = inCode

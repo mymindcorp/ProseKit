@@ -121,7 +121,8 @@ public func splitListItem(_ itemType: NodeType, _ itemAttrs: Attrs? = nil) -> Co
                 }
                 let depthAfter = from.indexAfter(-1) < from.node(-2).childCount ? 1
                     : (from.indexAfter(-2) < from.node(-3).childCount ? 2 : 3)
-                wrap = wrap.append(Fragment.from(try! itemType.createAndFill()!))
+                guard let filledItem = itemType.createAndFill() else { return true }
+                wrap = wrap.append(Fragment.from(filledItem))
                 let start = from.before(from.depth - (depthBefore - 1))
                 let tr = state.tr
                 _ = try? tr.replace(start, from.after(-depthAfter), Slice(content: wrap, openStart: 4 - depthBefore, openEnd: 0))
@@ -171,9 +172,14 @@ public func sinkListItem(_ itemType: NodeType) -> Command {
         if nodeBefore.type !== itemType { return false }
         if let dispatch {
             let nestedBefore = nodeBefore.lastChild?.type === parent.type
-            let innerInner = nestedBefore ? Fragment.from(try! itemType.create()) : Fragment.empty
-            let inner = Fragment.from(try! parent.type.create([:], content: innerInner))
-            let slice = Slice(content: Fragment.from(try! itemType.create([:], content: inner)),
+            var innerInner = Fragment.empty
+            if nestedBefore {
+                guard let nested = try? itemType.create() else { return true }
+                innerInner = Fragment.from(nested)
+            }
+            guard let parentNode = try? parent.type.create([:], content: innerInner),
+                  let itemNode = try? itemType.create([:], content: Fragment.from(parentNode)) else { return true }
+            let slice = Slice(content: Fragment.from(itemNode),
                               openStart: nestedBefore ? 3 : 1, openEnd: 0)
             let before = range.start, after = range.end
             let tr = state.tr
@@ -206,8 +212,9 @@ private func liftToOuterList(_ state: EditorState, _ dispatch: Dispatch, _ itemT
     if end < endOfList {
         // Siblings after the lifted items must become children of the last item:
         // wrap them in an empty copy of the surrounding list inside a new item.
+        guard let wrapItem = try? itemType.create([:], content: range.parent.copy(content: .empty)) else { return false }
         _ = try? tr.step(ReplaceAroundStep(end - 1, endOfList, end, endOfList,
-            Slice(content: Fragment.from(try! itemType.create([:], content: range.parent.copy(content: .empty))), openStart: 1, openEnd: 0), 1, structure: true))
+            Slice(content: Fragment.from(wrapItem), openStart: 1, openEnd: 0), 1, structure: true))
         range = NodeRange(tr.doc.resolve(range.from.pos), tr.doc.resolve(endOfList), range.depth)
     }
     guard let target = liftTarget(range) else { return false }
