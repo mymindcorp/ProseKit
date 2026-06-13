@@ -23,6 +23,8 @@ open class EditorTextView: UIView, UIKeyInput {
     private var layout: DocumentLayout?
     private var lastLayoutWidth: CGFloat = 0
     private var caretLayer = CAShapeLayer()
+    /// Insertion-point indicator shown while a drag session hovers the view.
+    private var dropCursorLayer = CAShapeLayer()
     private var blinkTimer: Timer?
     /// Native selection UI (loupe, handles, edit menu, tap-to-place caret).
     private var textInteraction: UITextInteraction?
@@ -53,6 +55,9 @@ open class EditorTextView: UIView, UIKeyInput {
         // ~0.25s animation on geometry changes (opacity still animates to blink).
         caretLayer.actions = ["path": NSNull(), "position": NSNull(), "bounds": NSNull(), "fillColor": NSNull()]
         layer.addSublayer(caretLayer)
+        dropCursorLayer.fillColor = theme.caretColor.withAlphaComponent(0.8).cgColor
+        dropCursorLayer.actions = caretLayer.actions
+        layer.addSublayer(dropCursorLayer)
 
         // Native text interaction: caret placement, the loupe/magnifier,
         // selection handles, and the edit menu — all driven by our UITextInput
@@ -80,7 +85,11 @@ open class EditorTextView: UIView, UIKeyInput {
         // document, or copy from another app).
         addInteraction(UIDragInteraction(delegate: self))
         addInteraction(UIDropInteraction(delegate: self))
+        // Pointer cursors (macOS / iPad trackpad): I-beam over text, hover
+        // shape over checkboxes, resize arrows over table column borders.
+        addInteraction(UIPointerInteraction(delegate: self))
 
+        editor.onTransaction = { [weak self] tr in self?.mapSpellCache(through: tr) }
         editor.onChange = { [weak self] _ in self?.setNeedsRebuild() }
         registerForDynamicTypeChanges()
     }
@@ -334,15 +343,41 @@ open class EditorTextView: UIView, UIKeyInput {
         }
         // Plugin (e.g. search highlight) backgrounds.
         let decorations = gatherDecorations()
-        for deco in decorations where deco.kind == .inline {
+        for deco in decorations where deco.kind == .inline || deco.kind == .node {
             // Explicit background attribute, else a known decoration class (the
             // ported search/table plugins emit upstream's class names only).
             let color = deco.attributes["background"].flatMap { UIColor(hex: $0) }
                 ?? Self.decorationClassColor(deco.attributes["class"])
-            if let color {
-                ctx.setFillColor(color.cgColor)
+            guard let color else { continue }
+            ctx.setFillColor(color.cgColor)
+            if deco.kind == .node {
+                // Fill the decorated node's full block frames, not just text.
+                for b in l.blocks where b.contentStart >= deco.from && b.contentEnd <= deco.to {
+                    let r = b.frame.insetBy(dx: -2, dy: -1)
+                    if onScreen(r) { ctx.fill(r) }
+                }
+            } else {
                 for r in l.selectionRects(from: deco.from, to: deco.to) where onScreen(r) { ctx.fill(r) }
             }
+        }
+        // Suggested deletions (track changes): the removed text floats just
+        // above the deletion point, struck through in red.
+        for deco in decorations where deco.kind == .widget && deco.attributes["class"] == "deletion" {
+            guard var text = deco.attributes["data-text"], !text.isEmpty else { continue }
+            if text.count > 40 { text = String(text.prefix(40)) + "…" }
+            guard let caret = l.caretRect(at: deco.from), onScreen(caret) else { continue }
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: theme.bodyFont.pointSize * 0.75),
+                .foregroundColor: UIColor.systemRed,
+                .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+                .strikethroughColor: UIColor.systemRed,
+            ]
+            let ns = NSAttributedString(string: text, attributes: attrs)
+            let size = ns.size()
+            let origin = CGPoint(x: caret.minX, y: caret.minY - size.height + 2)
+            ctx.setFillColor(UIColor.systemRed.withAlphaComponent(0.08).cgColor)
+            ctx.fill(CGRect(x: origin.x - 2, y: origin.y - 1, width: size.width + 4, height: size.height + 2))
+            ns.draw(at: origin)
         }
         // Selection highlight (every range — a cell selection has several).
         let sel = editor.state.selection
@@ -439,7 +474,7 @@ open class EditorTextView: UIView, UIKeyInput {
         }
     }
 
-    private var spellCache: [Decoration] = []
+    var spellCache: [Decoration] = []
     private var spellCheckedVersion = -1
     private var spellCheckedRange: ClosedRange<Int>?
 
@@ -474,7 +509,7 @@ open class EditorTextView: UIView, UIKeyInput {
             && (spellCheckedRange.map { $0.lowerBound <= want.lowerBound && $0.upperBound >= want.upperBound } ?? false)
     }
 
-    private func currentSpellDecorations() -> [Decoration] {
+    func currentSpellDecorations() -> [Decoration] {
         guard spellCheckingEnabled else { return [] }
         // Debounce: while scrolling/typing keeps changing the visible region or
         // the document, defer the (relatively expensive) UITextChecker pass until
@@ -485,14 +520,73 @@ open class EditorTextView: UIView, UIKeyInput {
             spellWorkItem = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
         }
-        // Only draw decorations computed for the CURRENT document revision — the
-        // positions of a stale pass are wrong once an edit shifts the text.
-        return spellCheckedVersion == docVersion ? spellCache : []
+        // The cache may be a revision behind, but `mapSpellCache(through:)`
+        // keeps its positions in step with every edit, so drawing it avoids
+        // the blink-out/blink-in flash while the debounced pass is pending.
+        return spellCache
+    }
+
+    /// Keep the spelling cache in step with an edit, without a full re-check:
+    /// shift the cached underlines through the transaction's mapping, then
+    /// synchronously re-check ONLY the textblock(s) the edit touched and
+    /// splice the result in. The cache stays valid for the new revision, so
+    /// the debounced viewport pass isn't scheduled while typing — underlines
+    /// outside the edited paragraph never change, and the edited paragraph
+    /// updates immediately. The word being typed is hidden separately
+    /// (`visibleSpellingRanges` skips the decoration under the caret).
+    private func mapSpellCache(through tr: Transaction) {
+        guard tr.docChanged else { return }
+        if !spellCache.isEmpty {
+            spellCache = DecorationSet(spellCache).map(tr.mapping).find()
+        }
+        if let range = spellCheckedRange {
+            let lo = tr.mapping.map(range.lowerBound, 1)
+            let hi = tr.mapping.map(range.upperBound, -1)
+            spellCheckedRange = lo <= hi ? lo...hi : nil
+        }
+        guard spellCheckingEnabled else { return }
+
+        // The edited range, in final-document coordinates.
+        let maps = tr.mapping.maps
+        var lo = Int.max, hi = Int.min
+        for (i, m) in maps.enumerated() {
+            m.forEach { _, _, fromB, toB in
+                var f = fromB, t = toB
+                for j in (i + 1)..<maps.count {
+                    f = maps[j].map(f, -1)
+                    t = maps[j].map(t, 1)
+                }
+                lo = min(lo, f)
+                hi = max(hi, t)
+            }
+        }
+        guard lo <= hi else { return }
+
+        // Expand to whole textblocks (the checker works word-by-word; a partial
+        // block could split a word at the boundary).
+        let doc = editor.doc
+        func textblockBounds(_ pos: Int) -> ClosedRange<Int>? {
+            let resolved = doc.resolve(min(max(pos, 0), doc.content.size))
+            guard resolved.parent.isTextblock else { return nil }
+            return resolved.start() ... resolved.end()
+        }
+        let from = textblockBounds(lo)?.lowerBound ?? lo
+        let to = max(textblockBounds(hi)?.upperBound ?? hi, from)
+        // A huge edit (multi-page paste): leave it to the debounced viewport
+        // pass rather than blocking the keystroke.
+        guard to - from <= 10_000 else { return }
+
+        let fresh = SpellCheck.decorations(for: doc, in: from...to)
+        spellCache = spellCache.filter { $0.to < from || $0.from > to } + fresh
+        spellCheckedVersion = docVersion
+        if let range = spellCheckedRange {
+            spellCheckedRange = min(range.lowerBound, from) ... max(range.upperBound, to)
+        }
     }
 
     /// Run a spell pass for the region visible *now*, if still needed. Runs on
     /// the main actor (debounced + bounded, so it's quick).
-    private func runSpellPassIfNeeded() {
+    func runSpellPassIfNeeded() {
         guard spellCheckingEnabled, let want = spellTargetRange(), !spellCovered(want) else { return }
         spellCache = SpellCheck.decorations(for: editor.doc, in: want)
         spellCheckedVersion = docVersion
@@ -853,6 +947,33 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     /// The internal column border (and its table) within ~6pt of `point`, if any.
+    // MARK: - Pointer (trackpad / mouse) cursor targets
+
+    /// What the pointer is over, for cursor styling. Rects are in viewport
+    /// coordinates (the pointer APIs work in view space, layout in doc space).
+    enum PointerTarget: Equatable {
+        case checkbox(CGRect)
+        case columnBorder(CGRect)
+        case text
+    }
+
+    func pointerTarget(at viewPoint: CGPoint) -> PointerTarget {
+        let point = docPoint(viewPoint)
+        let l = ensureLayout()
+        if let box = l.checkboxes.first(where: { $0.rect.contains(point) }) {
+            // The stored rect is padded for touch; style the visual box.
+            let visual = box.rect.insetBy(dx: 6, dy: 6).offsetBy(dx: 0, dy: -contentOffsetY)
+            return .checkbox(visual)
+        }
+        if let hit = columnBorderHit(at: point) {
+            let x = hit.table.borderX(after: hit.leftColumn)
+            let rect = CGRect(x: x - 6, y: hit.table.top - contentOffsetY,
+                              width: 12, height: hit.table.bottom - hit.table.top)
+            return .columnBorder(rect)
+        }
+        return .text
+    }
+
     func columnBorderHit(at point: CGPoint) -> (table: DocumentLayout.TableInfo, leftColumn: Int)? {
         let tolerance: CGFloat = 6
         for table in ensureLayout().tables where point.y >= table.top && point.y <= table.bottom {
@@ -904,6 +1025,7 @@ open class EditorTextView: UIView, UIKeyInput {
         case "ProseMirror-search-match": return UIColor(hex: "#FFE082")
         case "ProseMirror-active-search-match": return UIColor(hex: "#FFB300")
         case "column-resize-dragging": return UIColor.systemBlue.withAlphaComponent(0.10)
+        case "insertion": return UIColor.systemGreen.withAlphaComponent(0.18)
         default: return nil
         }
     }
@@ -1020,17 +1142,26 @@ open class EditorTextView: UIView, UIKeyInput {
     /// attributed string, so a whole-note proto never replaces a selection
     /// paste. Otherwise: RTF/RTFD → HTML via NSAttributedString, parsed, with
     /// checklist state recovered. Returns nil if no flavor converts.
-    private func richTextPasteDoc(_ pb: UIPasteboard) -> Node? {
+    func richTextPasteDoc(_ pb: UIPasteboard) -> Node? {
         let proto = pb.data(forPasteboardType: "com.apple.notes.richtext")
-        let candidates: [(String, NSAttributedString.DocumentType)] = [
-            ("com.apple.flat-rtfd", .rtfd), ("public.rtfd", .rtfd), ("public.rtf", .rtf),
+        // The archived-attributed-string flavor first: it skips the RTF
+        // round-trip's losses entirely when a UIKit-sourced copy provides it.
+        func documentType(_ docType: NSAttributedString.DocumentType) -> (Data) -> NSAttributedString? {
+            { try? NSAttributedString(data: $0, options: [.documentType: docType], documentAttributes: nil) }
+        }
+        let candidates: [(String, (Data) -> NSAttributedString?)] = [
+            ("com.apple.uikit.attributedstring", { data in
+                try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSAttributedString.self, from: data)
+            }),
+            ("com.apple.flat-rtfd", documentType(.rtfd)),
+            ("public.rtfd", documentType(.rtfd)),
+            ("public.rtf", documentType(.rtf)),
         ]
         var sawRichData = false
-        for (type, docType) in candidates {
+        for (type, decode) in candidates {
             guard let data = pb.data(forPasteboardType: type) else { continue }
             sawRichData = true
-            guard let attr = try? NSAttributedString(data: data, options: [.documentType: docType], documentAttributes: nil)
-            else { continue }
+            guard let attr = decode(data) else { continue }
             if let proto,
                let doc = AppleNotesPasteboard.document(fromArchive: proto, schema: editor.schema,
                                                        matchingText: attr.string) {
@@ -1466,12 +1597,42 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
     }
 
     public func dropInteraction(_ interaction: UIDropInteraction, sessionDidUpdate session: any UIDropSession) -> UIDropProposal {
+        updateDropCursor(at: session.location(in: self))
         // A drag we started → move; anything from outside → copy.
-        UIDropProposal(operation: session.localDragSession != nil ? .move : .copy)
+        return UIDropProposal(operation: session.localDragSession != nil ? .move : .copy)
+    }
+
+    public func dropInteraction(_ interaction: UIDropInteraction, sessionDidExit session: any UIDropSession) {
+        dropCursorLayer.path = nil
+    }
+
+    public func dropInteraction(_ interaction: UIDropInteraction, sessionDidEnd session: any UIDropSession) {
+        dropCursorLayer.path = nil
+    }
+
+    /// The indicator rect (doc coordinates) for a drop at the given view point:
+    /// a horizontal gap bar between blocks, or a text caret inside one.
+    func dropCursorRect(at point: CGPoint) -> CGRect? {
+        let dp = docPoint(point)
+        let l = ensureLayout()
+        if let gap = gapBoundaryPosition(at: dp) { return gapCaretRect(at: gap, in: l) }
+        guard let pos = l.position(at: dp) else { return nil }
+        return l.caretRect(at: pos)
+    }
+
+    private func updateDropCursor(at point: CGPoint) {
+        guard let rect = dropCursorRect(at: point) else {
+            dropCursorLayer.path = nil
+            return
+        }
+        dropCursorLayer.path = UIBezierPath(rect: rect.offsetBy(dx: 0, dy: -contentOffsetY)).cgPath
     }
 
     public func dropInteraction(_ interaction: UIDropInteraction, performDrop session: any UIDropSession) {
-        guard let dropPos = ensureLayout().position(at: docPoint(session.location(in: self))) else { return }
+        dropCursorLayer.path = nil
+        let location = docPoint(session.location(in: self))
+        // A drop in a gap between blocks targets the gap boundary.
+        guard let dropPos = gapBoundaryPosition(at: location) ?? ensureLayout().position(at: location) else { return }
         // Capture the move source now (the drag session ends before async loads).
         let moveFrom = session.localDragSession != nil ? dragSourceRange : nil
         if session.canLoadObjects(ofClass: NSString.self) {
@@ -1529,6 +1690,55 @@ extension EditorTextView: UIGestureRecognizerDelegate {
     /// Coexist with UITextInteraction's own recognizers.
     public func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         true
+    }
+}
+
+extension EditorTextView: UIPointerInteractionDelegate {
+    public func pointerInteraction(_ interaction: UIPointerInteraction,
+                                   regionFor request: UIPointerRegionRequest,
+                                   defaultRegion: UIPointerRegion) -> UIPointerRegion? {
+        switch pointerTarget(at: request.location) {
+        case .checkbox(let rect):
+            return UIPointerRegion(rect: rect, identifier: "checkbox")
+        case .columnBorder(let rect):
+            return UIPointerRegion(rect: rect, identifier: "columnBorder")
+        case .text:
+            return defaultRegion
+        }
+    }
+
+    public func pointerInteraction(_ interaction: UIPointerInteraction,
+                                   styleFor region: UIPointerRegion) -> UIPointerStyle? {
+        switch region.identifier as? String {
+        case "checkbox":
+            // The cursor morphs into a rounded highlight over the box — the
+            // platform's "this is clickable" affordance.
+            return UIPointerStyle(shape: .roundedRect(region.rect.insetBy(dx: -3, dy: -3),
+                                                      radius: region.rect.height * 0.35))
+        case "columnBorder":
+            return UIPointerStyle(shape: .path(Self.columnResizeCursorPath()))
+        default:
+            // Text: the standard I-beam.
+            return UIPointerStyle(shape: .verticalBeam(length: theme.bodyFont.lineHeight + 4))
+        }
+    }
+
+    /// A horizontal double-arrow (⟷), centered on the pointer — the resize
+    /// affordance for dragging a column border.
+    private static func columnResizeCursorPath() -> UIBezierPath {
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: -11, y: 0))
+        path.addLine(to: CGPoint(x: -5, y: -5))
+        path.addLine(to: CGPoint(x: -5, y: -1.5))
+        path.addLine(to: CGPoint(x: 5, y: -1.5))
+        path.addLine(to: CGPoint(x: 5, y: -5))
+        path.addLine(to: CGPoint(x: 11, y: 0))
+        path.addLine(to: CGPoint(x: 5, y: 5))
+        path.addLine(to: CGPoint(x: 5, y: 1.5))
+        path.addLine(to: CGPoint(x: -5, y: 1.5))
+        path.addLine(to: CGPoint(x: -5, y: 5))
+        path.close()
+        return path
     }
 }
 

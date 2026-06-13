@@ -2,6 +2,7 @@
 import UIKit
 import DocumentModel
 import EditorStateKit
+import SchemaKit
 
 // `UITextInput` conformance: lets the system drive text input the native way —
 // IME / marked-text composition (CJK, accents), dictation, autocorrect, and the
@@ -75,6 +76,15 @@ extension EditorTextView: UITextInput {
             // TextSelection.between would snap away into a neighbor block.
             if r.from == r.to, GapCursor.valid(h) {
                 editor.dispatch(editor.state.tr.setSelection(GapCursor(h)))
+                return
+            }
+            // A drag whose endpoints sit in different cells of one table is a
+            // cell selection (prosemirror-tables' createSelectionBetween).
+            if r.from != r.to,
+               let anchorCell = cellAround(a), let headCell = cellAround(h),
+               anchorCell.pos != headCell.pos, inSameTable(anchorCell, headCell) {
+                editor.dispatch(editor.state.tr.setSelection(
+                    CellSelection.create(editor.doc, anchorCellPos: anchorCell.pos, headCellPos: headCell.pos)))
                 return
             }
             editor.dispatch(editor.state.tr.setSelection(TextSelection.between(a, h)))
