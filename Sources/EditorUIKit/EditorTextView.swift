@@ -101,10 +101,14 @@ open class EditorTextView: UIView, UIKeyInput {
         let columnResize = UIPanGestureRecognizer(target: self, action: #selector(handleMouseDrag(_:)))
         let linkTap = UITapGestureRecognizer(target: self, action: #selector(handleLinkTap(_:)))
         let blockDrag = UIPanGestureRecognizer(target: self, action: #selector(handleBlockDrag(_:)))
+        // Triple-tap selects the whole paragraph (UITextInteraction only does
+        // caret/word) — matching Notes and other rich editors.
+        let tripleTap = UITapGestureRecognizer(target: self, action: #selector(handleTripleTap(_:)))
+        tripleTap.numberOfTapsRequired = 3
         columnResizeRecognizer = columnResize
         linkTapRecognizer = linkTap
         blockDragRecognizer = blockDrag
-        for recognizer in [columnResize, linkTap, blockDrag] as [UIGestureRecognizer] {
+        for recognizer in [columnResize, linkTap, blockDrag, tripleTap] as [UIGestureRecognizer] {
             recognizer.delegate = self
             recognizer.cancelsTouchesInView = false
             addGestureRecognizer(recognizer)
@@ -285,12 +289,15 @@ open class EditorTextView: UIView, UIKeyInput {
         return (contentOffsetY - margin) ... (contentOffsetY + max(bounds.height, 1) + margin)
     }
 
-    /// The system draws the selection highlight + handles from our `UITextInput`
-    /// geometry, which is in view coordinates. Our virtualized scrolling changes
-    /// that geometry without moving the view, so the system would keep a stale
-    /// selection — tell it to re-query when there's a selection to re-map.
+    /// The system draws the selection highlight + handles AND its own caret from
+    /// our `UITextInput` geometry, which is in view coordinates. Our virtualized
+    /// scrolling changes that geometry without moving the view, so the system
+    /// keeps a stale position — tell it to re-query. This must fire for a
+    /// COLLAPSED caret too (an empty selection): otherwise UITextInteraction
+    /// leaves its native caret stranded on scroll, appearing as a second,
+    /// motionless cursor beside the one we draw.
     private func notifySelectionGeometryChanged() {
-        guard !applyingTextInput, !editor.state.selection.empty else { return }
+        guard !applyingTextInput else { return }
         textInputDelegate?.selectionWillChange(self)
         textInputDelegate?.selectionDidChange(self)
     }
@@ -756,6 +763,9 @@ open class EditorTextView: UIView, UIKeyInput {
         caretLayer.fillColor = theme.caretColor.cgColor
     }
 
+    /// Test hook: the caret's current on-screen rect (the caret layer's path).
+    var caretViewRectForTesting: CGRect? { caretLayer.path?.boundingBoxOfPath }
+
     private func updateCaret() {
         let l = ensureLayout()
         realizeCaretRegionIfNeeded() // make an off-screen (estimated) caret target real
@@ -832,6 +842,7 @@ open class EditorTextView: UIView, UIKeyInput {
     @discardableResult
     open override func resignFirstResponder() -> Bool {
         stopBlink()
+        stopKeyRepeat()
         caretLayer.path = nil
         return super.resignFirstResponder()
     }
@@ -1047,6 +1058,21 @@ open class EditorTextView: UIView, UIKeyInput {
 
     /// Test hook: drive link activation by document position.
     func activateLinkForTesting(at docPos: Int) { activateLink(at: docPos) }
+
+    /// Triple-tap → select the whole paragraph (the text block under the point).
+    @objc private func handleTripleTap(_ gesture: UITapGestureRecognizer) {
+        if !isFirstResponder { becomeFirstResponder() }
+        let point = docPoint(gesture.location(in: self))
+        guard let range = paragraphRange(at: point) else { return }
+        setTextSelection(anchor: range.from, head: range.to)
+    }
+
+    /// The content range of the text block containing a document-space point.
+    func paragraphRange(at point: CGPoint) -> (from: Int, to: Int)? {
+        let l = ensureLayout()
+        guard let pos = l.position(at: point), let block = l.blockContaining(pos) else { return nil }
+        return (block.contentStart, block.contentEnd)
+    }
 
     // MARK: - Link editing (Mod-K / menu)
 
@@ -1704,17 +1730,11 @@ open class EditorTextView: UIView, UIKeyInput {
     // system behavior, because an enclosing UIScrollView's keyboard-scrolling
     // otherwise swallows Up/Down before `pressesBegan` ever sees them.
     open override var keyCommands: [UIKeyCommand]? {
-        let arrows = [UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow,
-                      UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow]
-        let modifierSets: [UIKeyModifierFlags] = [[], .shift, .alternate, .command, [.shift, .alternate], [.shift, .command]]
+        // All arrows are handled via pressesBegan (not key commands) so holding
+        // one auto-repeats — key commands fire once, presses repeat. We keep
+        // Up/Down responsive over the scroll view via `pressesBegan` consuming
+        // the press (and not calling super).
         var commands: [UIKeyCommand] = []
-        for input in arrows {
-            for mods in modifierSets {
-                let command = UIKeyCommand(input: input, modifierFlags: mods, action: #selector(handleNavigationCommand(_:)))
-                command.wantsPriorityOverSystemBehavior = true
-                commands.append(command)
-            }
-        }
         // Home/End (line edges) and Tab also need priority over scroll-view
         // keyboard handling. PageUp/PageDown are intentionally left to the
         // scroll view, which scrolls by a page.
@@ -1764,9 +1784,62 @@ open class EditorTextView: UIView, UIKeyInput {
         var handledAny = false
         for press in presses {
             guard let key = press.key else { continue }
-            if handle(key: key) { handledAny = true }
+            if handle(key: key) {
+                handledAny = true
+                // Auto-repeat held keys that move/delete (key commands don't
+                // repeat; presses do) so holding ←/→/Delete behaves like Notes.
+                if isAutoRepeatKey(key.keyCode) {
+                    startKeyRepeat(KeyEvent(key.keyCode, modifiers: key.modifierFlags,
+                                            characters: key.charactersIgnoringModifiers))
+                }
+            }
         }
         if !handledAny { super.pressesBegan(presses, with: event) }
+    }
+
+    open override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        for press in presses where press.key != nil { stopKeyRepeat(for: press.key!.keyCode) }
+        super.pressesEnded(presses, with: event)
+    }
+
+    open override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        stopKeyRepeat()
+        super.pressesCancelled(presses, with: event)
+    }
+
+    // MARK: - Key auto-repeat
+
+    private var keyRepeatTimer: Timer?
+    private var keyRepeatEvent: KeyEvent?
+
+    private func isAutoRepeatKey(_ keyCode: UIKeyboardHIDUsage) -> Bool {
+        // All arrows + Delete/Backspace repeat when held (they flow through
+        // presses, not key commands).
+        keyCode == .keyboardLeftArrow || keyCode == .keyboardRightArrow
+            || keyCode == .keyboardUpArrow || keyCode == .keyboardDownArrow
+            || keyCode == .keyboardDeleteOrBackspace || keyCode == .keyboardDeleteForward
+    }
+
+    private func startKeyRepeat(_ event: KeyEvent) {
+        stopKeyRepeat()
+        keyRepeatEvent = event
+        // Initial delay, then a steady repeat — the usual key-repeat cadence.
+        // (If the OS also repeats presses, each repeat resets this timer, so the
+        // move still happens once per event and never double-fires.)
+        keyRepeatTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.keyRepeatTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+                guard let self, let event = self.keyRepeatEvent else { return }
+                _ = self.handle(event)
+            }
+        }
+    }
+
+    private func stopKeyRepeat(for keyCode: UIKeyboardHIDUsage? = nil) {
+        if let keyCode, keyRepeatEvent?.keyCode != keyCode { return }
+        keyRepeatTimer?.invalidate()
+        keyRepeatTimer = nil
+        keyRepeatEvent = nil
     }
 
     /// A key press, decoupled from `UIKey` so the key handler can be unit-tested
