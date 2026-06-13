@@ -304,14 +304,15 @@ final class KeyboardBehaviorTests: XCTestCase {
 
     func testBackspaceDeletesInlineAtom() throws {
         let editor = try Editor(extensions: fullKit())
-        let img = try! editor.schema.nodes["image"]!.create(["src": .string("c.png")])
-        let para = try! editor.schema.node("paragraph", [:], content: Fragment.from([editor.schema.text("a"), img, editor.schema.text("b")]))
+        // A wiki-link is an inline atom (images are block-level now).
+        let atom = try! editor.schema.nodes["wikiLink"]!.create(["target": .string("p"), "label": .string("L")])
+        let para = try! editor.schema.node("paragraph", [:], content: Fragment.from([editor.schema.text("a"), atom, editor.schema.text("b")]))
         editor.setContent(try! editor.schema.node("doc", [:], content: Fragment.from([para])))
         let view = EditorTextView(editor: editor)
-        XCTAssertEqual(count(view, "image"), 1)
-        cursor(view, 3) // right after the image (a=1..2, image=2..3)
+        XCTAssertEqual(count(view, "wikiLink"), 1)
+        cursor(view, 3) // right after the atom (a=1..2, atom=2..3)
         key(view, .keyboardDeleteOrBackspace)
-        XCTAssertEqual(count(view, "image"), 0, "backspace should delete the inline image")
+        XCTAssertEqual(count(view, "wikiLink"), 0, "backspace should delete the inline atom")
         XCTAssertEqual(text(view), "ab")
     }
 

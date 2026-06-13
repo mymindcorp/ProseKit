@@ -100,7 +100,7 @@ final class ImageHookTests: XCTestCase {
         let editor = try Editor(extensions: fullKit())
         let view = EditorTextView(editor: editor)
         let fileURL = URL(fileURLWithPath: "/tmp/assets/x.png")
-        view.imageURLResolver = { src in src == "asset://x" ? fileURL : nil }
+        view.imageURLResolver = { node in node.attrs["src"]?.stringValue == "asset://x" ? fileURL : nil }
         XCTAssertEqual(view.imageURLForTesting("asset://x"), fileURL, "resolver maps a custom src")
         // Built-in handling still applies when the resolver returns nil.
         XCTAssertEqual(view.imageURLForTesting("https://example.com/a.png")?.scheme, "https")
@@ -175,6 +175,20 @@ final class ImageHookTests: XCTestCase {
         XCTAssertEqual(imageWidth(view), maxW, "above the content width, width clamps to it")
     }
 
+    func testResizeHandleRevealsOnHover() throws {
+        let view = try imageEditorView(width: 120)
+        let pos = 0
+        let rect = view.ensureLayout().imageRects.first!.rect
+        // Touch (no pointer yet): every image shows its handle.
+        XCTAssertTrue(view.imageHandleVisibleForTesting(pos))
+        // Pointer hovering the image → handle stays revealed.
+        view.updateImageHover(at: CGPoint(x: rect.midX, y: rect.midY))
+        XCTAssertTrue(view.imageHandleVisibleForTesting(pos), "hovered image reveals its handle")
+        // Pointer away from any image → handle hides on desktop.
+        view.updateImageHover(at: CGPoint(x: rect.midX, y: rect.maxY + 200))
+        XCTAssertFalse(view.imageHandleVisibleForTesting(pos), "non-hovered image hides its handle")
+    }
+
     func testImageWidthRoundTripsThroughHTML() throws {
         let s = try Editor(extensions: fullKit()).schema
         let img = try s.node("image", ["src": .string("a.png"), "width": .int(180)])
@@ -192,6 +206,40 @@ final class ImageHookTests: XCTestCase {
             return true
         }
         return w
+    }
+
+    func testDocumentViewLoadsImageFromSrc() throws {
+        // No imageData hook: the read-only view must load the image from its src
+        // (here a data: URL) via the async path, then redraw with it.
+        let s = try Editor(extensions: fullKit()).schema
+        let dataURL = "data:image/png;base64," + redPNG().base64EncodedString()
+        let doc = try s.node("doc", [:], content: Fragment.from([try s.node("image", ["src": .string(dataURL)])]))
+        let view = DocumentView(document: doc)
+        view.frame = CGRect(x: 0, y: 0, width: 200, height: 200)
+        _ = view.documentHeight // triggers ensureLayout → loadPendingImages
+        let done = expectation(description: "image loaded")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { done.fulfill() }
+        wait(for: [done], timeout: 2)
+        view.invalidateLayout()
+        XCTAssertGreaterThan(redPixels(of: view), 100, "DocumentView loaded the image from its src")
+    }
+
+    func testDocumentViewHonorsImageURLResolver() throws {
+        // The read-only view resolves a custom src to a file it then loads.
+        let s = try Editor(extensions: fullKit()).schema
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("dv-\(UUID().uuidString).png")
+        try redPNG().write(to: tmp)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let doc = try s.node("doc", [:], content: Fragment.from([try s.node("image", ["src": .string("asset://pic")])]))
+        let view = DocumentView(document: doc)
+        view.imageURLResolver = { node in node.attrs["src"]?.stringValue == "asset://pic" ? tmp : nil }
+        view.frame = CGRect(x: 0, y: 0, width: 200, height: 200)
+        _ = view.documentHeight
+        let done = expectation(description: "image loaded")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { done.fulfill() }
+        wait(for: [done], timeout: 2)
+        view.invalidateLayout()
+        XCTAssertGreaterThan(redPixels(of: view), 100, "DocumentView resolved + loaded the custom src")
     }
 
     func testHTMLImageInParagraphLiftsToBlock() throws {
