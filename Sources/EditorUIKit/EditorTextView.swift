@@ -30,6 +30,18 @@ open class EditorTextView: UIView, UIKeyInput {
     private var textInteraction: UITextInteraction?
     private weak var columnResizeRecognizer: UIGestureRecognizer?
     private weak var linkTapRecognizer: UIGestureRecognizer?
+    private weak var blockDragRecognizer: UIGestureRecognizer?
+
+    /// When true, each top-level block shows a drag handle in the left gutter
+    /// that reorders the block by dragging. Off by default.
+    public var blockReorderingEnabled = false { didSet { setNeedsDisplay() } }
+    /// In-progress block drag: source index and the current drop gap.
+    private var blockDrag: (sourceIndex: Int, dropIndex: Int)?
+    /// Desktop hover: the block under the pointer (handles reveal on hover);
+    /// nil on touch, where all handles show. `usesPointer` flips true once a
+    /// pointer is seen, switching from always-on to hover-reveal handles.
+    private var hoveredBlockIndex: Int?
+    private var usesPointer = false
 
     /// Supplies the view used for each task-item checkbox. When nil, the editor
     /// uses `DefaultTaskCheckboxView` (circle + check, themed, animated). The
@@ -88,9 +100,11 @@ open class EditorTextView: UIView, UIKeyInput {
         // taps and selection drags fall through to UITextInteraction.
         let columnResize = UIPanGestureRecognizer(target: self, action: #selector(handleMouseDrag(_:)))
         let linkTap = UITapGestureRecognizer(target: self, action: #selector(handleLinkTap(_:)))
+        let blockDrag = UIPanGestureRecognizer(target: self, action: #selector(handleBlockDrag(_:)))
         columnResizeRecognizer = columnResize
         linkTapRecognizer = linkTap
-        for recognizer in [columnResize, linkTap] as [UIGestureRecognizer] {
+        blockDragRecognizer = blockDrag
+        for recognizer in [columnResize, linkTap, blockDrag] as [UIGestureRecognizer] {
             recognizer.delegate = self
             recognizer.cancelsTouchesInView = false
             addGestureRecognizer(recognizer)
@@ -475,6 +489,29 @@ open class EditorTextView: UIView, UIKeyInput {
             ctx.setFillColor(color.cgColor)
             ctx.fill(bar)
             drawCollabLabel(cursor.label, color: color, at: bar, in: ctx)
+        }
+
+        // Block drag handles + drop indicator (reordering).
+        if blockReorderingEnabled {
+            let entries = l.entries
+            for i in entries.indices {
+                guard blockHandleVisible(i), let handle = blockHandleRect(forEntryAt: i), onScreen(handle) else { continue }
+                let active = blockDrag?.sourceIndex == i
+                ctx.setFillColor(theme.quoteBarColor.withAlphaComponent(active ? 0.9 : 0.45).cgColor)
+                // Six grip dots (2 columns × 3 rows).
+                let dot: CGFloat = 2.5, gapX: CGFloat = 4, gapY: CGFloat = 5
+                let ox = handle.minX + 2, oy = handle.midY - gapY
+                for r in 0..<3 { for c in 0..<2 {
+                    ctx.fillEllipse(in: CGRect(x: ox + CGFloat(c) * gapX, y: oy + CGFloat(r) * gapY, width: dot, height: dot))
+                } }
+            }
+            if let drag = blockDrag, drag.dropIndex != drag.sourceIndex, drag.dropIndex != drag.sourceIndex + 1 {
+                let y: CGFloat = drag.dropIndex < entries.count
+                    ? entries[drag.dropIndex].topY
+                    : (entries.last.map { $0.topY + $0.height } ?? 0)
+                ctx.setFillColor(theme.caretColor.cgColor)
+                ctx.fill(CGRect(x: theme.pageInsets.left, y: y - 1, width: max(bounds.width, 1) - theme.pageInsets.left * 2, height: 2))
+            }
         }
         ctx.restoreGState()
     }
@@ -1080,6 +1117,84 @@ open class EditorTextView: UIView, UIKeyInput {
         gesture.modifierFlags.contains(.command)
     }
 
+    // MARK: - Block reordering (drag handles)
+
+    /// The drag-handle rect for top-level block `index`, in DOCUMENT coords.
+    func blockHandleRect(forEntryAt index: Int) -> CGRect? {
+        let entries = ensureLayout().entries
+        guard entries.indices.contains(index) else { return nil }
+        let e = entries[index]
+        let height: CGFloat = 18
+        let y = e.topY + max(0, (min(e.height, 44) - height) / 2)
+        return CGRect(x: 1, y: y, width: 13, height: height)
+    }
+
+    /// The top-level entry whose handle contains `viewPoint` (view coords), when
+    /// reordering is on.
+    func blockHandleHit(at viewPoint: CGPoint) -> Int? {
+        guard blockReorderingEnabled else { return nil }
+        let docP = docPoint(viewPoint)
+        for i in ensureLayout().entries.indices
+        where blockHandleRect(forEntryAt: i)?.insetBy(dx: -6, dy: -4).contains(docP) == true {
+            return i
+        }
+        return nil
+    }
+
+    /// The drop-gap index (0...count) nearest a view-space y.
+    func blockDropIndex(atViewY y: CGFloat) -> Int {
+        let entries = ensureLayout().entries
+        let docY = y + contentOffsetY
+        for (i, e) in entries.enumerated() where docY < e.topY + e.height / 2 { return i }
+        return entries.count
+    }
+
+    /// Note the pointer's position (desktop) so the hovered block reveals its
+    /// handle. Called from the pointer interaction as the cursor moves.
+    func updateBlockHover(at viewPoint: CGPoint) {
+        guard blockReorderingEnabled else { return }
+        usesPointer = true
+        let docY = viewPoint.y + contentOffsetY
+        let idx = ensureLayout().entries.firstIndex { docY >= $0.topY && docY < $0.topY + $0.height }
+        if idx != hoveredBlockIndex { hoveredBlockIndex = idx; setNeedsDisplay() }
+    }
+
+    /// Whether block `index`'s handle should be visible right now.
+    private func blockHandleVisible(_ index: Int) -> Bool {
+        !usesPointer || hoveredBlockIndex == index || blockDrag?.sourceIndex == index
+    }
+
+    /// Test hook: whether block `index`'s handle is currently drawn.
+    func blockHandleVisibleForTesting(_ index: Int) -> Bool { blockHandleVisible(index) }
+
+    @objc private func handleBlockDrag(_ gesture: UIPanGestureRecognizer) {
+        let p = gesture.location(in: self)
+        switch gesture.state {
+        case .began:
+            guard let src = blockHandleHit(at: p) else { return }
+            blockDrag = (src, src)
+            setNeedsDisplay()
+        case .changed:
+            guard blockDrag != nil else { return }
+            blockDrag?.dropIndex = blockDropIndex(atViewY: p.y)
+            setNeedsDisplay()
+        case .ended:
+            if let d = blockDrag { moveTopBlock(from: d.sourceIndex, to: d.dropIndex) }
+            blockDrag = nil
+            setNeedsDisplay()
+        default:
+            blockDrag = nil
+            setNeedsDisplay()
+        }
+    }
+
+    /// Move top-level block `sourceIndex` to land at drop-gap `targetIndex`
+    /// (0...childCount). Delegates to the pure `moveBlock` command in
+    /// EditorCommands (no-op when the gap is adjacent to the source).
+    func moveTopBlock(from sourceIndex: Int, to targetIndex: Int) {
+        _ = editor.run(moveBlock(sourceIndex, targetIndex))
+    }
+
     // The column-resize pan, gated by the gesture delegate to begin only on a
     // table column border. Caret placement and text selection are handled
     // natively by UITextInteraction.
@@ -1099,6 +1214,7 @@ open class EditorTextView: UIView, UIKeyInput {
     open override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
         let point = docPoint(gesture.location(in: self))
         if gesture === columnResizeRecognizer { return columnBorderHit(at: point) != nil }
+        if gesture === blockDragRecognizer { return blockHandleHit(at: gesture.location(in: self)) != nil }
         if gesture === linkTapRecognizer {
             guard isCommandClick(gesture), let pos = ensureLayout().position(at: point) else { return false }
             return linkInfo(at: pos) != nil
@@ -1147,12 +1263,17 @@ open class EditorTextView: UIView, UIKeyInput {
     enum PointerTarget: Equatable {
         case columnBorder(CGRect)
         case link(CGRect)
+        case blockHandle(CGRect)
         case text
     }
 
     func pointerTarget(at viewPoint: CGPoint) -> PointerTarget {
         let point = docPoint(viewPoint)
         let l = ensureLayout()
+        // A block drag handle (in the left gutter) takes priority.
+        if let i = blockHandleHit(at: viewPoint), let r = blockHandleRect(forEntryAt: i) {
+            return .blockHandle(r.offsetBy(dx: 0, dy: -contentOffsetY))
+        }
         // Checkboxes are their own subviews (with their own pointer hover).
         if let hit = columnBorderHit(at: point) {
             let x = hit.table.borderX(after: hit.leftColumn)
@@ -2011,11 +2132,15 @@ extension EditorTextView: UIPointerInteractionDelegate {
     public func pointerInteraction(_ interaction: UIPointerInteraction,
                                    regionFor request: UIPointerRegionRequest,
                                    defaultRegion: UIPointerRegion) -> UIPointerRegion? {
+        // Track the pointer so the hovered block reveals its drag handle.
+        updateBlockHover(at: request.location)
         switch pointerTarget(at: request.location) {
         case .columnBorder(let rect):
             return UIPointerRegion(rect: rect, identifier: "columnBorder")
         case .link(let rect):
             return UIPointerRegion(rect: rect, identifier: "link")
+        case .blockHandle(let rect):
+            return UIPointerRegion(rect: rect, identifier: "blockHandle")
         case .text:
             return defaultRegion
         }
@@ -2031,6 +2156,9 @@ extension EditorTextView: UIPointerInteractionDelegate {
             // affordance (the I-beam still serves caret placement on a plain
             // click). The region rect is in view coordinates.
             return UIPointerStyle(shape: .roundedRect(region.rect.insetBy(dx: -2, dy: -1), radius: 4))
+        case "blockHandle":
+            // A highlight over the grip — its "drag to reorder" affordance.
+            return UIPointerStyle(shape: .roundedRect(region.rect.insetBy(dx: -3, dy: -2), radius: 4))
         default:
             // Text: the standard I-beam.
             return UIPointerStyle(shape: .verticalBeam(length: theme.bodyFont.lineHeight + 4))

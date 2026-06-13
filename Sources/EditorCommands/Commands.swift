@@ -2,6 +2,34 @@ import DocumentModel
 import DocumentTransform
 import EditorStateKit
 
+// MARK: - Block reordering
+
+/// Move the top-level block at `fromIndex` so it lands at drop-gap `toIndex`
+/// (0...childCount, the position *before* the child at that index). A no-op when
+/// the gap is adjacent to the source. Pure transform — no view dependency — so a
+/// drag handle, a menu command, or a script can all reuse it.
+public func moveBlock(_ fromIndex: Int, _ toIndex: Int) -> Command {
+    { state, dispatch, _ in
+        let doc = state.doc
+        guard fromIndex >= 0, fromIndex < doc.childCount,
+              toIndex >= 0, toIndex <= doc.childCount,
+              toIndex != fromIndex, toIndex != fromIndex + 1 else { return false }
+        func startPos(_ index: Int) -> Int {
+            (0..<min(index, doc.childCount)).reduce(0) { $0 + doc.child($1).nodeSize }
+        }
+        let node = doc.child(fromIndex)
+        let from = startPos(fromIndex), to = from + node.nodeSize
+        let target = startPos(toIndex)
+        guard let dispatch else { return true } // dry run (can-perform check)
+        let tr = state.tr
+        guard (try? tr.delete(from, to)) != nil else { return false }
+        let insertAt = tr.mapping.map(target)
+        guard (try? tr.insert(insertAt, node)) != nil else { return false }
+        dispatch(tr.scrollIntoView())
+        return true
+    }
+}
+
 // MARK: - Deletion
 
 /// Delete the selection, if there is one.
