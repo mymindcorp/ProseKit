@@ -406,16 +406,38 @@ public final class LinkExtension: MarkExtension {
     }
     public func commands(_ ctx: ExtensionContext) -> [String: Command] {
         guard let type = ctx.markType else { return [:] }
-        return ["unsetLink": { state, dispatch, _ in
-            let sel = state.selection
-            if sel.empty { return false }
-            if let dispatch {
-                let tr = state.tr
-                _ = try? tr.removeMark(sel.from, sel.to, type)
-                dispatch(tr.scrollIntoView())
-            }
-            return true
-        }]
+        return ["unsetLink": unsetLink(type)]
+    }
+}
+
+/// Add (or replace) a link over the selection with the given href.
+public func setLink(_ markType: MarkType, href: String, title: String? = nil) -> Command {
+    { state, dispatch, _ in
+        let sel = state.selection
+        if sel.empty { return false }
+        if let dispatch {
+            let tr = state.tr
+            _ = try? tr.removeMark(sel.from, sel.to, markType) // replace any existing link
+            var attrs: Attrs = ["href": .string(href)]
+            if let title { attrs["title"] = .string(title) }
+            _ = try? tr.addMark(sel.from, sel.to, markType.create(attrs))
+            dispatch(tr.scrollIntoView())
+        }
+        return true
+    }
+}
+
+/// Remove any link mark over the selection.
+public func unsetLink(_ markType: MarkType) -> Command {
+    { state, dispatch, _ in
+        let sel = state.selection
+        if sel.empty { return false }
+        if let dispatch {
+            let tr = state.tr
+            _ = try? tr.removeMark(sel.from, sel.to, markType)
+            dispatch(tr.scrollIntoView())
+        }
+        return true
     }
 }
 
