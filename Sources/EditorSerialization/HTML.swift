@@ -25,6 +25,8 @@ public struct HTMLConfig: Sendable {
         let markTags: [String: String] = [
             "bold": "strong", "italic": "em", "strike": "s", "underline": "u",
             "highlight": "mark", "code": "code", "link": "a",
+            "subscript": "sub", "superscript": "sup",
+            // textColor/backgroundColor serialize to styled <span> (see applyMarks).
         ]
         var tagToNode: [String: String] = [:]
         // taskList/taskItem also use ul/li but need a data-type to round-trip,
@@ -37,6 +39,7 @@ public struct HTMLConfig: Sendable {
             "strong": "bold", "b": "bold", "em": "italic", "i": "italic",
             "s": "strike", "del": "strike", "strike": "strike", "u": "underline",
             "mark": "highlight", "code": "code", "a": "link",
+            "sub": "subscript", "sup": "superscript",
         ]
         return HTMLConfig(nodeTags: nodeTags, markTags: markTags, tagToNode: tagToNode, tagToMark: tagToMark)
     }()
@@ -119,6 +122,10 @@ public enum HTMLSerializer {
             if mark.type.name == "link" {
                 let href = mark.attrs["href"]?.stringValue ?? ""
                 result = "<a href=\"\(escape(href))\">\(result)</a>"
+            } else if mark.type.name == "textColor", let c = mark.attrs["color"]?.stringValue {
+                result = "<span style=\"color:\(escape(c))\">\(result)</span>"
+            } else if mark.type.name == "backgroundColor", let c = mark.attrs["color"]?.stringValue {
+                result = "<span style=\"background-color:\(escape(c))\">\(result)</span>"
             } else if let tag = config.markTags[mark.type.name] {
                 result = "<\(tag)>\(result)</\(tag)>"
             }
@@ -348,6 +355,20 @@ public enum HTMLParser {
         return false
     }
 
+    /// The value of a CSS declaration in an inline `style` string, matching the
+    /// property name exactly (so `color` doesn't match `background-color`).
+    private static func styleValue(_ style: String, _ property: String) -> String? {
+        for decl in style.split(separator: ";") {
+            let parts = decl.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            if parts[0].trimmingCharacters(in: .whitespaces).lowercased() == property {
+                let v = parts[1].trimmingCharacters(in: .whitespaces)
+                if !v.isEmpty { return v }
+            }
+        }
+        return nil
+    }
+
     private static func parseColwidth(_ attrs: [String: String]) -> [Int]? {
         guard let s = attrs["data-colwidth"] else { return nil }
         let parts = s.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
@@ -358,6 +379,8 @@ public enum HTMLParser {
     private static func parseInline(_ tokens: [Token], _ schema: Schema, _ config: HTMLConfig) -> [Node] {
         var result: [Node] = []
         var markStack: [Mark] = []
+        // Count of color marks each open <span> pushed, popped on its close.
+        var spanStack: [Int] = []
         var i = 0
         while i < tokens.count {
             switch tokens[i] {
@@ -375,6 +398,22 @@ public enum HTMLParser {
                     if let m = try? schema.nodes["mention"]?.create(["id": .string(id), "label": .string(label)]) {
                         result.append(m); i = close + 1; continue
                     }
+                }
+                // A styled <span> contributes textColor / backgroundColor marks.
+                if tag == "span" {
+                    var pushed = 0
+                    if !selfClosing, let style = attrs["style"] {
+                        if let c = styleValue(style, "background-color"), let mt = schema.marks["backgroundColor"] {
+                            markStack.append(mt.create(["color": .string(c)])); pushed += 1
+                        }
+                        if let c = styleValue(style, "color"), let mt = schema.marks["textColor"] {
+                            markStack.append(mt.create(["color": .string(c)])); pushed += 1
+                        }
+                        spanStack.append(pushed)
+                    } else if !selfClosing {
+                        spanStack.append(0)
+                    }
+                    i += 1; continue
                 }
                 if tag == "a", attrs["data-wikilink"] != nil || schema.nodes["wikiLink"] != nil, attrs["data-wikilink"] != nil {
                     let target = attrs["data-wikilink"] ?? attrs["href"] ?? ""
@@ -394,7 +433,13 @@ public enum HTMLParser {
                 }
                 i += 1
             case let .close(tag):
-                if config.tagToMark[tag] != nil, !markStack.isEmpty { markStack.removeLast() }
+                if tag == "span" {
+                    if let n = spanStack.popLast() {
+                        for _ in 0..<n where !markStack.isEmpty { markStack.removeLast() }
+                    }
+                } else if config.tagToMark[tag] != nil, !markStack.isEmpty {
+                    markStack.removeLast()
+                }
                 i += 1
             }
         }

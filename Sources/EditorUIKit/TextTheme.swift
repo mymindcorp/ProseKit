@@ -132,6 +132,8 @@ public struct TextTheme: Sendable {
         var font = baseFont
         var traits = font.fontDescriptor.symbolicTraits
         var attrs: [NSAttributedString.Key: Any] = [.foregroundColor: textColor]
+        var sizeScale: CGFloat = 1
+        var baselineOffset: CGFloat = 0
 
         for mark in marks {
             switch mark.type.name {
@@ -147,14 +149,48 @@ public struct TextTheme: Sendable {
             case "link":
                 attrs[.foregroundColor] = linkColor
                 attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            case "textColor":
+                if let color = TextTheme.parseColor(mark.attrs["color"]?.stringValue) {
+                    attrs[.foregroundColor] = color
+                }
+            // backgroundColor is painted behind the run by DocumentLayout (CoreText
+            // ignores .backgroundColor), so it's not applied here.
+            case "subscript":
+                sizeScale = 0.75; baselineOffset = -baseFont.pointSize * 0.2
+            case "superscript":
+                sizeScale = 0.75; baselineOffset = baseFont.pointSize * 0.35
             default: break
             }
         }
+        if sizeScale != 1 { font = font.withSize(font.pointSize * sizeScale) }
+        if baselineOffset != 0 { attrs[.baselineOffset] = baselineOffset }
         if let descriptor = font.fontDescriptor.withSymbolicTraits(traits) {
             font = UIFont(descriptor: descriptor, size: font.pointSize)
         }
         attrs[.font] = font
         return attrs
     }
+
+    /// Parse a CSS color string — `#rgb`/`#rrggbb`/`#rrggbbaa` (with or without
+    /// `#`) or a common named color — into a UIColor. Returns nil if unparseable.
+    public static func parseColor(_ string: String?) -> UIColor? {
+        guard var s = string?.trimmingCharacters(in: .whitespaces).lowercased(), !s.isEmpty else { return nil }
+        if let named = namedColors[s] { return named }
+        if s.hasPrefix("#") { s.removeFirst() }
+        if s.count == 3 { s = s.map { "\($0)\($0)" }.joined() } // #rgb → #rrggbb
+        guard s.count == 6 || s.count == 8, let value = UInt64(s, radix: 16) else { return nil }
+        let hasAlpha = s.count == 8
+        let r = CGFloat((value >> (hasAlpha ? 24 : 16)) & 0xFF) / 255
+        let g = CGFloat((value >> (hasAlpha ? 16 : 8)) & 0xFF) / 255
+        let b = CGFloat((value >> (hasAlpha ? 8 : 0)) & 0xFF) / 255
+        let a = hasAlpha ? CGFloat(value & 0xFF) / 255 : 1
+        return UIColor(red: r, green: g, blue: b, alpha: a)
+    }
+
+    private static let namedColors: [String: UIColor] = [
+        "black": .black, "white": .white, "red": .red, "green": .green, "blue": .blue,
+        "yellow": .yellow, "orange": .orange, "purple": .purple, "gray": .gray, "grey": .gray,
+        "brown": .brown, "cyan": .cyan, "magenta": .magenta, "clear": .clear,
+    ]
 }
 #endif

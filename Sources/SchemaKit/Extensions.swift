@@ -465,6 +465,85 @@ public func unsetLink(_ markType: MarkType) -> Command {
     }
 }
 
+// MARK: - Subscript / Superscript
+
+public final class SubscriptExtension: MarkExtension {
+    public let name = "subscript"
+    public init() {}
+    // Subscript and superscript are mutually exclusive (text can't be both).
+    public var markSpec: MarkSpec { MarkSpec(excludes: "subscript superscript") }
+    public var html: HTMLSpec { HTMLSpec(tag: "sub") }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["toggleSubscript": toggleMark(type)]
+    }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["Mod-,": toggleMark(type)]
+    }
+}
+
+public final class SuperscriptExtension: MarkExtension {
+    public let name = "superscript"
+    public init() {}
+    public var markSpec: MarkSpec { MarkSpec(excludes: "subscript superscript") }
+    public var html: HTMLSpec { HTMLSpec(tag: "sup") }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["toggleSuperscript": toggleMark(type)]
+    }
+    public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["Mod-.": toggleMark(type)]
+    }
+}
+
+// MARK: - Text / background color
+
+public final class TextColorExtension: MarkExtension {
+    public let name = "textColor"
+    public init() {}
+    /// `color` is a CSS color string (named or hex) applied as the text's
+    /// foreground; nil renders the default text color.
+    public var markSpec: MarkSpec { MarkSpec(attrs: ["color": AttributeSpec(default: .null)]) }
+    public var html: HTMLSpec { HTMLSpec(tag: "span") }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["unsetTextColor": unsetColor(type)]
+    }
+}
+
+public final class BackgroundColorExtension: MarkExtension {
+    public let name = "backgroundColor"
+    public init() {}
+    /// `color` is a CSS color string painted behind the text.
+    public var markSpec: MarkSpec { MarkSpec(attrs: ["color": AttributeSpec(default: .null)]) }
+    public var html: HTMLSpec { HTMLSpec(tag: "span") }
+    public func commands(_ ctx: ExtensionContext) -> [String: Command] {
+        guard let type = ctx.markType else { return [:] }
+        return ["unsetBackgroundColor": unsetColor(type)]
+    }
+}
+
+/// Apply a color mark (text or background) of the given CSS color over the
+/// selection, replacing any existing color of that type. A nil color removes it.
+public func setColor(_ markType: MarkType, _ color: String?) -> Command {
+    { state, dispatch, _ in
+        let sel = state.selection
+        if sel.empty { return false }
+        if let dispatch {
+            let tr = state.tr
+            _ = try? tr.removeMark(sel.from, sel.to, markType)
+            if let color { _ = try? tr.addMark(sel.from, sel.to, markType.create(["color": .string(color)])) }
+            dispatch(tr.scrollIntoView())
+        }
+        return true
+    }
+}
+
+/// Remove a color mark over the selection.
+public func unsetColor(_ markType: MarkType) -> Command { setColor(markType, nil) }
+
 // MARK: - StarterKit
 
 /// A reasonable default set of basic extensions, mirroring Tiptap's StarterKit.
@@ -486,6 +565,10 @@ public func starterKit() -> [Extension] {
         StrikeExtension(),
         UnderlineExtension(),
         HighlightExtension(),
+        SubscriptExtension(),
+        SuperscriptExtension(),
+        TextColorExtension(),
+        BackgroundColorExtension(),
         CodeExtension(),
         LinkExtension(),
         TypographyExtension(),

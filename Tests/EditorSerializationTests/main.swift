@@ -38,6 +38,10 @@ let schema: Schema = {
     let marks: [(String, MarkSpec)] = [
         ("bold", MarkSpec()), ("italic", MarkSpec()), ("strike", MarkSpec()), ("highlight", MarkSpec()),
         ("underline", MarkSpec()),
+        ("subscript", MarkSpec(excludes: "subscript superscript")),
+        ("superscript", MarkSpec(excludes: "subscript superscript")),
+        ("textColor", MarkSpec(attrs: ["color": AttributeSpec(default: .null)])),
+        ("backgroundColor", MarkSpec(attrs: ["color": AttributeSpec(default: .null)])),
         ("code", MarkSpec(excludes: "_")),
         ("link", MarkSpec(attrs: ["href": AttributeSpec(), "title": AttributeSpec(default: .null)], inclusive: false)),
     ]
@@ -115,6 +119,36 @@ test("HTML underline round-trip (<u>)") {
     let html = HTMLSerializer.serialize(d)
     try expect(html.contains("<u>u</u>"), "got: \(html)")
     try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+}
+
+test("HTML subscript/superscript round-trip (<sub>/<sup>)") {
+    let d = doc(p(t("H"), schema.text("2", [schema.mark("subscript")]), t("O, e=mc"),
+                  schema.text("2", [schema.mark("superscript")])))
+    let html = HTMLSerializer.serialize(d)
+    try expect(html.contains("<sub>2</sub>"), "got: \(html)")
+    try expect(html.contains("<sup>2</sup>"), "got: \(html)")
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+}
+
+test("HTML textColor round-trip (span style color)") {
+    let d = doc(p(t("a "), schema.text("red", [schema.mark("textColor", ["color": .string("#ff0000")])])))
+    let html = HTMLSerializer.serialize(d)
+    try expect(html.contains("style=\"color:#ff0000\""), "got: \(html)")
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+}
+
+test("HTML backgroundColor round-trip (span style background-color)") {
+    let d = doc(p(schema.text("hi", [schema.mark("backgroundColor", ["color": .string("yellow")])])))
+    let html = HTMLSerializer.serialize(d)
+    try expect(html.contains("style=\"background-color:yellow\""), "got: \(html)")
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+}
+
+test("HTML color: 'color' style does not match 'background-color'") {
+    // Parsing a background-color span must NOT also apply a textColor mark.
+    let back = try HTMLParser.parse("<p><span style=\"background-color: blue\">x</span></p>", schema: schema)
+    let expected = doc(p(schema.text("x", [schema.mark("backgroundColor", ["color": .string("blue")])])))
+    try expectEqual(back, expected)
 }
 
 test("HTML mention round-trip (span data-mention)") {
