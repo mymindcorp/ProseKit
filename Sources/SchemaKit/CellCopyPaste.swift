@@ -223,17 +223,21 @@ public func insertCells(_ state: EditorState, _ dispatch: (Transaction) -> Void,
     let right = left + cells.width, bottom = top + cells.height
     let tr = state.tr
     var mapFrom = 0
-    func recomp() {
+    // Re-fetch the table after a structural step. Returns false (so the caller
+    // bails, dispatching what's done) if the table node vanished — otherwise the
+    // `table!` uses below would crash on a malformed table/position.
+    func recomp() -> Bool {
         table = tableStart != 0 ? tr.doc.nodeAt(tableStart - 1) : tr.doc
-        guard table != nil else { return }
-        map = TableMap.get(table!)
+        guard let t = table else { return false }
+        map = TableMap.get(t)
         mapFrom = tr.mapping.maps.count
+        return true
     }
-    if growTable(tr, map, table!, tableStart, right, bottom, mapFrom) { recomp() }
-    if isolateHorizontal(tr, map, table!, tableStart, left, right, top, mapFrom) { recomp() }
-    if isolateHorizontal(tr, map, table!, tableStart, left, right, bottom, mapFrom) { recomp() }
-    if isolateVertical(tr, map, table!, tableStart, top, bottom, left, mapFrom) { recomp() }
-    if isolateVertical(tr, map, table!, tableStart, top, bottom, right, mapFrom) { recomp() }
+    if growTable(tr, map, table!, tableStart, right, bottom, mapFrom), !recomp() { dispatch(tr); return }
+    if isolateHorizontal(tr, map, table!, tableStart, left, right, top, mapFrom), !recomp() { dispatch(tr); return }
+    if isolateHorizontal(tr, map, table!, tableStart, left, right, bottom, mapFrom), !recomp() { dispatch(tr); return }
+    if isolateVertical(tr, map, table!, tableStart, top, bottom, left, mapFrom), !recomp() { dispatch(tr); return }
+    if isolateVertical(tr, map, table!, tableStart, top, bottom, right, mapFrom), !recomp() { dispatch(tr); return }
     for row in top..<bottom {
         let from = map.positionAt(row, left, table!)
         let to = map.positionAt(row, right, table!)
@@ -241,7 +245,7 @@ public func insertCells(_ state: EditorState, _ dispatch: (Transaction) -> Void,
                             tr.mapping.slice(mapFrom).map(to + tableStart),
                             Slice(content: cells.rows[row - top], openStart: 0, openEnd: 0))
     }
-    recomp()
+    guard recomp() else { dispatch(tr); return }
     tr.setSelection(CellSelection(tr.doc.resolve(tableStart + map.positionAt(top, left, table!)),
                                   tr.doc.resolve(tableStart + map.positionAt(bottom - 1, right - 1, table!))))
     dispatch(tr)

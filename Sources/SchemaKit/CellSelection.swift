@@ -242,9 +242,13 @@ public func normalizeSelection(_ state: EditorState, _ tr0: Transaction?, _ allo
             normalize = CellSelection.rowSelection(cell, cell)
         } else if !allowTableNodeSelection {
             let map = TableMap.get(ns.node)
-            let start = ns.from + 1
-            let lastCell = start + map.map[map.width * map.height - 1]
-            normalize = CellSelection.create(doc, start + 1, lastCell)
+            // A well-formed table always has ≥1 cell; guard a degenerate (empty)
+            // map so `width * height - 1` can't index out of bounds.
+            if !map.map.isEmpty {
+                let start = ns.from + 1
+                let lastCell = start + map.map[map.width * map.height - 1]
+                normalize = CellSelection.create(doc, start + 1, lastCell)
+            }
         }
     }
     if let normalize {

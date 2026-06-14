@@ -117,17 +117,23 @@ public func handleDecorations(_ state: EditorState, _ cell: Int) -> DecorationSe
 /// Set the width of the column ending at `cell`'s right edge: writes `width`
 /// into the right `colwidth` slot of every cell spanning that column.
 public func updateColumnWidth(_ tr: Transaction, _ cell: Int, _ width: Int) {
+    // `cell` is supplied by the UI drag handler and may be stale if the document
+    // changed mid-drag; guard like `handleDecorations` rather than force-unwrap.
+    guard cell >= 0, cell <= tr.doc.content.size else { return }
     let resolvedCell = tr.doc.resolve(cell)
+    guard pointsAtCell(resolvedCell), resolvedCell.depth >= 1,
+          let cellAfter = resolvedCell.nodeAfter else { return }
     let table = resolvedCell.node(-1)
+    guard tableRole(table) == "table" else { return }
     let map = TableMap.get(table)
     let start = resolvedCell.start(-1)
-    let col = map.colCount(resolvedCell.pos - start) + cellColspan(resolvedCell.nodeAfter!) - 1
+    let col = map.colCount(resolvedCell.pos - start) + cellColspan(cellAfter) - 1
     for row in 0..<map.height {
         let mapIndex = row * map.width + col
         // Rowspanning cell that has already been handled.
         if row > 0, map.map[mapIndex] == map.map[mapIndex - map.width] { continue }
         let pos = map.map[mapIndex]
-        let cellNode = table.nodeAt(pos)!
+        guard let cellNode = table.nodeAt(pos) else { continue }
         let colspan = cellColspan(cellNode)
         let index = colspan == 1 ? 0 : col - map.colCount(pos)
         if let colwidth = cellColwidth(cellNode), colwidth[index] == width { continue }
