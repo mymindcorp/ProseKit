@@ -45,6 +45,13 @@ open class EditorTextView: UIView, UIKeyInput {
     private var hoveredBlockIndex: Int?
     private var usesPointer = false
 
+    /// When false, the view is read-only: text input, the caret/keyboard, drag &
+    /// resize handles, drops, and editing menu actions are all suppressed —
+    /// selection, copy, select-all, and find still work. Defaults to true.
+    public var isEditable: Bool = true {
+        didSet { if oldValue != isEditable { installTextInteraction(); setNeedsDisplay() } }
+    }
+
     /// When true (the default), each block image shows a resize handle at its
     /// bottom-right corner; dragging it sets the image's `width` attribute.
     public var imageResizingEnabled = true { didSet { setNeedsDisplay() } }
@@ -55,6 +62,8 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Desktop hover: the block image under the pointer, whose resize handle is
     /// revealed. nil on touch, where every image's handle shows.
     private var hoveredImagePos: Int?
+    /// Whether the active color picker targets background (vs foreground) color.
+    private var colorPickerTargetsBackground = false
 
     /// Supplies the view used for each task-item checkbox. When nil, the editor
     /// uses `DefaultTaskCheckboxView` (circle + check, themed, animated). The
@@ -106,11 +115,9 @@ open class EditorTextView: UIView, UIKeyInput {
 
         // Native text interaction: caret placement, the loupe/magnifier,
         // selection handles, and the edit menu — all driven by our UITextInput
-        // conformance.
-        let interaction = UITextInteraction(for: .editable)
-        interaction.textInput = self
-        addInteraction(interaction)
-        textInteraction = interaction
+        // conformance. Editable vs read-only (.nonEditable: selection without a
+        // caret/keyboard) is chosen by `installTextInteraction`.
+        installTextInteraction()
 
         // Our own gestures handle only what UITextInteraction doesn't: toggling
         // task-list checkboxes and dragging table column borders. Each is gated
@@ -530,7 +537,7 @@ open class EditorTextView: UIView, UIKeyInput {
         }
 
         // Block drag handles + drop indicator (reordering).
-        if blockReorderingEnabled {
+        if blockReorderingEnabled, isEditable {
             let entries = l.entries
             for i in entries.indices {
                 guard blockHandleVisible(i), let handle = blockHandleRect(forEntryAt: i), onScreen(handle) else { continue }
@@ -553,7 +560,7 @@ open class EditorTextView: UIView, UIKeyInput {
         }
 
         // Image resize handles: a grip at each block image's bottom-right corner.
-        if imageResizingEnabled {
+        if imageResizingEnabled, isEditable {
             for (pos, rect) in l.imageRects {
                 let handle = imageResizeHandleRect(for: rect)
                 guard imageHandleVisible(pos), onScreen(handle) else { continue }
@@ -879,10 +886,28 @@ open class EditorTextView: UIView, UIKeyInput {
 
     open override var canBecomeFirstResponder: Bool { true }
 
+    /// (Re)install the native text interaction for the current `isEditable` state:
+    /// `.editable` gives a caret + keyboard; `.nonEditable` allows selection/copy
+    /// without either. Called at init and whenever `isEditable` flips.
+    private func installTextInteraction() {
+        if let old = textInteraction { removeInteraction(old) }
+        let interaction = UITextInteraction(for: isEditable ? .editable : .nonEditable)
+        interaction.textInput = self
+        addInteraction(interaction)
+        textInteraction = interaction
+    }
+
+    /// Called when the editor gains keyboard focus (becomes first responder).
+    public var onFocus: (() -> Void)?
+    /// Called when the editor loses keyboard focus (resigns first responder).
+    public var onBlur: (() -> Void)?
+
     @discardableResult
     open override func becomeFirstResponder() -> Bool {
+        let wasFirstResponder = isFirstResponder
         let became = super.becomeFirstResponder()
         if became { startBlink(); updateCaret() }
+        if became, !wasFirstResponder { onFocus?() }
         return became
     }
 
@@ -891,7 +916,10 @@ open class EditorTextView: UIView, UIKeyInput {
         stopBlink()
         stopKeyRepeat()
         caretLayer.path = nil
-        return super.resignFirstResponder()
+        let wasFirstResponder = isFirstResponder
+        let resigned = super.resignFirstResponder()
+        if wasFirstResponder, !isFirstResponder { onBlur?() }
+        return resigned
     }
 
     // MARK: - Gestures
@@ -1205,7 +1233,7 @@ open class EditorTextView: UIView, UIKeyInput {
     /// The top-level entry whose handle contains `viewPoint` (view coords), when
     /// reordering is on.
     func blockHandleHit(at viewPoint: CGPoint) -> Int? {
-        guard blockReorderingEnabled else { return nil }
+        guard blockReorderingEnabled, isEditable else { return nil }
         let docP = docPoint(viewPoint)
         for i in ensureLayout().entries.indices
         where blockHandleRect(forEntryAt: i)?.insetBy(dx: -6, dy: -4).contains(docP) == true {
@@ -1279,7 +1307,7 @@ open class EditorTextView: UIView, UIKeyInput {
 
     /// The image position + drawn rect whose resize handle contains `viewPoint`.
     func imageResizeHit(at viewPoint: CGPoint) -> (pos: Int, rect: CGRect)? {
-        guard imageResizingEnabled else { return nil }
+        guard imageResizingEnabled, isEditable else { return nil }
         let p = docPoint(viewPoint)
         for (pos, rect) in ensureLayout().imageRects
         where imageResizeHandleRect(for: rect).insetBy(dx: -8, dy: -8).contains(p) {
@@ -1553,6 +1581,7 @@ open class EditorTextView: UIView, UIKeyInput {
     public var hasText: Bool { editor.doc.content.size > 0 }
 
     public func insertText(_ text: String) {
+        guard isEditable else { return }
         // This is a UIKit-initiated edit: suppress the input-delegate echo so a
         // mid-stream selectionDidChange doesn't desync fast typing.
         applyingTextInput = true
@@ -1595,6 +1624,7 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     public func deleteBackward() {
+        guard isEditable else { return }
         applyingTextInput = true
         defer { applyingTextInput = false }
         markedRange = nil // a delete ends any composition
@@ -1605,9 +1635,12 @@ open class EditorTextView: UIView, UIKeyInput {
 
     open override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         switch action {
-        case #selector(copy(_:)), #selector(cut(_:)):
+        case #selector(copy(_:)):
             return !editor.state.selection.empty
+        case #selector(cut(_:)):
+            return isEditable && !editor.state.selection.empty
         case #selector(paste(_:)):
+            guard isEditable else { return false }
             let pb = UIPasteboard.general
             return pb.hasStrings || pb.contains(pasteboardTypes: [
                 "public.html", "com.apple.flat-rtfd", "public.rtfd", "public.rtf",
@@ -1616,14 +1649,15 @@ open class EditorTextView: UIView, UIKeyInput {
         case #selector(pasteAndMatchStyle(_:)):
             // Match-style only reads the plain-text flavor; offering it for
             // rich-only pasteboards would be an enabled item that does nothing.
-            return UIPasteboard.general.hasStrings
+            return isEditable && UIPasteboard.general.hasStrings
         case #selector(selectAll(_:)):
             return editor.doc.content.size > 0
         case #selector(formatBold(_:)), #selector(formatItalic(_:)), #selector(formatUnderline(_:)),
-             #selector(toggleHighlightAction(_:)):
-            return !editor.state.selection.empty
+             #selector(toggleHighlightAction(_:)), #selector(formatSubscript(_:)), #selector(formatSuperscript(_:)),
+             #selector(formatTextColor(_:)), #selector(formatBackgroundColor(_:)):
+            return isEditable && !editor.state.selection.empty
         case #selector(addOrEditLink(_:)):
-            return canEditLink
+            return isEditable && canEditLink
         default:
             return super.canPerformAction(action, withSender: sender)
         }
@@ -1646,6 +1680,41 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Highlight the selection (right-click / Format menu / Mod-Shift-H).
     @objc func toggleHighlightAction(_ sender: Any?) { _ = editor.run("toggleHighlight") }
 
+    @objc func formatSubscript(_ sender: Any?) { _ = editor.run("toggleSubscript") }
+    @objc func formatSuperscript(_ sender: Any?) { _ = editor.run("toggleSuperscript") }
+
+    /// Pick a foreground color for the selection (presents a system color picker).
+    @objc func formatTextColor(_ sender: Any?) { presentColorPicker(background: false) }
+    /// Pick a background color for the selection.
+    @objc func formatBackgroundColor(_ sender: Any?) { presentColorPicker(background: true) }
+
+    private func presentColorPicker(background: Bool) {
+        guard !editor.state.selection.empty, let vc = nearestViewController() else { return }
+        colorPickerTargetsBackground = background
+        let picker = UIColorPickerViewController()
+        picker.delegate = self
+        picker.title = background ? "Background Color" : "Text Color"
+        vc.present(picker, animated: true)
+    }
+
+    private func nearestViewController() -> UIViewController? {
+        var responder: UIResponder? = self
+        while let r = responder {
+            if let vc = r as? UIViewController { return vc }
+            responder = r.next
+        }
+        return window?.rootViewController
+    }
+
+    /// A UIColor as a `#rrggbb` CSS string (what the color marks store, so it
+    /// round-trips through HTML/serialization).
+    static func cssHex(_ color: UIColor) -> String {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        func byte(_ v: CGFloat) -> Int { Int((max(0, min(1, v)) * 255).rounded()) }
+        return String(format: "#%02x%02x%02x", byte(r), byte(g), byte(b))
+    }
+
     /// The supported formatting actions, for a host to build its menu from.
     /// Each routes through the responder chain to the focused editor.
     public static let formatMenuActions: [(title: String, action: Selector)] = [
@@ -1653,15 +1722,21 @@ open class EditorTextView: UIView, UIKeyInput {
         ("Italic", #selector(formatItalic(_:))),
         ("Underline", #selector(formatUnderline(_:))),
         ("Highlight", #selector(toggleHighlightAction(_:))),
+        ("Subscript", #selector(formatSubscript(_:))),
+        ("Superscript", #selector(formatSuperscript(_:))),
+        ("Text Color…", #selector(formatTextColor(_:))),
+        ("Background Color…", #selector(formatBackgroundColor(_:))),
         ("Add Link…", #selector(addOrEditLink(_:))),
     ]
 
     open override func cut(_ sender: Any?) {
+        guard isEditable else { return }
         writeSelectionToPasteboard()
         deleteCurrentSelection()
     }
 
     open override func paste(_ sender: Any?) {
+        guard isEditable else { return }
         let pb = UIPasteboard.general
         // Pasting a bare URL over selected text links the selection instead of
         // replacing it (the common "select text, paste link" gesture).
@@ -2020,15 +2095,19 @@ open class EditorTextView: UIView, UIKeyInput {
         case .keyboardEnd:
             moveHorizontal(.forward, by: .lineBoundary, extend: extend); return true
         case .keyboardDeleteOrBackspace:
+            guard isEditable else { return false }
             deleteInDirection(.backward, by: granularity); return true
         case .keyboardDeleteForward:
+            guard isEditable else { return false }
             deleteInDirection(.forward, by: mods.contains(.alternate) ? .word : .character); return true
         case .keyboardReturnOrEnter:
+            guard isEditable else { return false }
             // Respect modifiers (Shift-Enter = hard break, Mod-Enter = exit code).
             let enter = modifierPrefix(mods) + "Enter"
             if runKey(enter) { return true }
             return runKey("Enter")
         case .keyboardTab:
+            guard isEditable else { return false }
             // The Tab key produces "\t"; map it to the named "Tab" binding.
             return runKey(mods.contains(.shift) ? "Shift-Tab" : "Tab")
         case .keyboardEscape:
@@ -2036,6 +2115,9 @@ open class EditorTextView: UIView, UIKeyInput {
             // Escape has no characters, so map it to the named binding.
             return runKey("Escape")
         default:
+            // Editor key-bindings (formatting, lists, …) mutate the document, so
+            // they're inert when read-only. Copy/select-all/find don't route here.
+            guard isEditable else { return false }
             let stroke = keyStroke(from: key)
             if stroke == "Mod-k" { openLinkEditor(); return true }
             if !stroke.isEmpty { return runKey(stroke) }
@@ -2268,7 +2350,8 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
     }
 
     public func dropInteraction(_ interaction: UIDropInteraction, canHandle session: any UIDropSession) -> Bool {
-        session.canLoadObjects(ofClass: NSString.self) || session.canLoadObjects(ofClass: UIImage.self)
+        guard isEditable else { return false } // read-only: no drops into the document
+        return session.canLoadObjects(ofClass: NSString.self) || session.canLoadObjects(ofClass: UIImage.self)
             || imageItemProvider(in: session) != nil
             || (session.localDragSession != nil && draggingImage != nil)
     }
@@ -2429,6 +2512,17 @@ extension EditorTextView: UIGestureRecognizerDelegate {
     /// Coexist with UITextInteraction's own recognizers.
     public func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         true
+    }
+}
+
+extension EditorTextView: UIColorPickerViewControllerDelegate {
+    // Apply once, on dismiss, so a live drag through the picker doesn't flood the
+    // undo history (the selection persists in the model while the picker is up).
+    public func colorPickerViewControllerDidFinish(_ viewController: UIColorPickerViewController) {
+        let css = Self.cssHex(viewController.selectedColor)
+        if colorPickerTargetsBackground { _ = editor.setBackgroundColor(css) }
+        else { _ = editor.setTextColor(css) }
+        becomeFirstResponder()
     }
 }
 

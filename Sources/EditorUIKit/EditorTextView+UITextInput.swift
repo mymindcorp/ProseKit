@@ -105,7 +105,7 @@ extension EditorTextView: UITextInput {
     }
 
     public func replace(_ range: UITextRange, withText text: String) {
-        guard let r = range as? DocTextRange else { return }
+        guard isEditable, let r = range as? DocTextRange else { return }
         applyingTextInput = true
         defer { applyingTextInput = false }
         let from = clamp(r.from), to = clamp(r.to)
@@ -123,6 +123,7 @@ extension EditorTextView: UITextInput {
     // MARK: Marked (IME / composing) text
 
     public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+        guard isEditable else { return }
         let text = markedText ?? ""
         let sel = editor.state.selection
         let range = markedRange ?? (sel.from, sel.to)
