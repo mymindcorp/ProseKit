@@ -69,6 +69,17 @@ func registerPMColumnResizingTests() {
         try expectEqual(cellAt(table, row: 0, col: 1).attrs["colwidth"], .null)
     }
 
+    test("PM columnresizing: updateColumnWidth ignores a non-cell position") {
+        // A stale/invalid handle position (not pointing at a cell) must be a safe
+        // no-op, not a crash (regression for the missing pointsAtCell guard).
+        let d = doc(table(tr(cEmpty(), cEmpty())))
+        let state = resizeState(d)
+        let tr = state.tr
+        updateColumnWidth(tr, 0, 120)                       // before the table
+        updateColumnWidth(tr, tr.doc.content.size + 50, 120) // out of range
+        try expect(!tr.docChanged)
+    }
+
     test("PM columnresizing: updateColumnWidth sets the right slot of a colspan cell") {
         // Row 0: one cell spanning both columns; row 1: two cells.
         let d = doc(table(tr(cell(2, 1)), tr(cEmpty(), cEmpty())))

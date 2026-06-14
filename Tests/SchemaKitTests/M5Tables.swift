@@ -150,6 +150,31 @@ func registerM5Tests() {
         try expect(!editor.run(goToNextCell(1)))
     }
 
+    test("table: Tab past the last cell appends a row and lands in its first cell") {
+        let editor = try makeFullEditor()
+        _ = editor.insertTable(rows: 2, cols: 2, withHeaderRow: false)
+        // Tab forward into the very last cell (bottom-right).
+        cursorInFirstCell(editor)
+        try expect(editor.run(goToNextCellOrAddRow)) // (0,1)
+        try expect(editor.run(goToNextCellOrAddRow)) // (1,0)
+        try expect(editor.run(goToNextCellOrAddRow)) // (1,1) — last cell
+        try expectEqual(count(editor.doc, "tableRow"), 2)
+        // Tab off the end grows the table and keeps the caret inside it.
+        try expect(editor.run(goToNextCellOrAddRow))
+        try expectEqual(count(editor.doc, "tableRow"), 3)
+        try expectEqual(count(editor.doc, "tableCell"), 6) // 3 rows × 2 cols
+        try expect(editor.isActive(node: "tableCell"))
+        // The caret lands in the first cell of the new (last) row.
+        var cellPos: [Int] = []
+        editor.doc.descendants { node, pos, _, _ in
+            if node.type.name == "tableCell" { cellPos.append(pos) }
+            return true
+        }
+        let lastRowFirstCell = cellPos[4] // index 4 = first cell of the 3rd row
+        let head = editor.state.selection.head
+        try expect(head > lastRowFirstCell && head <= lastRowFirstCell + 3)
+    }
+
     test("cellSelection: spans a rectangle of cells") {
         let editor = try makeFullEditor()
         _ = editor.insertTable(rows: 2, cols: 2, withHeaderRow: false)

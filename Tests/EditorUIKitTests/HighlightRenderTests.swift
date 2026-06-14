@@ -69,6 +69,32 @@ final class HighlightRenderTests: XCTestCase {
                        "no yellow background without a highlight")
     }
 
+    private func markView(_ markName: String, _ color: String) throws -> EditorTextView {
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        let mark = s.marks[markName]!.create(["color": .string(color)])
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            try s.node("paragraph", [:], content: Fragment.from([s.text("COLORED", [mark])])),
+        ])))
+        let v = EditorTextView(editor: editor)
+        v.frame = CGRect(x: 0, y: 0, width: 320, height: 120)
+        v.backgroundColor = .white
+        v.layoutIfNeeded()
+        return v
+    }
+
+    func testTextColorRendersForegroundColor() throws {
+        let image = render(try markView("textColor", "#ff0000"))
+        XCTAssertTrue(hasPixel(image) { r, g, b in r > 180 && g < 90 && b < 90 },
+                      "text drawn in its red foreground color")
+    }
+
+    func testBackgroundColorPaintsBehindText() throws {
+        let image = render(try markView("backgroundColor", "#00ff00"))
+        XCTAssertTrue(hasPixel(image) { r, g, b in g > 180 && r < 120 && b < 120 },
+                      "a green background painted behind the run")
+    }
+
     private func codeView(language: String?) throws -> EditorTextView {
         let editor = try Editor(extensions: fullKit())
         let s = editor.schema
