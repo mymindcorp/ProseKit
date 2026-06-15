@@ -1115,7 +1115,11 @@ open class EditorTextView: UIView, UIKeyInput {
 
     /// Flip a task item's `checked` attribute (the checkbox view's toggle
     /// action). The new state flows back to the view via `syncCheckboxViews`.
+    /// Test hook: drive a checkbox toggle by document position.
+    func toggleCheckboxForTesting(at pos: Int) { toggleCheckbox(at: pos) }
+
     private func toggleCheckbox(at pos: Int) {
+        guard isEditable else { return }
         if !isFirstResponder { becomeFirstResponder() }
         let checked = editor.doc.nodeAt(pos)?.attrs["checked"]?.boolValue ?? false
         if let tr = try? editor.state.tr.setNodeAttribute(pos, "checked", .bool(!checked)) {
@@ -1516,6 +1520,7 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     func columnBorderHit(at point: CGPoint) -> (table: DocumentLayout.TableInfo, leftColumn: Int)? {
+        guard isEditable else { return nil } // read-only: no column resizing
         let tolerance: CGFloat = 6
         for table in ensureLayout().tables where point.y >= table.top && point.y <= table.bottom {
             // Internal borders only (resizing the outer edges would change the
@@ -1886,6 +1891,7 @@ open class EditorTextView: UIView, UIKeyInput {
 
     /// Paste the pasteboard's text as plain text, discarding any rich formatting.
     open override func pasteAndMatchStyle(_ sender: Any?) {
+        guard isEditable else { return }
         if let string = UIPasteboard.general.string { pastePlainText(string) }
     }
 
@@ -2034,11 +2040,17 @@ open class EditorTextView: UIView, UIKeyInput {
         // Initial delay, then a steady repeat — the usual key-repeat cadence.
         // (If the OS also repeats presses, each repeat resets this timer, so the
         // move still happens once per event and never double-fires.)
+        // Timers scheduled on the main run loop fire on the main actor, so it's
+        // safe to assume isolation to touch the main-actor state they drive.
         keyRepeatTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: false) { [weak self] _ in
-            guard let self else { return }
-            self.keyRepeatTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-                guard let self, let event = self.keyRepeatEvent else { return }
-                _ = self.handle(event)
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.keyRepeatTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self, let event = self.keyRepeatEvent else { return }
+                        _ = self.handle(event)
+                    }
+                }
             }
         }
     }
