@@ -219,6 +219,19 @@ public final class Editor {
     public var doc: Node { state.doc }
     public func json() -> [String: AttributeValue] { state.doc.toJSON() }
 
+    /// Whether the document is effectively empty — a single empty textblock.
+    public var isEmpty: Bool {
+        state.doc.childCount == 1
+            && state.doc.firstChild?.isTextblock == true
+            && state.doc.firstChild?.content.size == 0
+    }
+
+    /// Reset the document to a single empty default block (not undoable).
+    public func clearContent() {
+        guard let empty = schema.topNodeType.createAndFill() else { return }
+        setContent(empty)
+    }
+
     /// The document serialized to HTML.
     public func getHTML() -> String { HTMLSerializer.serialize(state.doc) }
 

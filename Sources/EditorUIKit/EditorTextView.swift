@@ -902,6 +902,16 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Called when the editor loses keyboard focus (resigns first responder).
     public var onBlur: (() -> Void)?
 
+    /// Whether the editor currently has keyboard focus. Redefines UIView's
+    /// focus-engine `isFocused` to mean "is first responder" — the meaningful
+    /// notion of focus for a text editor.
+    open override var isFocused: Bool { isFirstResponder }
+
+    /// Give the editor keyboard focus (become first responder). Returns whether
+    /// focus was taken.
+    @discardableResult
+    public func focus() -> Bool { becomeFirstResponder() }
+
     @discardableResult
     open override func becomeFirstResponder() -> Bool {
         let wasFirstResponder = isFirstResponder
