@@ -18,7 +18,9 @@ let package = Package(
         .library(name: "SchemaKit", targets: ["SchemaKit"]),
         .library(name: "EditorSerialization", targets: ["EditorSerialization"]),
         .library(name: "EditorCollab", targets: ["EditorCollab"]),
+        .library(name: "EditorChangeset", targets: ["EditorChangeset"]),
         .library(name: "EditorUIKit", targets: ["EditorUIKit"]),
+        .library(name: "EditorSyntax", targets: ["EditorSyntax"]),
     ],
     targets: [
         // M0 — the document object model (prosemirror-model).
@@ -35,16 +37,21 @@ let package = Package(
         // M4 — the Tiptap-style extension layer + Editor facade.
         .target(name: "SchemaKit", dependencies: [
             "EditorStateKit", "EditorCommands", "EditorHistory", "EditorKeymap", "EditorInputRules",
+            "EditorChangeset", "EditorSerialization",
         ]),
         // M6 — JSON / HTML / Markdown serialization.
         .target(name: "EditorSerialization", dependencies: ["DocumentModel"]),
         // M10 — collaborative editing (prosemirror-collab).
         .target(name: "EditorCollab", dependencies: ["EditorStateKit"]),
+        .target(name: "EditorChangeset", dependencies: ["DocumentModel", "DocumentTransform"]),
         // M9 — the iOS (UIKit) renderer + editor host. Source is guarded by
         // `#if canImport(UIKit)` so the macOS build stays green.
         .target(name: "EditorUIKit", dependencies: [
             "SchemaKit", "EditorCommands", "EditorKeymap", "EditorStateKit", "DocumentModel", "DocumentTransform", "EditorSerialization",
         ]),
+        // Optional, isolated syntax highlighter for the EditorUIKit code-block
+        // hook (JavaScript + CSS, with content-based language detection).
+        .target(name: "EditorSyntax", dependencies: ["EditorUIKit"]),
 
         // Minimal test harness (no XCTest/swift-testing in this CLT-only env).
         .target(name: "TestHarness"),
@@ -68,7 +75,7 @@ let package = Package(
             path: "Tests/EditorCommandsTests"),
         .executableTarget(
             name: "SchemaKitTests",
-            dependencies: ["SchemaKit", "TestHarness"],
+            dependencies: ["SchemaKit", "EditorHistory", "TestHarness"],
             path: "Tests/SchemaKitTests",
             resources: [.copy("highlight-doc.json")]),
         .executableTarget(
@@ -77,13 +84,23 @@ let package = Package(
             path: "Tests/EditorSerializationTests"),
         .executableTarget(
             name: "EditorCollabTests",
-            dependencies: ["EditorCollab", "TestHarness"],
+            dependencies: ["EditorCollab", "EditorHistory", "TestHarness"],
             path: "Tests/EditorCollabTests"),
+        .executableTarget(
+            name: "EditorChangesetTests",
+            dependencies: ["EditorChangeset", "TestHarness"],
+            path: "Tests/EditorChangesetTests"),
         // iOS-only XCTest target for the renderer (run via xcodebuild on a
         // simulator). Source is #if canImport(UIKit) so it's empty on macOS.
         .testTarget(
             name: "EditorUIKitTests",
-            dependencies: ["EditorUIKit", "SchemaKit"],
+            dependencies: ["EditorUIKit", "SchemaKit", "EditorSyntax"],
             path: "Tests/EditorUIKitTests"),
     ]
 )
+
+// Treat warnings as errors across every target (first-class Swift 6.2 setting —
+// not `.unsafeFlags`, so the package stays usable as a dependency).
+for target in package.targets {
+    target.swiftSettings = (target.swiftSettings ?? []) + [.treatAllWarnings(as: .error)]
+}
