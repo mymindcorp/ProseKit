@@ -745,11 +745,16 @@ final class DocumentLayout {
             let attrs = node.type.name == "codeBlock"
                 ? [NSAttributedString.Key.font: theme.monoFont, .foregroundColor: theme.textColor]
                 : theme.attributes(for: marks, baseFont: blockFont)
-            // Highlight marks paint a background behind the run (drawn separately
-            // since CoreText ignores `.backgroundColor`).
-            if let mark = marks.first(where: { $0.type.name == "highlight" }), !text.isEmpty {
-                highlights.append((from: docPos, to: docPos + text.count,
-                                   color: theme.highlightColor(mark.attrs["color"]?.stringValue)))
+            // Highlight and backgroundColor marks paint a background behind the
+            // run (drawn separately since CoreText ignores `.backgroundColor`).
+            if !text.isEmpty {
+                if let mark = marks.first(where: { $0.type.name == "highlight" }) {
+                    highlights.append((from: docPos, to: docPos + text.count,
+                                       color: theme.highlightColor(mark.attrs["color"]?.stringValue)))
+                } else if let mark = marks.first(where: { $0.type.name == "backgroundColor" }),
+                          let color = TextTheme.parseColor(mark.attrs["color"]?.stringValue) {
+                    highlights.append((from: docPos, to: docPos + text.count, color: color))
+                }
             }
             let attrStart = result.length
             result.append(NSAttributedString(string: text, attributes: attrs))
