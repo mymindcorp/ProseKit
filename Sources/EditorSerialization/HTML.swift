@@ -378,15 +378,19 @@ public enum HTMLParser {
     // Parse inline content (text + marks + inline atoms) within a block.
     private static func parseInline(_ tokens: [Token], _ schema: Schema, _ config: HTMLConfig) -> [Node] {
         var result: [Node] = []
-        var markStack: [Mark] = []
-        // Count of color marks each open <span> pushed, popped on its close.
-        var spanStack: [Int] = []
+        // Open mark scopes, each tagged with the HTML tag that opened it. A close
+        // removes the *nearest matching* scope rather than blindly popping the
+        // top, so crossed or stray tags in foreign clipboard HTML (e.g.
+        // `<span style=color><strong>a</span>b</strong>`) can't pop — and corrupt
+        // — a mark they didn't open. The active mark set is the open scopes' marks.
+        var openMarks: [(tag: String, marks: [Mark])] = []
+        func currentMarks() -> [Mark] { openMarks.flatMap { $0.marks } }
         var i = 0
         while i < tokens.count {
             switch tokens[i] {
             case let .text(t):
                 let text = decodeEntities(t)
-                if !text.isEmpty { result.append(schema.text(text, markStack)) }
+                if !text.isEmpty { result.append(schema.text(text, currentMarks())) }
                 i += 1
             case let .open(tag, attrs, selfClosing):
                 if tag == "br", let br = try? schema.node("hardBreak") { result.append(br); i += 1; continue }
@@ -399,19 +403,19 @@ public enum HTMLParser {
                         result.append(m); i = close + 1; continue
                     }
                 }
-                // A styled <span> contributes textColor / backgroundColor marks.
+                // A styled <span> opens a scope contributing textColor / backgroundColor.
                 if tag == "span" {
-                    var pushed = 0
-                    if !selfClosing, let style = attrs["style"] {
-                        if let c = styleValue(style, "background-color"), let mt = schema.marks["backgroundColor"] {
-                            markStack.append(mt.create(["color": .string(c)])); pushed += 1
+                    if !selfClosing {
+                        var marks: [Mark] = []
+                        if let style = attrs["style"] {
+                            if let c = styleValue(style, "background-color"), let mt = schema.marks["backgroundColor"] {
+                                marks.append(mt.create(["color": .string(c)]))
+                            }
+                            if let c = styleValue(style, "color"), let mt = schema.marks["textColor"] {
+                                marks.append(mt.create(["color": .string(c)]))
+                            }
                         }
-                        if let c = styleValue(style, "color"), let mt = schema.marks["textColor"] {
-                            markStack.append(mt.create(["color": .string(c)])); pushed += 1
-                        }
-                        spanStack.append(pushed)
-                    } else if !selfClosing {
-                        spanStack.append(0)
+                        openMarks.append((tag: "span", marks: marks))
                     }
                     i += 1; continue
                 }
@@ -423,22 +427,18 @@ public enum HTMLParser {
                         result.append(wl); i = close + 1; continue
                     }
                 }
-                if let markName = config.tagToMark[tag], let markType = schema.marks[markName] {
+                // A self-closing mark tag opens no lasting scope.
+                if !selfClosing, let markName = config.tagToMark[tag], let markType = schema.marks[markName] {
                     var attrsDict: Attrs = [:]
                     if markName == "link" { attrsDict["href"] = .string(attrs["href"] ?? "") }
-                    markStack.append(markType.create(attrsDict))
-                }
-                if selfClosing, let markName = config.tagToMark[tag], schema.marks[markName] != nil {
-                    markStack.removeLast()
+                    openMarks.append((tag: tag, marks: [markType.create(attrsDict)]))
                 }
                 i += 1
             case let .close(tag):
-                if tag == "span" {
-                    if let n = spanStack.popLast() {
-                        for _ in 0..<n where !markStack.isEmpty { markStack.removeLast() }
-                    }
-                } else if config.tagToMark[tag] != nil, !markStack.isEmpty {
-                    markStack.removeLast()
+                // Remove the nearest scope opened by this exact tag; a stray or
+                // crossed close (no matching open) is ignored.
+                if let idx = openMarks.lastIndex(where: { $0.tag == tag }) {
+                    openMarks.remove(at: idx)
                 }
                 i += 1
             }
