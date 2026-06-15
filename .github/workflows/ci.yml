@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # macOS-buildable targets (the model/transform/state/commands/serialization
+  # layers) + the headless CLT test suites. `swift build` also enforces the
+  # package's warnings-as-errors setting, so a new warning fails CI here.
+  spm:
+    name: SPM build + CLT suites
+    runs-on: macos-26 # needs Xcode 26 / Swift 6.2 (swift-tools-version: 6.2)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select newest Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+      - run: swift --version
+      - name: Build (warnings-as-errors)
+        run: swift build
+      - name: Run CLT test suites
+        run: |
+          set -e
+          for suite in DocumentModelTests DocumentTransformTests EditorStateKitTests \
+                       EditorCommandsTests SchemaKitTests EditorSerializationTests \
+                       EditorCollabTests EditorChangesetTests; do
+            echo "::group::$suite"
+            swift run "$suite"
+            echo "::endgroup::"
+          done
+
+  # The UIKit renderer/editor (EditorUIKit + EditorSyntax) is `#if canImport(UIKit)`,
+  # so it only compiles for a simulator — run its XCTest target there.
+  ios:
+    name: iOS renderer tests
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select newest Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+      - name: Pick an available iPhone simulator
+        id: sim
+        run: |
+          DEVICE=$(xcrun simctl list devices available | grep -oE 'iPhone [0-9]+[^(]*' | head -1 | xargs)
+          echo "Using simulator: '$DEVICE'"
+          echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
+      - name: Run EditorUIKitTests
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -scheme ProseKit-Package \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
+            -only-testing:EditorUIKitTests \
+            CODE_SIGNING_ALLOWED=NO
+
+  # The example app links the package products — building it (Mac Catalyst, no
+  # signing) catches host-integration breakage the libraries' tests don't.
+  demo:
+    name: Demo builds (Mac Catalyst)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select newest Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+      - name: Build EditorDemo
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -scheme EditorDemo \
+            -destination 'platform=macOS,variant=Mac Catalyst' \
+            -workspace Examples/EditorDemo/EditorDemo.xcodeproj/project.xcworkspace \
+            CODE_SIGNING_ALLOWED=NO
