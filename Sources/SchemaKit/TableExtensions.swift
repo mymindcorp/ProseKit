@@ -26,7 +26,7 @@ public final class TableExtension: NodeExtension {
          "toggleHeaderRow": toggleHeaderRow, "toggleHeaderColumn": toggleHeaderColumn, "toggleHeaderCell": toggleHeaderCell]
     }
     public func keyboardShortcuts(_ ctx: ExtensionContext) -> [String: Command] {
-        ["Tab": goToNextCell(1), "Shift-Tab": goToNextCell(-1),
+        ["Tab": goToNextCellOrAddRow, "Shift-Tab": goToNextCell(-1),
          "ArrowLeft": tableArrow(.horiz, -1), "ArrowRight": tableArrow(.horiz, 1),
          "ArrowUp": tableArrow(.vert, -1), "ArrowDown": tableArrow(.vert, 1),
          "Shift-ArrowLeft": tableShiftArrow(.horiz, -1), "Shift-ArrowRight": tableShiftArrow(.horiz, 1),

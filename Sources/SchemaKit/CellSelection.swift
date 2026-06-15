@@ -71,13 +71,13 @@ public final class CellSelection: Selection {
                     var attrs = cell.attrs
                     if extraLeft > 0 { attrs = removeColSpan(attrs, 0, extraLeft) }
                     if extraRight > 0 { attrs = removeColSpan(attrs, (attrs["colspan"]?.intValue ?? 1) - extraRight, extraRight) }
-                    if cellRect.left < rect.left { cell = (try? cell.type.createAndFill(attrs)) ?? cell }
+                    if cellRect.left < rect.left { cell = cell.type.createAndFill(attrs) ?? cell }
                     else { cell = (try? cell.type.create(attrs, content: cell.content)) ?? cell }
                 }
                 if cellRect.top < rect.top || cellRect.bottom > rect.bottom {
                     var attrs = cell.attrs
                     attrs["rowspan"] = .int(min(cellRect.bottom, rect.bottom) - max(cellRect.top, rect.top))
-                    if cellRect.top < rect.top { cell = (try? cell.type.createAndFill(attrs)) ?? cell }
+                    if cellRect.top < rect.top { cell = cell.type.createAndFill(attrs) ?? cell }
                     else { cell = (try? cell.type.create(attrs, content: cell.content)) ?? cell }
                 }
                 rowContent.append(cell)
