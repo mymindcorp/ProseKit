@@ -144,6 +144,42 @@ test("HTML backgroundColor round-trip (span style background-color)") {
     try expectEqual(try HTMLParser.parse(html, schema: schema), d)
 }
 
+test("HTML crossed close tag doesn't corrupt color marks") {
+    // The stray </strong> must be ignored, not pop the textColor scope.
+    let d = try HTMLParser.parse("<p><span style=\"color:red\">a</strong>b</span>c</p>", schema: schema)
+    try expectEqual(d.textContent, "abc")
+    let tc = schema.marks["textColor"]!
+    try expect(d.rangeHasMark(1, 3, tc), "a and b stay colored despite the stray </strong>")
+    try expect(!d.rangeHasMark(3, 4, tc), "c is not colored")
+}
+
+test("HTML stray close tag is ignored") {
+    let d = try HTMLParser.parse("<p>x</em>y</p>", schema: schema)
+    try expectEqual(d.textContent, "xy")
+    try expect(!d.rangeHasMark(1, 3, schema.marks["italic"]!), "no italic from a stray </em>")
+}
+
+test("HTML crossed bold/italic tags degrade without corruption") {
+    let d = try HTMLParser.parse("<p><strong><em>a</strong>b</em></p>", schema: schema)
+    try expectEqual(d.textContent, "ab")
+    let bold = schema.marks["bold"]!, italic = schema.marks["italic"]!
+    try expect(d.rangeHasMark(1, 2, bold) && d.rangeHasMark(1, 2, italic), "a is bold+italic")
+    try expect(d.rangeHasMark(2, 3, italic), "b keeps italic (em outlives the crossed </strong>)")
+    try expect(!d.rangeHasMark(2, 3, bold), "b is not bold")
+}
+
+test("HTML mismatched close tag leaves the scope open (browser-like)") {
+    // </strong> doesn't match the <b> scope, so bold continues across the block.
+    let d = try HTMLParser.parse("<p><b>a</strong>b</p>", schema: schema)
+    try expectEqual(d.textContent, "ab")
+    try expect(d.rangeHasMark(1, 3, schema.marks["bold"]!), "bold spans a and b")
+}
+
+test("HTML well-nested marks still round-trip after the refactor") {
+    let d = doc(p(t("a"), schema.text("b", [schema.mark("bold"), schema.mark("italic")]), t("c")))
+    try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema), d)
+}
+
 test("HTML color: 'color' style does not match 'background-color'") {
     // Parsing a background-color span must NOT also apply a textColor mark.
     let back = try HTMLParser.parse("<p><span style=\"background-color: blue\">x</span></p>", schema: schema)

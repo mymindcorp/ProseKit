@@ -78,10 +78,60 @@ final class EditableToggleTests: XCTestCase {
         var focused = 0, blurred = 0
         view.onFocus = { focused += 1 }
         view.onBlur = { blurred += 1 }
-        XCTAssertTrue(view.becomeFirstResponder())
+        XCTAssertFalse(view.isFocused)
+        XCTAssertTrue(view.focus())
+        XCTAssertTrue(view.isFocused, "isFocused tracks first-responder state")
         XCTAssertEqual(focused, 1, "onFocus fires when becoming first responder")
         XCTAssertTrue(view.resignFirstResponder())
+        XCTAssertFalse(view.isFocused)
         XCTAssertEqual(blurred, 1, "onBlur fires when resigning")
+    }
+
+    func testReadOnlyBlocksCheckboxToggle() throws {
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        let item = try s.node("taskItem", ["checked": .bool(false)],
+                              content: Fragment.from([try s.node("paragraph", [:], content: Fragment.from([s.text("todo")]))]))
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            try s.node("taskList", [:], content: Fragment.from([item])),
+        ])))
+        let view = EditorTextView(editor: editor)
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
+        view.layoutIfNeeded()
+        var pos = -1
+        editor.doc.descendants { node, p, _, _ in
+            if node.type.name == "taskItem" { pos = p }
+            return true
+        }
+        XCTAssertGreaterThanOrEqual(pos, 0, "found the taskItem")
+        view.isEditable = false
+        view.toggleCheckboxForTesting(at: pos)
+        try checked(editor, pos, is: false, "read-only must not toggle the checkbox")
+        view.isEditable = true
+        view.toggleCheckboxForTesting(at: pos)
+        try checked(editor, pos, is: true, "toggling works when editable")
+    }
+
+    func testReadOnlyBlocksColumnResize() throws {
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        let cell = try s.node("tableCell", [:], content: Fragment.from([try s.node("paragraph", [:], content: .empty)]))
+        let row = try s.node("tableRow", [:], content: Fragment.from([cell, cell]))
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            try s.node("table", [:], content: Fragment.from([row])),
+        ])))
+        let view = EditorTextView(editor: editor)
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
+        view.layoutIfNeeded()
+        view.isEditable = false
+        // Scan the table's border band; no column border should be hittable read-only.
+        for x in stride(from: CGFloat(0), through: 320, by: 4) {
+            XCTAssertNil(view.columnBorderHit(at: CGPoint(x: x, y: 12)), "no column resize when read-only")
+        }
+    }
+
+    private func checked(_ editor: Editor, _ pos: Int, is value: Bool, _ message: String) throws {
+        XCTAssertEqual(editor.doc.nodeAt(pos)?.attrs["checked"]?.boolValue, value, message)
     }
 
     func testReadOnlyMenuDisablesEditingButKeepsCopy() throws {

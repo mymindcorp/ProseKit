@@ -96,7 +96,7 @@ private func runOneFuzz(seed: UInt64, ops: Int) throws {
         case 9: // replace the selection with a (possibly malformed) slice
             if let slice = try? Slice.fromJSON(editor.schema, randomSliceJSON(&rng)) {
                 let tr = editor.state.tr
-                _ = try? tr.replaceSelection(slice)
+                _ = tr.replaceSelection(slice)
                 editor.dispatch(tr)
             }
         case 10:

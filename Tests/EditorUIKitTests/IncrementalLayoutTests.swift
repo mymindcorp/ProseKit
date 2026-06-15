@@ -55,10 +55,10 @@ final class IncrementalLayoutTests: XCTestCase {
                 if Bool.random(using: &rng), size > 6 {
                     let from = Int.random(in: 1..<(size - 2), using: &rng)
                     let len = Int.random(in: 1...3, using: &rng)
-                    try? tr.delete(from, min(from + len, size - 1))
+                    _ = try? tr.delete(from, min(from + len, size - 1))
                 } else {
                     let at = Int.random(in: 1...max(1, size - 1), using: &rng)
-                    try? tr.insertText(["a", "b ", "long word ", "x"].randomElement(using: &rng)!, at, at)
+                    _ = try? tr.insertText(["a", "b ", "long word ", "x"].randomElement(using: &rng)!, at, at)
                 }
                 if tr.docChanged { editor.dispatch(tr) }
                 assertMatchesFullRebuild(view, "seed \(seed) step \(step)")

@@ -60,6 +60,22 @@ func registerEditorContentAPITests() {
         try expectNil(editor.attributes(ofMark: "textColor"))
     }
 
+    test("isEmpty reflects document content") {
+        let editor = try Editor(extensions: fullKit())
+        try expect(editor.isEmpty, "a fresh editor is empty")
+        try type(editor, "x")
+        try expect(!editor.isEmpty, "typing makes it non-empty")
+    }
+
+    test("clearContent resets to an empty document") {
+        let editor = try Editor(extensions: fullKit())
+        try editor.setContent(html: "<h1>Title</h1><p>body</p>")
+        try expect(!editor.isEmpty)
+        editor.clearContent()
+        try expect(editor.isEmpty, "clearContent empties the document")
+        try expectEqual(editor.getText(), "")
+    }
+
     test("insertContent inserts a block node at a position") {
         let editor = try Editor(extensions: fullKit())
         try editor.setContent(html: "<p>ab</p>")
