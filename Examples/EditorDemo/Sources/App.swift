@@ -5,12 +5,27 @@ import EditorStateKit
 import SchemaKit
 import EditorSerialization
 import EditorUIKit
+import EditorSyntax
+import UniformTypeIdentifiers
 
 @main
 struct EditorDemoApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView().ignoresSafeArea(.container, edges: .horizontal)
+        }
+        // The editor supports inline marks but not fonts or text colors, so we
+        // replace SwiftUI's default text-formatting menu (Fonts / sizes /
+        // colors) with one offering only the supported formatting. Each command
+        // routes through the responder chain to the focused EditorTextView.
+        .commands {
+            CommandGroup(replacing: .textFormatting) {
+                ForEach(Array(EditorTextView.formatMenuActions.enumerated()), id: \.offset) { _, item in
+                    Button(item.title) {
+                        UIApplication.shared.sendAction(item.action, to: nil, from: nil, for: nil)
+                    }
+                }
+            }
         }
     }
 }
@@ -22,7 +37,33 @@ let demoDocuments: [(name: String, build: @Sendable (Schema) -> Node)] = [
     ("Empty", emptyDocument),
     ("Format", formattingDocument),
     ("Tables", tablesDocument),
+    ("Code", codeDocument),
 ]
+
+/// Inline formatting controls — the editor supports these marks but not fonts
+/// or colors, so they live here rather than in a system Font menu. Each routes
+/// through the responder chain to the focused `EditorTextView`.
+struct FormattingToolbar: View {
+    private let icons = ["Bold": "bold", "Italic": "italic", "Underline": "underline",
+                         "Highlight": "highlighter", "Add Link…": "link"]
+    var body: some View {
+        HStack(spacing: 18) {
+            ForEach(Array(EditorTextView.formatMenuActions.enumerated()), id: \.offset) { _, item in
+                Button {
+                    UIApplication.shared.sendAction(item.action, to: nil, from: nil, for: nil)
+                } label: {
+                    Image(systemName: icons[item.title] ?? "textformat")
+                }
+                .buttonStyle(.borderless)
+                .help(item.title)
+            }
+            Spacer()
+        }
+        .font(.system(size: 15))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+}
 
 struct ContentView: View {
     @State private var docIndex = 0
@@ -35,6 +76,8 @@ struct ContentView: View {
     @State private var loadError: String?
     /// Whether the simulated remote collaborator is inserting text as you type.
     @State private var agentOn = false
+    /// Whether top-level blocks show drag handles for reordering.
+    @State private var reorderOn = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -48,10 +91,15 @@ struct ContentView: View {
                 Button(agentOn ? "🤖 Stop" : "🤖 Agent") { agentOn.toggle() }
                     .buttonStyle(.bordered)
                     .tint(agentOn ? .orange : nil)
+                Button(reorderOn ? "⠿ Reorder On" : "⠿ Reorder") { reorderOn.toggle() }
+                    .buttonStyle(.bordered)
+                    .tint(reorderOn ? .accentColor : nil)
             }
             .padding(8)
             Divider()
-            EditorContainer(docIndex: docIndex, proseLoad: proseLoad, agentOn: agentOn) { message in
+            // FormattingToolbar()  // hidden for now (struct kept for later)
+            // Divider()
+            EditorContainer(docIndex: docIndex, proseLoad: proseLoad, agentOn: agentOn, reorder: reorderOn) { message in
                 loadError = message
             }
             .ignoresSafeArea(.keyboard)
@@ -153,6 +201,8 @@ struct EditorContainer: UIViewRepresentable {
     var proseLoad: ProseLoad?
     /// Whether the simulated collaborator ("Agent") is running.
     var agentOn: Bool = false
+    /// Whether top-level blocks show drag handles for reordering.
+    var reorder: Bool = false
     /// Surfaces a human-readable message when pasted prose fails to decode.
     var onLoadError: (String) -> Void
 
@@ -265,6 +315,20 @@ struct EditorContainer: UIViewRepresentable {
         scroll.delegate = context.coordinator
 
         let textView = EditorTextView(editor: editor)
+        // Opt into code-block syntax highlighting + language badges. Highlighting
+        // only affects code blocks; detection only switches when confident.
+        textView.syntaxHighlighter = makeSyntaxHighlighter()
+        textView.codeLanguageLabel = makeCodeLanguageLabel()
+        // Persist dropped/pasted images (incl. from Apple Notes) to a file and
+        // reference them by path, instead of embedding huge data: URLs. The
+        // built-in loader then loads the file:// src.
+        textView.onImageDrop = { dropped in
+            let ext = dropped.typeIdentifier.flatMap { UTType($0)?.preferredFilenameExtension } ?? "png"
+            let url = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("drop-\(UUID().uuidString).\(ext)")
+            guard (try? dropped.data.write(to: url)) != nil else { return nil } // nil → data: URL fallback
+            return ["src": .string(url.absoluteString), "alt": .string(dropped.suggestedName ?? "image")]
+        }
         textView.translatesAutoresizingMaskIntoConstraints = false
         scroll.addSubview(textView)
         // Pinned to the viewport (frame), not the content — it stays screen-sized.
@@ -295,6 +359,7 @@ struct EditorContainer: UIViewRepresentable {
         guard let editor = coordinator.editor, let textView = coordinator.textView else { return }
         coordinator.onLoadError = onLoadError
         coordinator.setAgent(agentOn)
+        textView.blockReorderingEnabled = reorder
 
         // A pasted-prose request takes priority and is applied exactly once.
         if let proseLoad, proseLoad.id != coordinator.lastProseID {
@@ -357,7 +422,7 @@ func sampleDocument(_ schema: Schema) -> Node {
     let b = B(schema)
     return b.n("doc", [:], [
         b.heading(1, "editor-swift"),
-        b.p(b.n("image", ["src": .string(sampleImageDataURL()), "alt": .string("banner")])),
+        b.n("image", ["src": .string(sampleImageDataURL()), "alt": .string("banner")]),
         b.p(b.t("A native Swift rich-text editor — a faithful Tiptap/ProseMirror port. Try typing, "),
             b.mark("bold", "bold"), b.t(", "), b.mark("italic", "italic"), b.t(", and "), b.mark("code", "code"), b.t(".")),
         b.heading(2, "Lists"),
@@ -448,6 +513,37 @@ func formattingDocument(_ schema: Schema) -> Node {
         b.n("codeBlock", [:], [b.t("func greet(_ name: String) {\n    print(\"hello, \\(name)\")\n}")]),
         b.n("horizontalRule", [:], []),
         b.p(b.t("Text after the horizontal rule.")),
+    ])
+}
+
+/// 6) Code blocks with syntax highlighting + language badges (EditorSyntax).
+/// Some blocks are tagged with an explicit language; the last few carry no tag
+/// and are auto-detected (only highlighted when detection is confident).
+func codeDocument(_ schema: Schema) -> Node {
+    let b = B(schema)
+    func code(_ language: String?, _ source: String) -> Node {
+        b.n("codeBlock", language.map { ["language": .string($0)] } ?? [:], [b.t(source)])
+    }
+    return b.n("doc", [:], [
+        b.heading(1, "Code & Syntax Highlighting"),
+        b.p(b.t("Blocks are highlighted by language with a badge in the corner. "),
+            b.t("The tagged ones use their language; the auto-detected section has no tag.")),
+        b.heading(3, "Swift"),
+        code("swift", "func greet(_ name: String) -> String {\n    return \"Hello, \\(name)\"  // interpolation\n}"),
+        b.heading(3, "TypeScript"),
+        code("ts", "interface User { id: number; name: string }\nconst u: User = { id: 1, name: \"Ada\" }"),
+        b.heading(3, "Python"),
+        code("python", "def fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a  # nth Fibonacci"),
+        b.heading(3, "CSS"),
+        code("css", ".btn {\n  color: #ff3b30;\n  padding: 8px 12px;\n}"),
+        b.heading(3, "JSON"),
+        code("json", "{\n  \"name\": \"prosekit\",\n  \"version\": 1,\n  \"tags\": [\"editor\", \"swift\"]\n}"),
+        b.heading(3, "SQL"),
+        code("sql", "SELECT name, role FROM team\nWHERE active = true\nORDER BY name;"),
+        b.heading(3, "Auto-detected (no language tag)"),
+        code(nil, "package main\n\nfunc main() {\n    fmt.Println(\"detected as Go\")\n}"),
+        code(nil, "fn main() {\n    let mut total = 0;\n    for i in 0..10 { total += i; }\n}"),
+        code(nil, "#include <stdio.h>\nint main() { printf(\"hi\\n\"); return 0; }"),
     ])
 }
 
