@@ -4,25 +4,18 @@ import DocumentModel
 
 extension UIColor {
     /// Create a color from a `#RRGGBB` (or `#RRGGBBAA`) hex string.
+    /// Parse `#rgb` / `#rrggbb` / `#rrggbbaa` (with or without `#`). The single
+    /// hex parser in the module — `TextTheme.parseColor` adds named colors on top.
     convenience init?(hex: String) {
-        var s = hex
+        var s = hex.trimmingCharacters(in: .whitespaces)
         if s.hasPrefix("#") { s.removeFirst() }
-        guard let value = UInt64(s, radix: 16) else { return nil }
-        let r, g, b, a: CGFloat
-        switch s.count {
-        case 6:
-            r = CGFloat((value >> 16) & 0xFF) / 255
-            g = CGFloat((value >> 8) & 0xFF) / 255
-            b = CGFloat(value & 0xFF) / 255
-            a = 1
-        case 8:
-            r = CGFloat((value >> 24) & 0xFF) / 255
-            g = CGFloat((value >> 16) & 0xFF) / 255
-            b = CGFloat((value >> 8) & 0xFF) / 255
-            a = CGFloat(value & 0xFF) / 255
-        default:
-            return nil
-        }
+        if s.count == 3 { s = s.map { "\($0)\($0)" }.joined() } // #rgb → #rrggbb
+        guard s.count == 6 || s.count == 8, let value = UInt64(s, radix: 16) else { return nil }
+        let hasAlpha = s.count == 8
+        let r = CGFloat((value >> (hasAlpha ? 24 : 16)) & 0xFF) / 255
+        let g = CGFloat((value >> (hasAlpha ? 16 : 8)) & 0xFF) / 255
+        let b = CGFloat((value >> (hasAlpha ? 8 : 0)) & 0xFF) / 255
+        let a = hasAlpha ? CGFloat(value & 0xFF) / 255 : 1
         self.init(red: r, green: g, blue: b, alpha: a)
     }
 }
@@ -171,20 +164,12 @@ public struct TextTheme: Sendable {
         return attrs
     }
 
-    /// Parse a CSS color string — `#rgb`/`#rrggbb`/`#rrggbbaa` (with or without
-    /// `#`) or a common named color — into a UIColor. Returns nil if unparseable.
+    /// Parse a CSS color string — a common named color, or `#rgb`/`#rrggbb`/
+    /// `#rrggbbaa` (with or without `#`) — into a UIColor. nil if unparseable.
     public static func parseColor(_ string: String?) -> UIColor? {
-        guard var s = string?.trimmingCharacters(in: .whitespaces).lowercased(), !s.isEmpty else { return nil }
-        if let named = namedColors[s] { return named }
-        if s.hasPrefix("#") { s.removeFirst() }
-        if s.count == 3 { s = s.map { "\($0)\($0)" }.joined() } // #rgb → #rrggbb
-        guard s.count == 6 || s.count == 8, let value = UInt64(s, radix: 16) else { return nil }
-        let hasAlpha = s.count == 8
-        let r = CGFloat((value >> (hasAlpha ? 24 : 16)) & 0xFF) / 255
-        let g = CGFloat((value >> (hasAlpha ? 16 : 8)) & 0xFF) / 255
-        let b = CGFloat((value >> (hasAlpha ? 8 : 0)) & 0xFF) / 255
-        let a = hasAlpha ? CGFloat(value & 0xFF) / 255 : 1
-        return UIColor(red: r, green: g, blue: b, alpha: a)
+        guard let s = string?.trimmingCharacters(in: .whitespaces), !s.isEmpty else { return nil }
+        if let named = namedColors[s.lowercased()] { return named }
+        return UIColor(hex: s)
     }
 
     private static let namedColors: [String: UIColor] = [
