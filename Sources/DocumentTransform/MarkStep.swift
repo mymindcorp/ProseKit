@@ -40,16 +40,16 @@ public struct AddMarkStep: Step {
         return .fromReplace(doc, from, to, slice)
     }
 
-    public func invert(_ doc: Node) -> Step { RemoveMarkStep(from, to, mark) }
+    public func invert(_ doc: Node) -> any Step { RemoveMarkStep(from, to, mark) }
 
-    public func map(_ mapping: Mappable) -> Step? {
+    public func map(_ mapping: any Mappable) -> (any Step)? {
         let from = mapping.mapResult(self.from, 1)
         let to = mapping.mapResult(self.to, -1)
         if (from.deleted && to.deleted) || from.pos >= to.pos { return nil }
         return AddMarkStep(from.pos, Swift.max(from.pos, to.pos), mark)
     }
 
-    public func merge(_ other: Step) -> Step? {
+    public func merge(_ other: any Step) -> (any Step)? {
         guard let other = other as? AddMarkStep, other.mark == mark, from <= other.to, to >= other.from else { return nil }
         return AddMarkStep(Swift.min(from, other.from), Swift.max(to, other.to), mark)
     }
@@ -58,7 +58,7 @@ public struct AddMarkStep: Step {
         ["stepType": "addMark", "mark": .object(mark.toJSON()), "from": .int(from), "to": .int(to)]
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> any Step {
         guard let from = json["from"]?.intValue, let to = json["to"]?.intValue,
               case let .object(markJSON)? = json["mark"] else {
             throw ModelError.invalidJSON("Invalid input for AddMarkStep.fromJSON")
@@ -88,16 +88,16 @@ public struct RemoveMarkStep: Step {
         return .fromReplace(doc, from, to, slice)
     }
 
-    public func invert(_ doc: Node) -> Step { AddMarkStep(from, to, mark) }
+    public func invert(_ doc: Node) -> any Step { AddMarkStep(from, to, mark) }
 
-    public func map(_ mapping: Mappable) -> Step? {
+    public func map(_ mapping: any Mappable) -> (any Step)? {
         let from = mapping.mapResult(self.from, 1)
         let to = mapping.mapResult(self.to, -1)
         if (from.deleted && to.deleted) || from.pos >= to.pos { return nil }
         return RemoveMarkStep(from.pos, Swift.max(from.pos, to.pos), mark)
     }
 
-    public func merge(_ other: Step) -> Step? {
+    public func merge(_ other: any Step) -> (any Step)? {
         guard let other = other as? RemoveMarkStep, other.mark == mark, from <= other.to, to >= other.from else { return nil }
         return RemoveMarkStep(Swift.min(from, other.from), Swift.max(to, other.to), mark)
     }
@@ -106,7 +106,7 @@ public struct RemoveMarkStep: Step {
         ["stepType": "removeMark", "mark": .object(mark.toJSON()), "from": .int(from), "to": .int(to)]
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> any Step {
         guard let from = json["from"]?.intValue, let to = json["to"]?.intValue,
               case let .object(markJSON)? = json["mark"] else {
             throw ModelError.invalidJSON("Invalid input for RemoveMarkStep.fromJSON")
@@ -130,7 +130,7 @@ public struct AddNodeMarkStep: Step {
         return .fromReplace(doc, pos, pos + 1, Slice(content: Fragment.from(updated), openStart: 0, openEnd: node.isLeaf ? 0 : 1))
     }
 
-    public func invert(_ doc: Node) -> Step {
+    public func invert(_ doc: Node) -> any Step {
         if let node = doc.nodeAt(pos) {
             let newSet = mark.addToSet(node.marks)
             if newSet.count == node.marks.count {
@@ -141,7 +141,7 @@ public struct AddNodeMarkStep: Step {
         return RemoveNodeMarkStep(pos, mark)
     }
 
-    public func map(_ mapping: Mappable) -> Step? {
+    public func map(_ mapping: any Mappable) -> (any Step)? {
         let p = mapping.mapResult(pos, 1)
         return p.deletedAfter ? nil : AddNodeMarkStep(p.pos, mark)
     }
@@ -150,7 +150,7 @@ public struct AddNodeMarkStep: Step {
         ["stepType": "addNodeMark", "pos": .int(pos), "mark": .object(mark.toJSON())]
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> any Step {
         guard let pos = json["pos"]?.intValue, case let .object(markJSON)? = json["mark"] else {
             throw ModelError.invalidJSON("Invalid input for AddNodeMarkStep.fromJSON")
         }
@@ -173,12 +173,12 @@ public struct RemoveNodeMarkStep: Step {
         return .fromReplace(doc, pos, pos + 1, Slice(content: Fragment.from(updated), openStart: 0, openEnd: node.isLeaf ? 0 : 1))
     }
 
-    public func invert(_ doc: Node) -> Step {
+    public func invert(_ doc: Node) -> any Step {
         guard let node = doc.nodeAt(pos), mark.isInSet(node.marks) else { return self }
         return AddNodeMarkStep(pos, mark)
     }
 
-    public func map(_ mapping: Mappable) -> Step? {
+    public func map(_ mapping: any Mappable) -> (any Step)? {
         let p = mapping.mapResult(pos, 1)
         return p.deletedAfter ? nil : RemoveNodeMarkStep(p.pos, mark)
     }
@@ -187,7 +187,7 @@ public struct RemoveNodeMarkStep: Step {
         ["stepType": "removeNodeMark", "pos": .int(pos), "mark": .object(mark.toJSON())]
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> any Step {
         guard let pos = json["pos"]?.intValue, case let .object(markJSON)? = json["mark"] else {
             throw ModelError.invalidJSON("Invalid input for RemoveNodeMarkStep.fromJSON")
         }

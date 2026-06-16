@@ -225,11 +225,11 @@ final class UITextInputTests: XCTestCase {
 private final class CountingInputDelegate: NSObject, UITextInputDelegate {
     var selectionChanges = 0
     var textChanges = 0
-    func selectionWillChange(_ textInput: UITextInput?) {}
-    func selectionDidChange(_ textInput: UITextInput?) { selectionChanges += 1 }
-    func textWillChange(_ textInput: UITextInput?) {}
-    func textDidChange(_ textInput: UITextInput?) { textChanges += 1 }
+    func selectionWillChange(_ textInput: (any UITextInput)?) {}
+    func selectionDidChange(_ textInput: (any UITextInput)?) { selectionChanges += 1 }
+    func textWillChange(_ textInput: (any UITextInput)?) {}
+    func textDidChange(_ textInput: (any UITextInput)?) { textChanges += 1 }
     @available(iOS 18.4, *)
-    func conversationContext(_ context: UIConversationContext?, didChange textInput: UITextInput?) {}
+    func conversationContext(_ context: UIConversationContext?, didChange textInput: (any UITextInput)?) {}
 }
 #endif

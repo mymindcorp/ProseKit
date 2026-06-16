@@ -44,7 +44,7 @@ public final class SearchQuery: @unchecked Sendable {
     /// Optional filter; results it rejects are skipped.
     public let filter: ((EditorState, SearchResult) -> Bool)?
 
-    private let impl: QueryImpl
+    private let impl: any QueryImpl
 
     public init(search: String, caseSensitive: Bool = false, literal: Bool = false,
                 regexp: Bool = false, replace: String = "", wholeWord: Bool = false,

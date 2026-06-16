@@ -5,10 +5,10 @@ import EditorStateKit
 /// A step paired with its inverse and the origin transaction, kept around while
 /// it is unconfirmed by the central authority.
 public struct Rebaseable {
-    public var step: Step
-    public var inverted: Step
+    public var step: any Step
+    public var inverted: any Step
     public var origin: Transaction?
-    public init(step: Step, inverted: Step, origin: Transaction? = nil) {
+    public init(step: any Step, inverted: any Step, origin: Transaction? = nil) {
         self.step = step
         self.inverted = inverted
         self.origin = origin
@@ -70,7 +70,7 @@ private func unconfirmedFrom(_ transform: Transaction) -> [Rebaseable] {
 /// The steps this client has ready to send to the authority, if any.
 public struct SendableSteps {
     public let version: Int
-    public let steps: [Step]
+    public let steps: [any Step]
     public let clientID: Int
     /// The original transactions that produced each step — useful for timestamps
     /// and other metadata. Note the steps may since have been rebased, while the
@@ -98,7 +98,7 @@ public func getVersion(_ state: EditorState) -> Int {
 ///
 /// With `mapSelectionBackward` (off by default, like upstream), a text selection
 /// is mapped with negative bias so content inserted at the cursor lands after it.
-public func receiveTransaction(_ state: EditorState, _ steps: [Step], _ clientIDs: [Int],
+public func receiveTransaction(_ state: EditorState, _ steps: [any Step], _ clientIDs: [Int],
                                mapSelectionBackward: Bool = false) -> Transaction {
     let collabState = collabKey.getState(state)!
     let version = collabState.version + steps.count
@@ -137,7 +137,7 @@ public func receiveTransaction(_ state: EditorState, _ steps: [Step], _ clientID
 }
 
 @discardableResult
-public func rebaseSteps(_ steps: [Rebaseable], _ over: [Step], _ transform: Transform) -> [Rebaseable] {
+public func rebaseSteps(_ steps: [Rebaseable], _ over: [any Step], _ transform: Transform) -> [Rebaseable] {
     // Undo our local steps...
     var i = steps.count - 1
     while i >= 0 { transform.maybeStep(steps[i].inverted); i -= 1 }

@@ -14,7 +14,7 @@ public final class TextSelection: Selection {
         resolvedAnchor.pos == resolvedHead.pos ? resolvedHead : nil
     }
 
-    public override func map(_ doc: Node, _ mapping: Mappable) -> Selection {
+    public override func map(_ doc: Node, _ mapping: any Mappable) -> Selection {
         let head = doc.resolve(mapping.map(self.head))
         if !head.parent.inlineContent { return Selection.near(head) }
         let anchor = doc.resolve(mapping.map(self.anchor))
@@ -29,7 +29,7 @@ public final class TextSelection: Selection {
         ["type": "text", "anchor": .int(anchor), "head": .int(head)]
     }
 
-    public override func getBookmark() -> SelectionBookmark {
+    public override func getBookmark() -> any SelectionBookmark {
         TextBookmark(anchor: anchor, head: head)
     }
 
@@ -80,7 +80,7 @@ public final class TextSelection: Selection {
 struct TextBookmark: SelectionBookmark {
     let anchor: Int
     let head: Int
-    func map(_ mapping: Mappable) -> SelectionBookmark {
+    func map(_ mapping: any Mappable) -> any SelectionBookmark {
         TextBookmark(anchor: mapping.map(anchor), head: mapping.map(head))
     }
     func resolve(_ doc: Node) -> Selection {
@@ -101,7 +101,7 @@ public final class NodeSelection: Selection {
 
     public override var empty: Bool { false }
 
-    public override func map(_ doc: Node, _ mapping: Mappable) -> Selection {
+    public override func map(_ doc: Node, _ mapping: any Mappable) -> Selection {
         let result = mapping.mapResult(anchor)
         let pos = doc.resolve(result.pos)
         if result.deleted { return Selection.near(pos) }
@@ -123,7 +123,7 @@ public final class NodeSelection: Selection {
         ["type": "node", "anchor": .int(anchor)]
     }
 
-    public override func getBookmark() -> SelectionBookmark {
+    public override func getBookmark() -> any SelectionBookmark {
         NodeBookmark(anchor: anchor)
     }
 
@@ -144,7 +144,7 @@ public final class NodeSelection: Selection {
 
 struct NodeBookmark: SelectionBookmark {
     let anchor: Int
-    func map(_ mapping: Mappable) -> SelectionBookmark {
+    func map(_ mapping: any Mappable) -> any SelectionBookmark {
         let result = mapping.mapResult(anchor)
         return result.deletedAfter ? TextBookmark(anchor: result.pos, head: result.pos) : NodeBookmark(anchor: result.pos)
     }
@@ -163,7 +163,7 @@ public final class AllSelection: Selection {
 
     public override func toJSON() -> [String: AttributeValue] { ["type": "all"] }
 
-    public override func map(_ doc: Node, _ mapping: Mappable) -> Selection { AllSelection(doc) }
+    public override func map(_ doc: Node, _ mapping: any Mappable) -> Selection { AllSelection(doc) }
 
     public override func eq(_ other: Selection) -> Bool { other is AllSelection }
 
@@ -171,10 +171,10 @@ public final class AllSelection: Selection {
         resolvedFrom.doc.slice(0, resolvedFrom.doc.content.size, includeParents: true)
     }
 
-    public override func getBookmark() -> SelectionBookmark { AllBookmark() }
+    public override func getBookmark() -> any SelectionBookmark { AllBookmark() }
 }
 
 struct AllBookmark: SelectionBookmark {
-    func map(_ mapping: Mappable) -> SelectionBookmark { self }
+    func map(_ mapping: any Mappable) -> any SelectionBookmark { self }
     func resolve(_ doc: Node) -> Selection { AllSelection(doc) }
 }

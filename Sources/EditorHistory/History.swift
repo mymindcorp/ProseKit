@@ -16,14 +16,14 @@ struct HistoryItem {
     /// The (forward) step map for this item.
     let map: StepMap
     /// The inverted step, if this item holds an undoable change.
-    let step: Step?
+    let step: (any Step)?
     /// Set on the first item of an event: the selection before the event.
-    let selection: SelectionBookmark?
+    let selection: (any SelectionBookmark)?
     /// If this item is the inverse of a previous map on the stack, the offset
     /// back to it (used to build remappings with mirror information).
     let mirrorOffset: Int?
 
-    init(map: StepMap, step: Step? = nil, selection: SelectionBookmark? = nil, mirrorOffset: Int? = nil) {
+    init(map: StepMap, step: (any Step)? = nil, selection: (any SelectionBookmark)? = nil, mirrorOffset: Int? = nil) {
         self.map = map
         self.step = step
         self.selection = selection
@@ -54,7 +54,7 @@ struct Branch {
     /// Pop the latest event off the branch: build a transaction that applies
     /// its inverted steps (remapped over everything that happened since), the
     /// branch that remains, and the selection to restore.
-    func popEvent(_ state: EditorState) -> (remaining: Branch, transform: Transaction, selection: SelectionBookmark)? {
+    func popEvent(_ state: EditorState) -> (remaining: Branch, transform: Transaction, selection: any SelectionBookmark)? {
         guard eventCount > 0 else { return nil }
 
         // The index of the item that starts the latest event.
@@ -102,7 +102,7 @@ struct Branch {
 
     /// A new branch with the given transform's inverted steps appended.
     /// `selection` marks the start of a new event (nil continues the last one).
-    func addTransform(_ transform: Transform, _ selection: SelectionBookmark?, _ depth: Int) -> Branch {
+    func addTransform(_ transform: Transform, _ selection: (any SelectionBookmark)?, _ depth: Int) -> Branch {
         var newItems: [HistoryItem] = []
         var eventCount = self.eventCount
         var selection = selection

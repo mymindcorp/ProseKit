@@ -34,7 +34,7 @@ public final class CellSelection: Selection {
 
     public override var empty: Bool { false }
 
-    public override func map(_ doc: Node, _ mapping: Mappable) -> Selection {
+    public override func map(_ doc: Node, _ mapping: any Mappable) -> Selection {
         let aCell = doc.resolve(mapping.map(anchorCell.pos))
         let hCell = doc.resolve(mapping.map(headCell.pos))
         if pointsAtCell(aCell), pointsAtCell(hCell), inSameTable(aCell, hCell) {
@@ -149,7 +149,7 @@ public final class CellSelection: Selection {
         ["type": .string("cell"), "anchor": .int(anchorCell.pos), "head": .int(headCell.pos)]
     }
 
-    public override func getBookmark() -> SelectionBookmark { CellBookmark(anchor: anchorCell.pos, head: headCell.pos) }
+    public override func getBookmark() -> any SelectionBookmark { CellBookmark(anchor: anchorCell.pos, head: headCell.pos) }
 
     /// The smallest column selection covering the two cells.
     public static func colSelection(_ anchorCell0: ResolvedPos, _ headCell0: ResolvedPos? = nil) -> CellSelection {
@@ -214,7 +214,7 @@ public struct CellBookmark: SelectionBookmark {
     public var head: Int
     public init(anchor: Int, head: Int) { self.anchor = anchor; self.head = head }
 
-    public func map(_ mapping: Mappable) -> SelectionBookmark {
+    public func map(_ mapping: any Mappable) -> any SelectionBookmark {
         CellBookmark(anchor: mapping.map(anchor), head: mapping.map(head))
     }
     public func resolve(_ doc: Node) -> Selection {

@@ -3,7 +3,7 @@ import DocumentModel
 /// Build a `ReplaceStep` (or `ReplaceAroundStep`) that replaces `from..to` with
 /// `slice`, fitting the slice's open ends to the surrounding document
 /// structure. Returns `nil` when the replacement is a no-op.
-public func replaceStep(_ doc: Node, _ from: Int, _ to: Int? = nil, _ slice: Slice = .empty) -> Step? {
+public func replaceStep(_ doc: Node, _ from: Int, _ to: Int? = nil, _ slice: Slice = .empty) -> (any Step)? {
     let to = to ?? from
     if from == to && slice.size == 0 { return nil }
     let resolvedFrom = doc.resolve(from)
@@ -57,7 +57,7 @@ final class Fitter {
 
     var depth: Int { frontier.count - 1 }
 
-    func fit() -> Step? {
+    func fit() -> (any Step)? {
         while unplaced.size != 0 {
             if let fit = findFittable() {
                 placeNodes(fit)

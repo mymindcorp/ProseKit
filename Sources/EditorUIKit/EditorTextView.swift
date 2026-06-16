@@ -72,8 +72,8 @@ open class EditorTextView: UIView, UIKeyInput {
     public var checkboxViewProvider: CheckboxViewProvider? {
         didSet { discardCheckboxViews(); setNeedsLayout() }
     }
-    private var activeCheckboxViews: [(pos: Int, view: TaskCheckboxView)] = []
-    private var checkboxViewPool: [TaskCheckboxView] = []
+    private var activeCheckboxViews: [(pos: Int, view: any TaskCheckboxView)] = []
+    private var checkboxViewPool: [any TaskCheckboxView] = []
 
     /// Called when a link is activated (Cmd-click on macOS / iPad). Defaults to
     /// opening the URL with the system; set it to handle links yourself (e.g.
@@ -190,7 +190,7 @@ open class EditorTextView: UIView, UIKeyInput {
     // MARK: - UITextInput state
     /// The system input delegate, notified when text/selection change outside
     /// of a UITextInput-initiated edit.
-    weak var textInputDelegate: UITextInputDelegate?
+    weak var textInputDelegate: (any UITextInputDelegate)?
     /// The marked (composing/IME) range in document positions, if any.
     var markedRange: (Int, Int)?
     var markedTextStyleStore: [NSAttributedString.Key: Any]?
@@ -198,7 +198,7 @@ open class EditorTextView: UIView, UIKeyInput {
     /// doesn't echo the change back to the input delegate (which would confuse
     /// autocorrect / marked-text state).
     var applyingTextInput = false
-    lazy var inputTokenizer: UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
+    lazy var inputTokenizer: any UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
 
     public required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
@@ -1057,7 +1057,7 @@ open class EditorTextView: UIView, UIKeyInput {
 
     // MARK: - Task-item checkbox views
 
-    private func makeCheckboxView() -> TaskCheckboxView {
+    private func makeCheckboxView() -> any TaskCheckboxView {
         if let view = checkboxViewProvider?() { return view }
         let view = DefaultTaskCheckboxView(frame: .zero)
         view.theme = theme
@@ -1079,9 +1079,9 @@ open class EditorTextView: UIView, UIKeyInput {
         let lo = contentOffsetY - 60, hi = contentOffsetY + max(bounds.height, 1) + 60
         let visible = l.checkboxes.filter { $0.rect.maxY >= lo && $0.rect.minY <= hi }
 
-        var newActive: [(pos: Int, view: TaskCheckboxView)] = []
+        var newActive: [(pos: Int, view: any TaskCheckboxView)] = []
         for (i, box) in visible.enumerated() {
-            let view: TaskCheckboxView
+            let view: any TaskCheckboxView
             if i < activeCheckboxViews.count {
                 view = activeCheckboxViews[i].view
             } else {

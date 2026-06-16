@@ -77,6 +77,6 @@ public func setTaskChecked(_ state: EditorState, pos: Int, checked: Bool) -> Tra
 }
 
 /// The task-list extensions (list + item).
-public func taskListExtensions() -> [Extension] {
+public func taskListExtensions() -> [any Extension] {
     [TaskListExtension(), TaskItemExtension()]
 }

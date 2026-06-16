@@ -32,7 +32,7 @@ public final class Editor {
 
     /// Create an editor from extensions and optional initial content (a doc
     /// node, or `nil` for an empty document).
-    public init(extensions: [Extension], content: Node? = nil, history includeHistory: Bool = true) throws {
+    public init(extensions: [any Extension], content: Node? = nil, history includeHistory: Bool = true) throws {
         let manager = try ExtensionManager(extensions)
         self.manager = manager
         // Temporary placeholder state; rebuilt below once `self` exists.
@@ -78,12 +78,12 @@ public final class Editor {
     /// Run a command against the current state, dispatching its transaction.
     @discardableResult
     public func run(_ command: Command) -> Bool {
-        command(state, { [weak self] tr in self?.dispatch(tr) }, host as? CommandHost)
+        command(state, { [weak self] tr in self?.dispatch(tr) }, host as? any CommandHost)
     }
 
     /// Whether a command would apply (a dry run, without dispatching).
     public func can(_ command: Command) -> Bool {
-        command(state, nil, host as? CommandHost)
+        command(state, nil, host as? any CommandHost)
     }
 
     /// Run a named command contributed by an extension.
@@ -119,7 +119,7 @@ public final class Editor {
         var applied: [Transaction] = []
         for command in commands {
             var produced: Transaction? = nil
-            let did = command(working, { produced = $0 }, host as? CommandHost)
+            let did = command(working, { produced = $0 }, host as? any CommandHost)
             if did, let tr = produced {
                 if tr.docChanged { changedDoc = true }
                 working = working.apply(tr)

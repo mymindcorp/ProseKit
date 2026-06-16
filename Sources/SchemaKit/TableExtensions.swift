@@ -67,7 +67,7 @@ public final class TableHeaderExtension: NodeExtension {
 }
 
 /// The full set of table extensions.
-public func tableExtensions() -> [Extension] {
+public func tableExtensions() -> [any Extension] {
     [TableExtension(), TableRowExtension(), TableCellExtension(), TableHeaderExtension()]
 }
 

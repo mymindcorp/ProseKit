@@ -40,7 +40,7 @@ public final class Transaction: Transform {
     /// extended (upstream's `isGeneric` — it is about meta, not selection).
     public var isGeneric: Bool { meta.isEmpty }
 
-    public override func addStep(_ step: Step, _ doc: Node) {
+    public override func addStep(_ step: any Step, _ doc: Node) {
         super.addStep(step, doc)
         updatedMarks = false
         storedMarks = nil

@@ -49,11 +49,11 @@ extension EditorTextView: UITextInput {
 
     // MARK: Delegate / tokenizer / styles
 
-    public var inputDelegate: UITextInputDelegate? {
+    public var inputDelegate: (any UITextInputDelegate)? {
         get { textInputDelegate }
         set { textInputDelegate = newValue }
     }
-    public var tokenizer: UITextInputTokenizer { inputTokenizer }
+    public var tokenizer: any UITextInputTokenizer { inputTokenizer }
     public var markedTextStyle: [NSAttributedString.Key: Any]? {
         get { markedTextStyleStore }
         set { markedTextStyleStore = newValue }

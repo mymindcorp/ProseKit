@@ -24,7 +24,7 @@ public typealias CodeLanguageLabelProvider = (_ code: String, _ language: String
 
 /// Supplies a fresh view for a task-item checkbox; the editor positions and
 /// recycles the returned views.
-public typealias CheckboxViewProvider = () -> TaskCheckboxView
+public typealias CheckboxViewProvider = () -> any TaskCheckboxView
 
 /// An image that arrived by drop or paste, with its raw bytes and (when known)
 /// its uniform type identifier and a suggested file name.

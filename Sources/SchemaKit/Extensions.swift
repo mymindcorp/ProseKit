@@ -547,7 +547,7 @@ public func unsetColor(_ markType: MarkType) -> Command { setColor(markType, nil
 // MARK: - StarterKit
 
 /// A reasonable default set of basic extensions, mirroring Tiptap's StarterKit.
-public func starterKit() -> [Extension] {
+public func starterKit() -> [any Extension] {
     [
         DocumentExtension(),
         ParagraphExtension(),
@@ -586,7 +586,7 @@ public final class GapCursorExtension: Extension {
 
 /// The starter kit plus tables, task lists, images, wiki-links, and search.
 public func fullKit(wikiLinkSuggestions: ((String) -> [String])? = nil,
-                    mentionSuggestions: ((String) -> [String])? = nil) -> [Extension] {
+                    mentionSuggestions: ((String) -> [String])? = nil) -> [any Extension] {
     starterKit() + tableExtensions() + taskListExtensions()
         + [ImageExtension(), WikiLinkExtension(suggestions: wikiLinkSuggestions),
            MentionExtension(suggestions: mentionSuggestions), SearchExtension(),

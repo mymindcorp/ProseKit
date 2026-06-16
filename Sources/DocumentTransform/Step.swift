@@ -35,12 +35,12 @@ public protocol Step: Sendable {
     /// Get the step map that represents the changes made by this step.
     func getMap() -> StepMap
     /// Create an inverted version of this step (undoing it on `doc`).
-    func invert(_ doc: Node) -> Step
+    func invert(_ doc: Node) -> any Step
     /// Map this step through a mappable, returning a new step whose positions
     /// have been adjusted, or `nil` if the step is entirely deleted.
-    func map(_ mapping: Mappable) -> Step?
+    func map(_ mapping: any Mappable) -> (any Step)?
     /// Try to merge this step with another, producing a single combined step.
-    func merge(_ other: Step) -> Step?
+    func merge(_ other: any Step) -> (any Step)?
     /// Serialize to JSON.
     func toJSON() -> [String: AttributeValue]
     /// The identifier used in JSON serialization.
@@ -49,12 +49,12 @@ public protocol Step: Sendable {
 
 public extension Step {
     func getMap() -> StepMap { .empty }
-    func merge(_ other: Step) -> Step? { nil }
+    func merge(_ other: any Step) -> (any Step)? { nil }
 }
 
 /// Registry mapping JSON step IDs to decoders, used by `Step.fromJSON`.
 public enum StepRegistry {
-    public typealias StepDecoder = @Sendable (Schema, [String: AttributeValue]) throws -> Step
+    public typealias StepDecoder = @Sendable (Schema, [String: AttributeValue]) throws -> any Step
 
     private struct State {
         var decoders: [String: StepDecoder] = [:]
@@ -89,7 +89,7 @@ public enum StepRegistry {
 }
 
 /// Decode a step from its JSON representation.
-public func decodeStep(_ schema: Schema, _ json: [String: AttributeValue]) throws -> Step {
+public func decodeStep(_ schema: Schema, _ json: [String: AttributeValue]) throws -> any Step {
     guard let id = json["stepType"]?.stringValue else {
         throw ModelError.invalidJSON("Invalid Step: missing stepType")
     }

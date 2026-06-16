@@ -65,7 +65,7 @@ public final class TestCollector: @unchecked Sendable {
 public enum TestSuite {
     /// Run the given cases, print a report, and exit the process.
     public static func main(_ name: String, _ cases: [TestCase]) -> Never {
-        var failures: [(String, Error)] = []
+        var failures: [(String, any Error)] = []
         for c in cases {
             // Flush before each test so a fatal trap localizes to this case.
             print("  • \(c.name) ...", terminator: ""); fflush(stdout)

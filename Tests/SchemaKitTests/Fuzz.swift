@@ -171,7 +171,7 @@ private func runTableFuzz(seed: UInt64, ops: Int) throws {
             _ = editor.run(cmd)
             action = cmd
         }
-        var checkErr: Error?
+        var checkErr: (any Error)?
         do { try editor.doc.check() } catch { checkErr = error }
         try expect(checkErr == nil, "invalid doc — table seed \(seed) step \(step) after \(action): \(checkErr.map { "\($0)" } ?? "")")
         let size = editor.doc.content.size

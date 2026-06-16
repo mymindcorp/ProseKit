@@ -27,18 +27,18 @@ public struct ReplaceStep: Step {
         StepMap([from, to - from, slice.size])
     }
 
-    public func invert(_ doc: Node) -> Step {
+    public func invert(_ doc: Node) -> any Step {
         ReplaceStep(from, from + slice.size, doc.slice(from, to))
     }
 
-    public func map(_ mapping: Mappable) -> Step? {
+    public func map(_ mapping: any Mappable) -> (any Step)? {
         let from = mapping.mapResult(self.from, 1)
         let to = mapping.mapResult(self.to, -1)
         if from.deletedAcross && to.deletedAcross { return nil }
         return ReplaceStep(from.pos, Swift.max(from.pos, to.pos), slice)
     }
 
-    public func merge(_ other: Step) -> Step? {
+    public func merge(_ other: any Step) -> (any Step)? {
         guard let other = other as? ReplaceStep, !other.structure, !structure else { return nil }
         if from + slice.size == other.from && slice.openEnd == 0 && other.slice.openStart == 0 {
             let newSlice = slice.size + other.slice.size == 0 ? Slice.empty
@@ -59,7 +59,7 @@ public struct ReplaceStep: Step {
         return json
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> any Step {
         guard let from = json["from"]?.intValue, let to = json["to"]?.intValue else {
             throw ModelError.invalidJSON("Invalid input for ReplaceStep.fromJSON")
         }
@@ -113,7 +113,7 @@ public struct ReplaceAroundStep: Step {
                  gapTo, to - gapTo, slice.size - insert])
     }
 
-    public func invert(_ doc: Node) -> Step {
+    public func invert(_ doc: Node) -> any Step {
         let gap = gapTo - gapFrom
         return ReplaceAroundStep(
             from, from + slice.size + gap,
@@ -122,7 +122,7 @@ public struct ReplaceAroundStep: Step {
             gapFrom - from, structure: structure)
     }
 
-    public func map(_ mapping: Mappable) -> Step? {
+    public func map(_ mapping: any Mappable) -> (any Step)? {
         let from = mapping.mapResult(self.from, 1)
         let to = mapping.mapResult(self.to, -1)
         let gapFrom = self.from == self.gapFrom ? from.pos : mapping.map(self.gapFrom, -1)
@@ -141,7 +141,7 @@ public struct ReplaceAroundStep: Step {
         return json
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> any Step {
         guard let from = json["from"]?.intValue, let to = json["to"]?.intValue,
               let gapFrom = json["gapFrom"]?.intValue, let gapTo = json["gapTo"]?.intValue,
               let insert = json["insert"]?.intValue else {

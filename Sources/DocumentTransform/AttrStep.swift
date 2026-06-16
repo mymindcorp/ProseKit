@@ -24,12 +24,12 @@ public struct AttrStep: Step {
 
     public func getMap() -> StepMap { .empty }
 
-    public func invert(_ doc: Node) -> Step {
+    public func invert(_ doc: Node) -> any Step {
         let old = doc.nodeAt(pos)?.attrs[attr] ?? .null
         return AttrStep(pos, attr, old)
     }
 
-    public func map(_ mapping: Mappable) -> Step? {
+    public func map(_ mapping: any Mappable) -> (any Step)? {
         let p = mapping.mapResult(pos, 1)
         return p.deletedAfter ? nil : AttrStep(p.pos, attr, value)
     }
@@ -38,7 +38,7 @@ public struct AttrStep: Step {
         ["stepType": "attr", "pos": .int(pos), "attr": .string(attr), "value": value]
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> any Step {
         guard let pos = json["pos"]?.intValue, let attr = json["attr"]?.stringValue else {
             throw ModelError.invalidJSON("Invalid input for AttrStep.fromJSON")
         }
@@ -66,17 +66,17 @@ public struct DocAttrStep: Step {
 
     public func getMap() -> StepMap { .empty }
 
-    public func invert(_ doc: Node) -> Step {
+    public func invert(_ doc: Node) -> any Step {
         DocAttrStep(attr, doc.attrs[attr] ?? .null)
     }
 
-    public func map(_ mapping: Mappable) -> Step? { self }
+    public func map(_ mapping: any Mappable) -> (any Step)? { self }
 
     public func toJSON() -> [String: AttributeValue] {
         ["stepType": "docAttr", "attr": .string(attr), "value": value]
     }
 
-    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> Step {
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> any Step {
         guard let attr = json["attr"]?.stringValue else {
             throw ModelError.invalidJSON("Invalid input for DocAttrStep.fromJSON")
         }

@@ -14,7 +14,7 @@ open class Transform {
     /// The current document (the result of applying the steps so far).
     public private(set) var doc: Node
     /// The steps in this transform.
-    public private(set) var steps: [Step] = []
+    public private(set) var steps: [any Step] = []
     /// The documents before each of the steps.
     public private(set) var docs: [Node] = []
     /// A mapping with the maps for each of the steps in this transform.
@@ -29,7 +29,7 @@ open class Transform {
 
     /// Apply a new step, throwing if it fails.
     @discardableResult
-    public func step(_ step: Step) throws -> Self {
+    public func step(_ step: any Step) throws -> Self {
         let result = maybeStep(step)
         if let failed = result.failed { throw TransformError.failed(failed) }
         return self
@@ -37,7 +37,7 @@ open class Transform {
 
     /// Try to apply a step, recording it (and its map) if successful.
     @discardableResult
-    public func maybeStep(_ step: Step) -> StepResult {
+    public func maybeStep(_ step: any Step) -> StepResult {
         let result = step.apply(doc)
         if let newDoc = result.doc { addStep(step, newDoc) }
         return result
@@ -46,7 +46,7 @@ open class Transform {
     /// True when the document has been changed (when there are any steps).
     public var docChanged: Bool { !steps.isEmpty }
 
-    open func addStep(_ step: Step, _ doc: Node) {
+    open func addStep(_ step: any Step, _ doc: Node) {
         docs.append(self.doc)
         steps.append(step)
         mapping.appendMap(step.getMap())

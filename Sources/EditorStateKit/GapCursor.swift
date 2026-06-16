@@ -24,7 +24,7 @@ public final class GapCursor: Selection {
         other is GapCursor && other.head == head
     }
 
-    override public func map(_ doc: Node, _ mapping: Mappable) -> Selection {
+    override public func map(_ doc: Node, _ mapping: any Mappable) -> Selection {
         let pos = doc.resolve(mapping.map(head))
         return GapCursor.valid(pos) ? GapCursor(pos) : Selection.near(pos)
     }
@@ -59,7 +59,7 @@ public final class GapCursor: Selection {
         ["type": .string("gapcursor"), "pos": .int(head)]
     }
 
-    override public func getBookmark() -> SelectionBookmark {
+    override public func getBookmark() -> any SelectionBookmark {
         GapBookmark(pos: anchor)
     }
 
@@ -125,7 +125,7 @@ public final class GapCursor: Selection {
 /// Bookmark for a gap cursor (history restores it through this).
 public struct GapBookmark: SelectionBookmark {
     public let pos: Int
-    public func map(_ mapping: Mappable) -> SelectionBookmark {
+    public func map(_ mapping: any Mappable) -> any SelectionBookmark {
         GapBookmark(pos: mapping.map(pos, 1))
     }
     public func resolve(_ doc: Node) -> Selection {

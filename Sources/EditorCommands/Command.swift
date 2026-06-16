@@ -18,7 +18,7 @@ public typealias Dispatch = (Transaction) -> Void
 /// function and a host. They return `true` when they apply to the given state.
 /// When a `dispatch` is given, they should produce their effect by dispatching
 /// a transaction.
-public typealias Command = @Sendable (_ state: EditorState, _ dispatch: Dispatch?, _ host: CommandHost?) -> Bool
+public typealias Command = @Sendable (_ state: EditorState, _ dispatch: Dispatch?, _ host: (any CommandHost)?) -> Bool
 
 /// Combine a number of commands into one. The combined command runs them in
 /// order until one returns `true`.

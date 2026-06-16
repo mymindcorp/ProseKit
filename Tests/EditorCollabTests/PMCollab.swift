@@ -11,7 +11,7 @@ import TestHarness
 
 private final class DummyServer {
     var states: [EditorState] = []
-    var steps: [Step] = []
+    var steps: [any Step] = []
     var clientIDs: [Int] = []
     var delayed: [Int] = []
 

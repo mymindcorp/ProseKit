@@ -215,7 +215,7 @@ public extension Transform {
     func clearIncompatible(_ pos: Int, _ parentType: NodeType, _ match: ContentMatch? = nil, clearNewlines: Bool = true) throws -> Self {
         guard let node = doc.nodeAt(pos) else { return self }
         var match = match ?? parentType.contentMatch
-        var replSteps: [Step] = []
+        var replSteps: [any Step] = []
         var cur = pos + 1
         // Code/`pre` blocks keep literal newlines; other textblocks turn them into
         // spaces (matching ProseMirror, so converting a code block to a paragraph

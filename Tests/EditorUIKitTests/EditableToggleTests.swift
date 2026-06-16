@@ -138,12 +138,12 @@ final class EditableToggleTests: XCTestCase {
         let view = try makeView("hello")
         selectAll(view)
         view.isEditable = false
-        XCTAssertFalse(view.canPerformAction(#selector(UIResponderStandardEditActions.cut(_:)), withSender: nil))
-        XCTAssertFalse(view.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil))
+        XCTAssertFalse(view.canPerformAction(#selector((any UIResponderStandardEditActions).cut(_:)), withSender: nil))
+        XCTAssertFalse(view.canPerformAction(#selector((any UIResponderStandardEditActions).paste(_:)), withSender: nil))
         XCTAssertFalse(view.canPerformAction(#selector(EditorTextView.formatBold(_:)), withSender: nil))
-        XCTAssertTrue(view.canPerformAction(#selector(UIResponderStandardEditActions.copy(_:)), withSender: nil),
+        XCTAssertTrue(view.canPerformAction(#selector((any UIResponderStandardEditActions).copy(_:)), withSender: nil),
                       "copy stays available read-only")
-        XCTAssertTrue(view.canPerformAction(#selector(UIResponderStandardEditActions.selectAll(_:)), withSender: nil))
+        XCTAssertTrue(view.canPerformAction(#selector((any UIResponderStandardEditActions).selectAll(_:)), withSender: nil))
     }
 }
 #endif

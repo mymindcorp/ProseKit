@@ -99,8 +99,13 @@ let package = Package(
     ]
 )
 
-// Treat warnings as errors across every target (first-class Swift 6.2 setting —
-// not `.unsafeFlags`, so the package stays usable as a dependency).
+// Package-wide Swift settings:
+// - treat warnings as errors (first-class Swift 6.2 setting, not `.unsafeFlags`,
+//   so the package stays usable as a dependency);
+// - require `any` on existentials ahead of the Swift 7 default (SE-0335).
 for target in package.targets {
-    target.swiftSettings = (target.swiftSettings ?? []) + [.treatAllWarnings(as: .error)]
+    target.swiftSettings = (target.swiftSettings ?? []) + [
+        .treatAllWarnings(as: .error),
+        .enableUpcomingFeature("ExistentialAny"),
+    ]
 }

@@ -39,7 +39,7 @@ public let deleteSelection: Command = { state, dispatch, _ in
     return true
 }
 
-private func atBlockStart(_ state: EditorState, _ host: CommandHost?) -> ResolvedPos? {
+private func atBlockStart(_ state: EditorState, _ host: (any CommandHost)?) -> ResolvedPos? {
     guard let sel = state.selection as? TextSelection, let cursor = sel.cursor else { return nil }
     if let host, let end = host.endOfTextblock("backward", state) {
         if !end { return nil }
@@ -49,7 +49,7 @@ private func atBlockStart(_ state: EditorState, _ host: CommandHost?) -> Resolve
     return cursor
 }
 
-private func atBlockEnd(_ state: EditorState, _ host: CommandHost?) -> ResolvedPos? {
+private func atBlockEnd(_ state: EditorState, _ host: (any CommandHost)?) -> ResolvedPos? {
     guard let sel = state.selection as? TextSelection, let cursor = sel.cursor else { return nil }
     if let host, let end = host.endOfTextblock("forward", state) {
         if !end { return nil }

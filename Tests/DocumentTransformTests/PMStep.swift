@@ -7,7 +7,7 @@ import TestHarness
 
 private let stepDoc = doc(p("foobar")).node
 
-private func mkStep(_ from: Int, _ to: Int, _ val: String?) -> Step {
+private func mkStep(_ from: Int, _ to: Int, _ val: String?) -> any Step {
     switch val {
     case "+em": return AddMarkStep(from, to, basicSchema.mark("em"))
     case "-em": return RemoveMarkStep(from, to, basicSchema.mark("em"))

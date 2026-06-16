@@ -64,7 +64,7 @@ func tag(_ t: TaggedNode, _ name: String) -> Int {
     return v
 }
 
-private func flatten(_ children: [PMContentChild], _ f: (Node) -> Node) -> (nodes: [Node], tags: [String: Int]) {
+private func flatten(_ children: [any PMContentChild], _ f: (Node) -> Node) -> (nodes: [Node], tags: [String: Int]) {
     var nodes: [Node] = []
     var tags: [String: Int] = [:]
     var pos = 0
@@ -96,12 +96,12 @@ private func flatten(_ children: [PMContentChild], _ f: (Node) -> Node) -> (node
     return (nodes, tags)
 }
 
-private func block(_ name: String, _ attrs: Attrs, _ children: [PMContentChild]) -> TaggedNode {
+private func block(_ name: String, _ attrs: Attrs, _ children: [any PMContentChild]) -> TaggedNode {
     let (nodes, tags) = flatten(children) { $0 }
     return TaggedNode(node: try! basicSchema.node(name, attrs, content: Fragment.from(nodes)), tags: tags)
 }
 
-private func markBuilder(_ name: String, _ attrs: Attrs, _ children: [PMContentChild]) -> MarkFrag {
+private func markBuilder(_ name: String, _ attrs: Attrs, _ children: [any PMContentChild]) -> MarkFrag {
     let m = basicSchema.mark(name, attrs)
     let (nodes, tags) = flatten(children) { n in
         let set = m.addToSet(n.marks)
@@ -112,16 +112,16 @@ private func markBuilder(_ name: String, _ attrs: Attrs, _ children: [PMContentC
 
 // MARK: - Builders (prosemirror-test-builder aliases)
 
-func doc(_ c: PMContentChild...) -> TaggedNode { block("doc", [:], c) }
-func p(_ c: PMContentChild...) -> TaggedNode { block("paragraph", [:], c) }
-func blockquote(_ c: PMContentChild...) -> TaggedNode { block("blockquote", [:], c) }
-func pre(_ c: PMContentChild...) -> TaggedNode { block("code_block", [:], c) }
-func h1(_ c: PMContentChild...) -> TaggedNode { block("heading", ["level": .int(1)], c) }
-func h2(_ c: PMContentChild...) -> TaggedNode { block("heading", ["level": .int(2)], c) }
-func h3(_ c: PMContentChild...) -> TaggedNode { block("heading", ["level": .int(3)], c) }
-func ul(_ c: PMContentChild...) -> TaggedNode { block("bullet_list", [:], c) }
-func ol(_ c: PMContentChild...) -> TaggedNode { block("ordered_list", [:], c) }
-func li(_ c: PMContentChild...) -> TaggedNode { block("list_item", [:], c) }
+func doc(_ c: any PMContentChild...) -> TaggedNode { block("doc", [:], c) }
+func p(_ c: any PMContentChild...) -> TaggedNode { block("paragraph", [:], c) }
+func blockquote(_ c: any PMContentChild...) -> TaggedNode { block("blockquote", [:], c) }
+func pre(_ c: any PMContentChild...) -> TaggedNode { block("code_block", [:], c) }
+func h1(_ c: any PMContentChild...) -> TaggedNode { block("heading", ["level": .int(1)], c) }
+func h2(_ c: any PMContentChild...) -> TaggedNode { block("heading", ["level": .int(2)], c) }
+func h3(_ c: any PMContentChild...) -> TaggedNode { block("heading", ["level": .int(3)], c) }
+func ul(_ c: any PMContentChild...) -> TaggedNode { block("bullet_list", [:], c) }
+func ol(_ c: any PMContentChild...) -> TaggedNode { block("ordered_list", [:], c) }
+func li(_ c: any PMContentChild...) -> TaggedNode { block("list_item", [:], c) }
 func hr() -> TaggedNode { block("horizontal_rule", [:], []) }
 func br() -> TaggedNode { block("hard_break", [:], []) }
 func img(src: String = "img.png", alt: String? = nil) -> TaggedNode {
@@ -129,19 +129,19 @@ func img(src: String = "img.png", alt: String? = nil) -> TaggedNode {
     if let alt { attrs["alt"] = .string(alt) }
     return block("image", attrs, [])
 }
-func em(_ c: PMContentChild...) -> MarkFrag { markBuilder("em", [:], c) }
-func strong(_ c: PMContentChild...) -> MarkFrag { markBuilder("strong", [:], c) }
-func code(_ c: PMContentChild...) -> MarkFrag { markBuilder("code", [:], c) }
-func a(_ c: PMContentChild..., href: String = "foo") -> MarkFrag { markBuilder("link", ["href": .string(href)], c) }
+func em(_ c: any PMContentChild...) -> MarkFrag { markBuilder("em", [:], c) }
+func strong(_ c: any PMContentChild...) -> MarkFrag { markBuilder("strong", [:], c) }
+func code(_ c: any PMContentChild...) -> MarkFrag { markBuilder("code", [:], c) }
+func a(_ c: any PMContentChild..., href: String = "foo") -> MarkFrag { markBuilder("link", ["href": .string(href)], c) }
 
 // MARK: - Table builders (prosemirror-tables test-builder)
 
-func table(_ c: PMContentChild...) -> TaggedNode { block("table", [:], c) }
-func tr(_ c: PMContentChild...) -> TaggedNode { block("tableRow", [:], c) }
-func td(_ c: PMContentChild...) -> TaggedNode { block("tableCell", [:], c) }
-func th(_ c: PMContentChild...) -> TaggedNode { block("tableHeader", [:], c) }
-func tdAttrs(_ attrs: Attrs, _ c: PMContentChild...) -> TaggedNode { block("tableCell", attrs, c) }
-func thAttrs(_ attrs: Attrs, _ c: PMContentChild...) -> TaggedNode { block("tableHeader", attrs, c) }
+func table(_ c: any PMContentChild...) -> TaggedNode { block("table", [:], c) }
+func tr(_ c: any PMContentChild...) -> TaggedNode { block("tableRow", [:], c) }
+func td(_ c: any PMContentChild...) -> TaggedNode { block("tableCell", [:], c) }
+func th(_ c: any PMContentChild...) -> TaggedNode { block("tableHeader", [:], c) }
+func tdAttrs(_ attrs: Attrs, _ c: any PMContentChild...) -> TaggedNode { block("tableCell", attrs, c) }
+func thAttrs(_ attrs: Attrs, _ c: any PMContentChild...) -> TaggedNode { block("tableHeader", attrs, c) }
 func cell(_ colspan: Int, _ rowspan: Int, _ text: String = "x") -> TaggedNode {
     block("tableCell", ["colspan": .int(colspan), "rowspan": .int(rowspan)], [p(text)])
 }

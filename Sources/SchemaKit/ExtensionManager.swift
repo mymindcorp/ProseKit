@@ -8,11 +8,11 @@ import EditorInputRules
 /// commands, and the ProseMirror plugins (input rules, keymap, and any
 /// extension-provided plugins). Mirrors Tiptap's resolution order.
 public final class ExtensionManager {
-    public let extensions: [Extension]
+    public let extensions: [any Extension]
     public let schema: Schema
     private let htmlByName: [String: HTMLSpec]
 
-    public init(_ extensions: [Extension]) throws(ModelError) {
+    public init(_ extensions: [any Extension]) throws(ModelError) {
         // Sort by priority (descending), stable on declaration order.
         let sorted = extensions.enumerated().sorted { a, b in
             a.element.priority != b.element.priority
@@ -25,10 +25,10 @@ public final class ExtensionManager {
         var markSpecs: [(String, MarkSpec)] = []
         var html: [String: HTMLSpec] = [:]
         for ext in sorted {
-            if let node = ext as? NodeExtension {
+            if let node = ext as? any NodeExtension {
                 nodeSpecs.append((node.name, node.nodeSpec))
                 html[node.name] = node.html
-            } else if let mark = ext as? MarkExtension {
+            } else if let mark = ext as? any MarkExtension {
                 markSpecs.append((mark.name, mark.markSpec))
                 html[mark.name] = mark.html
             }
@@ -40,7 +40,7 @@ public final class ExtensionManager {
         self.htmlByName = html
     }
 
-    func context(for ext: Extension, editor: Editor?) -> ExtensionContext {
+    func context(for ext: any Extension, editor: Editor?) -> ExtensionContext {
         ExtensionContext(
             schema: schema,
             nodeType: schema.nodes[ext.name],

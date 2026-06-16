@@ -55,7 +55,7 @@ open class Selection {
     }
 
     /// Map this selection through a set of mappings, onto a new document.
-    open func map(_ doc: Node, _ mapping: Mappable) -> Selection {
+    open func map(_ doc: Node, _ mapping: any Mappable) -> Selection {
         fatalError("must override")
     }
 
@@ -119,7 +119,7 @@ open class Selection {
     }
 
     /// Get a bookmark for this selection (position that survives mapping).
-    open func getBookmark() -> SelectionBookmark {
+    open func getBookmark() -> any SelectionBookmark {
         TextSelection.between(resolvedAnchor, resolvedHead).getBookmark()
     }
 
@@ -220,6 +220,6 @@ func findSelectionIn(_ doc: Node, _ node: Node, _ pos: Int, _ index: Int, _ dir:
 /// A lightweight, position-only representation of a selection that can be
 /// mapped through document changes.
 public protocol SelectionBookmark {
-    func map(_ mapping: Mappable) -> SelectionBookmark
+    func map(_ mapping: any Mappable) -> any SelectionBookmark
     func resolve(_ doc: Node) -> Selection
 }

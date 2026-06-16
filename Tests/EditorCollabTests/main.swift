@@ -24,14 +24,14 @@ func startDoc() -> Node {
 /// A minimal central authority: an ordered, append-only log of steps.
 final class Authority {
     private(set) var doc: Node
-    private(set) var steps: [Step] = []
+    private(set) var steps: [any Step] = []
     private(set) var clientIDs: [Int] = []
     init(_ doc: Node) { self.doc = doc }
     var version: Int { steps.count }
 
     /// Accept steps if they are based on the current version.
     @discardableResult
-    func receive(version: Int, steps: [Step], clientID: Int) -> Bool {
+    func receive(version: Int, steps: [any Step], clientID: Int) -> Bool {
         if version != self.version { return false }
         for s in steps {
             let result = s.apply(doc)
@@ -43,7 +43,7 @@ final class Authority {
         return true
     }
 
-    func stepsSince(_ version: Int) -> (steps: [Step], clientIDs: [Int]) {
+    func stepsSince(_ version: Int) -> (steps: [any Step], clientIDs: [Int]) {
         (Array(steps[version...]), Array(clientIDs[version...]))
     }
 }
