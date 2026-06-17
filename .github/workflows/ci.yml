@@ -10,6 +10,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Opt into the package's warnings-as-errors policy (gated off by default so the
+# package builds as an Xcode SPM dependency — see Package.swift).
+env:
+  PROSEKIT_STRICT: "1"
+
 jobs:
   # macOS-buildable targets (the model/transform/state/commands/serialization
   # layers) + the headless CLT test suites. `swift build` also enforces the

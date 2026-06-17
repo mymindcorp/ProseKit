@@ -41,9 +41,9 @@ if [ "$ASSUME_YES" -ne 1 ]; then
   case "$ans" in [yY]|[yY][eE][sS]) ;; *) echo "aborted."; exit 0 ;; esac
 fi
 
-# Fast sanity build (also enforces warnings-as-errors / ExistentialAny). Full
-# tests are CI's job.
-swift build
+# Fast sanity build. PROSEKIT_STRICT turns on warnings-as-errors (gated off by
+# default so the package builds as an Xcode SPM dependency). Full tests are CI's job.
+PROSEKIT_STRICT=1 swift build
 
 git push origin "$BRANCH"
 gh release create "$VERSION" --target "$(git rev-parse HEAD)" --title "$VERSION" --generate-notes

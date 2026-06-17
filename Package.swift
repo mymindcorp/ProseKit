@@ -99,13 +99,23 @@ let package = Package(
     ]
 )
 
-// Package-wide Swift settings:
-// - treat warnings as errors (first-class Swift 6.2 setting, not `.unsafeFlags`,
-//   so the package stays usable as a dependency);
-// - require `any` on existentials ahead of the Swift 7 default (SE-0335).
+// Package-wide Swift settings.
+//
+// `ExistentialAny` is always on — it only enforces the `any` spelling in our own
+// (already-compliant) source ahead of the Swift 7 default (SE-0335), and never
+// conflicts with a consumer's build.
+//
+// Warnings-as-errors is a policy for *developing* ProseKit, not something to
+// impose on consumers: it emits `-warnings-as-errors`, and when ProseKit is built
+// as an Xcode SPM dependency Xcode injects `-suppress-warnings` for package code —
+// swiftc refuses both at once ("Conflicting options '-warnings-as-errors' and
+// '-suppress-warnings'"). So it's gated behind PROSEKIT_STRICT, which our CI and
+// release script set; consumer builds (no env var) get a normal, conflict-free
+// compile.
+var packageSwiftSettings: [SwiftSetting] = [.enableUpcomingFeature("ExistentialAny")]
+if Context.environment["PROSEKIT_STRICT"] != nil {
+    packageSwiftSettings.append(.treatAllWarnings(as: .error))
+}
 for target in package.targets {
-    target.swiftSettings = (target.swiftSettings ?? []) + [
-        .treatAllWarnings(as: .error),
-        .enableUpcomingFeature("ExistentialAny"),
-    ]
+    target.swiftSettings = (target.swiftSettings ?? []) + packageSwiftSettings
 }
