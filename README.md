@@ -131,3 +131,15 @@ The library and its tests build with plain SwiftPM; the demo needs Xcode's `xcod
 swift build
 swift run SchemaKitTests        # the test suites are executable targets
 ```
+
+## License & credits
+
+ProseKit is released under the [MIT License](LICENSE) (© 2026 mymind, Inc.).
+
+It is a Swift reimplementation heavily based on — and porting code and tests
+from — two MIT-licensed projects, with gratitude:
+
+- [**ProseMirror**](https://prosemirror.net) (© Marijn Haverbeke and others) — the document model, transforms, state, and the table/collab/changeset algorithms.
+- [**Tiptap**](https://tiptap.dev) (© Tiptap GmbH) — the extension architecture, schema/mark naming, and editor ergonomics.
+
+Their copyright and permission notices are reproduced in [NOTICE](NOTICE).
