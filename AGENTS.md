@@ -1,0 +1,48 @@
+# AGENTS
+
+Notes for coding agents working in this repo.
+
+## Toolchain / building
+
+- **Package (library + tests):** the active CLI toolchain is **Command Line Tools** (`xcode-select -p` → `/Library/Developer/CommandLineTools`), so `xcodebuild` is unavailable by default. Build and test the SwiftPM package with:
+  - `swift build`
+  - `swift run <Module>Tests` (the test suites are executable targets, not XCTest/Swift Testing — see `Tests/`).
+
+- **Xcode IS installed** at `/Applications/Xcode.app` (currently Xcode 26.3). It is just not the selected toolchain. To build the Mac Catalyst demo app — or anything needing `xcodebuild` — drive Xcode's tools via a `DEVELOPER_DIR` override (no `sudo xcode-select` needed):
+
+  ```sh
+  DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  xcodebuild -project Examples/EditorDemo/EditorDemo.xcodeproj -scheme EditorDemo \
+    -destination 'platform=macOS,variant=Mac Catalyst' \
+    -derivedDataPath /tmp/editordemo-dd build
+  ```
+
+- **Demo project is generated** from `Examples/EditorDemo/project.yml` via `xcodegen`. After editing `project.yml`, run `xcodegen generate` in `Examples/EditorDemo/` to refresh the `.xcodeproj`.
+
+## Platforms
+
+- Minimum deployment targets are **macOS 15 / iOS 18** (required by the `Synchronization` module's `Mutex`).
+
+## Reference sources (porting)
+
+This codebase is a Swift port of ProseMirror/Tiptap. When porting algorithms or
+test suites, port from the **official ProseMirror sources** at
+<https://github.com/ProseMirror> (`prosemirror-model`, `-transform`, `-state`,
+`-commands`, `-history`, `-collab`, `-tables`, `-inputrules`, `-keymap`,
+`-schema-list`, `-markdown`, `-test-builder`). Fetch files raw, e.g.:
+
+```sh
+curl -s https://raw.githubusercontent.com/ProseMirror/prosemirror-history/master/src/history.ts
+```
+
+(WebFetch-style summarizer tools tend to refuse verbatim source; plain `curl` of
+`raw.githubusercontent.com` works.)
+
+Provenance note: the table row/column *move* code
+(`Sources/SchemaKit/TableMove.swift`, `TableMoveCommands.swift`,
+`Tests/SchemaKitTests/PMTableMove.swift`) ports
+**official `ProseMirror/prosemirror-tables`** `src/utils/` +
+`test/{transpose,move-row-in-array-of-rows,convert-*}.test.ts`. Only port code
+from ProseMirror. If you ever need an algorithm that exists only in a
+non-ProseMirror repo, flag it explicitly in code comments and get sign-off
+before porting from it.

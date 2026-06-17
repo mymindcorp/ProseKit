@@ -3,9 +3,7 @@ import DocumentTransform
 import EditorStateKit
 
 // Row/column move, ported from prosemirror-tables src/utils/{move-row,
-// move-column, selection-range, get-cells, query}.ts (official ProseMirror
-// sources; the algorithm originated in Atlassian's editor-tables, Apache 2.0,
-// and was absorbed upstream).
+// move-column, selection-range, get-cells, query}.ts (official ProseMirror).
 
 /// The closest parent matching a predicate: its node, the position before it,
 /// its start, and its depth (prosemirror-tables' FindNodeResult).
