@@ -108,6 +108,14 @@ public final class Editor {
         return run(setColor(type, color))
     }
 
+    /// Highlight the selection with a named color (a `theme.highlightColors` key,
+    /// e.g. "yellow"); pass nil for the default highlight. No-op without the mark.
+    @discardableResult
+    public func setHighlight(_ color: String?) -> Bool {
+        guard let type = schema.marks["highlight"] else { return false }
+        return run(SchemaKit.setHighlight(type, color: color))
+    }
+
     /// Run a sequence of commands as a chain, threading state through each.
     /// Returns true if all applied.
     @discardableResult

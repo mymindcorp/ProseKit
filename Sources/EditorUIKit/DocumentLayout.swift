@@ -1058,7 +1058,8 @@ final class DocumentLayout {
 
     // MARK: - Draw
 
-    func draw(in ctx: CGContext, clipY: ClosedRange<CGFloat>? = nil) {
+    func draw(in ctx: CGContext, clipY: ClosedRange<CGFloat>? = nil,
+              highlightRenderer: ((CGContext, [HighlightRun]) -> Void)? = nil) {
         func visible(_ minY: CGFloat, _ maxY: CGFloat) -> Bool {
             guard let clipY else { return true }
             return maxY >= clipY.lowerBound && minY <= clipY.upperBound
@@ -1103,11 +1104,22 @@ final class DocumentLayout {
             }
         }
         // Highlight-mark backgrounds, behind the text (CoreText won't draw them).
-        for highlight in highlights {
-            for rect in selectionRects(from: highlight.from, to: highlight.to) where visible(rect.minY, rect.maxY) {
-                let r = rect.insetBy(dx: -1, dy: -1)
-                highlight.color.setFill()
-                UIBezierPath(roundedRect: r, cornerRadius: 3).fill()
+        if let highlightRenderer {
+            // Host-drawn (e.g. a textured "drying ink" effect): hand it the visible runs.
+            var runs: [HighlightRun] = []
+            for highlight in highlights {
+                for rect in selectionRects(from: highlight.from, to: highlight.to) where visible(rect.minY, rect.maxY) {
+                    runs.append(HighlightRun(from: highlight.from, to: highlight.to, rect: rect, color: highlight.color))
+                }
+            }
+            if !runs.isEmpty { highlightRenderer(ctx, runs) }
+        } else {
+            for highlight in highlights {
+                for rect in selectionRects(from: highlight.from, to: highlight.to) where visible(rect.minY, rect.maxY) {
+                    let r = rect.insetBy(dx: -1, dy: -1)
+                    highlight.color.setFill()
+                    UIBezierPath(roundedRect: r, cornerRadius: 3).fill()
+                }
             }
         }
         // Text blocks via CoreText.

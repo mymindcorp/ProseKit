@@ -9,6 +9,17 @@ import EditorKeymap
 import SchemaKit
 import EditorSerialization
 
+/// One on-screen run of a highlight-mark background, passed to a custom
+/// `EditorTextView.highlightRenderer`. `from`/`to` are the run's document range —
+/// stable across scrolling, so a renderer can animate a given highlight over time
+/// — and `rect` is its position in the draw context's (content) coordinates.
+public struct HighlightRun {
+    public let from: Int
+    public let to: Int
+    public let rect: CGRect
+    public let color: UIColor
+}
+
 /// A UIKit view that renders an `Editor`'s document with CoreText and handles
 /// text input, caret placement, key bindings, and selection. The shared engine
 /// does all editing; this view only renders and translates input.
@@ -148,9 +159,12 @@ open class EditorTextView: UIView, UIKeyInput {
         // Pointer cursors (macOS / iPad trackpad): I-beam over text, hover
         // shape over checkboxes, resize arrows over table column borders.
         addInteraction(UIPointerInteraction(delegate: self))
+        // NOTE: a custom edit-menu interaction is installed lazily — only when the
+        // host sets `editMenuItems` — so the system's native callout (with Writing
+        // Tools / Rewrite) stays intact by default. See `editMenuItems`.
 
         editor.onTransaction = { [weak self] tr in self?.mapSpellCache(through: tr) }
-        editor.onChange = { [weak self] _ in self?.setNeedsRebuild() }
+        editor.onChange = { [weak self] _ in self?.setNeedsRebuild(); self?.fireSelectionChange() }
         registerForDynamicTypeChanges()
     }
 
@@ -178,7 +192,7 @@ open class EditorTextView: UIView, UIKeyInput {
     public var contentOffsetY: CGFloat = 0 {
         // Scrolling only repositions the caret layer; it must NOT reveal the
         // caret (that would scroll back to the cursor and fight the user).
-        didSet { if oldValue != contentOffsetY { realizeVisibleIfNeeded(); setNeedsDisplay(); positionCaretLayer(); syncCheckboxViews(); updateSuggestionPopup(); notifySelectionGeometryChanged() } }
+        didSet { if oldValue != contentOffsetY { realizeVisibleIfNeeded(); setNeedsDisplay(); positionCaretLayer(); syncCheckboxViews(); updateSuggestionPopup(); notifySelectionGeometryChanged(); fireSelectionChange() } }
     }
     /// The full document height; the host uses it as the scroll content height.
     public var documentHeight: CGFloat { ensureLayout().height }
@@ -338,6 +352,17 @@ open class EditorTextView: UIView, UIKeyInput {
         textInputDelegate?.selectionDidChange(self)
     }
 
+    /// Report the selection's on-screen geometry to `onSelectionChange` (for a
+    /// host-drawn bubble menu). Rects are in view coordinates.
+    private func fireSelectionChange() {
+        guard let onSelectionChange else { return }
+        let sel = editor.state.selection
+        guard !sel.empty else { onSelectionChange([], true); return }
+        let rects = ensureLayout().selectionRects(from: sel.from, to: sel.to)
+            .map { $0.offsetBy(dx: 0, dy: -contentOffsetY) }
+        onSelectionChange(rects, false)
+    }
+
     /// If the caret sits in a still-estimated (off-screen) block under lazy
     /// layout, realize the region around it so `caretRect`/`revealRect` can scroll
     /// to it (e.g. ⌘↓ to the end of a huge document, or a programmatic selection).
@@ -487,7 +512,7 @@ open class EditorTextView: UIView, UIKeyInput {
                 for r in l.selectionRects(from: range.from.pos, to: range.to.pos) where onScreen(r) { ctx.fill(r) }
             }
         }
-        l.draw(in: ctx, clipY: visibleY)
+        l.draw(in: ctx, clipY: visibleY, highlightRenderer: highlightRenderer)
 
         // Spelling underlines — skip the word under the caret, and only the
         // misspellings within the visible block window (bounds the work on huge
@@ -897,10 +922,50 @@ open class EditorTextView: UIView, UIKeyInput {
         textInteraction = interaction
     }
 
+    /// Reports the current selection's on-screen rects (view coordinates) and
+    /// whether it's empty, whenever the selection or its geometry changes — edits,
+    /// selection drags, and scrolling. Enough to anchor a floating "bubble" menu
+    /// over the selection; `rects` is empty when the selection is collapsed.
+    public var onSelectionChange: ((_ rects: [CGRect], _ isEmpty: Bool) -> Void)?
+
     /// Called when the editor gains keyboard focus (becomes first responder).
     public var onFocus: (() -> Void)?
     /// Called when the editor loses keyboard focus (resigns first responder).
     public var onBlur: (() -> Void)?
+
+    /// Contribute custom items to the text-selection edit menu (the callout shown
+    /// over a selection). Return the extra elements to append after the system
+    /// items (Copy/Paste/…); return `[]` to leave the menu unchanged. Each call
+    /// reflects the current selection, so build actions against `editor` (e.g. a
+    /// highlighter). See the demo's `HighlighterMenu` for an example.
+    ///
+    /// Installing a custom edit-menu interaction means the system's own callout
+    /// (which contributes Writing Tools / Rewrite) is replaced by ours. So we only
+    /// own the menu while a host actually sets this — leave it nil and the native
+    /// menu (including Writing Tools) is untouched.
+    public var editMenuItems: (@MainActor (_ editor: Editor) -> [UIMenuElement])? {
+        didSet {
+            let wantsCustomMenu = editMenuItems != nil
+            if wantsCustomMenu, editMenuInteraction == nil {
+                let interaction = UIEditMenuInteraction(delegate: self)
+                addInteraction(interaction)
+                editMenuInteraction = interaction
+            } else if !wantsCustomMenu, let interaction = editMenuInteraction {
+                removeInteraction(interaction)
+                editMenuInteraction = nil
+            }
+        }
+    }
+    private var editMenuInteraction: UIEditMenuInteraction?
+
+    /// When set, the host draws highlight-mark backgrounds itself instead of the
+    /// built-in flat fill — e.g. a textured "drying ink" effect. Called during the
+    /// draw pass with the graphics context (already in content coordinates, so
+    /// draw runs at their given rects) and the visible runs. Each `HighlightRun`
+    /// carries its document range (a stable identity across scrolling, for
+    /// per-highlight animation) plus the on-screen rect and resolved color. Call
+    /// `setNeedsDisplay()` to drive an animation. nil → default rendering.
+    public var highlightRenderer: ((_ ctx: CGContext, _ runs: [HighlightRun]) -> Void)?
 
     /// Whether the editor currently has keyboard focus. Redefines UIView's
     /// focus-engine `isFocused` to mean "is first responder" — the meaningful
@@ -950,26 +1015,46 @@ open class EditorTextView: UIView, UIKeyInput {
         hideSuggestion()
     }
 
+    // MARK: - Floating overlays (suggestion menu, link editor)
+
+    /// The view that hosts floating overlays (the suggestion/slash menu and the
+    /// link editor) so an enclosing scroll view can't clip them. The window when
+    /// the view is in the hierarchy; otherwise self (still works, just clipped).
+    public var overlayHost: UIView { window ?? self }
+
+    /// Frame a floating `popup` of `size` relative to a viewport-space `anchor`
+    /// (in this view's coordinates), hosting it in `overlayHost` so it isn't
+    /// clipped. Prefers below the anchor, flips above when it would overflow the
+    /// host's bottom edge, and clamps horizontally. Re-parents the popup as needed.
+    func placeOverlay(_ popup: UIView, viewportAnchor anchor: CGRect, size: CGSize, gap: CGFloat = 4) {
+        let host = overlayHost
+        if popup.superview !== host {
+            popup.removeFromSuperview()
+            host.addSubview(popup)
+        }
+        let a = convert(anchor, to: host) // viewport rect → host (window) coords
+        let b = host.bounds
+        let x = min(max(a.minX, 4), max(4, b.width - size.width - 4))
+        let below = a.maxY + gap
+        let y = (below + size.height > b.maxY - 4 && a.minY - size.height - gap > b.minY + 4)
+            ? a.minY - size.height - gap : below
+        popup.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
+        host.bringSubviewToFront(popup)
+    }
+
     private func showSuggestion(_ entries: [SuggestionEntry], caretAt pos: Int) {
         let popup = suggestionPopup ?? {
             let p = SuggestionPopupView(theme: theme)
             p.onSelect = { [weak self] _ in self?.acceptSuggestion() }
-            addSubview(p)
             suggestionPopup = p
             return p
         }()
         activeEntries = entries
         popup.setItems(entries.map { SuggestionPopupView.Item(title: $0.title, subtitle: $0.subtitle, icon: $0.icon) })
-        // Position just below the caret, in view (viewport) coordinates.
+        // Anchor to the caret (viewport coords); the host keeps it un-clipped.
         let caret = (ensureLayout().caretRect(at: min(pos, editor.doc.content.size)) ?? .zero)
             .offsetBy(dx: 0, dy: -contentOffsetY)
-        let size = popup.fittingSize()
-        let x = min(max(caret.minX, 4), max(4, bounds.width - size.width - 4))
-        // Flip above the caret if it would overflow the bottom edge.
-        let below = caret.maxY + 4
-        let y = (below + size.height > bounds.height - 4 && caret.minY - size.height - 4 > 0)
-            ? caret.minY - size.height - 4 : below
-        popup.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
+        placeOverlay(popup, viewportAnchor: caret, size: popup.fittingSize())
     }
 
     private func hideSuggestion() {
@@ -1188,15 +1273,14 @@ open class EditorTextView: UIView, UIKeyInput {
         let popup = LinkPopupView(theme: theme, initialURL: target.href, showRemove: target.href != nil)
         popup.onSubmit = { [weak self] url in self?.applyLink(url, from: target.from, to: target.to) }
         popup.onCancel = { [weak self] in self?.dismissLinkEditor() }
-        addSubview(popup)
         linkPopup = popup
         let caret = (ensureLayout().caretRect(at: min(target.from, editor.doc.content.size)) ?? .zero)
             .offsetBy(dx: 0, dy: -contentOffsetY)
         let size = popup.systemLayoutSizeFitting(CGSize(width: 320, height: 0),
                                                  withHorizontalFittingPriority: .required,
                                                  verticalFittingPriority: .fittingSizeLevel)
-        let x = min(max(caret.minX, 4), max(4, bounds.width - size.width - 4))
-        popup.frame = CGRect(x: x, y: caret.maxY + 6, width: size.width, height: size.height)
+        // Host in the window so the scroll view can't clip the popover.
+        placeOverlay(popup, viewportAnchor: caret, size: size, gap: 6)
         popup.focus()
     }
 
@@ -2534,6 +2618,21 @@ extension EditorTextView: UIGestureRecognizerDelegate {
     /// Coexist with UITextInteraction's own recognizers.
     public func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         true
+    }
+}
+
+extension EditorTextView: UIEditMenuInteractionDelegate {
+    // Append the host's custom items (e.g. a highlighter) after the system menu
+    // items. Returning nil leaves the default menu untouched. The protocol method
+    // is nonisolated in this SDK; UIKit invokes it on the main thread, so it's
+    // safe to assume main-actor isolation to read our state.
+    public nonisolated func editMenuInteraction(_ interaction: UIEditMenuInteraction,
+                                                menuFor configuration: UIEditMenuConfiguration,
+                                                suggestedActions: [UIMenuElement]) -> UIMenu? {
+        MainActor.assumeIsolated {
+            guard let custom = editMenuItems?(editor), !custom.isEmpty else { return nil }
+            return UIMenu(children: suggestedActions + custom)
+        }
     }
 }
 
