@@ -213,6 +213,7 @@ registerMarksParityTests()
 registerEditorContentAPITests()
 registerEditorRevisionTests()
 registerSlashMenuTests()
+registerWikiLinkAsyncTests()
 registerCollabCursorTests()
 registerFuzzTests()
 
