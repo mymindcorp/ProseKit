@@ -82,6 +82,8 @@ struct ContentView: View {
     @State private var dryingInkOn = false
     /// Whether the floating highlight bubble menu shows on selection.
     @State private var bubbleOn = false
+    /// Whether misspelled words are underlined (the editor's built-in checker).
+    @State private var spellCheckOn = true
     /// The live editor (handed up from the container) so the toolbar can read
     /// the current document — e.g. to dump its prose and verify marks.
     @State private var editorRef: Editor?
@@ -109,6 +111,9 @@ struct ContentView: View {
                 Button(bubbleOn ? "💬 Bubble On" : "💬 Bubble") { bubbleOn.toggle() }
                     .buttonStyle(.bordered)
                     .tint(bubbleOn ? .accentColor : nil)
+                Button(spellCheckOn ? "✓ Spell On" : "✓ Spell") { spellCheckOn.toggle() }
+                    .buttonStyle(.bordered)
+                    .tint(spellCheckOn ? .accentColor : nil)
                 Spacer()
                 // Dump the live document's prose (ProseMirror JSON) so you can
                 // confirm a highlight lands as a serializable `highlight` mark.
@@ -125,7 +130,7 @@ struct ContentView: View {
             // Divider()
             EditorContainer(docIndex: docIndex, proseLoad: proseLoad, agentOn: agentOn,
                             reorder: reorderOn, useDryingInk: dryingInkOn, bubbleOn: bubbleOn,
-                            onReady: { editorRef = $0 }) { message in
+                            spellCheck: spellCheckOn, onReady: { editorRef = $0 }) { message in
                 loadError = message
             }
             .ignoresSafeArea(.keyboard)
@@ -260,6 +265,8 @@ struct EditorContainer: UIViewRepresentable {
     var useDryingInk: Bool = false
     /// Whether the floating highlight bubble menu shows on selection.
     var bubbleOn: Bool = false
+    /// Whether the editor underlines misspellings.
+    var spellCheck: Bool = true
     /// Hands the live editor up to the host once it's created (for the toolbar's
     /// "View Prose" dump).
     var onReady: ((Editor) -> Void)? = nil
@@ -421,11 +428,12 @@ struct EditorContainer: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> UIScrollView {
-        // `[[` wiki-link suggestions from a fixed demo list. The provider lives on
-        // the WikiLink extension (self-contained); the renderer just shows the
-        // popup for whichever suggestion source is active. The `/` slash menu is
-        // included by `fullKit` with its default commands.
-        let editor = try! Editor(extensions: fullKit(wikiLinkSuggestions: { query in
+        // `[[` wiki-link suggestions via the ASYNC provider — simulating a DB /
+        // search-index lookup (250ms latency). The source debounces, cancels
+        // superseded queries, and repaints the popup when results arrive; the `/`
+        // slash menu stays synchronous (included by `fullKit`).
+        let editor = try! Editor(extensions: fullKit(wikiLinkAsyncSuggestions: { query in
+            try? await Task.sleep(for: .milliseconds(250)) // pretend to hit the index
             let pages = ["Home", "Getting Started", "Architecture", "ProseMirror", "Tiptap",
                          "Document Model", "Commands", "Keymap", "Schema", "Releases", "Roadmap"]
             guard !query.isEmpty else { return pages }
@@ -516,6 +524,7 @@ struct EditorContainer: UIViewRepresentable {
         coordinator.onLoadError = onLoadError
         coordinator.setAgent(agentOn)
         textView.blockReorderingEnabled = reorder
+        textView.spellCheckingEnabled = spellCheck
         // Drying-ink highlight rendering (demo-only effect via highlightRenderer).
         coordinator.dryingInk?.enabled = useDryingInk
         textView.highlightRenderer = useDryingInk
@@ -790,40 +799,64 @@ enum HighlighterMenu {
 
 // MARK: - Drying ink (demo-only "real highlighter" effect via highlightRenderer)
 
-/// A small deterministic RNG so each highlight's imperfections are stable across
-/// redraws and scrolling (no per-frame shimmer). Seeded by the run's position.
-private struct SeededRNG {
-    private var state: UInt64
-    init(_ seed: UInt64) { state = seed ^ 0x9E3779B97F4A7C15 }
-    mutating func next() -> UInt64 {
-        state = state &* 6364136223846793005 &+ 1442695040888963407
-        var z = state
-        z = (z ^ (z >> 33)) &* 0xFF51AFD7ED558CCD
-        z = (z ^ (z >> 33)) &* 0xC4CEB9FE1A85EC53
-        return z ^ (z >> 33)
-    }
-    mutating func unit() -> CGFloat { CGFloat(next() >> 11) * (1.0 / 9_007_199_254_740_992.0) }
-    mutating func range(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * unit() }
-}
-
-/// Renders highlights as a translucent felt-tip marker over paper: ink overflows
-/// the glyph box a little, density is uneven, ink pools at the ends, overlapping
-/// strokes darken (multiply), and a freshly-applied stroke goes down "wet"
-/// (darker, more spread, a faint sheen) and dries to a settled matte over ~1.3s.
+/// Renders highlights as a chisel-tip highlighter on paper. Translucent dye
+/// (multiply over white, additive on dark) lays down left→right at a brisk hand
+/// speed and dries behind the tip. Dried ink is an even, uniform band with angled
+/// (chiseled) ends, a hair of edge bleed, and a slight deterministic hand wobble —
+/// low variance, the way real highlighter looks once dry. Every feel knob lives in
+/// `Config`; set `drying.config` to tune timing, color, shape, wobble, or aim.
 @MainActor
 final class DryingInk {
+    /// All the tunable "feel" parameters. Defaults are the dialed-in values; set
+    /// `drying.config = …` (or mutate fields) to change how the ink behaves.
+    struct Config {
+        // Timing
+        var tipSpeed: CGFloat = 104             // laydown speed, characters/second
+        var maxSweep: CFTimeInterval = 0.3      // cap on the full sweep (long text snaps on)
+        var dryDuration: CFTimeInterval = 0.6   // wet → dry settle time
+
+        // Color / density (the mark's hue drawn translucent)
+        var lightAlpha: CGFloat = 0.60          // dried opacity over a light page
+        var darkAlpha: CGFloat = 0.34           // dried opacity over a dark page (additive)
+        var wetBoost: CGFloat = 0.12            // extra density while still wet
+
+        // Chisel shape
+        var slantFraction: CGFloat = 0.32       // end angle as a fraction of line height…
+        var slantMax: CGFloat = 4.5             // …capped at this many points
+        var verticalBleed: CGFloat = 1.5        // over/under-bleed past the line (points)
+        var edgeFeather: CGFloat = 0.8          // soft edge-bleed ring width (points)
+        var edgeAlpha: CGFloat = 0.45           // edge ring opacity, × body
+
+        // Hand wobble (deterministic, sub-pixel — stable, never shimmers)
+        var driftAmp: CGFloat = 0.8             // slow baseline wander
+        var edgeWobble: CGFloat = 0.4           // fine top/bottom edge jitter
+        var endTaper: CGFloat = 0.9             // lighter pressure at the very ends
+
+        // End aim (points): real strokes rarely land flush
+        var undershoot: CGFloat = 3             // max it stops short
+        var overshoot: CGFloat = 2              // max it runs past
+        var undershootBias: CGFloat = 0.7       // fraction of ends that stop short
+    }
+    var config = Config()
+
     weak var textView: EditorTextView?
     var enabled = false
 
     private struct Stroke { let from: Int; let to: Int; let at: CFTimeInterval }
     private var strokes: [Stroke] = []
     private var link: CADisplayLink?
-    private let dryDuration: CFTimeInterval = 1.3
-    /// Pen speed in characters/second — a natural hand-highlighting pace, so the
-    /// sweep takes about as long as it would on a real page (longer text = longer).
-    private let charSpeed: CGFloat = 52
 
     init(textView: EditorTextView) { self.textView = textView }
+
+    /// How long the tip takes to cross a stroke: length / speed, capped at `maxSweep`.
+    private func sweepDuration(_ s: Stroke) -> CFTimeInterval {
+        min(config.maxSweep, Double(max(1, s.to - s.from)) / Double(config.tipSpeed))
+    }
+    /// The effective tip speed for a stroke (chars/sec), raised above `tipSpeed`
+    /// when the cap kicks in so the whole stroke still lands within `maxSweep`.
+    private func strokeSpeed(_ s: Stroke) -> CGFloat {
+        CGFloat(max(1, s.to - s.from)) / CGFloat(sweepDuration(s))
+    }
 
     /// Apply a highlight (`color` is a name, or nil to remove). When enabled, the
     /// applied range is recorded as fresh wet ink and the drying animation starts.
@@ -849,9 +882,8 @@ final class DryingInk {
     func render(_ ctx: CGContext, _ runs: [HighlightRun]) {
         let now = CACurrentMediaTime()
         ctx.saveGState()
-        // Over white paper, multiply makes translucent ink read like a real marker
-        // (overlapping strokes darken). On a dark background multiply collapses to
-        // invisible, so add light instead — the ink glows.
+        // Translucent dye darkens what's under it (multiply); on a dark page that
+        // collapses to invisible, so add light instead — the ink glows.
         ctx.setBlendMode(isDark ? .plusLighter : .multiply)
         for run in runs { drawInk(ctx, run, now: now) }
         ctx.restoreGState()
@@ -867,82 +899,116 @@ final class DryingInk {
     }
 
     private func drawInk(_ ctx: CGContext, _ run: HighlightRun, now: CFTimeInterval) {
-        let stroke = freshStroke(for: run)
-        // Per-position timing: the pen sweeps left→right at a constant, natural
-        // speed; each spot is wet the instant the pen passes and dries behind it —
-        // exactly as dragging a real highlighter across the page would look.
+        // Per-position timing: the chisel sweeps left→right at a constant speed;
+        // each spot is wet the instant the tip passes and dries behind it.
         var p: CGFloat = 1        // 0 = wet, 1 = dry
-        var revealed: CGFloat = 1 // fraction of this run the pen has covered
-        if let s = stroke {
+        var revealed: CGFloat = 1 // fraction of this run the tip has crossed
+        if let s = freshStroke(for: run) {
             let elapsed = CGFloat(now - s.at)
-            let penChars = elapsed * charSpeed
+            let speed = strokeSpeed(s)
+            let penChars = elapsed * speed
             let startChar = CGFloat(run.from - s.from)
             let runChars = max(1, CGFloat(run.to - run.from))
             revealed = min(1, max(0, (penChars - startChar) / runChars))
-            if revealed <= 0.001 { return }                  // pen hasn't arrived here
-            let localElapsed = elapsed - startChar / charSpeed // time since the pen entered
-            p = min(1, max(0, localElapsed / CGFloat(dryDuration)))
+            if revealed <= 0.001 { return }                  // tip hasn't arrived yet
+            let localElapsed = elapsed - startChar / speed
+            p = min(1, max(0, localElapsed / CGFloat(config.dryDuration)))
         }
+
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         run.color.getRed(&r, green: &g, blue: &b, alpha: &a)
         func ink(_ alpha: CGFloat) -> UIColor { UIColor(red: r, green: g, blue: b, alpha: alpha) }
-        func lerp(_ x: CGFloat, _ y: CGFloat) -> CGFloat { x + (y - x) * p }
 
-        // Wet ink is more opaque and spreads further; it dries lighter and the
-        // bleed sets in tighter. (Additive dark mode needs lower alpha.)
-        let alpha = isDark ? lerp(0.52, 0.34) : lerp(0.78, 0.62)
-        let bleedX = lerp(3.0, 1.5), bleedTop = lerp(2.0, 1.0), bleedBot = lerp(2.8, 1.5)
-        let main = CGRect(x: run.rect.minX - bleedX, y: run.rect.minY - bleedTop,
-                          width: run.rect.width + bleedX * 2,
-                          height: run.rect.height + bleedTop + bleedBot)
-        // Chisel-tip marker: nearly flat (square) ends, not round pills.
-        let rounding: CGFloat = 2
-        func rrect(_ rect: CGRect, _ rad: CGFloat) -> UIBezierPath { UIBezierPath(roundedRect: rect, cornerRadius: rad) }
-        var rng = SeededRNG(UInt64(bitPattern: Int64(run.from)) &* 0x2545F4914F6CDD1D)
+        // Dry ink is an even translucent band; wet ink is only a touch denser and
+        // settles to the same matte everywhere (so the dried variance is tiny).
+        let alpha = (isDark ? config.darkAlpha : config.lightAlpha) + (1 - p) * config.wetBoost
 
-        func paint() {
-            // Soft halo: faint spread past the glyphs.
-            ink(alpha * 0.40).setFill()
-            rrect(main.insetBy(dx: -1.0, dy: -0.8), rounding + 1).fill()
-            // Body.
-            ink(alpha).setFill()
-            rrect(main, rounding).fill()
-            // Uneven density: short seeded streaks (felt pressure varies).
-            let streaks = max(2, Int(main.width / 42))
-            for _ in 0..<streaks {
-                let w = rng.range(main.width * 0.15, main.width * 0.42)
-                let x = rng.range(main.minX, max(main.minX, main.maxX - w))
-                let dy = rng.range(-1.0, 1.2)
-                let h = max(2, main.height - rng.range(1, 3))
-                ink(alpha * 0.24).setFill()
-                rrect(CGRect(x: x, y: main.minY + dy + (main.height - h) / 2, width: w, height: h), rounding).fill()
-            }
-            // Ink builds a touch at the start and stop (chiseled, square caps).
-            ink(alpha * 0.5).setFill()
-            let cap = main.height * 0.5
-            rrect(CGRect(x: main.minX, y: main.minY, width: cap, height: main.height), rounding).fill()
-            rrect(CGRect(x: main.maxX - cap, y: main.minY, width: cap, height: main.height), rounding).fill()
-            // Wet sheen: a faint bright band near the top while still wet.
-            if p < 1 {
-                ctx.saveGState()
-                ctx.setBlendMode(.screen)
-                UIColor(white: 1, alpha: (1 - p) * 0.16).setFill()
-                rrect(CGRect(x: main.minX + 3, y: main.minY + 1.5,
-                             width: max(0, main.width - 6), height: max(1, main.height * 0.2)), 1.5).fill()
-                ctx.restoreGState()
-            }
+        // The chisel covers the line plus a hair of vertical bleed.
+        let rect = run.rect.insetBy(dx: 0, dy: -config.verticalBleed)
+        // A wedge marker lays a slanted band — flat-ish top/bottom, angled ends
+        // (the hallmark of a chisel tip).
+        let slant = min(rect.height * config.slantFraction, config.slantMax)
+
+        // Deterministic, sub-pixel hand wobble keyed to document x: stable across
+        // frames and scroll (so it doesn't shimmer) and tiny (so dried ink still
+        // reads even). 1-D value noise: smooth-interpolated hashes per cell.
+        func hash01(_ n: Int) -> CGFloat {
+            var x = UInt64(bitPattern: Int64(n)) &+ 0x9E3779B97F4A7C15
+            x = (x ^ (x >> 30)) &* 0xBF58476D1CE4E5B9
+            x = (x ^ (x >> 27)) &* 0x94D049BB133111EB
+            return CGFloat((x ^ (x >> 31)) >> 40) / CGFloat(1 << 24)
+        }
+        func wobble(_ x: CGFloat, _ seed: Int, _ cell: CGFloat, _ amp: CGFloat) -> CGFloat {
+            let t = x / cell
+            let i = Int(t.rounded(.down))
+            let f = t - CGFloat(i)
+            let s = f * f * (3 - 2 * f) // smoothstep
+            let a = hash01(i &* 1_103_515_245 &+ seed)
+            let b = hash01((i &+ 1) &* 1_103_515_245 &+ seed)
+            return ((a + (b - a) * s) * 2 - 1) * amp
         }
 
-        // Clip to the swept portion so the ink "draws on" with a crisp chisel edge.
-        if revealed < 1 {
-            ctx.saveGState()
-            let w = main.width * revealed + rounding
-            ctx.clip(to: CGRect(x: main.minX - 3, y: main.minY - 10, width: w + 3, height: main.height + 20))
-            paint()
-            ctx.restoreGState()
-        } else {
-            paint()
+        // A hand-drawn slanted band over [x0, x1] within `box`: the top edge is
+        // shifted right by `slant`, both edges wobble a touch, the very ends taper
+        // (lighter pressure), and the caps bow slightly so they're not perfect lines.
+        func band(_ x0: CGFloat, _ x1: CGFloat, _ box: CGRect) -> UIBezierPath {
+            func drift(_ x: CGFloat) -> CGFloat { wobble(x, 11, 38, config.driftAmp) } // baseline wander
+            func taper(_ x: CGFloat) -> CGFloat {                              // ends fade in/out
+                let d = min(x - x0, x1 - x)
+                return d >= 6 ? 0 : (6 - max(0, d)) / 6 * config.endTaper
+            }
+            func topY(_ x: CGFloat) -> CGFloat { box.minY + drift(x) + wobble(x, 23, 15, config.edgeWobble) + taper(x) }
+            func botY(_ x: CGFloat) -> CGFloat { box.maxY + drift(x) + wobble(x, 37, 15, config.edgeWobble) - taper(x) }
+
+            var xs: [CGFloat] = []
+            var x = x0
+            let step: CGFloat = 13
+            while x < x1 - 0.1 { xs.append(x); x += step }
+            xs.append(x1)
+
+            let path = UIBezierPath()
+            for (k, cx) in xs.enumerated() {                                   // bottom edge L→R
+                let pt = CGPoint(x: cx, y: botY(cx))
+                k == 0 ? path.move(to: pt) : path.addLine(to: pt)
+            }
+            path.addLine(to: CGPoint(x: x1 + slant * 0.5 + wobble(x1, 51, 7, config.driftAmp), // end cap, bowed
+                                     y: (botY(x1) + topY(x1)) / 2))
+            path.addLine(to: CGPoint(x: x1 + slant, y: topY(x1)))
+            for cx in xs.reversed() { path.addLine(to: CGPoint(x: cx + slant, y: topY(cx))) } // top R→L
+            path.addLine(to: CGPoint(x: x0 + slant * 0.5 + wobble(x0, 67, 7, config.driftAmp), // start cap, bowed
+                                     y: (botY(x0) + topY(x0)) / 2))
+            path.close()
+            return path
         }
+
+        // Real highlighting rarely lands flush: each end under- or overshoots the
+        // text. Bias toward undershoot (stopping a hair short) ~70% of the time,
+        // capped to ~3px under / ~2px over, keyed per end so it's stable.
+        let bias = config.undershootBias
+        func shoot(_ seed: Int) -> CGFloat {          // + = undershoot (inset), − = overshoot
+            let u = hash01(seed)
+            return u < bias
+                ? 1 + (u / bias) * (config.undershoot - 1)
+                : -(1 + (u - bias) / (1 - bias) * (config.overshoot - 1))
+        }
+        let leftX = run.rect.minX + shoot(run.from &* 2 &+ 1)
+        let rightX = run.rect.maxX - shoot(run.to &* 2 &+ 5)
+        let penX = leftX + max(0, rightX - leftX) * revealed
+
+        // Soft edge bleed as a ring (outer − body), even-odd so it feathers the
+        // edges — including the slanted ends and tip — without double-darkening
+        // the body (which overlapping multiply fills would otherwise do).
+        let feather = config.edgeFeather
+        let outer = rect.insetBy(dx: -feather, dy: -feather)
+        let ring = band(leftX - feather, penX + feather, outer)
+        ring.append(band(leftX, penX, rect))
+        ring.usesEvenOddFillRule = true
+        ink(alpha * config.edgeAlpha).setFill()
+        ring.fill()
+
+        // Even body — one uniform color throughout.
+        ink(alpha).setFill()
+        band(leftX, penX, rect).fill()
     }
 
     private func startLink() {
@@ -956,10 +1022,7 @@ final class DryingInk {
         let now = CACurrentMediaTime()
         // A stroke is done once the pen has crossed its whole length and the last
         // spot has dried (so long highlights keep animating for their full sweep).
-        strokes.removeAll { s in
-            let sweep = Double(s.to - s.from) / Double(charSpeed)
-            return now - s.at > sweep + dryDuration
-        }
+        strokes.removeAll { s in now - s.at > sweepDuration(s) + config.dryDuration }
         textView?.setNeedsDisplay()
         if strokes.isEmpty { link?.invalidate(); link = nil }
     }
