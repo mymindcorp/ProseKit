@@ -25,8 +25,8 @@ public final class MentionExtension: NodeExtension {
     public let name = "mention"
     /// Provides `@` autocomplete candidates for a typed query. When nil, no
     /// suggestion popup is shown (mentions can still be inserted via API).
-    public let suggestions: ((String) -> [String])?
-    public init(suggestions: ((String) -> [String])? = nil) {
+    public let suggestions: (@Sendable (String) -> [String])?
+    public init(suggestions: (@Sendable (String) -> [String])? = nil) {
         self.suggestions = suggestions
     }
 
@@ -65,9 +65,10 @@ public final class MentionExtension: NodeExtension {
 }
 
 /// Drives the `@` popup from the tracked query + a configurable name list.
+@MainActor
 final class MentionSuggestionSource: SuggestionSource {
-    let provider: (String) -> [String]
-    init(provider: @escaping (String) -> [String]) { self.provider = provider }
+    let provider: @Sendable (String) -> [String]
+    nonisolated init(provider: @escaping @Sendable (String) -> [String]) { self.provider = provider }
 
     func context(_ editor: Editor) -> SuggestionContext? {
         editor.mentionSuggestion.map { SuggestionContext(from: $0.from, to: $0.to, query: $0.query) }

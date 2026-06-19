@@ -69,9 +69,10 @@ public final class SlashMenuExtension: Extension {
 }
 
 /// Drives the slash-menu popup from the tracked query + the configured commands.
+@MainActor
 final class SlashSuggestionSource: SuggestionSource {
     let commands: [SlashCommandItem]
-    init(commands: [SlashCommandItem]) { self.commands = commands }
+    nonisolated init(commands: [SlashCommandItem]) { self.commands = commands }
 
     func context(_ editor: Editor) -> SuggestionContext? {
         editor.slashMenu.map { SuggestionContext(from: $0.from, to: $0.to, query: $0.query) }

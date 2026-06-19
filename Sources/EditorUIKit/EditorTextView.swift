@@ -165,6 +165,11 @@ open class EditorTextView: UIView, UIKeyInput {
 
         editor.onTransaction = { [weak self] tr in self?.mapSpellCache(through: tr) }
         editor.onChange = { [weak self] _ in self?.setNeedsRebuild(); self?.fireSelectionChange() }
+        // Let async suggestion sources (e.g. a DB-backed `[[`) repaint the popup
+        // when their results arrive, by re-pulling the active source.
+        for source in editor.suggestionSources {
+            source.onChange = { [weak self] in self?.updateSuggestionPopup() }
+        }
         registerForDynamicTypeChanges()
     }
 

@@ -10,7 +10,7 @@ import SchemaKit
 /// view the way typing does.
 @MainActor
 final class SuggestionMenuTests: XCTestCase {
-    private func makeView(wikiLinks: ((String) -> [String])? = nil) throws -> EditorTextView {
+    private func makeView(wikiLinks: (@Sendable (String) -> [String])? = nil) throws -> EditorTextView {
         let editor = try Editor(extensions: fullKit(wikiLinkSuggestions: wikiLinks))
         editor.setContent(try! editor.schema.node("doc", [:], content: Fragment.from([
             try! editor.schema.node("paragraph", [:], content: Fragment.empty),
