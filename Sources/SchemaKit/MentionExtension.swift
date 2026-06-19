@@ -23,11 +23,18 @@ public let mentionSuggestionKey = PluginKey<MentionSuggestion?>("mentionSuggesti
 /// `<span data-mention="id">@label</span>`.
 public final class MentionExtension: NodeExtension {
     public let name = "mention"
-    /// Provides `@` autocomplete candidates for a typed query. When nil, no
-    /// suggestion popup is shown (mentions can still be inserted via API).
+    /// Provides `@` autocomplete candidates for a typed query (synchronous, for
+    /// in-memory lists). When nil, no suggestion popup is shown (mentions can
+    /// still be inserted via API).
     public let suggestions: (@Sendable (String) -> [String])?
-    public init(suggestions: (@Sendable (String) -> [String])? = nil) {
+    /// Async `@` candidates — e.g. a directory / user-search lookup. The popup
+    /// shows the latest cached results immediately and repaints when fresh ones
+    /// arrive (debounced + cancel-on-new-query). Takes precedence over `suggestions`.
+    public let asyncSuggestions: (@Sendable (String) async -> [String])?
+    public init(suggestions: (@Sendable (String) -> [String])? = nil,
+                asyncSuggestions: (@Sendable (String) async -> [String])? = nil) {
         self.suggestions = suggestions
+        self.asyncSuggestions = asyncSuggestions
     }
 
     public var nodeSpec: NodeSpec {
@@ -59,27 +66,42 @@ public final class MentionExtension: NodeExtension {
     }
 
     public func suggestionSources(_ ctx: ExtensionContext) -> [any SuggestionSource] {
+        if let asyncSuggestions {
+            return [AsyncSuggestionSource(provider: asyncSuggestions, locate: mentionContext,
+                                          build: { mentionEntries($0, from: $1.from, to: $1.to) })]
+        }
         guard let suggestions else { return [] }
         return [MentionSuggestionSource(provider: suggestions)]
     }
 }
 
-/// Drives the `@` popup from the tracked query + a configurable name list.
+/// The active `@` query for this editor as a generic SuggestionContext, or nil.
+@MainActor
+private func mentionContext(_ editor: Editor) -> SuggestionContext? {
+    editor.mentionSuggestion.map { SuggestionContext(from: $0.from, to: $0.to, query: $0.query) }
+}
+
+/// Maps a list of mention ids to popup entries for an `@` range. The range is
+/// captured up front (a tap can clear the live suggestion before `apply` runs).
+@MainActor
+private func mentionEntries(_ ids: [String], from: Int, to: Int) -> [SuggestionEntry] {
+    ids.map { id in
+        SuggestionEntry(title: "@" + id, icon: "person.circle") {
+            $0.acceptMentionSuggestion(id: id, from: from, to: to)
+        }
+    }
+}
+
+/// Drives the `@` popup from the tracked query + a synchronous name list.
 @MainActor
 final class MentionSuggestionSource: SuggestionSource {
     let provider: @Sendable (String) -> [String]
     nonisolated init(provider: @escaping @Sendable (String) -> [String]) { self.provider = provider }
 
-    func context(_ editor: Editor) -> SuggestionContext? {
-        editor.mentionSuggestion.map { SuggestionContext(from: $0.from, to: $0.to, query: $0.query) }
-    }
+    func context(_ editor: Editor) -> SuggestionContext? { mentionContext(editor) }
     func entries(_ query: String, _ editor: Editor) -> [SuggestionEntry] {
         guard let suggestion = editor.mentionSuggestion else { return [] }
-        // Capture the `@` range now (a tap can clear the live suggestion).
-        let from = suggestion.from, to = suggestion.to
-        return provider(query).map { id in
-            SuggestionEntry(title: "@" + id, icon: "person.circle") { $0.acceptMentionSuggestion(id: id, from: from, to: to) }
-        }
+        return mentionEntries(provider(query), from: suggestion.from, to: suggestion.to)
     }
 }
 

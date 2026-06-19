@@ -585,15 +585,17 @@ public final class GapCursorExtension: Extension {
 }
 
 /// The starter kit plus tables, task lists, images, wiki-links, and search.
-/// Pass `wikiLinkAsyncSuggestions` for a DB/index-backed `[[` lookup (it takes
-/// precedence over the synchronous `wikiLinkSuggestions`).
+/// Pass the `*AsyncSuggestions` variants for a DB/index-backed `[[` or `@` lookup
+/// (each takes precedence over its synchronous counterpart).
 public func fullKit(wikiLinkSuggestions: (@Sendable (String) -> [String])? = nil,
                     wikiLinkAsyncSuggestions: (@Sendable (String) async -> [String])? = nil,
-                    mentionSuggestions: (@Sendable (String) -> [String])? = nil) -> [any Extension] {
+                    mentionSuggestions: (@Sendable (String) -> [String])? = nil,
+                    mentionAsyncSuggestions: (@Sendable (String) async -> [String])? = nil) -> [any Extension] {
     starterKit() + tableExtensions() + taskListExtensions()
         + [ImageExtension(), WikiLinkExtension(suggestions: wikiLinkSuggestions,
                                                asyncSuggestions: wikiLinkAsyncSuggestions),
-           MentionExtension(suggestions: mentionSuggestions), SearchExtension(),
+           MentionExtension(suggestions: mentionSuggestions,
+                            asyncSuggestions: mentionAsyncSuggestions), SearchExtension(),
            SlashMenuExtension(), CollabCursorExtension(), GapCursorExtension(),
            SuggestionModeExtension()]
 }

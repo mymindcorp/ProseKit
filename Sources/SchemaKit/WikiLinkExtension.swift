@@ -91,18 +91,26 @@ public final class WikiLinkExtension: NodeExtension {
     }
 
     public func suggestionSources(_ ctx: ExtensionContext) -> [any SuggestionSource] {
-        if let asyncSuggestions { return [WikiLinkAsyncSuggestionSource(provider: asyncSuggestions)] }
+        if let asyncSuggestions {
+            return [AsyncSuggestionSource(provider: asyncSuggestions, locate: wikiLinkContext,
+                                          build: { wikiLinkEntries($0, from: $1.from, to: $1.to) })]
+        }
         guard let suggestions else { return [] }
         return [WikiLinkSuggestionSource(provider: suggestions)]
     }
 }
 
-/// Maps a list of target page ids to popup entries for the active `[[` query.
-/// The `[[` range is captured up front (a tap can clear the live suggestion).
+/// The active `[[` query for this editor as a generic SuggestionContext, or nil.
 @MainActor
-private func wikiLinkEntries(_ targets: [String], for suggestion: WikiLinkSuggestion) -> [SuggestionEntry] {
-    let from = suggestion.from, to = suggestion.to
-    return targets.map { target in
+private func wikiLinkContext(_ editor: Editor) -> SuggestionContext? {
+    editor.wikiLinkSuggestion.map { SuggestionContext(from: $0.from, to: $0.to, query: $0.query) }
+}
+
+/// Maps a list of target page ids to popup entries for a `[[` range. The range is
+/// captured up front (a tap can clear the live suggestion before `apply` runs).
+@MainActor
+private func wikiLinkEntries(_ targets: [String], from: Int, to: Int) -> [SuggestionEntry] {
+    targets.map { target in
         SuggestionEntry(title: target, icon: "doc.text") {
             $0.acceptWikiLinkSuggestion(target: target, from: from, to: to)
         }
@@ -115,65 +123,10 @@ final class WikiLinkSuggestionSource: SuggestionSource {
     let provider: @Sendable (String) -> [String]
     nonisolated init(provider: @escaping @Sendable (String) -> [String]) { self.provider = provider }
 
-    func context(_ editor: Editor) -> SuggestionContext? {
-        editor.wikiLinkSuggestion.map { SuggestionContext(from: $0.from, to: $0.to, query: $0.query) }
-    }
+    func context(_ editor: Editor) -> SuggestionContext? { wikiLinkContext(editor) }
     func entries(_ query: String, _ editor: Editor) -> [SuggestionEntry] {
         guard let suggestion = editor.wikiLinkSuggestion else { return [] }
-        return wikiLinkEntries(provider(query), for: suggestion)
-    }
-}
-
-/// Drives the `[[` popup from an async source (DB / index). Fetches with a short
-/// debounce, cancels superseded queries, caches the latest results, and asks the
-/// renderer to repaint via `onChange`. While a newer query is in flight it keeps
-/// showing the last results (stale-while-revalidate) so the popup doesn't blink.
-@MainActor
-final class WikiLinkAsyncSuggestionSource: SuggestionSource {
-    private let provider: @Sendable (String) async -> [String]
-    private let debounce: Duration
-    var onChange: (() -> Void)?
-
-    private var cachedQuery: String?
-    private var pendingQuery: String?
-    private var cached: [String] = []
-    private var task: Task<Void, Never>?
-
-    nonisolated init(provider: @escaping @Sendable (String) async -> [String],
-                     debounce: Duration = .milliseconds(180)) {
-        self.provider = provider
-        self.debounce = debounce
-    }
-
-    func context(_ editor: Editor) -> SuggestionContext? {
-        editor.wikiLinkSuggestion.map { SuggestionContext(from: $0.from, to: $0.to, query: $0.query) }
-    }
-
-    func entries(_ query: String, _ editor: Editor) -> [SuggestionEntry] {
-        guard let suggestion = editor.wikiLinkSuggestion else {
-            task?.cancel(); pendingQuery = nil; return []
-        }
-        // Refresh only when this query is neither already shown nor in flight (so
-        // repeated pulls — every keystroke *and* every scroll frame — don't restart
-        // the fetch and reset its debounce forever).
-        if query != cachedQuery, query != pendingQuery { fetch(query) }
-        return wikiLinkEntries(cached, for: suggestion)
-    }
-
-    private func fetch(_ query: String) {
-        task?.cancel()
-        pendingQuery = query
-        task = Task { [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(for: self.debounce)
-            if Task.isCancelled { return }
-            let results = await self.provider(query)
-            if Task.isCancelled { return }
-            self.cachedQuery = query
-            self.pendingQuery = nil
-            self.cached = results
-            self.onChange?()
-        }
+        return wikiLinkEntries(provider(query), from: suggestion.from, to: suggestion.to)
     }
 }
 
