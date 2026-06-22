@@ -7,6 +7,11 @@ import EditorHistory
 import EditorKeymap
 import EditorSerialization
 
+/// Transaction meta flag set on the no-op seed transaction `Editor` dispatches
+/// once at creation, so `appendTransaction` plugins (e.g. UniqueID) can run
+/// their initial housekeeping even though the seed changes nothing.
+let appendTransactionPrimeMeta = "primeAppendTransactions"
+
 /// The high-level editor facade (the Tiptap `Editor`). Builds a schema from a
 /// set of extensions, owns the `EditorState`, and exposes commands.
 public final class Editor {
@@ -54,6 +59,17 @@ public final class Editor {
         self.state = EditorState.create(EditorStateConfig(schema: manager.schema, doc: content, plugins: plugins))
         self.namedCommands = manager.commands(editor: self)
         self.suggestionSources = manager.suggestionSources(editor: self)
+
+        // Prime appendTransaction plugins against the initial document. PM only
+        // runs appendTransaction on dispatch, so loaded content would otherwise
+        // miss housekeeping like UniqueID's id assignment until the first edit.
+        // The seed changes nothing itself (so it's flagged, not detected via
+        // docChanged) and is non-undoable; a no-op when no plugin appends.
+        let seed = state.tr
+        seed.setMeta(appendTransactionPrimeMeta, true)
+        seed.setMeta("addToHistory", false)
+        let primed = state.applyTransaction(seed)
+        if primed.transactions.count > 1 { self.state = primed.state }
     }
 
     // MARK: - Dispatch

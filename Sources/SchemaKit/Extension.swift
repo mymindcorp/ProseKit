@@ -39,6 +39,25 @@ public protocol Extension: AnyObject {
     /// Suggestion menus (slash `/`, wiki `[[`, mentions `@`, …) this extension
     /// drives. The renderer shows their popups generically.
     func suggestionSources(_ ctx: ExtensionContext) -> [any SuggestionSource]
+    /// Attributes this extension contributes to *other* nodes' schemas (Tiptap's
+    /// `addGlobalAttributes`). Used e.g. by UniqueID to add an `id` attribute to
+    /// existing node types without redefining them. Resolved at schema-build time
+    /// (before any `ExtensionContext` exists), so this takes no context.
+    func globalAttributes() -> [GlobalAttribute]
+}
+
+/// A set of attributes an extension injects into the schema of one or more
+/// already-defined node types — the equivalent of Tiptap's `addGlobalAttributes`.
+public struct GlobalAttribute: Sendable {
+    /// The node type names that receive these attributes. The special value
+    /// `"all"` applies them to every node except `doc` and `text`.
+    public var types: [String]
+    /// The attributes to add. Existing attributes on a node are never overwritten.
+    public var attributes: [String: AttributeSpec]
+    public init(types: [String], attributes: [String: AttributeSpec]) {
+        self.types = types
+        self.attributes = attributes
+    }
 }
 
 public extension Extension {
@@ -48,6 +67,7 @@ public extension Extension {
     func inputRules(_ ctx: ExtensionContext) -> [InputRule] { [] }
     func plugins(_ ctx: ExtensionContext) -> [Plugin] { [] }
     func suggestionSources(_ ctx: ExtensionContext) -> [any SuggestionSource] { [] }
+    func globalAttributes() -> [GlobalAttribute] { [] }
 }
 
 /// HTML round-trip hints for a node/mark, used by the serialization layer (M6).

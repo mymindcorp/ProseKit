@@ -215,6 +215,7 @@ registerEditorRevisionTests()
 registerSlashMenuTests()
 registerWikiLinkAsyncTests()
 registerCollabCursorTests()
+registerUniqueIDTests()
 registerFuzzTests()
 
 registerPMListTests(); registerPMTableMapTests(); registerPMTableCommandsTests(); registerPMCellCopyPasteTests(); registerPMTableExtraTests()
