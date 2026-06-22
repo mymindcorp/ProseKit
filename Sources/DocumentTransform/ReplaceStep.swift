@@ -35,7 +35,10 @@ public struct ReplaceStep: Step {
         let from = mapping.mapResult(self.from, 1)
         let to = mapping.mapResult(self.to, -1)
         if from.deletedAcross && to.deletedAcross { return nil }
-        return ReplaceStep(from.pos, Swift.max(from.pos, to.pos), slice)
+        // Preserve `structure` across mapping (prosemirror-transform 1.10.4):
+        // a mapped structural step must stay structural, or it can later be
+        // applied where it would overwrite content it was meant to guard.
+        return ReplaceStep(from.pos, Swift.max(from.pos, to.pos), slice, structure: structure)
     }
 
     public func merge(_ other: any Step) -> (any Step)? {
