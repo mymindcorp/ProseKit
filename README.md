@@ -17,6 +17,8 @@ Everything except the renderer is pure, cross-platform Swift (value-typed docume
 | `EditorUIKit` | the CoreText renderer: `EditorTextView` (editable) + `DocumentView` (read-only) |
 | `EditorCollab` | rebaseable collaborative steps |
 
+Each module ports a corresponding ProseMirror package; [docs/upstream-versions.md](docs/upstream-versions.md) tracks how far up each one has been reviewed/ported, so future ports know what's new to look for.
+
 ## Using the editor (no UI required)
 
 `Editor` owns the document and state. You change it by running named commands or dispatching transactions — all of this works headlessly (it's how the tests drive it).
