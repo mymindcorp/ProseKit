@@ -38,6 +38,12 @@ curl -s https://raw.githubusercontent.com/ProseMirror/prosemirror-history/master
 (WebFetch-style summarizer tools tend to refuse verbatim source; plain `curl` of
 `raw.githubusercontent.com` works.)
 
+**Which upstream version is each module at?** See
+[docs/upstream-versions.md](docs/upstream-versions.md) — it records the release
+each module has been reviewed/ported through, known gaps, and the re-audit
+procedure. When you port a new upstream fix, update that table and its ported-fix
+log.
+
 Provenance note: the table row/column *move* code
 (`Sources/SchemaKit/TableMove.swift`, `TableMoveCommands.swift`,
 `Tests/SchemaKitTests/PMTableMove.swift`) ports

@@ -221,6 +221,39 @@ final class KeyboardBehaviorTests: XCTestCase {
         XCTAssertEqual(sel.resolvedHead.parent.textContent, "alpha")
     }
 
+    func testShiftUpOnFirstLineExtendsToDocumentStart() throws {
+        let view = try makeView(["alpha", "bravo"])
+        cursor(view, 3) // inside "alpha", already on the first line
+        key(view, .keyboardUpArrow, .shift)
+        let sel = view.editor.state.selection
+        XCTAssertFalse(sel.empty)          // it does something, not nothing
+        XCTAssertEqual(sel.anchor, 3)      // anchor stays put
+        XCTAssertEqual(sel.from, 1)        // head extended to document start
+    }
+
+    func testShiftDownOnLastLineExtendsToDocumentEnd() throws {
+        let view = try makeView(["alpha", "bravo"])
+        var bravo = 0
+        view.editor.doc.descendants { n, p, _, _ in if n.isText, n.text == "bravo" { bravo = p + 1 }; return true }
+        cursor(view, bravo + 2) // inside "bravo", already on the last line
+        key(view, .keyboardDownArrow, .shift)
+        let sel = view.editor.state.selection
+        XCTAssertFalse(sel.empty)
+        // Head extended to the document end — i.e. the end of the last textblock's
+        // text (content.size points past the final close token, which is not a
+        // valid text-selection endpoint, so the head clamps to just before it).
+        XCTAssertEqual(sel.resolvedHead.parent.textContent, "bravo")
+        XCTAssertEqual(sel.resolvedHead.parentOffset, 5) // end of "bravo"
+    }
+
+    func testUpOnFirstLineMovesToDocumentStart() throws {
+        let view = try makeView(["alpha", "bravo"])
+        cursor(view, 3)
+        key(view, .keyboardUpArrow) // no shift
+        XCTAssertTrue(view.editor.state.selection.empty)
+        XCTAssertEqual(headPos(view), 1) // collapsed at document start
+    }
+
     func testShiftHomeEndExtendToLineEdges() throws {
         let view = try makeView(["hello world"])
         cursor(view, 6)

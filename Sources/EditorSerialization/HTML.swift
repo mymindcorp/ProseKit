@@ -12,6 +12,13 @@ public struct HTMLConfig: Sendable {
     public var tagToNode: [String: String]
     /// tag → mark name (parse direction)
     public var tagToMark: [String: String]
+    /// The node attribute written by the UniqueID extension to round-trip as a
+    /// `data-*` HTML attribute, and the HTML attribute name to use. Defaults to
+    /// the `id` document attribute ↔ `data-id` (matching Tiptap). Set `idDocAttr`
+    /// to nil to disable id serialization. Only emitted for nodes that actually
+    /// carry the attribute, so non-UniqueID documents are unaffected.
+    public var idDocAttr: String? = "id"
+    public var idHTMLAttr: String = "data-id"
 
     public static let `default`: HTMLConfig = {
         let nodeTags: [String: String] = [
@@ -66,6 +73,13 @@ public enum HTMLSerializer {
         return out
     }
 
+    /// ` data-id="…"` for a node carrying the UniqueID attribute, else "".
+    static func idAttr(_ node: Node, _ config: HTMLConfig) -> String {
+        guard let docAttr = config.idDocAttr,
+              case let .string(id)? = node.attrs[docAttr] else { return "" }
+        return " \(config.idHTMLAttr)=\"\(escape(id))\""
+    }
+
     static func serializeNode(_ node: Node, _ config: HTMLConfig) -> String {
         if node.isText {
             return applyMarks(escape(node.text ?? ""), node.marks, config)
@@ -73,9 +87,9 @@ public enum HTMLSerializer {
         switch node.type.name {
         case "heading":
             let level = node.attrs["level"]?.intValue ?? 1
-            return "<h\(level)>\(serializeFragment(node.content, config))</h\(level)>"
+            return "<h\(level)\(idAttr(node, config))>\(serializeFragment(node.content, config))</h\(level)>"
         case "codeBlock":
-            return "<pre><code>\(escape(node.textContent))</code></pre>"
+            return "<pre\(idAttr(node, config))><code>\(escape(node.textContent))</code></pre>"
         case "horizontalRule":
             return "<hr>"
         case "hardBreak":
@@ -95,11 +109,11 @@ public enum HTMLSerializer {
             let label = node.attrs["label"]?.stringValue ?? id
             return "<span data-mention=\"\(escape(id))\">\(escape("@" + label))</span>"
         case "taskList":
-            return "<ul data-type=\"taskList\">\(serializeFragment(node.content, config))</ul>"
+            return "<ul data-type=\"taskList\"\(idAttr(node, config))>\(serializeFragment(node.content, config))</ul>"
         case "taskItem":
             let checked = node.attrs["checked"]?.boolValue ?? false
             let box = "<input type=\"checkbox\"\(checked ? " checked=\"checked\"" : "")>"
-            return "<li data-type=\"taskItem\" data-checked=\"\(checked)\">\(box)\(serializeFragment(node.content, config))</li>"
+            return "<li data-type=\"taskItem\" data-checked=\"\(checked)\"\(idAttr(node, config))>\(box)\(serializeFragment(node.content, config))</li>"
         case "tableCell", "tableHeader":
             let tag = node.type.name == "tableHeader" ? "th" : "td"
             var a = ""
@@ -109,10 +123,10 @@ public enum HTMLSerializer {
             if case let .array(cw)? = node.attrs["colwidth"] {
                 a += " data-colwidth=\"\(cw.map { String($0.intValue ?? 0) }.joined(separator: ","))\""
             }
-            return "<\(tag)\(a)>\(serializeFragment(node.content, config))</\(tag)>"
+            return "<\(tag)\(a)\(idAttr(node, config))>\(serializeFragment(node.content, config))</\(tag)>"
         default:
             let tag = config.nodeTags[node.type.name] ?? "div"
-            return "<\(tag)>\(serializeFragment(node.content, config))</\(tag)>"
+            return "<\(tag)\(idAttr(node, config))>\(serializeFragment(node.content, config))</\(tag)>"
         }
     }
 
@@ -176,6 +190,19 @@ public enum HTMLParser {
 
     private static func one(_ node: Node?) -> [Node] { node.map { [$0] } ?? [] }
 
+    /// The UniqueID attribute parsed from an element's `data-id`, as node attrs —
+    /// but only when the target node type actually declares the attribute (i.e.
+    /// the UniqueID extension is configured for it). Empty otherwise.
+    private static func idAttrs(_ htmlAttrs: [String: String], _ nodeName: String,
+                                _ schema: Schema, _ config: HTMLConfig) -> Attrs {
+        guard let docAttr = config.idDocAttr,
+              let value = htmlAttrs[config.idHTMLAttr],
+              let type = schema.nodes[nodeName],
+              type.defaultAttrs[docAttr] != nil
+        else { return [:] }
+        return [docAttr: .string(value)]
+    }
+
     /// Wrap inline content as a textblock, but split it around any block-level
     /// atoms (e.g. a block `image`) so each becomes its own sibling rather than an
     /// invalid child of the textblock. With an inline-image schema nothing splits.
@@ -221,20 +248,23 @@ public enum HTMLParser {
         case "heading":
             let level = Int(tag.dropFirst()) ?? 1
             let inline = parseInline(Array(tokens[(start + 1)..<end]), schema, config)
-            return (textblockSplittingBlocks(inline) { try? schema.node("heading", ["level": .int(level)], content: Fragment.from($0)) }, end + 1)
+            var a: Attrs = ["level": .int(level)]
+            a.merge(idAttrs(attrs, "heading", schema, config)) { _, new in new }
+            return (textblockSplittingBlocks(inline) { try? schema.node("heading", a, content: Fragment.from($0)) }, end + 1)
         case "codeBlock":
             let text = innerText(tokens, start + 1, end)
             let content = text.isEmpty ? Fragment.empty : Fragment.from([schema.text(text)])
-            return (one(try? schema.node("codeBlock", [:], content: content)), end + 1)
+            return (one(try? schema.node("codeBlock", idAttrs(attrs, "codeBlock", schema, config), content: content)), end + 1)
         case "paragraph":
             let inline = parseInline(Array(tokens[(start + 1)..<end]), schema, config)
-            return (textblockSplittingBlocks(inline) { try? schema.node("paragraph", [:], content: Fragment.from($0)) }, end + 1)
+            let a = idAttrs(attrs, "paragraph", schema, config)
+            return (textblockSplittingBlocks(inline) { try? schema.node("paragraph", a, content: Fragment.from($0)) }, end + 1)
         case "bulletList", "orderedList":
             // ul/ol may actually be a task list (Tiptap data-type, or items with checkboxes).
             return (one(parseList(tag, attrs, tokens, start, end, schema, config)), end + 1)
         case "tableCell", "tableHeader":
             let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
-            var a: Attrs = [:]
+            var a: Attrs = idAttrs(attrs, nodeName!, schema, config)
             if let cs = attrs["colspan"].flatMap({ Int($0) }), cs != 1 { a["colspan"] = .int(cs) }
             if let rs = attrs["rowspan"].flatMap({ Int($0) }), rs != 1 { a["rowspan"] = .int(rs) }
             if let cw = parseColwidth(attrs) { a["colwidth"] = .array(cw.map { .int($0) }) }
@@ -246,9 +276,10 @@ public enum HTMLParser {
         case "blockquote", "listItem", "table", "tableRow":
             let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
             let name = nodeName!
+            let a = idAttrs(attrs, name, schema, config)
             if let type = schema.nodes[name] {
-                if let n = try? type.create([:], content: Fragment.from(children)) { return ([n], end + 1) }
-                if let filled = type.createAndFill([:], content: Fragment.from(children)) { return ([filled], end + 1) }
+                if let n = try? type.create(a, content: Fragment.from(children)) { return ([n], end + 1) }
+                if let filled = type.createAndFill(a, content: Fragment.from(children)) { return ([filled], end + 1) }
             }
             return ([], end + 1)
         default:
@@ -311,13 +342,14 @@ public enum HTMLParser {
                     i = liEnd + 1
                 } else { i += 1 }
             }
-            if !items.isEmpty, let n = try? listType.create([:], content: Fragment.from(items)) { return n }
+            if !items.isEmpty, let n = try? listType.create(idAttrs(attrs, "taskList", schema, config), content: Fragment.from(items)) { return n }
         }
         let name = config.tagToNode[tag] ?? "bulletList"
         let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
         guard let type = schema.nodes[name] else { return nil }
-        if let n = try? type.create([:], content: Fragment.from(children)) { return n }
-        return type.createAndFill([:], content: Fragment.from(children))
+        let a = idAttrs(attrs, name, schema, config)
+        if let n = try? type.create(a, content: Fragment.from(children)) { return n }
+        return type.createAndFill(a, content: Fragment.from(children))
     }
 
     private static func parseTaskItem(_ tokens: [Token], _ liStart: Int, _ liEnd: Int, _ liAttrs: [String: String], _ schema: Schema, _ config: HTMLConfig) -> Node? {
@@ -338,7 +370,8 @@ public enum HTMLParser {
             inner[0] = .text(String(s.drop(while: { $0 == " " || $0 == "\n" || $0 == "\t" })))
         }
         let children = parseBlocks(inner, schema, config)
-        let a: Attrs = ["checked": .bool(checked)]
+        var a: Attrs = ["checked": .bool(checked)]
+        a.merge(idAttrs(liAttrs, "taskItem", schema, config)) { _, new in new }
         if let n = try? itemType.create(a, content: Fragment.from(children)) { return n }
         return itemType.createAndFill(a, content: Fragment.from(children))
     }

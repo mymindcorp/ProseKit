@@ -51,4 +51,18 @@ func registerPMStepTests() {
     yes("merges removing adjacent styles", 1, 2, "-em", 2, 4, "-em")
     yes("merges removing overlapping styles", 1, 3, "-em", 2, 4, "-em")
     no("doesn't merge removing separate styles", 1, 2, "-em", 3, 4, "-em")
+
+    test("PM Step map: ReplaceStep preserves the structure flag") {
+        // A structural replace, mapped through an insertion earlier in the doc,
+        // must stay structural (prosemirror-transform 1.10.4) — otherwise it can
+        // later apply where it would overwrite content it was meant to guard.
+        let step = ReplaceStep(3, 5, .empty, structure: true)
+        let mapping = Mapping(maps: [StepMap([0, 0, 2])]) // insert 2 tokens at the start
+        guard let mapped = step.map(mapping) as? ReplaceStep else {
+            try expect(false, "expected a mapped ReplaceStep"); return
+        }
+        try expect(mapped.structure, "structure flag must survive mapping")
+        try expectEqual(mapped.from, 5)
+        try expectEqual(mapped.to, 7)
+    }
 }

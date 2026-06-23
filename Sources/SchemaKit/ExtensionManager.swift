@@ -36,6 +36,25 @@ public final class ExtensionManager {
         guard nodeSpecs.contains(where: { $0.0 == "doc" }) else {
             throw ModelError.schemaError("Extensions must include a top-level 'doc' node")
         }
+        // Merge in global attributes (Tiptap's addGlobalAttributes) before
+        // compiling the schema, so extensions like UniqueID can add attributes
+        // to nodes they don't own. Existing attributes are never overwritten.
+        let globals = sorted.flatMap { $0.globalAttributes() }
+        if !globals.isEmpty {
+            nodeSpecs = nodeSpecs.map { name, spec in
+                var spec = spec
+                for global in globals {
+                    let applies = global.types.contains("all")
+                        ? (name != "doc" && name != "text")
+                        : global.types.contains(name)
+                    guard applies else { continue }
+                    for (attr, attrSpec) in global.attributes where spec.attrs[attr] == nil {
+                        spec.attrs[attr] = attrSpec
+                    }
+                }
+                return (name, spec)
+            }
+        }
         self.schema = try Schema(nodes: nodeSpecs, marks: markSpecs, topNode: "doc")
         self.htmlByName = html
     }

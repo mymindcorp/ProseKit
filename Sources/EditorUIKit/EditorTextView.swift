@@ -2360,7 +2360,13 @@ open class EditorTextView: UIView, UIKeyInput {
         if goalColumnHead != sel.head { goalColumnX = caret.midX }
         let preferredX = goalColumnX ?? caret.midX
         guard let pos = l.verticalPosition(from: sel.head, up: up, preferredX: preferredX) else {
-            goalColumnHead = sel.head // at an edge: keep the goal for the next move
+            // Already on the first/last visual line. Like AppKit/UIKit text views,
+            // snap to the document edge in the travel direction — so Shift-Up on
+            // the top line extends the selection to the start of the document
+            // rather than doing nothing. Keep goalColumnX so a following ↑/↓
+            // returns to the original column.
+            applyMove(to: up ? 0 : editor.doc.content.size, extend: extend, bias: up ? -1 : 1)
+            goalColumnHead = editor.state.selection.head
             return
         }
         let target = min(pos, editor.doc.content.size)
