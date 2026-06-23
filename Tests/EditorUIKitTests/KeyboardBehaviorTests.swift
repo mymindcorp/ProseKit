@@ -239,7 +239,11 @@ final class KeyboardBehaviorTests: XCTestCase {
         key(view, .keyboardDownArrow, .shift)
         let sel = view.editor.state.selection
         XCTAssertFalse(sel.empty)
-        XCTAssertEqual(sel.to, view.editor.doc.content.size) // head extended to document end
+        // Head extended to the document end — i.e. the end of the last textblock's
+        // text (content.size points past the final close token, which is not a
+        // valid text-selection endpoint, so the head clamps to just before it).
+        XCTAssertEqual(sel.resolvedHead.parent.textContent, "bravo")
+        XCTAssertEqual(sel.resolvedHead.parentOffset, 5) // end of "bravo"
     }
 
     func testUpOnFirstLineMovesToDocumentStart() throws {
