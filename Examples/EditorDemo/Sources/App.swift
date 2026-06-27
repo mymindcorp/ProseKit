@@ -84,11 +84,17 @@ struct ContentView: View {
     @State private var bubbleOn = false
     /// Whether misspelled words are underlined (the editor's built-in checker).
     @State private var spellCheckOn = true
+    /// When on, swap the editable editor for the read-only `DocumentView` (the
+    /// shared `DocumentLayout` renderer), seeded from the current document.
+    @State private var readOnly = false
     /// The live editor (handed up from the container) so the toolbar can read
     /// the current document — e.g. to dump its prose and verify marks.
     @State private var editorRef: Editor?
     /// The serialized document shown in the "View Prose" sheet (nil = hidden).
     @State private var proseOutput: String?
+    /// Live, user-editable theme (via the 🎨 Theme panel).
+    @State private var themeSettings = ThemeSettings()
+    @State private var showThemePanel = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -114,6 +120,14 @@ struct ContentView: View {
                 Button(spellCheckOn ? "✓ Spell On" : "✓ Spell") { spellCheckOn.toggle() }
                     .buttonStyle(.bordered)
                     .tint(spellCheckOn ? .accentColor : nil)
+                Button(readOnly ? "👁 Read-Only" : "✏️ Editable") { readOnly.toggle() }
+                    .buttonStyle(.bordered)
+                    .tint(readOnly ? .accentColor : nil)
+                Button("🎨 Theme") { showThemePanel = true }
+                    .buttonStyle(.bordered)
+                    .popover(isPresented: $showThemePanel) {
+                        ThemePanel(settings: $themeSettings, onReset: { themeSettings = ThemeSettings() })
+                    }
                 Spacer()
                 // Dump the live document's prose (ProseMirror JSON) so you can
                 // confirm a highlight lands as a serializable `highlight` mark.
@@ -128,12 +142,21 @@ struct ContentView: View {
             Divider()
             // FormattingToolbar()  // hidden for now (struct kept for later)
             // Divider()
-            EditorContainer(docIndex: docIndex, proseLoad: proseLoad, agentOn: agentOn,
-                            reorder: reorderOn, useDryingInk: dryingInkOn, bubbleOn: bubbleOn,
-                            spellCheck: spellCheckOn, onReady: { editorRef = $0 }) { message in
-                loadError = message
+            if readOnly {
+                // The read-only renderer (`DocumentView` over the shared
+                // `DocumentLayout`), seeded from the live document so you can see
+                // the same content — including non-interactive checkboxes.
+                ReadOnlyContainer(document: editorRef?.doc, themeSettings: themeSettings)
+                    .ignoresSafeArea(.keyboard)
+            } else {
+                EditorContainer(docIndex: docIndex, proseLoad: proseLoad, agentOn: agentOn,
+                                reorder: reorderOn, useDryingInk: dryingInkOn, bubbleOn: bubbleOn,
+                                spellCheck: spellCheckOn, themeSettings: themeSettings,
+                                onReady: { editorRef = $0 }) { message in
+                    loadError = message
+                }
+                .ignoresSafeArea(.keyboard)
             }
-            .ignoresSafeArea(.keyboard)
         }
         .sheet(isPresented: $showProseSheet) {
             ProseSheet(json: $proseDraft, onLoad: {
@@ -249,6 +272,121 @@ let sampleProseJSON = """
 }
 """
 
+// MARK: - Theme config panel
+
+/// The editable subset of `TextTheme` the demo's theme panel exposes. Held as
+/// SwiftUI-friendly values (`Double`, `Color`) and converted to a `TextTheme`
+/// via `makeTheme()`. `Equatable` so the host only re-applies it on a real change.
+struct ThemeSettings: Equatable {
+    // Font & spacing
+    var bodyFontSize: Double = 17
+    var lineSpacing: Double = 3
+    var paragraphSpacing: Double = 10
+    var listIndent: Double = 24
+    var fontName: String = systemFont
+    // Text colors
+    var textColor = Color(uiColor: .label)
+    var caretColor = Color(uiColor: .tintColor)
+    var selectionColor = Color(uiColor: .tintColor)
+    // Headings
+    var headingColorOn = false
+    var headingColor = Color(uiColor: .label)
+    // Links
+    var linkColor = Color(uiColor: .link)
+    var linkUnderline = true
+    // Code
+    var codeColor = Color(uiColor: .secondaryLabel)
+    var codeBackgroundOn = false
+    var codeBackground = Color(uiColor: .secondarySystemFill)
+
+    static let systemFont = "System"
+    static let fontChoices = [systemFont, "Georgia", "Charter", "Palatino", "Times New Roman", "Avenir Next"]
+
+    /// Build the `TextTheme` these settings describe (keeping the demo's vivid
+    /// highlighter palette). Dynamic Type is turned off so the size slider wins.
+    func makeTheme() -> TextTheme {
+        var t = TextTheme()
+        t.dynamicType = false
+        t.fixedBodyFontSize = bodyFontSize
+        t.lineSpacing = lineSpacing
+        t.paragraphSpacing = paragraphSpacing
+        t.listIndent = listIndent
+        t.fontName = (fontName == ThemeSettings.systemFont) ? nil : fontName
+        t.textColor = UIColor(textColor)
+        t.caretColor = UIColor(caretColor)
+        t.selectionColor = UIColor(selectionColor).withAlphaComponent(0.25)
+        t.headingColor = headingColorOn ? UIColor(headingColor) : nil
+        t.linkColor = UIColor(linkColor)
+        t.linkUnderline = linkUnderline
+        t.codeColor = UIColor(codeColor)
+        t.codeBackground = codeBackgroundOn ? UIColor(codeBackground) : nil
+        t.highlightColors = HighlighterMenu.themeColors
+        return t
+    }
+}
+
+/// A small live theme editor: tweak fonts, spacing, and colors and watch the
+/// editor repaint. Bound to a `ThemeSettings` the host feeds to the editor view.
+struct ThemePanel: View {
+    @Binding var settings: ThemeSettings
+    let onReset: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Font") {
+                    Picker("Face", selection: $settings.fontName) {
+                        ForEach(ThemeSettings.fontChoices, id: \.self) { Text($0).tag($0) }
+                    }
+                    themeSlider("Body size", $settings.bodyFontSize, 11...28, unit: "pt")
+                }
+                Section("Spacing") {
+                    themeSlider("Line", $settings.lineSpacing, 0...16)
+                    themeSlider("Paragraph", $settings.paragraphSpacing, 0...32)
+                    themeSlider("List indent", $settings.listIndent, 8...48)
+                }
+                Section("Text") {
+                    ColorPicker("Text", selection: $settings.textColor)
+                    ColorPicker("Caret", selection: $settings.caretColor)
+                    ColorPicker("Selection", selection: $settings.selectionColor)
+                }
+                Section("Headings") {
+                    Toggle("Custom color", isOn: $settings.headingColorOn)
+                    if settings.headingColorOn {
+                        ColorPicker("Heading color", selection: $settings.headingColor)
+                    }
+                }
+                Section("Links") {
+                    ColorPicker("Link color", selection: $settings.linkColor)
+                    Toggle("Underline", isOn: $settings.linkUnderline)
+                }
+                Section("Code") {
+                    ColorPicker("Inline code", selection: $settings.codeColor)
+                    Toggle("Background pill", isOn: $settings.codeBackgroundOn)
+                    if settings.codeBackgroundOn {
+                        ColorPicker("Pill color", selection: $settings.codeBackground)
+                    }
+                }
+            }
+            .navigationTitle("Theme")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Reset", action: onReset) } }
+        }
+        .frame(minWidth: 340, minHeight: 520)
+    }
+
+    private func themeSlider(_ label: String, _ value: Binding<Double>,
+                             _ range: ClosedRange<Double>, unit: String = "") -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(label)
+                Spacer()
+                Text("\(Int(value.wrappedValue))\(unit)").foregroundStyle(.secondary).monospacedDigit()
+            }
+            Slider(value: value, in: range)
+        }
+    }
+}
+
 /// Hosts an `EditorTextView` inside a scroll view, virtualized: the editor view
 /// is pinned to the scroll viewport (never taller than the screen) and renders
 /// only the visible window, while the scroll content height is the full document
@@ -267,6 +405,8 @@ struct EditorContainer: UIViewRepresentable {
     var bubbleOn: Bool = false
     /// Whether the editor underlines misspellings.
     var spellCheck: Bool = true
+    /// The live, user-editable theme from the 🎨 Theme panel.
+    var themeSettings: ThemeSettings = ThemeSettings()
     /// Hands the live editor up to the host once it's created (for the toolbar's
     /// "View Prose" dump).
     var onReady: ((Editor) -> Void)? = nil
@@ -279,6 +419,8 @@ struct EditorContainer: UIViewRepresentable {
         weak var scroll: UIScrollView?
         var currentIndex = -1
         var lastProseID = 0
+        /// The theme settings currently applied, so we only rebuild on a change.
+        var lastThemeSettings = ThemeSettings()
         var onLoadError: ((String) -> Void)?
         /// The demo drying-ink controller (records fresh highlights, draws ink).
         var dryingInk: DryingInk?
@@ -438,6 +580,12 @@ struct EditorContainer: UIViewRepresentable {
                          "Document Model", "Commands", "Keymap", "Schema", "Releases", "Roadmap"]
             guard !query.isEmpty else { return pages }
             return pages.filter { $0.range(of: query, options: .caseInsensitive) != nil }
+        }, mentionSuggestions: { query in
+            // `@` mentions from a small in-memory directory (synchronous source).
+            let people = ["Ada Lovelace", "Alan Turing", "Grace Hopper", "Katherine Johnson",
+                          "Margaret Hamilton", "Marijn Haverbeke", "Barbara Liskov", "Donald Knuth"]
+            guard !query.isEmpty else { return people }
+            return people.filter { $0.range(of: query, options: .caseInsensitive) != nil }
         }))
         editor.setContent(demoDocuments[docIndex].build(editor.schema))
 
@@ -447,8 +595,10 @@ struct EditorContainer: UIViewRepresentable {
         scroll.delegate = context.coordinator
 
         let textView = EditorTextView(editor: editor)
-        // Vivid, near-fluorescent highlighter colors (the ink/flat highlight reads
-        // these; the bubble/menu swatches use the same set — see HighlighterMenu).
+        // The live theme from the 🎨 panel (its `makeTheme()` includes the vivid
+        // highlighter palette below; the bubble/menu swatches use the same set).
+        textView.theme = themeSettings.makeTheme()
+        context.coordinator.lastThemeSettings = themeSettings
         textView.theme.highlightColors = HighlighterMenu.themeColors
         // Opt into code-block syntax highlighting + language badges. Highlighting
         // only affects code blocks; detection only switches when confident.
@@ -523,6 +673,13 @@ struct EditorContainer: UIViewRepresentable {
         guard let editor = coordinator.editor, let textView = coordinator.textView else { return }
         coordinator.onLoadError = onLoadError
         coordinator.setAgent(agentOn)
+        // Live theme edits from the 🎨 panel — re-apply (and resync height) only
+        // when something actually changed; `theme`'s didSet rebuilds the layout.
+        if coordinator.lastThemeSettings != themeSettings {
+            coordinator.lastThemeSettings = themeSettings
+            textView.theme = themeSettings.makeTheme()
+            DispatchQueue.main.async { coordinator.syncContentHeight(textView.documentHeight) }
+        }
         textView.blockReorderingEnabled = reorder
         textView.spellCheckingEnabled = spellCheck
         // Drying-ink highlight rendering (demo-only effect via highlightRenderer).
@@ -561,6 +718,62 @@ struct EditorContainer: UIViewRepresentable {
         scroll.setContentOffset(.zero, animated: false)
         textView.contentOffsetY = 0
         DispatchQueue.main.async { coordinator.syncContentHeight(textView.documentHeight) }
+    }
+}
+
+/// Hosts the read-only `DocumentView` (the shared `DocumentLayout` renderer)
+/// inside a scroll view, virtualized the same way as `EditorContainer`: the view
+/// is pinned to the viewport and renders only the visible window, while the
+/// scroll content height is the full document height. Checkboxes here use the
+/// same `DefaultTaskCheckboxView` as the editor, just non-interactive.
+struct ReadOnlyContainer: UIViewRepresentable {
+    /// The document to display (the live editor's current doc).
+    var document: Node?
+    /// The live, user-editable theme from the 🎨 Theme panel.
+    var themeSettings: ThemeSettings = ThemeSettings()
+
+    @MainActor final class Coordinator: NSObject, UIScrollViewDelegate {
+        weak var documentView: DocumentView?
+        weak var scroll: UIScrollView?
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            documentView?.contentOffsetY = scrollView.contentOffset.y
+        }
+        func syncContentHeight(_ height: CGFloat) {
+            guard let scroll else { return }
+            scroll.contentSize = CGSize(width: scroll.bounds.width, height: height)
+        }
+    }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UIScrollView {
+        let scroll = UIScrollView()
+        scroll.alwaysBounceVertical = true
+        scroll.delegate = context.coordinator
+
+        let documentView = DocumentView(document: document, theme: themeSettings.makeTheme())
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        documentView.onDocumentHeightChange = { [weak coordinator = context.coordinator] height in
+            coordinator?.syncContentHeight(height)
+        }
+        scroll.addSubview(documentView)
+        // Pinned to the viewport (frame), not the content — it stays screen-sized.
+        NSLayoutConstraint.activate([
+            documentView.leadingAnchor.constraint(equalTo: scroll.frameLayoutGuide.leadingAnchor),
+            documentView.trailingAnchor.constraint(equalTo: scroll.frameLayoutGuide.trailingAnchor),
+            documentView.topAnchor.constraint(equalTo: scroll.frameLayoutGuide.topAnchor),
+            documentView.bottomAnchor.constraint(equalTo: scroll.frameLayoutGuide.bottomAnchor),
+        ])
+        context.coordinator.documentView = documentView
+        context.coordinator.scroll = scroll
+        DispatchQueue.main.async { context.coordinator.syncContentHeight(documentView.documentHeight) }
+        return scroll
+    }
+
+    func updateUIView(_ uiView: UIScrollView, context: Context) {
+        guard let documentView = context.coordinator.documentView else { return }
+        documentView.theme = themeSettings.makeTheme()
+        documentView.document = document
+        DispatchQueue.main.async { context.coordinator.syncContentHeight(documentView.documentHeight) }
     }
 }
 

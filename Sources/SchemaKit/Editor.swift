@@ -165,6 +165,29 @@ public final class Editor {
 
     // MARK: - Queries
 
+    /// Whether a node *or* mark of the given name is active over the current
+    /// selection — Tiptap's `editor.isActive(name)` / `isActive(name, attrs)`.
+    /// Resolves `name` against the schema (a mark name routes to the mark check,
+    /// otherwise a node name routes to the node check) so a toolbar can ask
+    /// `isActive("bold")`, `isActive("link")`, or `isActive("heading", attrs:
+    /// ["level": .int(2)])` without knowing whether it's a node or a mark.
+    /// Returns false for an unknown name.
+    public func isActive(_ name: String, attrs: Attrs? = nil) -> Bool {
+        if schema.marks[name] != nil { return isActive(mark: name, attrs: attrs) }
+        if schema.nodes[name] != nil { return isActive(node: name, attrs: attrs) }
+        return false
+    }
+
+    /// The attributes of the active node or mark of the given name — Tiptap's
+    /// `editor.getAttributes(name)`. Resolves `name` like ``isActive(_:attrs:)``
+    /// and returns an empty dictionary when nothing of that name is active (so a
+    /// toolbar can read `getAttributes("link")["href"]` unconditionally).
+    public func getAttributes(_ name: String) -> Attrs {
+        if schema.marks[name] != nil { return attributes(ofMark: name) ?? [:] }
+        if schema.nodes[name] != nil { return attributes(ofNode: name) ?? [:] }
+        return [:]
+    }
+
     /// Whether the selection is inside a node of the given name (and attrs).
     public func isActive(node name: String, attrs: Attrs? = nil) -> Bool {
         guard let type = schema.nodes[name] else { return false }
@@ -183,20 +206,28 @@ public final class Editor {
         return false
     }
 
-    /// Whether the given mark is active over the selection (or stored).
-    public func isActive(mark name: String) -> Bool {
+    /// Whether the given mark is active over the selection (or stored). When
+    /// `attrs` is non-nil, the mark must also match those attributes (a subset
+    /// check) — e.g. `isActive(mark: "highlight", attrs: ["color": .string("red")])`.
+    public func isActive(mark name: String, attrs: Attrs? = nil) -> Bool {
         guard let type = schema.marks[name] else { return false }
         let sel = state.selection
+        // The mark is present in `marks` and (if `attrs` was given) matches it.
+        func matches(_ marks: [Mark]) -> Bool {
+            guard let mark = type.isInSet(marks) else { return false }
+            return attrs == nil || attrsMatch(mark.attrs, attrs!)
+        }
         if sel.empty {
             let marks = state.storedMarks ?? sel.resolvedFrom.marks()
-            return type.isInSet(marks) != nil
+            return matches(marks)
         }
         for range in sel.ranges {
+            // Fast precondition: the mark must exist somewhere in the range.
             if !state.doc.rangeHasMark(range.from.pos, range.to.pos, type) { return false }
-            // Ensure it covers the whole range, not just part of it.
+            // …and cover every inline node in it (with matching attrs).
             var covered = true
             state.doc.nodesBetween(range.from.pos, range.to.pos, { node, _, _, _ in
-                if node.isInline && type.isInSet(node.marks) == nil { covered = false }
+                if node.isInline && !matches(node.marks) { covered = false }
                 return true
             })
             if !covered { return false }

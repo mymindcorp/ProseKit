@@ -81,10 +81,18 @@ open class EditorTextView: UIView, UIKeyInput {
     /// editor positions and recycles the returned views as items scroll; your
     /// factory should return a fresh, unconfigured view each call.
     public var checkboxViewProvider: CheckboxViewProvider? {
-        didSet { discardCheckboxViews(); setNeedsLayout() }
+        didSet { checkboxOverlay.provider = checkboxViewProvider; checkboxOverlay.discard(); setNeedsLayout() }
     }
-    private var activeCheckboxViews: [(pos: Int, view: any TaskCheckboxView)] = []
-    private var checkboxViewPool: [any TaskCheckboxView] = []
+    /// Manages the recycled checkbox views (positioning, pooling). Interactive
+    /// here — a tap toggles the task item's `checked` attribute. The same overlay
+    /// drives the read-only `DocumentView` (without a toggle handler).
+    private lazy var checkboxOverlay: CheckboxOverlay = {
+        let overlay = CheckboxOverlay(host: self)
+        overlay.theme = theme
+        overlay.provider = checkboxViewProvider
+        overlay.onToggle = { [weak self] pos in self?.toggleCheckbox(at: pos) }
+        return overlay
+    }()
 
     /// Called when a link is activated (Cmd-click on macOS / iPad). Defaults to
     /// opening the URL with the system; set it to handle links yourself (e.g.
@@ -1147,60 +1155,13 @@ open class EditorTextView: UIView, UIKeyInput {
 
     // MARK: - Task-item checkbox views
 
-    private func makeCheckboxView() -> any TaskCheckboxView {
-        if let view = checkboxViewProvider?() { return view }
-        let view = DefaultTaskCheckboxView(frame: .zero)
-        view.theme = theme
-        return view
-    }
-
-    /// Position a recycled checkbox view over every visible task item, syncing
-    /// its checked state and toggle action. Off-screen views are parked in a
-    /// small reuse pool. Called on layout, scroll, and document change.
-    ///
-    /// Views are reused IN ORDER: the i-th visible checkbox keeps the i-th
-    /// active view across syncs. A toggle (order unchanged) touches only the
-    /// toggled view; a deleted row shifts the remaining views up by one rather
-    /// than recreating them. Combined with the checkbox view's instant
-    /// (non-animated) state updates, neither flashes the row.
+    /// Position the recycled checkbox views over the visible task items, syncing
+    /// their checked state and toggle action. Called on layout, scroll, and
+    /// document change; the shared `CheckboxOverlay` does the pooling.
     func syncCheckboxViews() {
-        guard window != nil || !activeCheckboxViews.isEmpty || !ensureLayout().checkboxes.isEmpty else { return }
-        let l = ensureLayout()
-        let lo = contentOffsetY - 60, hi = contentOffsetY + max(bounds.height, 1) + 60
-        let visible = l.checkboxes.filter { $0.rect.maxY >= lo && $0.rect.minY <= hi }
-
-        var newActive: [(pos: Int, view: any TaskCheckboxView)] = []
-        for (i, box) in visible.enumerated() {
-            let view: any TaskCheckboxView
-            if i < activeCheckboxViews.count {
-                view = activeCheckboxViews[i].view
-            } else {
-                view = checkboxViewPool.popLast() ?? makeCheckboxView()
-            }
-            if view.superview !== self { addSubview(view) }
-            view.isHidden = false
-            view.frame = box.rect.offsetBy(dx: 0, dy: -contentOffsetY)
-            view.isChecked = box.checked // silent sync (setter is a no-op if unchanged)
-            let pos = box.pos
-            view.onToggle = { [weak self] in self?.toggleCheckbox(at: pos) }
-            newActive.append((pos, view))
-        }
-        // Park the surplus views (fewer items than before).
-        if activeCheckboxViews.count > visible.count {
-            for entry in activeCheckboxViews[visible.count...] {
-                entry.view.isHidden = true
-                if checkboxViewPool.count < 12 { checkboxViewPool.append(entry.view) } else { entry.view.removeFromSuperview() }
-            }
-        }
-        activeCheckboxViews = newActive
-    }
-
-    /// Remove all checkbox views (e.g. when the provider changes).
-    private func discardCheckboxViews() {
-        for entry in activeCheckboxViews { entry.view.removeFromSuperview() }
-        for view in checkboxViewPool { view.removeFromSuperview() }
-        activeCheckboxViews.removeAll()
-        checkboxViewPool.removeAll()
+        checkboxOverlay.theme = theme
+        checkboxOverlay.sync(ensureLayout().checkboxes, offsetY: contentOffsetY,
+                             viewportHeight: bounds.height, attached: window != nil)
     }
 
     /// Flip a task item's `checked` attribute (the checkbox view's toggle
@@ -1561,12 +1522,12 @@ open class EditorTextView: UIView, UIKeyInput {
                               width: 12, height: hit.table.bottom - hit.table.top)
             return .columnBorder(rect)
         }
-        if let pos = l.position(at: point), let link = linkInfo(at: pos) {
+        if let pos = l.position(at: point), let range = linkHoverRange(at: pos) {
             // Union the link's selection rects (it may wrap lines) into one
             // hover region; clamp to the line under the pointer if it spans.
-            let rects = l.selectionRects(from: link.from, to: link.to)
+            let rects = l.selectionRects(from: range.from, to: range.to)
                 .filter { $0.minY - contentOffsetY <= viewPoint.y && viewPoint.y <= $0.maxY - contentOffsetY }
-            if let rect = (rects.first ?? l.selectionRects(from: link.from, to: link.to).first) {
+            if let rect = (rects.first ?? l.selectionRects(from: range.from, to: range.to).first) {
                 return .link(rect.offsetBy(dx: 0, dy: -contentOffsetY))
             }
         }
@@ -1606,6 +1567,21 @@ open class EditorTextView: UIView, UIKeyInput {
         while lo > 0, ranges[lo - 1].href == target { lo -= 1 }
         while hi + 1 < ranges.count, ranges[hi + 1].href == target { hi += 1 }
         return (ranges[lo].from, ranges[hi].to, target)
+    }
+
+    /// The document range of any link-like thing at `docPos` — a `link` mark run
+    /// or a link-style inline atom (wikiLink / mention) — for pointer hovering.
+    /// Atoms occupy a single position, so `position(at:)` can land on either side
+    /// of one; check both the node starting at `docPos` and the one before it.
+    func linkHoverRange(at docPos: Int) -> (from: Int, to: Int)? {
+        if let link = linkInfo(at: docPos) { return (link.from, link.to) }
+        let linkAtoms: Set<String> = ["wikiLink", "mention"]
+        for p in [docPos, docPos - 1] where p >= 0 && p < editor.doc.content.size {
+            if let node = editor.doc.nodeAt(p), node.isAtom, linkAtoms.contains(node.type.name) {
+                return (p, p + node.nodeSize)
+            }
+        }
+        return nil
     }
 
     func columnBorderHit(at point: CGPoint) -> (table: DocumentLayout.TableInfo, leftColumn: Int)? {

@@ -22,7 +22,7 @@ extension UIColor {
 
 /// Visual styling for the editor: fonts, colors, and block spacing. The layout
 /// engine reads this to build attributed strings and position blocks.
-public struct TextTheme: Sendable {
+public struct TextTheme: Sendable, Equatable {
     /// When true, fonts track the user's Dynamic Type content-size setting.
     public var dynamicType: Bool = true
     /// The base body point size used when `dynamicType` is off.
@@ -39,8 +39,14 @@ public struct TextTheme: Sendable {
     /// The effective body point size (drives caret vertical movement).
     public var baseFontSize: CGFloat { bodyFont.pointSize }
     public var textColor: UIColor = .label
+    /// Optional override color for heading text (nil = inherit `textColor`).
+    public var headingColor: UIColor?
     public var linkColor: UIColor = .link
+    /// Whether link text is underlined. Off gives color-only links.
+    public var linkUnderline: Bool = true
     public var codeColor: UIColor = .secondaryLabel
+    /// Optional background "pill" painted behind inline `code` runs (nil = none).
+    public var codeBackground: UIColor?
     public var quoteBarColor: UIColor = .separator
     public var caretColor: UIColor = .tintColor
     public var selectionColor: UIColor = UIColor.tintColor.withAlphaComponent(0.25)
@@ -120,11 +126,14 @@ public struct TextTheme: Sendable {
         isFirst ? 0 : paragraphSpacing
     }
 
-    /// Apply inline marks to a font + attribute dictionary.
-    public func attributes(for marks: [Mark], baseFont: UIFont) -> [NSAttributedString.Key: Any] {
+    /// Apply inline marks to a font + attribute dictionary. `baseColor` overrides
+    /// the default text color for this run (e.g. heading text); marks that set
+    /// their own color (code/link/textColor) still win over it.
+    public func attributes(for marks: [Mark], baseFont: UIFont,
+                           baseColor: UIColor? = nil) -> [NSAttributedString.Key: Any] {
         var font = baseFont
         var traits = font.fontDescriptor.symbolicTraits
-        var attrs: [NSAttributedString.Key: Any] = [.foregroundColor: textColor]
+        var attrs: [NSAttributedString.Key: Any] = [.foregroundColor: baseColor ?? textColor]
         var sizeScale: CGFloat = 1
         var baselineOffset: CGFloat = 0
 
@@ -141,7 +150,7 @@ public struct TextTheme: Sendable {
                 attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
             case "link":
                 attrs[.foregroundColor] = linkColor
-                attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+                if linkUnderline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
             case "textColor":
                 if let color = TextTheme.parseColor(mark.attrs["color"]?.stringValue) {
                     attrs[.foregroundColor] = color
