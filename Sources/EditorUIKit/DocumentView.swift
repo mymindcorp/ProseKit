@@ -28,6 +28,22 @@ public final class DocumentView: UIView {
     /// ids — it sees all the node's attrs). nil falls back to the node's `src` as
     /// data:/http(s)/file/absolute path.
     public var imageURLResolver: ImageURLResolver?
+    /// Supplies the view used for each task-item checkbox — the same hook as the
+    /// editable `EditorTextView`. When nil, `DefaultTaskCheckboxView` is used.
+    /// Checkboxes here are read-only: they render and reflect the document's
+    /// `checked` state but don't respond to taps.
+    public var checkboxViewProvider: CheckboxViewProvider? {
+        didSet { checkboxOverlay.provider = checkboxViewProvider; checkboxOverlay.discard(); setNeedsDisplay() }
+    }
+
+    /// Manages the recycled checkbox views (positioning, pooling), shared with the
+    /// editable editor. No `onToggle` handler → non-interactive.
+    private lazy var checkboxOverlay: CheckboxOverlay = {
+        let overlay = CheckboxOverlay(host: self)
+        overlay.theme = theme
+        overlay.provider = checkboxViewProvider
+        return overlay
+    }()
 
     private var layout: DocumentLayout?
     private var layoutWidth: CGFloat = 0
@@ -127,6 +143,17 @@ public final class DocumentView: UIView {
     public override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
         render(into: ctx, height: bounds.height, offsetY: contentOffsetY)
+        syncCheckboxes()
+    }
+
+    /// Position read-only checkbox views over the visible task items. Driven from
+    /// `draw(_:)` — `contentOffsetY` and `invalidateLayout` both request a redraw,
+    /// so this stays in step with scrolling, document, and theme changes.
+    private func syncCheckboxes() {
+        guard let l = ensureLayout() else { checkboxOverlay.discard(); return }
+        checkboxOverlay.theme = theme
+        checkboxOverlay.sync(l.checkboxes, offsetY: contentOffsetY,
+                             viewportHeight: bounds.height, attached: window != nil)
     }
 
     /// Render this document's **visible window** into an arbitrary context —

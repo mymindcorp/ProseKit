@@ -106,8 +106,19 @@ final class TextBlockLayoutCache {
     }
     private var entries: [Key: Entry] = [:]
     private var generation = 0
+    /// The theme the cached blocks were typeset with. Colors and fonts are baked
+    /// into each block's attributed string (not part of `Key`), so a theme change
+    /// must drop the cache — otherwise a new theme reuses stale-styled blocks.
+    private(set) var lastTheme: TextTheme?
 
     var debugEntryCount: Int { entries.count }
+
+    /// Drop all cached blocks when the theme changes (e.g. the user edits colors,
+    /// fonts, or spacing live), so they're re-typeset with the new styling.
+    func syncTheme(_ theme: TextTheme) {
+        if let lastTheme, lastTheme != theme { entries.removeAll() }
+        lastTheme = theme
+    }
 
     private static func key(_ node: Node, _ width: CGFloat) -> Key {
         let buffer = node.content.content.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
@@ -154,6 +165,10 @@ final class DocumentLayout {
     /// Highlight-mark ranges (document positions) and their colors, drawn as a
     /// background behind the text (CoreText ignores `.backgroundColor`).
     private(set) var highlights: [(from: Int, to: Int, color: UIColor)] = []
+    /// Inline-code background ranges + color, painted as a rounded pill behind the
+    /// run. Kept separate from `highlights` so the (demo) drying-ink renderer,
+    /// which consumes `highlights`, never textures a code pill.
+    private(set) var codeBackgrounds: [(from: Int, to: Int, color: UIColor)] = []
     /// Laid-out tables, for column-border hit-testing and resize.
     struct TableInfo {
         let tablePos: Int
@@ -192,6 +207,7 @@ final class DocumentLayout {
         let decorations: [DecorationItem]
         let checkboxes: [(rect: CGRect, pos: Int, checked: Bool)]
         let highlights: [(from: Int, to: Int, color: UIColor)]
+        var codeBackgrounds: [(from: Int, to: Int, color: UIColor)] = []
         let tables: [TableInfo]
         /// When true this child's height is an estimate and it hasn't been
         /// typeset — it carries no blocks/decorations. Realized on demand when it
@@ -213,10 +229,14 @@ final class DocumentLayout {
         self.blockCache = blockCache
         self.syntaxHighlighter = syntaxHighlighter
         self.codeLanguageLabel = codeLanguageLabel
+        blockCache?.syncTheme(theme) // drop stale-styled blocks when the theme changes
         blockCache?.beginPass()
         let contentWidth = width - theme.pageInsets.left - theme.pageInsets.right
         let x = theme.pageInsets.left
-        if let previous, previous.width == width, let (front, back) = diff(doc, previous), front + back > 0 {
+        // Only reuse a previous layout when it was built with the same theme — its
+        // entries bake in the old colors/fonts, so a theme change must re-lay them.
+        if let previous, previous.width == width, previous.theme == theme,
+           let (front, back) = diff(doc, previous), front + back > 0 {
             // A real edit: reuse the unchanged prefix/suffix, re-lay the middle.
             buildIncremental(doc, previous: previous, front: front, back: back, x: x, width: contentWidth)
         } else if let realizeWindow, doc.childCount > Self.lazyThreshold {
@@ -286,17 +306,19 @@ final class DocumentLayout {
     private func layoutTopChild(_ child: Node, docPos: Int, x: CGFloat, width: CGFloat, y: inout CGFloat, isFirst: Bool) -> TopEntry {
         let topY = y
         let (b0, d0, c0, h0, t0) = (blocks.count, decorations.count, checkboxes.count, highlights.count, tables.count)
+        let cb0 = codeBackgrounds.count
         y += theme.spacingBefore(child, isFirst: isFirst)
         y = layoutBlock(child, docPos: docPos, x: x, width: width, y: y)
         return TopEntry(node: child, docStart: docPos, topY: topY, height: y - topY,
                         blocks: Array(blocks[b0...]), decorations: Array(decorations[d0...]),
                         checkboxes: Array(checkboxes[c0...]), highlights: Array(highlights[h0...]),
+                        codeBackgrounds: Array(codeBackgrounds[cb0...]),
                         tables: Array(tables[t0...]))
     }
 
     private func append(_ e: TopEntry) {
         blocks += e.blocks; decorations += e.decorations; checkboxes += e.checkboxes
-        highlights += e.highlights; tables += e.tables
+        highlights += e.highlights; codeBackgrounds += e.codeBackgrounds; tables += e.tables
     }
 
     private func shiftEntry(_ e: TopEntry, dPos: Int, dy: CGFloat) -> TopEntry {
@@ -309,6 +331,7 @@ final class DocumentLayout {
                         decorations: e.decorations.isEmpty ? e.decorations : e.decorations.map { shiftDeco($0, dy: dy) },
                         checkboxes: e.checkboxes.isEmpty ? e.checkboxes : e.checkboxes.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos, checked: $0.checked) },
                         highlights: e.highlights.isEmpty ? e.highlights : e.highlights.map { (from: $0.from + dPos, to: $0.to + dPos, color: $0.color) },
+                        codeBackgrounds: e.codeBackgrounds.isEmpty ? e.codeBackgrounds : e.codeBackgrounds.map { (from: $0.from + dPos, to: $0.to + dPos, color: $0.color) },
                         tables: e.tables.isEmpty ? e.tables : e.tables.map { TableInfo(tablePos: $0.tablePos + dPos, originX: $0.originX, widths: $0.widths, top: $0.top + dy, bottom: $0.bottom + dy) },
                         estimated: e.estimated)
     }
@@ -368,7 +391,7 @@ final class DocumentLayout {
         guard hit else { return false }
 
         let old = entries
-        entries = []; blocks = []; decorations = []; checkboxes = []; highlights = []; tables = []; pendingImages = []
+        entries = []; blocks = []; decorations = []; checkboxes = []; highlights = []; codeBackgrounds = []; tables = []; pendingImages = []
         let x = theme.pageInsets.left
         let contentWidth = width - theme.pageInsets.left - theme.pageInsets.right
         var y = theme.pageInsets.top
@@ -742,9 +765,13 @@ final class DocumentLayout {
         var docPos = contentStart
 
         func appendText(_ text: String, marks: [Mark]) {
+            // Sub-headings (h2–h6) can override the base text color; the h1 title
+            // keeps the default `textColor`. (Marks still win over either.)
+            let headingColor = (node.type.name == "heading" && (node.attrs["level"]?.intValue ?? 1) > 1)
+                ? theme.headingColor : nil
             let attrs = node.type.name == "codeBlock"
                 ? [NSAttributedString.Key.font: theme.monoFont, .foregroundColor: theme.textColor]
-                : theme.attributes(for: marks, baseFont: blockFont)
+                : theme.attributes(for: marks, baseFont: blockFont, baseColor: headingColor)
             // Highlight and backgroundColor marks paint a background behind the
             // run (drawn separately since CoreText ignores `.backgroundColor`).
             if !text.isEmpty {
@@ -754,6 +781,10 @@ final class DocumentLayout {
                 } else if let mark = marks.first(where: { $0.type.name == "backgroundColor" }),
                           let color = TextTheme.parseColor(mark.attrs["color"]?.stringValue) {
                     highlights.append((from: docPos, to: docPos + text.count, color: color))
+                }
+                // Inline `code` runs get a themed background pill (if configured).
+                if let codeBg = theme.codeBackground, marks.contains(where: { $0.type.name == "code" }) {
+                    codeBackgrounds.append((from: docPos, to: docPos + text.count, color: codeBg))
                 }
             }
             let attrStart = result.length
@@ -789,9 +820,12 @@ final class DocumentLayout {
                 let display = child.type.name == "wikiLink"
                     ? (child.attrs["label"]?.stringValue ?? child.attrs["target"]?.stringValue ?? "link")
                     : "🖼"
-                let atomAttrs: [NSAttributedString.Key: Any] = child.type.name == "wikiLink"
-                    ? [.font: blockFont, .foregroundColor: theme.linkColor, .underlineStyle: NSUnderlineStyle.single.rawValue]
+                var atomAttrs: [NSAttributedString.Key: Any] = child.type.name == "wikiLink"
+                    ? [.font: blockFont, .foregroundColor: theme.linkColor]
                     : [.font: blockFont, .foregroundColor: theme.codeColor]
+                if child.type.name == "wikiLink", theme.linkUnderline {
+                    atomAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+                }
                 let attrStart = result.length
                 result.append(NSAttributedString(string: display, attributes: atomAttrs))
                 segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: (display as NSString).length, text: nil))
@@ -1101,6 +1135,14 @@ final class DocumentLayout {
                 path.lineJoinStyle = .round
                 color.setStroke()
                 path.stroke()
+            }
+        }
+        // Inline-code background pills, behind the text. Always a flat rounded
+        // fill (never routed through the host highlight renderer / ink effect).
+        for code in codeBackgrounds {
+            for rect in selectionRects(from: code.from, to: code.to) where visible(rect.minY, rect.maxY) {
+                code.color.setFill()
+                UIBezierPath(roundedRect: rect.insetBy(dx: -2, dy: -1), cornerRadius: 4).fill()
             }
         }
         // Highlight-mark backgrounds, behind the text (CoreText won't draw them).
