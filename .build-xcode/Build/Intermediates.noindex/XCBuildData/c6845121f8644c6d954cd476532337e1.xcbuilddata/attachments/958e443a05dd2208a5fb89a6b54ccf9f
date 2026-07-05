@@ -1,0 +1,4 @@
+module DocumentModel {
+header "DocumentModel-Swift.h"
+export *
+}

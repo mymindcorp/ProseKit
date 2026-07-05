@@ -1,0 +1,383 @@
+[
+  {
+    "isFramework" : true,
+    "moduleName" : "Combine",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/Combine.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "CoreFoundation",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/CoreFoundation.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "Darwin",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/Darwin.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "Dispatch",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/Dispatch.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "DocumentModel",
+    "modulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/Build\/Products\/Debug-maccatalyst\/DocumentModel.swiftmodule\/arm64-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "DocumentTransform",
+    "modulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/Build\/Products\/Debug-maccatalyst\/DocumentTransform.swiftmodule\/arm64-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "EditorChangeset",
+    "modulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/Build\/Products\/Debug-maccatalyst\/EditorChangeset.swiftmodule\/arm64-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "EditorCommands",
+    "modulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/Build\/Products\/Debug-maccatalyst\/EditorCommands.swiftmodule\/arm64-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "EditorHistory",
+    "modulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/Build\/Products\/Debug-maccatalyst\/EditorHistory.swiftmodule\/arm64-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "EditorInputRules",
+    "modulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/Build\/Products\/Debug-maccatalyst\/EditorInputRules.swiftmodule\/arm64-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "EditorKeymap",
+    "modulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/Build\/Products\/Debug-maccatalyst\/EditorKeymap.swiftmodule\/arm64-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "EditorSerialization",
+    "modulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/Build\/Products\/Debug-maccatalyst\/EditorSerialization.swiftmodule\/arm64-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "EditorStateKit",
+    "modulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/Build\/Products\/Debug-maccatalyst\/EditorStateKit.swiftmodule\/arm64-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : true,
+    "moduleName" : "Foundation",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/Foundation.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "IOKit",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/IOKit.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "ObjectiveC",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/ObjectiveC.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "Observation",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/Observation.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "SchemaKit",
+    "modulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/Build\/Products\/Debug-maccatalyst\/SchemaKit.swiftmodule\/arm64-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "Swift",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/Swift.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "SwiftOnoneSupport",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/SwiftOnoneSupport.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "Synchronization",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/Synchronization.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "System",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/System.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "TestHarness",
+    "modulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/Build\/Products\/Debug-maccatalyst\/TestHarness.swiftmodule\/arm64-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "XPC",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/XPC.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "_Builtin_float",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/_Builtin_float.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "_Concurrency",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/_Concurrency.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "_DarwinFoundation1",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/_DarwinFoundation1.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "_DarwinFoundation2",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/_DarwinFoundation2.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "_DarwinFoundation3",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/_DarwinFoundation3.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "isFramework" : false,
+    "moduleName" : "_StringProcessing",
+    "modulePath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/swift\/macosx\/prebuilt-modules\/26.5\/_StringProcessing.swiftmodule\/arm64e-apple-ios-macabi.swiftmodule"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/System\/Library\/Frameworks\/CFNetwork.framework\/Modules\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/CFNetwork-EOD2YY27K3OYI92MG16IMS1S2.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "CFNetwork"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/System\/Library\/Frameworks\/CoreFoundation.framework\/Modules\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/CoreFoundation-1NG0HTDZ3AWQML284JPYW8PRI.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "CoreFoundation"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/System\/Library\/Frameworks\/CoreServices.framework\/Modules\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/CoreServices-87XNEA49LA5097WA9SDK2XGPL.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "CoreServices"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/include\/Darwin.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/Darwin-82YTTLRYNCH0ELHQ8B6TURZU1.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "Darwin"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/System\/Library\/Frameworks\/DiskArbitration.framework\/Modules\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/DiskArbitration-3QSTYTN5CHHARVHDQOP2W93RF.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "DiskArbitration"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/include\/dispatch.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/Dispatch-85Y3608ZLTM3651C2JHYMPRDW.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "Dispatch"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/System\/Library\/Frameworks\/Foundation.framework\/Modules\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/Foundation-C40UWY36VG9KP1CL0WFSIJ2D9.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "Foundation"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/System\/Library\/Frameworks\/IOKit.framework\/Modules\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/IOKit-54ZATQT4E6CNZL2K9FXPYIOPA.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "IOKit"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/include\/DarwinBasic.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/MachO-7UQGUBQOJK0YP1YLSANQZFJYQ.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "MachO"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/include\/ObjectiveC.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/ObjectiveC-B84SZIP6SPDUFLG1A44CREES0.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "ObjectiveC"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/System\/Library\/Frameworks\/Security.framework\/Modules\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/Security-AFFIVDSVQEQJLNLSPPBBJCH7Z.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "Security"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/lib\/swift\/shims\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/SwiftShims-4NAHEG682CEOFKFHCZLI6G6MY.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "SwiftShims"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/include\/xpc.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/XPC-CQ3KA5H8W5TY2DDTY9G5CQESI.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "XPC"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/include\/DarwinFoundation1.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/_AvailabilityInternal-DJY5LOKVTKRJTKYZ8CCBM83DM.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "_AvailabilityInternal"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/clang\/21\/include\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/_Builtin_float-8OOE9WYKE43NFM1691J77XYST.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "_Builtin_float"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/clang\/21\/include\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/_Builtin_inttypes-BL6P63BADLNBAD8JCPJDRTF7W.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "_Builtin_inttypes"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/clang\/21\/include\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/_Builtin_limits-61MNST3QX9K016M07IXZ6Y8Q3.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "_Builtin_limits"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/clang\/21\/include\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/_Builtin_stdarg-464WBBPTGTCE0MQLGNBOHGL90.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "_Builtin_stdarg"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/clang\/21\/include\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/_Builtin_stdbool-4QHGM3ZP9CL1M36WII6TSRBDC.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "_Builtin_stdbool"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/clang\/21\/include\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/_Builtin_stddef-3WQRILKCR0ULF455RYKTR5BOG.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "_Builtin_stddef"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/clang\/21\/include\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/_Builtin_stdint-662YOVH0P1JQQIMJVXCM7EKJQ.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "_Builtin_stdint"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/include\/DarwinFoundation1.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/_DarwinFoundation1-ECKTTD3HDV35UD6EF2SAFADTC.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "_DarwinFoundation1"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/include\/DarwinFoundation2.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/_DarwinFoundation2-6PM0XG0WXA8W2GF3JD41CL8Z.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "_DarwinFoundation2"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/include\/DarwinFoundation3.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/_DarwinFoundation3-YAA88AXIRGANBFCC763VONJ4.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "_DarwinFoundation3"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/lib\/swift\/shims\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/_SwiftConcurrencyShims-8FVXGX1SQLA1FCDJTO8XL5QCG.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "_SwiftConcurrencyShims"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/include\/launch.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/launch-3Q7AK6W9KWH04CAV7FK8X10OX.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "launch"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/include\/libDER\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/libDER-4WF9LI5K2Z3IS2YU0J72VGMRK.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "libDER"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/include\/libkern.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/libkern-CF82F9QDT269UV82ANDGEPR0I.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "libkern"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/include\/os.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/os_object-1VQRQ38DZZBHR9O1OQPYITHLB.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "os_object"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/include\/os.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/os_workgroup-EMVMFAU0OBL68MBLAN7G72NH9.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "os_workgroup"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/clang\/21\/include\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/ptrauth-3DVSHQ0X3WNOOC3311DSW1CUU.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "ptrauth"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Toolchains\/XcodeDefault.xctoolchain\/usr\/lib\/clang\/21\/include\/module.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/ptrcheck-7D4TUD98T1WB1BW2HNHSZ8I5A.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "ptrcheck"
+  },
+  {
+    "clangModuleMapPath" : "\/Applications\/Xcode.app\/Contents\/Developer\/Platforms\/MacOSX.platform\/Developer\/SDKs\/MacOSX.sdk\/usr\/include\/DarwinFoundation2.modulemap",
+    "clangModulePath" : "\/tmp\/claude-501\/-Users-jason-Workspace-universe--claude-worktrees-elegant-maxwell-563f87\/fc6a8911-6c34-43df-8597-87a1d0f7fb23\/scratchpad\/ProseKit\/.build-xcode\/ModuleCache.noindex\/sys_types-KSBKYKE5KPW06F7NY3Y0NXOE.pcm",
+    "isBridgingHeaderDependency" : false,
+    "isFramework" : false,
+    "moduleName" : "sys_types"
+  }
+]

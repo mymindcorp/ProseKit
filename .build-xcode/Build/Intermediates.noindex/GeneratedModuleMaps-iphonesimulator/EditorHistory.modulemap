@@ -1,0 +1,4 @@
+module EditorHistory {
+header "EditorHistory-Swift.h"
+export *
+}

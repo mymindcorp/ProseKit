@@ -1,0 +1,4 @@
+module EditorSerialization {
+header "EditorSerialization-Swift.h"
+export *
+}

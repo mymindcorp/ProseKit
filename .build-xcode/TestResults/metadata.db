@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>FormatVersion</key>
+	<integer>1</integer>
+	<key>Store</key>
+	<dict>
+		<key>EditorUIKitTests</key>
+		<dict>
+			<key>RevealRectTests</key>
+			<dict>
+				<key>testRevealAccountsForTopInsetWhenTargetOffscreen</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.26976001262664795</real>
+				</dict>
+				<key>testRevealClampsToContentSize</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.036522030830383301</real>
+				</dict>
+				<key>testRevealTargetsContentCoordinatesWhenEditorIsOffsetInContent</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.017692923545837402</real>
+				</dict>
+				<key>testRevealTopClampFloorsAtNegativeInset</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.018679022789001465</real>
+				</dict>
+				<key>testRevealUnchangedInPinnedViewportMode</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.024249076843261719</real>
+				</dict>
+				<key>testRevealUnchangedWhenEditorIsTheScrollContentAtOrigin</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.01638495922088623</real>
+				</dict>
+				<key>testVisibleSelectionLeavesInsetRestingOffsetAlone</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.017076969146728516</real>
+				</dict>
+			</dict>
+		</dict>
+	</dict>
+</dict>
+</plist>

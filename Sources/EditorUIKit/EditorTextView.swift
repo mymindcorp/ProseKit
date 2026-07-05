@@ -882,7 +882,8 @@ open class EditorTextView: UIView, UIKeyInput {
     /// viewport whose content height the host sets to `documentHeight`.
     private func revealRect(_ rect: CGRect) {
         guard let scrollView = enclosingScrollView else { return }
-        let viewportHeight = scrollView.bounds.height
+        let inset = scrollView.adjustedContentInset
+        let viewportHeight = scrollView.bounds.height - inset.top - inset.bottom
         guard viewportHeight > 0 else { return }
         // Document → view coordinates (the same shift draw() applies)…
         let viewRect = rect.offsetBy(dx: 0, dy: -contentOffsetY)
@@ -892,14 +893,26 @@ open class EditorTextView: UIView, UIKeyInput {
         // of where this view sits inside the scroll content.
         let target = convert(viewRect, to: scrollView)
         let margin: CGFloat = 8
-        var offset = scrollView.contentOffset.y
-        if target.minY - margin < offset {
-            offset = target.minY - margin
-        } else if target.maxY + margin > offset + viewportHeight {
-            offset = target.maxY + margin - viewportHeight
+        // The visible band in content coordinates starts below any top inset
+        // (safe areas, host chrome): at rest the offset is -inset.top, not 0.
+        let current = scrollView.contentOffset.y
+        let visibleTop = current + inset.top
+        var newTop = visibleTop
+        if target.minY - margin < visibleTop {
+            newTop = target.minY - margin
+        } else if target.maxY + margin > visibleTop + viewportHeight {
+            newTop = target.maxY + margin - viewportHeight
+        } else {
+            // Already visible: never touch the scroll position. (Clamping an
+            // untouched offset is not a no-op — an inset resting offset is
+            // negative, and snapping it to 0 read as a jump on every
+            // selection.)
+            return
         }
-        offset = max(0, min(offset, max(0, scrollView.contentSize.height - viewportHeight)))
-        if abs(offset - scrollView.contentOffset.y) > 0.5 {
+        let minOffset = -inset.top
+        let maxOffset = max(minOffset, scrollView.contentSize.height + inset.bottom - scrollView.bounds.height)
+        let offset = max(minOffset, min(newTop - inset.top, maxOffset))
+        if abs(offset - current) > 0.5 {
             scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: offset), animated: false)
         }
     }
