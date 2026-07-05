@@ -137,6 +137,24 @@ test("collab: interleaved multi-round editing converges") {
     try expect(text.contains("Hello") && text.contains("World") && text.contains("!"), "got '\(text)'")
 }
 
+test("collab: mapSelectionBackward maps the selection without marking it explicit") {
+    let doc = try! schema.node("doc", [:], content: Fragment.from([
+        try! schema.node("paragraph", [:], content: Fragment.from([schema.text("ab")])),
+    ]))
+    let state = EditorState.create(EditorStateConfig(
+        schema: schema, doc: doc, selection: TextSelection.create(doc, 2),
+        plugins: [collab(clientID: 1)]))
+    // A remote peer inserts "X" right at our cursor.
+    let remote = state.tr
+    try! remote.insertText("X", 2)
+    let tr = receiveTransaction(state, remote.steps, [2], mapSelectionBackward: true)
+    // Backward bias: content inserted at the cursor lands after it.
+    try expectEqual(tr.selection.head, 2)
+    // The mapped selection is bookkeeping, not a user action: it must not
+    // count as an explicit selection update (upstream clears the flag).
+    try expect(!tr.selectionSet)
+}
+
 test("collab: steps are JSON-codable for transport") {
     let doc = startDoc()
     let authority = Authority(doc)
