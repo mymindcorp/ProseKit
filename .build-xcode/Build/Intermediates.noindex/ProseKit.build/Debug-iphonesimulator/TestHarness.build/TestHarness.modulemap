@@ -1,4 +1,0 @@
-module TestHarness {
-header "TestHarness-Swift.h"
-export *
-}

@@ -1,4 +1,0 @@
-module EditorCollab {
-header "EditorCollab-Swift.h"
-export *
-}

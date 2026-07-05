@@ -1,4 +1,0 @@
-module EditorStateKit {
-header "EditorStateKit-Swift.h"
-export *
-}
