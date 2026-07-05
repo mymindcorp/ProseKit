@@ -2,3 +2,5 @@
 /Examples/EditorDemo/build
 /Examples/EditorDemo/build-ios/Build
 /Examples/EditorDemo/build-ios
+/.build-xcode
+*.log

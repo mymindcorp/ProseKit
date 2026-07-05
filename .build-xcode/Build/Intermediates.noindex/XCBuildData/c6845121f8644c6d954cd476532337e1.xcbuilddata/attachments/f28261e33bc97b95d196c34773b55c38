@@ -1,4 +1,0 @@
-module EditorInputRules {
-header "EditorInputRules-Swift.h"
-export *
-}

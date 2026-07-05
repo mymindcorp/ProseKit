@@ -1,4 +1,0 @@
-module EditorSyntax {
-header "EditorSyntax-Swift.h"
-export *
-}

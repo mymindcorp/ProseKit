@@ -1,4 +1,0 @@
-module EditorCommands {
-header "EditorCommands-Swift.h"
-export *
-}
