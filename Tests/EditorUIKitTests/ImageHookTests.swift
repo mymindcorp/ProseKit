@@ -24,6 +24,22 @@ final class ImageHookTests: XCTestCase {
         return (s, try! s.node("doc", [:], content: Fragment.from([image])))
     }
 
+    /// Pump the main run loop until `condition` holds (or the deadline passes).
+    /// A fixed sleep races async work on slow CI runners; polling waits exactly
+    /// as long as needed.
+    private func pump(until condition: () -> Bool, timeout: TimeInterval = 10) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+    }
+
+    private func waitForRedPixels(of view: UIView) -> Int {
+        var n = 0
+        pump(until: { n = redPixels(of: view); return n > 100 })
+        return n
+    }
+
     private func redPixels(of view: UIView) -> Int {
         let w = Int(view.bounds.width), h = Int(view.bounds.height)
         var bytes = [UInt8](repeating: 0, count: w * h * 4)
@@ -123,10 +139,7 @@ final class ImageHookTests: XCTestCase {
         }
         view.loadDroppedImage(from: provider, at: 1)
 
-        let done = expectation(description: "image inserted")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { done.fulfill() }
-        wait(for: [done], timeout: 2)
-
+        pump(until: { imageSrc(view) == "asset://notes" })
         XCTAssertEqual(imageSrc(view), "asset://notes", "item-provider image went through onImageDrop")
         XCTAssertEqual(receivedUTI, UTType.png.identifier, "the original image UTI is preserved")
     }
@@ -217,11 +230,7 @@ final class ImageHookTests: XCTestCase {
         let view = DocumentView(document: doc)
         view.frame = CGRect(x: 0, y: 0, width: 200, height: 200)
         _ = view.documentHeight // triggers ensureLayout → loadPendingImages
-        let done = expectation(description: "image loaded")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { done.fulfill() }
-        wait(for: [done], timeout: 2)
-        view.invalidateLayout()
-        XCTAssertGreaterThan(redPixels(of: view), 100, "DocumentView loaded the image from its src")
+        XCTAssertGreaterThan(waitForRedPixels(of: view), 100, "DocumentView loaded the image from its src")
     }
 
     func testDocumentViewHonorsImageURLResolver() throws {
@@ -235,11 +244,7 @@ final class ImageHookTests: XCTestCase {
         view.imageURLResolver = { node in node.attrs["src"]?.stringValue == "asset://pic" ? tmp : nil }
         view.frame = CGRect(x: 0, y: 0, width: 200, height: 200)
         _ = view.documentHeight
-        let done = expectation(description: "image loaded")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { done.fulfill() }
-        wait(for: [done], timeout: 2)
-        view.invalidateLayout()
-        XCTAssertGreaterThan(redPixels(of: view), 100, "DocumentView resolved + loaded the custom src")
+        XCTAssertGreaterThan(waitForRedPixels(of: view), 100, "DocumentView resolved + loaded the custom src")
     }
 
     func testHTMLImageInParagraphLiftsToBlock() throws {
