@@ -9,15 +9,20 @@ import EditorStateKit
 public struct InputRule: Sendable {
     let regex: NSRegularExpression
     let handler: @Sendable (_ state: EditorState, _ match: [String?], _ start: Int, _ end: Int) -> Transaction?
-    /// When true, the rule may fire on text already present (used for paste).
+    /// By default rules don't apply inside nodes whose spec is marked as
+    /// `code`; set this to true to change that.
     let inCode: Bool
+    /// When false, the rule won't fire when any part of the matched text
+    /// carries a mark whose spec is marked as `code`. The default is true.
+    let inCodeMark: Bool
 
-    public init(_ pattern: String, inCode: Bool = false, handler: @escaping @Sendable (_ state: EditorState, _ match: [String?], _ start: Int, _ end: Int) -> Transaction?) {
+    public init(_ pattern: String, inCode: Bool = false, inCodeMark: Bool = true, handler: @escaping @Sendable (_ state: EditorState, _ match: [String?], _ start: Int, _ end: Int) -> Transaction?) {
         // The pattern is an authored constant; a malformed one is a programmer
         // error (fail fast here rather than silently disabling the rule).
         self.regex = try! NSRegularExpression(pattern: pattern)
         self.handler = handler
         self.inCode = inCode
+        self.inCodeMark = inCodeMark
     }
 }
 
@@ -43,7 +48,7 @@ public func inputRules(_ rules: [InputRule]) -> Plugin {
                 let s = value as! InputRulesState
                 if let stored = tr.getMeta("applyInputRule") as? (from: Int, to: Int, text: String) {
                     s.from = stored.from; s.to = stored.to; s.text = stored.text; s.transform = tr
-                } else if tr.docChanged {
+                } else if tr.selectionSet || tr.docChanged {
                     s.transform = nil
                 }
                 return s
@@ -55,10 +60,11 @@ public func inputRules(_ rules: [InputRule]) -> Plugin {
 
 private func run(_ state: EditorState, _ from: Int, _ to: Int, _ text: String, _ rules: [InputRule], _ dispatch: ((Transaction) -> Void)?) -> Bool {
     let resolvedFrom = state.doc.resolve(from)
-    if resolvedFrom.parent.type.spec.code { return false }
     let lo = max(0, resolvedFrom.parentOffset - MAX_MATCH)
     let textBefore = resolvedFrom.parent.textBetween(lo, resolvedFrom.parentOffset, blockSeparator: nil, leafText: "\u{fffc}") + text
     for rule in rules {
+        if !rule.inCodeMark, resolvedFrom.marks().contains(where: { $0.type.spec.code }) { continue }
+        if resolvedFrom.parent.type.spec.code, !rule.inCode { continue }
         let ns = textBefore as NSString
         guard let m = rule.regex.firstMatch(in: textBefore, range: NSRange(location: 0, length: ns.length)) else { continue }
         var groups: [String?] = []
@@ -67,7 +73,20 @@ private func run(_ state: EditorState, _ from: Int, _ to: Int, _ text: String, _
             groups.append(r.location == NSNotFound ? nil : ns.substring(with: r))
         }
         let matchLen = (groups[0] ?? "").count
+        // A rule may not consume only part of the inserted text (the range
+        // math below would invert).
+        if matchLen < text.count { continue }
         let start = from - (matchLen - text.count)
+        if !rule.inCodeMark {
+            // The cursor check above misses code marks that end mid-match;
+            // scan the whole matched range.
+            var hasCodeMark = false
+            state.doc.nodesBetween(start, from, { node, _, _, _ in
+                if node.isInline, node.marks.contains(where: { $0.type.spec.code }) { hasCodeMark = true }
+                return true
+            })
+            if hasCodeMark { continue }
+        }
         if let tr = rule.handler(state, groups, start, to) {
             // Store the TYPED range (not the match start): undoInputRule inverts
             // the steps and then re-inserts the typed text at this range.
@@ -146,14 +165,14 @@ public func markInputRule(_ pattern: String, _ markType: MarkType, _ getAttrs: (
 }
 
 /// Replaces `--` with an em-dash.
-public let emDashRule = InputRule("--$") { state, _, start, end in
+public let emDashRule = InputRule("--$", inCodeMark: false) { state, _, start, end in
     let t = state.tr
     _ = try? t.insertText("\u{2014}", start, end)
     return t
 }
 
 /// Replaces three dots with an ellipsis character.
-public let ellipsisRule = InputRule("\\.\\.\\.$") { state, _, start, end in
+public let ellipsisRule = InputRule("\\.\\.\\.$", inCodeMark: false) { state, _, start, end in
     let t = state.tr
     _ = try? t.insertText("\u{2026}", start, end)
     return t

@@ -78,4 +78,75 @@ func registerPMInputRulesTests() {
         try expectEqual(out!.doc, B.doc(B.p("a\u{2014}")))
         try expect(!ranFallback.value)
     }
+
+    // Upstream 1.5.0: when the inserted text is longer than the regex match,
+    // the rule must be skipped (the old math produced an inverted range).
+    test("PM input rule: skips a rule whose match is shorter than the inserted text") {
+        let out = fireRule([emDashRule], B.doc(B.p("a")), anchor: 2, typing: "x--")
+        try expect(out == nil)
+    }
+
+    test("PM input rule: multi-character input can complete a match") {
+        let out = fireRule([emDashRule], B.doc(B.p("a")), anchor: 2, typing: "--")
+        try expectNotNil(out)
+        try expectEqual(out!.doc, B.doc(B.p("a\u{2014}")))
+    }
+
+    // Upstream 1.5.0: rules with inCodeMark: false don't fire at a cursor
+    // carrying a code mark. emDash/ellipsis/smart quotes all opt out.
+    test("PM input rule: inCodeMark=false rule does not fire inside a code mark") {
+        let out = fireRule([emDashRule], B.doc(B.p(B.code("a-"))), anchor: 3, typing: "-")
+        try expect(out == nil)
+    }
+
+    test("PM input rule: rules fire inside code marks by default") {
+        let rule = InputRule("--$") { state, _, start, end in
+            let t = state.tr
+            _ = try? t.insertText("\u{2014}", start, end)
+            return t
+        }
+        let out = fireRule([rule], B.doc(B.p(B.code("a-"))), anchor: 3, typing: "-")
+        try expectNotNil(out)
+    }
+
+    // Upstream 1.5.1: the code-mark check covers the whole matched range, not
+    // just the cursor — here the cursor sits after plain text but the match
+    // reaches back into code-marked text.
+    test("PM input rule: inCodeMark=false rule does not fire when the match spans a code mark") {
+        let rule = InputRule("-xy$", inCodeMark: false) { state, _, start, end in
+            let t = state.tr
+            _ = try? t.insertText("!", start, end)
+            return t
+        }
+        let out = fireRule([rule], B.doc(B.p(B.code("-"), B.t("x"))), anchor: 3, typing: "y")
+        try expect(out == nil)
+    }
+
+    // Upstream 1.4.0 semantics: inCode: true lets a rule apply inside a code
+    // block (the default remains skipping them).
+    test("PM input rule: inCode rule fires inside a code block") {
+        let rule = InputRule("--$", inCode: true) { state, _, start, end in
+            let t = state.tr
+            _ = try? t.insertText("\u{2014}", start, end)
+            return t
+        }
+        let out = fireRule([rule], B.doc(B.codeBlock("a-")), anchor: 3, typing: "-")
+        try expectNotNil(out)
+    }
+
+    // Upstream parity: moving the selection (without changing the doc) makes
+    // the last input rule no longer undoable.
+    test("PM input rule: a selection change clears the undoable rule") {
+        let plugin = inputRules([emDashRule])
+        let state = B.state(B.doc(B.p("a-")), anchor: 3, plugins: [plugin])
+        var afterRule: EditorState?
+        if let handler = plugin.props?.handleTextInput {
+            _ = handler(3, 3, "-", state) { afterRule = state.apply($0) }
+        }
+        try expectNotNil(afterRule)
+
+        let moved = afterRule!.apply(afterRule!.tr.setSelection(TextSelection.create(afterRule!.doc, 1)))
+        let undid = undoInputRule(moved) { _ in }
+        try expect(!undid)
+    }
 }

@@ -21,7 +21,7 @@ public final class TypographyExtension: Extension {
 /// A rule that replaces a straight quote with the opening or closing curly
 /// variant, chosen by the preceding character.
 func smartQuoteRule(_ quote: Character, open: String, close: String) -> InputRule {
-    InputRule("\(quote)$") { state, _, start, end in
+    InputRule("\(quote)$", inCodeMark: false) { state, _, start, end in
         let before = start > 0 ? state.doc.textBetween(start - 1, start) : ""
         let opensHere = before.isEmpty || before == " " || "([{\u{201C}\u{2018}\n\t".contains(before)
         let tr = state.tr

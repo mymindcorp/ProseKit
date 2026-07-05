@@ -82,19 +82,24 @@ public struct MarkSpec: Sendable {
     public var excludes: String?
     public var group: String?
     public var spanning: Bool
+    /// Marks the content of this mark as code, meaning input rules (and other
+    /// smart text behavior) should not apply inside it.
+    public var code: Bool
 
     public init(
         attrs: [String: AttributeSpec] = [:],
         inclusive: Bool = true,
         excludes: String? = nil,
         group: String? = nil,
-        spanning: Bool = true
+        spanning: Bool = true,
+        code: Bool = false
     ) {
         self.attrs = attrs
         self.inclusive = inclusive
         self.excludes = excludes
         self.group = group
         self.spanning = spanning
+        self.code = code
     }
 }
 
