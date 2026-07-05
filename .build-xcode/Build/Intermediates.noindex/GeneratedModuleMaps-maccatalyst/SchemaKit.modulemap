@@ -1,0 +1,4 @@
+module SchemaKit {
+header "SchemaKit-Swift.h"
+export *
+}

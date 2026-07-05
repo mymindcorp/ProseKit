@@ -1,0 +1,461 @@
+{
+    "type": "doc",
+    "content": [
+        {
+            "type": "heading",
+            "attrs": {
+                "level": 1
+            },
+            "content": [
+                {
+                    "type": "text",
+                    "text": "This is a one liner headline."
+                }
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": [
+                {
+                    "type": "text",
+                    "marks": [
+                        {
+                            "type": "bold"
+                        }
+                    ],
+                    "text": "Lorem Ipsum"
+                },
+                {
+                    "type": "text",
+                    "text": " is simply "
+                },
+                {
+                    "type": "text",
+                    "marks": [
+                        {
+                            "type": "highlight"
+                        }
+                    ],
+                    "text": "dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, "
+                },
+                {
+                    "type": "text",
+                    "text": "when an unknown printer took a galley of type and scrambled it to make a type specimen book. It has survived not only five centuries, but also the leap into "
+                },
+                {
+                    "type": "wikiLink",
+                    "attrs": {
+                        "id": "000000000020O2s7V7QQnK",
+                        "target": "",
+                        "targetId": null,
+                        "targetType": null,
+                        "text": "New Videos"
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": " typesetting, remaining essentially unchanged. It was popularised in the 1960s with the release of "
+                },
+                {
+                    "type": "text",
+                    "marks": [
+                        {
+                            "type": "bold"
+                        }
+                    ],
+                    "text": "Letraset"
+                },
+                {
+                    "type": "text",
+                    "text": " sheets containing Lorem Ipsum "
+                },
+                {
+                    "type": "wikiLink",
+                    "attrs": {
+                        "id": "000000000020O2qbbgfJyE",
+                        "target": "",
+                        "targetId": null,
+                        "targetType": null,
+                        "text": "mymind newsletters"
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": ", and more recently with desktop publishing software like Aldus PageMaker including versions of Lorem Ipsum"
+                }
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": [
+                {
+                    "type": "text",
+                    "marks": [
+                        {
+                            "type": "bold"
+                        }
+                    ],
+                    "text": "em Ipsum"
+                },
+                {
+                    "type": "text",
+                    "text": " is simply dummy text of the printing "
+                },
+                {
+                    "type": "wikiLink",
+                    "attrs": {
+                        "id": "000000000020O2s7V7QQnK",
+                        "target": "",
+                        "targetId": null,
+                        "targetType": null,
+                        "text": "New Videos"
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": " and typesetting industry. Lorem Ipsum has been the "
+                },
+                {
+                    "type": "text",
+                    "marks": [
+                        {
+                            "type": "link",
+                            "attrs": {
+                                "href": "https://vanschneider.com/",
+                                "target": "_blank",
+                                "rel": "noopener noreferrer nofollow",
+                                "class": null,
+                                "title": null
+                            }
+                        }
+                    ],
+                    "text": "industry's"
+                },
+                {
+                    "type": "text",
+                    "text": " standard "
+                },
+                {
+                    "type": "text",
+                    "marks": [
+                        {
+                            "type": "link",
+                            "attrs": {
+                                "href": "https://vanschneider.com/",
+                                "target": "_blank",
+                                "rel": "noopener noreferrer nofollow",
+                                "class": null,
+                                "title": null
+                            }
+                        }
+                    ],
+                    "text": "dummy"
+                },
+                {
+                    "type": "text",
+                    "text": " text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to ma"
+                }
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": [
+                {
+                    "type": "text",
+                    "marks": [
+                        {
+                            "type": "bold"
+                        }
+                    ],
+                    "text": "em Ipsum"
+                },
+                {
+                    "type": "text",
+                    "text": " is "
+                },
+                {
+                    "type": "text",
+                    "marks": [
+                        {
+                            "type": "bold"
+                        }
+                    ],
+                    "text": "simply"
+                },
+                {
+                    "type": "text",
+                    "text": " dummy text of "
+                },
+                {
+                    "type": "wikiLink",
+                    "attrs": {
+                        "id": "000000000020O2bzTiI5s4",
+                        "target": "",
+                        "targetId": null,
+                        "targetType": null,
+                        "text": "ChatGPT Mode"
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": " rinting and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an unknown printer took a galley of type and "
+                },
+                {
+                    "type": "text",
+                    "marks": [
+                        {
+                            "type": "bold"
+                        }
+                    ],
+                    "text": "scrambled"
+                },
+                {
+                    "type": "text",
+                    "text": " it to."
+                }
+            ]
+        },
+        {
+            "type": "heading",
+            "attrs": {
+                "level": 1
+            },
+            "content": [
+                {
+                    "type": "text",
+                    "text": "This is a two liner headline that goes on forever so it can be seen in two lines."
+                }
+            ]
+        },
+        {
+            "type": "taskList",
+            "content": [
+                {
+                    "type": "taskItem",
+                    "attrs": {
+                        "checked": false
+                    },
+                    "content": [
+                        {
+                            "type": "paragraph",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "This is a todo item"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "type": "taskItem",
+                    "attrs": {
+                        "checked": true
+                    },
+                    "content": [
+                        {
+                            "type": "paragraph",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "This is another one"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "type": "taskItem",
+                    "attrs": {
+                        "checked": false
+                    },
+                    "content": [
+                        {
+                            "type": "paragraph",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "And another one"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "type": "taskItem",
+                    "attrs": {
+                        "checked": false
+                    },
+                    "content": [
+                        {
+                            "type": "paragraph",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "Nice ok, cool"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Here we have a block quote."
+                }
+            ]
+        },
+        {
+            "type": "blockquote",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Nice this is a block quote, thats cool."
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "type": "paragraph",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Lets see what the block quote looks like with two lines or more."
+                }
+            ]
+        },
+        {
+            "type": "blockquote",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "text",
+                            "marks": [
+                                {
+                                    "type": "bold"
+                                }
+                            ],
+                            "text": "Lorem Ipsum"
+                        },
+                        {
+                            "type": "text",
+                            "text": " is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an setting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an "
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "type": "horizontalRule"
+        },
+        {
+            "type": "paragraph",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Okay nice. And here is some code."
+                }
+            ]
+        },
+        {
+            "type": "codeBlock",
+            "attrs": {
+                "language": null
+            },
+            "content": [
+                {
+                    "type": "text",
+                    "text": "ly dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an setting industry. Lorem Ipsum has been the industry's standard d"
+                }
+            ]
+        },
+        {
+            "type": "paragraph"
+        },
+        {
+            "type": "paragraph",
+            "content": [
+                {
+                    "type": "text",
+                    "marks": [
+                        {
+                            "type": "bold"
+                        }
+                    ],
+                    "text": "there will be blood "
+                },
+                {
+                    "type": "text",
+                    "marks": [
+                        {
+                            "type": "code"
+                        }
+                    ],
+                    "text": "/macos/Library/Horses "
+                },
+                {
+                    "type": "text",
+                    "text": "quick brown fox."
+                }
+            ]
+        },
+        {
+            "type": "paragraph"
+        },
+        {
+            "type": "heading",
+            "attrs": {
+                "level": 2
+            },
+            "content": [
+                {
+                    "type": "text",
+                    "text": "This is an H2"
+                }
+            ]
+        },
+        {
+            "type": "heading",
+            "attrs": {
+                "level": 3
+            },
+            "content": [
+                {
+                    "type": "text",
+                    "text": "This is an H3"
+                }
+            ]
+        },
+        {
+            "type": "heading",
+            "attrs": {
+                "level": 4
+            },
+            "content": [
+                {
+                    "type": "text",
+                    "text": "This is an H4"
+                }
+            ]
+        },
+        {
+            "type": "paragraph"
+        },
+        {
+            "type": "paragraph"
+        },
+        {
+            "type": "paragraph"
+        }
+    ]
+}

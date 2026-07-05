@@ -1,0 +1,4 @@
+module EditorUIKit {
+header "EditorUIKit-Swift.h"
+export *
+}

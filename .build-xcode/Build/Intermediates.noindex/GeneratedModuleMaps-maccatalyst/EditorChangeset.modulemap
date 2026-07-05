@@ -1,0 +1,4 @@
+module EditorChangeset {
+header "EditorChangeset-Swift.h"
+export *
+}
