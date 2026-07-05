@@ -129,6 +129,8 @@ public func receiveTransaction(_ state: EditorState, _ steps: [any Step], _ clie
     if mapSelectionBackward, state.selection is TextSelection {
         tr.setSelection(TextSelection.between(tr.doc.resolve(tr.mapping.map(state.selection.anchor, -1)),
                                               tr.doc.resolve(tr.mapping.map(state.selection.head, -1)), -1))
+        // The mapped selection is bookkeeping, not an explicit update.
+        tr.clearSelectionSet()
     }
     tr.setMeta(rebasedMeta, nUnconfirmed)
     tr.setMeta(addToHistoryMeta, false)

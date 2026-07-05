@@ -19,7 +19,7 @@ enum B {
         let marks: [(String, MarkSpec)] = [
             ("bold", MarkSpec()),
             ("italic", MarkSpec()),
-            ("code", MarkSpec(excludes: "_")),
+            ("code", MarkSpec(excludes: "_", code: true)),
         ]
         return try! Schema(nodes: nodes, marks: marks, topNode: "doc")
     }()
@@ -37,6 +37,7 @@ enum B {
     static func codeBlock(_ text: String) -> Node { node("codeBlock", [:], text.isEmpty ? [] : [t(text)]) }
     static func t(_ text: String) -> Node { schema.text(text) }
     static func strong(_ text: String) -> Node { schema.text(text, [schema.mark("bold")]) }
+    static func code(_ text: String) -> Node { schema.text(text, [schema.mark("code")]) }
 
     static func state(_ doc: Node, anchor: Int? = nil, head: Int? = nil, plugins: [Plugin] = []) -> EditorState {
         var sel: Selection? = nil

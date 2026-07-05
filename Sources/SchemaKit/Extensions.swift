@@ -386,7 +386,7 @@ public func setHighlight(_ markType: MarkType, color: String?) -> Command {
 public final class CodeExtension: MarkExtension {
     public let name = "code"
     public init() {}
-    public var markSpec: MarkSpec { MarkSpec(excludes: "_") }
+    public var markSpec: MarkSpec { MarkSpec(excludes: "_", code: true) }
     public var html: HTMLSpec { HTMLSpec(tag: "code") }
     public func commands(_ ctx: ExtensionContext) -> [String: Command] {
         guard let type = ctx.markType else { return [:] }

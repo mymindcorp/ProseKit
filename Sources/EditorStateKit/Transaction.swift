@@ -57,6 +57,12 @@ public final class Transaction: Transform {
         return self
     }
 
+    /// Un-mark the selection as explicitly set. For machinery that restores a
+    /// position-mapped selection (collab's `mapSelectionBackward`) which must
+    /// not count as a user selection update for plugins inspecting
+    /// `selectionSet` (upstream's `tr.updated &= ~UPDATED_SEL`).
+    public func clearSelectionSet() { selectionSet = false }
+
     /// Set the stored marks.
     @discardableResult
     public func setStoredMarks(_ marks: [Mark]?) -> Transaction {
