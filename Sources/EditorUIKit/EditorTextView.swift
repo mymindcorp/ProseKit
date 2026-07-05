@@ -884,12 +884,19 @@ open class EditorTextView: UIView, UIKeyInput {
         guard let scrollView = enclosingScrollView else { return }
         let viewportHeight = scrollView.bounds.height
         guard viewportHeight > 0 else { return }
+        // Document → view coordinates (the same shift draw() applies)…
+        let viewRect = rect.offsetBy(dx: 0, dy: -contentOffsetY)
+        // …→ the scroll view's coordinate space. For a UIScrollView, bounds
+        // coordinates ARE content coordinates (bounds.origin == contentOffset),
+        // so the target is directly comparable with contentOffset — regardless
+        // of where this view sits inside the scroll content.
+        let target = convert(viewRect, to: scrollView)
         let margin: CGFloat = 8
         var offset = scrollView.contentOffset.y
-        if rect.minY - margin < offset {
-            offset = rect.minY - margin
-        } else if rect.maxY + margin > offset + viewportHeight {
-            offset = rect.maxY + margin - viewportHeight
+        if target.minY - margin < offset {
+            offset = target.minY - margin
+        } else if target.maxY + margin > offset + viewportHeight {
+            offset = target.maxY + margin - viewportHeight
         }
         offset = max(0, min(offset, max(0, scrollView.contentSize.height - viewportHeight)))
         if abs(offset - scrollView.contentOffset.y) > 0.5 {
