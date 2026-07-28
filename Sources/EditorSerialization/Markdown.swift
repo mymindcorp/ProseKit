@@ -395,7 +395,8 @@ public enum MarkdownParser {
             if c == "!" && i + 1 < chars.count && chars[i + 1] == "[" {
                 if let (alt, url, next) = parseLinkLike(chars, i + 1) {
                     flush()
-                    if let type = schema.nodes["image"], let img = try? type.create(["src": .string(url), "alt": .string(alt)]) {
+                    if let src = sanitizeURL(url, for: .image), let type = schema.nodes["image"],
+                       let img = try? type.create(["src": .string(src), "alt": .string(alt)]) {
                         nodes.append(img)
                     }
                     i = next; continue
@@ -405,7 +406,14 @@ public enum MarkdownParser {
             if c == "[" {
                 if let (label, url, next) = parseLinkLike(chars, i) {
                     flush()
-                    nodes.append(schema.text(label, mark("link", ["href": .string(url)])))
+                    // Markdown reaches the editor from the same untrusted places
+                    // HTML does, so `[x](javascript:…)` gets the same treatment:
+                    // the link is dropped, the text kept.
+                    if let href = sanitizeURL(url, for: .link) {
+                        nodes.append(schema.text(label, mark("link", ["href": .string(href)])))
+                    } else if !label.isEmpty {
+                        nodes.append(schema.text(label))
+                    }
                     i = next; continue
                 }
             }
