@@ -160,6 +160,7 @@ Rendering is opt-in, through `EditorMath` — a native TeX typesetter (no web vi
 import EditorMath
 
 editorView.mathRenderer = makeMathRenderer()
+documentView.mathRenderer = makeMathRenderer()   // the read-only renderer too
 ```
 
 Without it, each formula draws its LaTeX source as monospaced text. Source the parser rejects is drawn verbatim in the muted code color rather than silently mis-rendered — KaTeX's `throwOnError: false` behavior.
