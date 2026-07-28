@@ -38,6 +38,10 @@ public struct MathBox {
     /// The box's full height.
     public var height: CGFloat { ascent + descent }
 
+    /// The primitives this box draws, in box coordinates. Exposed for
+    /// inspection — drawing goes through `draw(in:at:color:)`.
+    public var drawItems: [MathDrawItem] { items }
+
     /// A box with no ink and no width. (Computed rather than `static let` —
     /// `CTFont` isn't `Sendable`, so `MathBox` can't be a shared constant.)
     static var empty: MathBox { MathBox() }

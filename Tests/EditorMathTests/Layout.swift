@@ -265,6 +265,103 @@ func registerLayoutTests() {
         try expect(step > 0)
     }
 
+    test("layout: an array's column spec sets per-column alignment") {
+        // A narrow cell above a wide one lands in a different place depending on
+        // the column's alignment, so the three specs must differ from each other.
+        func box(_ spec: String) throws -> MathBox {
+            try layout("\\begin{array}{\(spec)} x \\\\ wwww \\end{array}")
+        }
+        let left = try box("l"), center = try box("c"), right = try box("r")
+        // Same overall size — alignment moves ink, it doesn't resize the column.
+        try expect(abs(left.width - center.width) < 0.01 && abs(center.width - right.width) < 0.01,
+                   "\(left.width) \(center.width) \(right.width)")
+        // An unspecified column falls back to centered.
+        try expect(abs((try box("")).width - center.width) < 0.01)
+    }
+
+    test("layout: a vertical rule in the column spec widens the array") {
+        let plain = try layout("\\begin{array}{cc} a & b \\end{array}")
+        let ruled = try layout("\\begin{array}{c|c} a & b \\end{array}")
+        // An interior rule sits inside the existing column gap, so the width is
+        // unchanged — but the drawing gains a rule.
+        try expect(abs(plain.width - ruled.width) < 0.01, "\(plain.width) vs \(ruled.width)")
+        try expectEqual(ruleCount(plain), 0)
+        try expectEqual(ruleCount(ruled), 1)
+    }
+
+    test("layout: edge rules reserve their own room") {
+        let plain = try layout("\\begin{array}{cc} a & b \\end{array}")
+        let bordered = try layout("\\begin{array}{|c|c|} a & b \\end{array}")
+        try expect(bordered.width > plain.width, "edge rules need padding: \(bordered.width) vs \(plain.width)")
+        try expectEqual(ruleCount(bordered), 3, "before, between, after")
+    }
+
+    test("layout: array rules span the rows and stay inside the box") {
+        let box = try layout("\\begin{array}{|c|c|} a & b \\\\ c & d \\\\ e & f \\end{array}")
+        let rules = ruleRects(box)
+        try expectEqual(rules.count, 3)
+        for rule in rules {
+            try expect(rule.width > 0 && rule.height > 0, "a rule with no extent: \(rule)")
+            // The box measures from the baseline: ascent up, descent down.
+            try expect(rule.maxY <= box.ascent + 0.01, "rule tops out above the box: \(rule.maxY) > \(box.ascent)")
+            try expect(rule.minY >= -box.descent - 0.01, "rule drops below the box: \(rule.minY)")
+            try expect(rule.minX >= -0.01 && rule.maxX <= box.width + 0.01, "rule outside the width: \(rule)")
+        }
+        // Rules are ordered left to right and distinct.
+        let xs = rules.map(\.midX).sorted()
+        for (a, b) in zip(xs, xs.dropFirst()) { try expect(b - a > 1, "rules overlap at \(a), \(b)") }
+    }
+
+    test("layout: \\hline draws a rule between rows") {
+        let plain = try layout("\\begin{array}{cc} a & b \\\\ c & d \\end{array}")
+        try expectEqual(ruleCount(plain), 0)
+        try expectEqual(ruleCount(try layout("\\begin{array}{cc} \\hline a & b \\\\ c & d \\end{array}")), 1)
+        try expectEqual(ruleCount(try layout("\\begin{array}{cc} a & b \\\\ \\hline c & d \\end{array}")), 1)
+        // A full grid: a rule above each row and one below the last.
+        let grid = try layout("\\begin{array}{cc} \\hline a & b \\\\ \\hline c & d \\\\ \\hline \\end{array}")
+        try expectEqual(ruleCount(grid), 3)
+    }
+
+    test("layout: a trailing \\hline doesn't add an empty row") {
+        // `\\ \hline \end` opens a row that only the rule occupies — it must not
+        // become a blank row of cells.
+        let withRule = try layout("\\begin{array}{cc} a & b \\\\ c & d \\\\ \\hline \\end{array}")
+        let without = try layout("\\begin{array}{cc} a & b \\\\ c & d \\end{array}")
+        try expect(abs(withRule.height - without.height) < 0.5,
+                   "a trailing rule shouldn't grow the array: \(withRule.height) vs \(without.height)")
+        try expectEqual(ruleCount(withRule), 1)
+    }
+
+    test("layout: horizontal rules span the array and stay inside the box") {
+        let box = try layout("\\begin{array}{|c|c|} \\hline a & b \\\\ \\hline c & d \\\\ \\hline \\end{array}")
+        let rules = ruleRects(box)
+        // 3 horizontal + 3 vertical.
+        try expectEqual(rules.count, 6)
+        for rule in rules {
+            try expect(rule.maxY <= box.ascent + 0.01 && rule.minY >= -box.descent - 0.01,
+                       "rule outside the box vertically: \(rule)")
+            try expect(rule.minX >= -0.01 && rule.maxX <= box.width + 0.01,
+                       "rule outside the box horizontally: \(rule)")
+        }
+        // The horizontal ones run the full width.
+        let horizontal = rules.filter { $0.width > $0.height }
+        try expectEqual(horizontal.count, 3)
+        for rule in horizontal { try expectEqual(rule.width, box.width) }
+    }
+
+    test("layout: a sizing column spec isn't mistaken for alignment letters") {
+        // The `c` in `p{2cm}` is part of a length, not a centered column.
+        let box = try layout("\\begin{array}{p{2cm}|l} a & b \\end{array}")
+        try expectEqual(ruleCount(box), 1, "one rule, between the two columns")
+    }
+
+    test("layout: rules only appear where the spec asks for them") {
+        for (spec, expected) in [("ccc", 0), ("c|cc", 1), ("c||c", 1), ("|ccc|", 2), ("|c|c|c|", 4)] {
+            let box = try layout("\\begin{array}{\(spec)} a & b & c \\end{array}")
+            try expectEqual(ruleCount(box), expected, "spec {\(spec)}")
+        }
+    }
+
     test("layout: \\text is set in the body font, spaces and all") {
         let text = try layout("\\text{if and only if}")
         try expect(text.width > 0)

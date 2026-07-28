@@ -508,6 +508,42 @@ test("HTML entities: the named long tail decodes, not just the markup five") {
     }
 }
 
+test("HTML entities: the mathematical and Greek set decodes") {
+    // Formulas pasted as HTML are written with these, and the editor has a math
+    // extension to receive them.
+    let cases: [(String, String)] = [
+        ("&sum;", "∑"), ("&prod;", "∏"), ("&int;", "∫"), ("&part;", "∂"),
+        ("&nabla;", "∇"), ("&radic;", "√"), ("&sdot;", "⋅"), ("&equiv;", "≡"),
+        ("&asymp;", "≈"), ("&prop;", "∝"), ("&perp;", "⊥"), ("&there4;", "∴"),
+        ("&isin;", "∈"), ("&notin;", "∉"), ("&sub;", "⊂"), ("&sube;", "⊆"),
+        ("&cap;", "∩"), ("&cup;", "∪"), ("&empty;", "∅"), ("&forall;", "∀"),
+        ("&exist;", "∃"), ("&and;", "∧"), ("&or;", "∨"), ("&not;", "¬"),
+        ("&alpha;", "α"), ("&pi;", "π"), ("&sigma;", "σ"), ("&omega;", "ω"),
+        ("&Delta;", "Δ"), ("&Sigma;", "Σ"), ("&Omega;", "Ω"), ("&thetasym;", "ϑ"),
+        ("&rArr;", "⇒"), ("&hArr;", "⇔"), ("&alefsym;", "ℵ"), ("&weierp;", "℘"),
+        ("&lang;", "⟨"), ("&rang;", "⟩"), ("&lceil;", "⌈"), ("&rfloor;", "⌋"),
+    ]
+    for (entity, expected) in cases {
+        try expectEqual(try HTMLParser.parse("<p>\(entity)</p>", schema: schema).textContent, expected,
+                        "\(entity) should decode")
+    }
+    // A whole formula's worth at once.
+    let d = try HTMLParser.parse("<p>&sum;<sub>n=1</sub> &alpha;&sup2; &isin; &Omega;</p>", schema: schema)
+    try expectEqual(d.textContent, "∑n=1 α² ∈ Ω")
+}
+
+test("HTML entities: names that prefix each other resolve exactly") {
+    // `sub`/`sube`, `sup`/`supe`/`sup2`, `not`/`notin` all share a prefix; the
+    // scanner must match the whole name up to the semicolon, not the prefix.
+    for (entity, expected) in [("&sub;", "⊂"), ("&sube;", "⊆"), ("&sup;", "⊃"),
+                               ("&supe;", "⊇"), ("&sup2;", "²"), ("&not;", "¬"),
+                               ("&notin;", "∉"), ("&pi;", "π"), ("&piv;", "ϖ"),
+                               ("&sigma;", "σ"), ("&sigmaf;", "ς")] {
+        try expectEqual(try HTMLParser.parse("<p>\(entity)</p>", schema: schema).textContent, expected,
+                        "\(entity) should decode to exactly its own character")
+    }
+}
+
 test("HTML entities: an unknown name stays literal") {
     for source in ["&notanentity;", "&fooooo;", "&;", "&mdash", "& amp;"] {
         let d = try HTMLParser.parse("<p>x\(source)y</p>", schema: schema)

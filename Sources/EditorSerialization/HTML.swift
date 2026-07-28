@@ -881,6 +881,34 @@ public enum HTMLParser {
         "infin": "∞", "ne": "≠", "le": "≤", "ge": "≥",
         "larr": "←", "uarr": "↑", "rarr": "→", "darr": "↓", "harr": "↔",
 
+        // Mathematical and Greek symbols. Worth carrying because the editor has
+        // a math extension: formulas pasted as HTML arrive written this way.
+        // Greek lowercase.
+        "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "epsilon": "ε", "zeta": "ζ",
+        "eta": "η", "theta": "θ", "iota": "ι", "kappa": "κ", "lambda": "λ", "mu": "μ",
+        "nu": "ν", "xi": "ξ", "omicron": "ο", "pi": "π", "rho": "ρ", "sigmaf": "ς",
+        "sigma": "σ", "tau": "τ", "upsilon": "υ", "phi": "φ", "chi": "χ", "psi": "ψ",
+        "omega": "ω", "thetasym": "ϑ", "upsih": "ϒ", "piv": "ϖ",
+        // Greek uppercase.
+        "Alpha": "Α", "Beta": "Β", "Gamma": "Γ", "Delta": "Δ", "Epsilon": "Ε", "Zeta": "Ζ",
+        "Eta": "Η", "Theta": "Θ", "Iota": "Ι", "Kappa": "Κ", "Lambda": "Λ", "Mu": "Μ",
+        "Nu": "Ν", "Xi": "Ξ", "Omicron": "Ο", "Pi": "Π", "Rho": "Ρ", "Sigma": "Σ", "Tau": "Τ",
+        "Upsilon": "Υ", "Phi": "Φ", "Chi": "Χ", "Psi": "Ψ", "Omega": "Ω",
+        // Operators and relations.
+        "sum": "∑", "prod": "∏", "int": "∫", "part": "∂", "nabla": "∇", "radic": "√",
+        "lowast": "∗", "sdot": "⋅", "equiv": "≡", "cong": "≅", "asymp": "≈", "prop": "∝",
+        "sim": "∼", "there4": "∴", "ang": "∠", "perp": "⊥",
+        // Set theory and logic.
+        "isin": "∈", "notin": "∉", "ni": "∋", "sub": "⊂", "sup": "⊃", "sube": "⊆", "supe": "⊇",
+        "nsub": "⊄", "cap": "∩", "cup": "∪", "empty": "∅", "forall": "∀", "exist": "∃",
+        "and": "∧", "or": "∨", "not": "¬",
+        // Double arrows.
+        "lArr": "⇐", "uArr": "⇑", "rArr": "⇒", "dArr": "⇓", "hArr": "⇔",
+        // Technical and misc.
+        "alefsym": "ℵ", "weierp": "℘", "image": "ℑ", "real": "ℜ", "fnof": "ƒ", "oline": "‾",
+        "frasl": "⁄", "lceil": "⌈", "rceil": "⌉", "lfloor": "⌊", "rfloor": "⌋", "lang": "⟨",
+        "rang": "⟩", "loz": "◊", "spades": "♠", "clubs": "♣", "hearts": "♥", "diams": "♦",
+
         // Accented Latin letters.
         "aacute": "á", "agrave": "à", "acirc": "â", "auml": "ä", "atilde": "ã", "aring": "å",
         "eacute": "é", "egrave": "è", "ecirc": "ê", "euml": "ë",
