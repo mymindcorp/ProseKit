@@ -33,6 +33,8 @@ let schema: Schema = {
         ("details", NodeSpec(content: "detailsSummary detailsContent", group: "block", attrs: ["open": AttributeSpec(default: .bool(false))], defining: true, isolating: true)),
         ("detailsSummary", NodeSpec(content: "inline*", selectable: false, defining: true, isolating: true)),
         ("detailsContent", NodeSpec(content: "block+", selectable: false, defining: true)),
+        ("inlineMath", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["latex": AttributeSpec(default: .string(""))], leafText: { "$" + ($0.attrs["latex"]?.stringValue ?? "") + "$" })),
+        ("blockMath", NodeSpec(group: "block", atom: true, attrs: ["latex": AttributeSpec(default: .string(""))], leafText: { "$$" + ($0.attrs["latex"]?.stringValue ?? "") + "$$" })),
         ("table", NodeSpec(content: "tableRow+", group: "block", isolating: true)),
         ("tableRow", NodeSpec(content: "(tableCell | tableHeader)+")),
         ("tableCell", NodeSpec(content: "block+", attrs: cellAttrs, isolating: true)),
@@ -514,6 +516,95 @@ test("Markdown details round-trip (closed, nested list)") {
     ])]))
     let back = try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema)
     try expectEqual(back, d)
+}
+
+// MARK: - Mathematics
+
+func inlineMath(_ latex: String) -> Node { node("inlineMath", ["latex": .string(latex)]) }
+func blockMath(_ latex: String) -> Node { node("blockMath", ["latex": .string(latex)]) }
+
+test("HTML serialize math carries the source in data-latex") {
+    let d = doc(p(t("let "), inlineMath("x^2")), blockMath("E = mc^2"))
+    try expectEqual(HTMLSerializer.serialize(d),
+                    "<p>let <span data-type=\"inline-math\" data-latex=\"x^2\">$x^2$</span></p>"
+                    + "<div data-type=\"block-math\" data-latex=\"E = mc^2\">$$E = mc^2$$</div>")
+}
+
+test("HTML math round-trip") {
+    let d = doc(p(t("before "), inlineMath("\\frac{a}{b}"), t(" after")),
+                blockMath("\\sum_{i=1}^{n} i"),
+                p("tail"))
+    try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema), d)
+}
+
+test("HTML math escapes source with markup characters") {
+    let d = doc(p(inlineMath("a < b & \"c\"")))
+    let html = HTMLSerializer.serialize(d)
+    try expect(html.contains("data-latex=\"a &lt; b &amp; &quot;c&quot;\""), html)
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+}
+
+test("HTML math falls back to the $-fenced text when data-latex is absent") {
+    // Hand-written or third-party markup that only carries the display text.
+    let inline = try HTMLParser.parse("<p><span data-type=\"inline-math\">$x^2$</span></p>", schema: schema)
+    try expectEqual(inline, doc(p(inlineMath("x^2"))))
+    let block = try HTMLParser.parse("<div data-type=\"block-math\">$$a+b$$</div>", schema: schema)
+    try expectEqual(block, doc(blockMath("a+b")))
+}
+
+test("HTML math keeps its source in a schema without math nodes") {
+    let plain = try Schema(nodes: [
+        ("doc", NodeSpec(content: "block+")),
+        ("paragraph", NodeSpec(content: "inline*", group: "block")),
+        ("text", NodeSpec(group: "inline")),
+    ], marks: [], topNode: "doc")
+    let d = try HTMLParser.parse(
+        "<p>a <span data-type=\"inline-math\" data-latex=\"x^2\">$x^2$</span></p>"
+        + "<div data-type=\"block-math\" data-latex=\"y\">$$y$$</div>", schema: plain)
+    try expectEqual(d.childCount, 2)
+    try expectEqual(d.child(0).textContent, "a $x^2$")
+    try expectEqual(d.child(1).textContent, "$$y$$")
+}
+
+test("Markdown serialize math uses the $ and $$ conventions") {
+    let d = doc(p(t("let "), inlineMath("x^2")), blockMath("E = mc^2"))
+    try expectEqual(MarkdownSerializer.serialize(d), "let $x^2$\n\n$$\nE = mc^2\n$$")
+}
+
+test("Markdown math round-trip") {
+    let d = doc(p(t("before "), inlineMath("x^2"), t(" after")),
+                blockMath("\\frac{a}{b}"),
+                p("tail"))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown parses a one-line $$…$$ fence") {
+    try expectEqual(try MarkdownParser.parse("$$x^2$$", schema: schema), doc(blockMath("x^2")))
+}
+
+test("Markdown parses a multi-line $$ fence") {
+    let d = try MarkdownParser.parse("$$\na + b\n$$", schema: schema)
+    try expectEqual(d, doc(blockMath("a + b")))
+}
+
+test("Markdown ends a paragraph at a $$ fence") {
+    let d = try MarkdownParser.parse("text\n$$x$$\nmore", schema: schema)
+    try expectEqual(d, doc(p("text"), blockMath("x"), p("more")))
+}
+
+test("Markdown leaves a lone $ alone") {
+    let d = try MarkdownParser.parse("costs $5 today", schema: schema)
+    try expectEqual(d, doc(p("costs $5 today")))
+}
+
+test("Markdown math is inert in a schema without the nodes") {
+    let plain = try Schema(nodes: [
+        ("doc", NodeSpec(content: "block+")),
+        ("paragraph", NodeSpec(content: "inline*", group: "block")),
+        ("text", NodeSpec(group: "inline")),
+    ], marks: [], topNode: "doc")
+    let d = try MarkdownParser.parse("a $x^2$ b", schema: plain)
+    try expectEqual(d.child(0).textContent, "a $x^2$ b")
 }
 
 test("property: random docs round-trip through HTML and JSON") {

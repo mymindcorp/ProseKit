@@ -21,6 +21,7 @@ let package = Package(
         .library(name: "EditorChangeset", targets: ["EditorChangeset"]),
         .library(name: "EditorUIKit", targets: ["EditorUIKit"]),
         .library(name: "EditorSyntax", targets: ["EditorSyntax"]),
+        .library(name: "EditorMath", targets: ["EditorMath"]),
     ],
     targets: [
         // M0 — the document object model (prosemirror-model).
@@ -52,6 +53,10 @@ let package = Package(
         // Optional, isolated syntax highlighter for the EditorUIKit code-block
         // hook (JavaScript + CSS, with content-based language detection).
         .target(name: "EditorSyntax", dependencies: ["EditorUIKit"]),
+        // Optional LaTeX math typesetter for the EditorUIKit math hook. The
+        // parser and box layout are CoreText-only (so they build and test on
+        // macOS); only the thin renderer adapter is UIKit-gated.
+        .target(name: "EditorMath", dependencies: ["EditorUIKit"]),
 
         // Minimal test harness (no XCTest/swift-testing in this CLT-only env).
         .target(name: "TestHarness"),
@@ -90,11 +95,15 @@ let package = Package(
             name: "EditorChangesetTests",
             dependencies: ["EditorChangeset", "TestHarness"],
             path: "Tests/EditorChangesetTests"),
+        .executableTarget(
+            name: "EditorMathTests",
+            dependencies: ["EditorMath", "TestHarness"],
+            path: "Tests/EditorMathTests"),
         // iOS-only XCTest target for the renderer (run via xcodebuild on a
         // simulator). Source is #if canImport(UIKit) so it's empty on macOS.
         .testTarget(
             name: "EditorUIKitTests",
-            dependencies: ["EditorUIKit", "SchemaKit", "EditorSyntax"],
+            dependencies: ["EditorUIKit", "SchemaKit", "EditorSyntax", "EditorMath"],
             path: "Tests/EditorUIKitTests"),
     ]
 )

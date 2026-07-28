@@ -124,6 +124,8 @@ public func defaultSlashCommands() -> [SlashCommandItem] {
         SlashCommandItem(title: "Code Block", keywords: ["code", "pre", "snippet"], command: "toggleCodeBlock", icon: "chevron.left.forwardslash.chevron.right", subtitle: "A formatted code snippet"),
         SlashCommandItem(title: "Divider", keywords: ["hr", "rule", "separator", "line"], command: "setHorizontalRule", icon: "minus", subtitle: "A horizontal rule"),
         SlashCommandItem(title: "Details", keywords: ["toggle", "collapse", "accordion", "disclosure", "summary"], command: "toggleDetails", icon: "chevron.right.square", subtitle: "A collapsible section"),
+        SlashCommandItem(title: "Equation", keywords: ["math", "latex", "katex", "formula", "tex"], command: "insertBlockMath", icon: "function", subtitle: "A LaTeX formula on its own row"),
+        SlashCommandItem(title: "Inline Equation", keywords: ["math", "latex", "katex", "formula", "tex"], command: "insertInlineMath", icon: "x.squareroot", subtitle: "A LaTeX formula within the line"),
     ]
 }
 

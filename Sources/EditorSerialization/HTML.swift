@@ -28,6 +28,7 @@ public struct HTMLConfig: Sendable {
             "table": "table", "tableRow": "tr", "tableCell": "td", "tableHeader": "th",
             "taskList": "ul", "taskItem": "li",
             "details": "details", "detailsSummary": "summary", "detailsContent": "div",
+            "inlineMath": "span", "blockMath": "div",
             "wikiLink": "a", "mention": "span",
         ]
         let markTags: [String: String] = [
@@ -40,7 +41,9 @@ public struct HTMLConfig: Sendable {
         // taskList/taskItem also use ul/li but need a data-type to round-trip,
         // so they don't claim the reverse mapping (ul→bulletList, li→listItem).
         // detailsContent is a data-typed <div>, parsed as part of its <details>.
-        let noReverse: Set<String> = ["wikiLink", "mention", "taskList", "taskItem", "detailsContent"]
+        // The math nodes are data-typed span/div, recognized by `data-type`.
+        let noReverse: Set<String> = ["wikiLink", "mention", "taskList", "taskItem", "detailsContent",
+                                      "inlineMath", "blockMath"]
         for (n, t) in nodeTags where !noReverse.contains(n) { tagToNode[t] = n }
         for h in 1...6 { tagToNode["h\(h)"] = "heading" }
         tagToNode["pre"] = "codeBlock"
@@ -79,7 +82,7 @@ public enum HTMLSerializer {
     static func idAttr(_ node: Node, _ config: HTMLConfig) -> String {
         guard let docAttr = config.idDocAttr,
               case let .string(id)? = node.attrs[docAttr] else { return "" }
-        return " \(config.idHTMLAttr)=\"\(escape(id))\""
+        return " \(config.idHTMLAttr)=\"\(escapeAttribute(id))\""
     }
 
     static func serializeNode(_ node: Node, _ config: HTMLConfig) -> String {
@@ -97,19 +100,19 @@ public enum HTMLSerializer {
         case "hardBreak":
             return "<br>"
         case "image":
-            var attrs = " src=\"\(escape(node.attrs["src"]?.stringValue ?? ""))\""
-            if let alt = node.attrs["alt"]?.stringValue { attrs += " alt=\"\(escape(alt))\"" }
-            if let title = node.attrs["title"]?.stringValue { attrs += " title=\"\(escape(title))\"" }
+            var attrs = " src=\"\(escapeAttribute(node.attrs["src"]?.stringValue ?? ""))\""
+            if let alt = node.attrs["alt"]?.stringValue { attrs += " alt=\"\(escapeAttribute(alt))\"" }
+            if let title = node.attrs["title"]?.stringValue { attrs += " title=\"\(escapeAttribute(title))\"" }
             if let w = node.attrs["width"]?.intValue { attrs += " width=\"\(w)\"" }
             return "<img\(attrs)>"
         case "wikiLink":
             let target = node.attrs["target"]?.stringValue ?? ""
             let label = node.attrs["label"]?.stringValue ?? target
-            return "<a href=\"\(escape(target))\" data-wikilink=\"\(escape(target))\">\(escape(label))</a>"
+            return "<a href=\"\(escapeAttribute(target))\" data-wikilink=\"\(escapeAttribute(target))\">\(escape(label))</a>"
         case "mention":
             let id = node.attrs["id"]?.stringValue ?? ""
             let label = node.attrs["label"]?.stringValue ?? id
-            return "<span data-mention=\"\(escape(id))\">\(escape("@" + label))</span>"
+            return "<span data-mention=\"\(escapeAttribute(id))\">\(escape("@" + label))</span>"
         case "taskList":
             return "<ul data-type=\"taskList\"\(idAttr(node, config))>\(serializeFragment(node.content, config))</ul>"
         case "taskItem":
@@ -123,6 +126,15 @@ public enum HTMLSerializer {
             return "<summary\(idAttr(node, config))>\(serializeFragment(node.content, config))</summary>"
         case "detailsContent":
             return "<div data-type=\"detailsContent\"\(idAttr(node, config))>\(serializeFragment(node.content, config))</div>"
+        case "inlineMath", "blockMath":
+            // Tiptap's shape: the source lives in `data-latex`, and the element's
+            // text is the `$…$` form so non-math readers still see the formula.
+            let inline = node.type.name == "inlineMath"
+            let tag = inline ? "span" : "div", fence = inline ? "$" : "$$"
+            let latex = node.attrs["latex"]?.stringValue ?? ""
+            return "<\(tag) data-type=\"\(inline ? "inline-math" : "block-math")\" "
+                + "data-latex=\"\(escapeAttribute(latex))\"\(idAttr(node, config))>"
+                + "\(escape(fence + latex + fence))</\(tag)>"
         case "tableCell", "tableHeader":
             let tag = node.type.name == "tableHeader" ? "th" : "td"
             var a = ""
@@ -144,11 +156,11 @@ public enum HTMLSerializer {
         for mark in marks.reversed() {
             if mark.type.name == "link" {
                 let href = mark.attrs["href"]?.stringValue ?? ""
-                result = "<a href=\"\(escape(href))\">\(result)</a>"
+                result = "<a href=\"\(escapeAttribute(href))\">\(result)</a>"
             } else if mark.type.name == "textColor", let c = mark.attrs["color"]?.stringValue {
-                result = "<span style=\"color:\(escape(c))\">\(result)</span>"
+                result = "<span style=\"color:\(escapeAttribute(c))\">\(result)</span>"
             } else if mark.type.name == "backgroundColor", let c = mark.attrs["color"]?.stringValue {
-                result = "<span style=\"background-color:\(escape(c))\">\(result)</span>"
+                result = "<span style=\"background-color:\(escapeAttribute(c))\">\(result)</span>"
             } else if let tag = config.markTags[mark.type.name] {
                 result = "<\(tag)>\(result)</\(tag)>"
             }
@@ -160,6 +172,13 @@ public enum HTMLSerializer {
         s.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    /// Escape a value going inside a double-quoted attribute. A bare `"` there
+    /// would end the attribute early and corrupt the rest of the tag — reachable
+    /// from any user-supplied text (an image `alt`, a `\text{"…"}` in a formula).
+    static func escapeAttribute(_ s: String) -> String {
+        escape(s).replacingOccurrences(of: "\"", with: "&quot;")
     }
 }
 
@@ -304,7 +323,13 @@ public enum HTMLParser {
         var result: [Node] = []
         var i = 0
         while i < tokens.count {
-            if case let .open(tag, _, _) = tokens[i] {
+            if case let .open(tag, attrs, _) = tokens[i] {
+                // A `data-type="block-math"` div, before the generic <div> branch
+                // below would turn it into a paragraph of its `$$…$$` text.
+                if tag == "div", let math = makeMath(attrs, tokens, i, schema, config) {
+                    result.append(math.node)
+                    i = math.next; continue
+                }
                 // Document/section wrappers (incl. <html>/<body> from full-document
                 // clipboard HTML, e.g. Apple Notes): splice their children in.
                 if transparentWrappers.contains(tag) {
@@ -486,6 +511,11 @@ public enum HTMLParser {
             case let .open(tag, attrs, selfClosing):
                 if tag == "br", let br = try? schema.node("hardBreak") { result.append(br); i += 1; continue }
                 if tag == "img" { if let img = makeImage(attrs, schema) { result.append(img) }; i += 1; continue }
+                // `data-type="inline-math"` (or a block-math div that landed in an
+                // inline context — `textblockSplittingBlocks` lifts it back out).
+                if let math = makeMath(attrs, tokens, i, schema, config) {
+                    result.append(math.node); i = math.next; continue
+                }
                 if tag == "span", let id = attrs["data-mention"], schema.nodes["mention"] != nil {
                     let close = matchingClose(tokens, i, tag)
                     var label = innerText(tokens, i + 1, close)
@@ -535,6 +565,42 @@ public enum HTMLParser {
             }
         }
         return result
+    }
+
+    /// A math node from an element carrying Tiptap's `data-type="inline-math"` /
+    /// `"block-math"`, with the node it produced and the token index just past
+    /// its close tag. Nil when the element isn't math or the schema lacks the
+    /// node — in which case the caller falls through and keeps the `$…$` text.
+    ///
+    /// The source comes from `data-latex`; an element written by hand without
+    /// that attribute falls back to unwrapping the `$` fences from its text.
+    private static func makeMath(_ attrs: [String: String], _ tokens: [Token], _ start: Int,
+                                 _ schema: Schema, _ config: HTMLConfig) -> (node: Node, next: Int)? {
+        let name: String
+        switch attrs["data-type"] {
+        case "inline-math": name = "inlineMath"
+        case "block-math": name = "blockMath"
+        default: return nil
+        }
+        guard let type = schema.nodes[name] else { return nil }
+        guard case let .open(tag, _, selfClosing) = tokens[start] else { return nil }
+        let close = selfClosing ? start : matchingClose(tokens, start, tag)
+        let latex = attrs["data-latex"].map(decodeEntities)
+            ?? unfence(innerText(tokens, start + 1, close))
+        var a: Attrs = ["latex": .string(latex)]
+        a.merge(idAttrs(attrs, name, schema, config)) { _, new in new }
+        guard let node = try? type.create(a) else { return nil }
+        return (node, close + 1)
+    }
+
+    /// Strip surrounding `$$`/`$` from a math element's display text.
+    private static func unfence(_ text: String) -> String {
+        var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        for fence in ["$$", "$"] where s.hasPrefix(fence) && s.hasSuffix(fence) && s.count > 2 * fence.count {
+            s = String(s.dropFirst(fence.count).dropLast(fence.count))
+            break
+        }
+        return s
     }
 
     private static func makeImage(_ attrs: [String: String], _ schema: Schema) -> Node? {

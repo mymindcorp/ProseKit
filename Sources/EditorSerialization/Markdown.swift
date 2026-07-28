@@ -31,6 +31,10 @@ public enum MarkdownSerializer {
         case "orderedList":
             let start = node.attrs["order"]?.intValue ?? 1
             return (0..<node.childCount).map { "\(start + $0). " + listItemText(node.child($0)) }.joined(separator: "\n")
+        case "blockMath":
+            // The `$$…$$` display-math convention shared by Pandoc, MathJax, and
+            // most Markdown renderers with math support.
+            return "$$\n\(node.attrs["latex"]?.stringValue ?? "")\n$$"
         case "details":
             // Markdown has no collapsible section; emit the HTML block form that
             // GitHub-flavored Markdown (and our parser) understands.
@@ -87,6 +91,8 @@ public enum MarkdownSerializer {
                 let target = node.attrs["target"]?.stringValue ?? ""
                 if let label = node.attrs["label"]?.stringValue { out += "[[\(target)|\(label)]]" }
                 else { out += "[[\(target)]]" }
+            } else if node.type.name == "inlineMath" {
+                out += "$\(node.attrs["latex"]?.stringValue ?? "")$"
             }
         }
         return out
@@ -135,6 +141,29 @@ public enum MarkdownParser {
                 let text = code.joined(separator: "\n")
                 let content = text.isEmpty ? Fragment.empty : Fragment.from([schema.text(text)])
                 if let cb = try? schema.node("codeBlock", [:], content: content) { blocks.append(cb) }
+                continue
+            }
+            // Display-math fence: `$$` on its own line opens a block formula that
+            // runs to the closing `$$`, or `$$…$$` all on one line.
+            if trimmed.hasPrefix("$$"), schema.nodes["blockMath"] != nil {
+                let rest = String(trimmed.dropFirst(2))
+                var latex: String
+                if rest.hasSuffix("$$"), rest.count >= 2 {
+                    latex = String(rest.dropLast(2)) // one-liner
+                    i += 1
+                } else {
+                    var body: [String] = rest.isEmpty ? [] : [rest]
+                    i += 1
+                    while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("$$") {
+                        body.append(lines[i]); i += 1
+                    }
+                    i += 1 // consume the closing fence
+                    latex = body.joined(separator: "\n")
+                }
+                latex = latex.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !latex.isEmpty, let math = try? schema.node("blockMath", ["latex": .string(latex)]) {
+                    blocks.append(math)
+                }
                 continue
             }
             // A `<details>` HTML block (what the serializer emits for a
@@ -204,7 +233,7 @@ public enum MarkdownParser {
             i += 1
             while i < lines.count {
                 let t = lines[i].trimmingCharacters(in: .whitespaces)
-                if t.isEmpty || t.hasPrefix("#") || t.hasPrefix(">") || t.hasPrefix("```")
+                if t.isEmpty || t.hasPrefix("#") || t.hasPrefix(">") || t.hasPrefix("```") || t.hasPrefix("$$")
                     || t.lowercased().hasPrefix("<details") || t.lowercased().hasPrefix("</details>")
                     || bulletMatch(t) != nil || orderedMatch(t) != nil { break }
                 para.append(t); i += 1
@@ -411,6 +440,16 @@ public enum MarkdownParser {
                     nodes.append(schema.text(String(chars[(i + 2)..<close]), mark("highlight")))
                     i = close + 2; continue
                 }
+            }
+            // Inline math $ $ — only when the schema has the node, so a lone `$`
+            // (or a price like "$5 and $6") stays literal text elsewhere.
+            if c == "$", let type = schema.nodes["inlineMath"], i + 1 < chars.count, chars[i + 1] != "$",
+               let close = findChar(chars, i + 1, "$"), close > i + 1,
+               !chars[(i + 1)..<close].contains("\n"),
+               let math = try? type.create(["latex": .string(String(chars[(i + 1)..<close]))]) {
+                flush()
+                nodes.append(math)
+                i = close + 1; continue
             }
             // Code ` `
             if c == "`" {
