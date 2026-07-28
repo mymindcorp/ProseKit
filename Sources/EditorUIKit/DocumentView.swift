@@ -72,6 +72,7 @@ public final class DocumentView: UIView {
     private func loadPendingImages(_ nodes: [Node]) {
         for node in nodes {
             let src = node.attrs["src"]?.stringValue ?? ""
+            let isInline = node.type.spec.inline
             guard !src.isEmpty, imageCache[src] == nil, imageTasks[src] == nil,
                   let url = resolveImageURL(node, resolver: imageURLResolver) else { continue }
             imageTasks[src] = Task { [weak self] in
@@ -82,7 +83,7 @@ public final class DocumentView: UIView {
                     self.imageTasks[src] = nil
                     if let image {
                         self.imageCache[src] = image
-                        self.invalidateLayout()
+                        self.invalidateImageLayout(clearingTypesetBlocks: isInline)
                     }
                 }
             }
@@ -108,6 +109,29 @@ public final class DocumentView: UIView {
     public func invalidateLayout() {
         layout = nil
         setNeedsDisplay()
+    }
+
+    /// Re-resolve every image and lay out again.
+    ///
+    /// Images are resolved *during* layout, so a host that didn't have the bytes
+    /// yet got a placeholder, and nothing about the document changed when they
+    /// arrived. Call this when `imageData` can answer for a node it previously
+    /// couldn't, or when the bytes behind a node have changed.
+    public func reloadImages() {
+        hostImageCache.removeAll()
+        invalidateImageLayout()
+    }
+
+    /// Drop every layout artifact with an image baked into it. An inline image
+    /// is typeset into its paragraph's cached block, which is keyed by node and
+    /// width — neither of which changed when the bytes arrived — so discarding
+    /// the document layout alone leaves the placeholder in place.
+    private func invalidateImageLayout(clearingTypesetBlocks: Bool = true) {
+        // Only inline images live inside a typeset block; a block-level one is
+        // resolved fresh each pass, so its arrival needn't cost a re-typeset of
+        // every paragraph on screen.
+        if clearingTypesetBlocks { blockCache.clear() }
+        invalidateLayout()
     }
 
     public override func layoutSubviews() {
