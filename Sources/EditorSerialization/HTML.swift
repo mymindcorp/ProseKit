@@ -156,7 +156,25 @@ public enum HTMLSerializer {
         for mark in marks.reversed() {
             if mark.type.name == "link" {
                 let href = mark.attrs["href"]?.stringValue ?? ""
-                result = "<a href=\"\(escapeAttribute(href))\">\(result)</a>"
+                var attributes = " href=\"\(escapeAttribute(href))\""
+                if let title = mark.attrs["title"]?.stringValue {
+                    attributes += " title=\"\(escapeAttribute(title))\""
+                }
+                result = "<a\(attributes)>\(result)</a>"
+            } else if mark.type.name == "highlight" {
+                // The colour is a named style the theme resolves ("yellow"), not
+                // necessarily a CSS colour — `data-color` is what round-trips it.
+                // A style is emitted alongside only when the name happens to be
+                // real CSS, so a highlight survives pasting into another app
+                // without this ever writing a bogus declaration.
+                var attributes = ""
+                if let color = mark.attrs["color"]?.stringValue {
+                    attributes = " data-color=\"\(escapeAttribute(color))\""
+                    if let css = sanitizeCSSColor(color) {
+                        attributes += " style=\"background-color:\(escapeAttribute(css))\""
+                    }
+                }
+                result = "<mark\(attributes)>\(result)</mark>"
             } else if mark.type.name == "textColor", let c = mark.attrs["color"]?.stringValue {
                 result = "<span style=\"color:\(escapeAttribute(c))\">\(result)</span>"
             } else if mark.type.name == "backgroundColor", let c = mark.attrs["color"]?.stringValue {
@@ -187,11 +205,17 @@ public enum HTMLParseError: Error, CustomStringConvertible, Equatable {
     /// The markup nests deeper than `HTMLParser.maxNestingDepth`. Parsing it
     /// would have recursed far enough to overflow the stack.
     case nestingTooDeep(depth: Int, limit: Int)
+    /// The parsed content couldn't be fitted to the schema. Structural coercion
+    /// handles the shapes real markup produces, so this means the schema itself
+    /// can't express the document — a bug rather than bad input.
+    case invalidDocument(String)
 
     public var description: String {
         switch self {
         case let .nestingTooDeep(depth, limit):
             return "HTMLParseError: markup nests at least \(depth) elements deep (limit \(limit))"
+        case let .invalidDocument(reason):
+            return "HTMLParseError: parsed content isn't a valid document — \(reason)"
         }
     }
 }
@@ -222,11 +246,24 @@ public enum HTMLParser {
         if let depth = excessiveNestingDepth(tokens) {
             throw HTMLParseError.nestingTooDeep(depth: depth, limit: maxNestingDepth)
         }
-        var blocks = parseBlocks(tokens, schema, config)
+        let parsed = parseBlocks(tokens, schema, config)
+        // HTML arrives in fragments, so the top level can hold things no schema
+        // allows there — a bare `<li>` or `<td>` from a partial copy. Fit them
+        // to the document's content instead of building something invalid.
+        var blocks = fitContent(parsed, into: schema.topNodeType, schema: schema)
         if blocks.isEmpty, let p = schema.nodes["paragraph"]?.createAndFill() {
             blocks = [p]
         }
-        return try schema.node("doc", [:], content: Fragment.from(blocks))
+        let doc = try schema.node("doc", [:], content: Fragment.from(blocks))
+        // `create` computes attributes but doesn't check content, so an invalid
+        // document would otherwise be returned silently and only fail later,
+        // somewhere that assumes it is well-formed.
+        do {
+            try doc.check()
+        } catch {
+            throw HTMLParseError.invalidDocument(String(describing: error))
+        }
+        return doc
     }
 
     /// The depth at which `tokens` exceed `maxNestingDepth`, or nil if they
@@ -350,7 +387,8 @@ public enum HTMLParser {
         case "details":
             return (parseDetails(attrs, tokens, start, end, schema, config), end + 1)
         case "tableCell", "tableHeader":
-            let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
+            let parsed = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
+            let children = schema.nodes[nodeName!].map { fitContent(parsed, into: $0, schema: schema) } ?? parsed
             var a: Attrs = idAttrs(attrs, nodeName!, schema, config)
             if let cs = attrs["colspan"].flatMap({ Int($0) }), cs != 1 { a["colspan"] = .int(cs) }
             if let rs = attrs["rowspan"].flatMap({ Int($0) }), rs != 1 { a["rowspan"] = .int(rs) }
@@ -359,16 +397,18 @@ public enum HTMLParser {
                 if let n = try? type.create(a, content: Fragment.from(children)) { return ([n], end + 1) }
                 if let filled = type.createAndFill(a, content: Fragment.from(children)) { return ([filled], end + 1) }
             }
-            return ([], end + 1)
+            return (parsed, end + 1)
         case "blockquote", "listItem", "table", "tableRow":
-            let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
+            let parsed = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
             let name = nodeName!
             let a = idAttrs(attrs, name, schema, config)
             if let type = schema.nodes[name] {
+                let children = fitContent(parsed, into: type, schema: schema)
                 if let n = try? type.create(a, content: Fragment.from(children)) { return ([n], end + 1) }
                 if let filled = type.createAndFill(a, content: Fragment.from(children)) { return ([filled], end + 1) }
             }
-            return ([], end + 1)
+            // The element itself has no place here; keep what was inside it.
+            return (parsed, end + 1)
         default:
             // Unknown block: try its children as blocks.
             let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
@@ -438,8 +478,11 @@ public enum HTMLParser {
             if !items.isEmpty, let n = try? listType.create(idAttrs(attrs, "taskList", schema, config), content: Fragment.from(items)) { return n }
         }
         let name = config.tagToNode[tag] ?? "bulletList"
-        let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
+        let parsed = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
         guard let type = schema.nodes[name] else { return nil }
+        // A `<ul>` can contain things that aren't list items — real pages put
+        // stray paragraphs and nested markup in there.
+        let children = fitContent(parsed, into: type, schema: schema)
         let a = idAttrs(attrs, name, schema, config)
         if let n = try? type.create(a, content: Fragment.from(children)) { return n }
         return type.createAndFill(a, content: Fragment.from(children))
@@ -627,6 +670,17 @@ public enum HTMLParser {
                             i += 1; continue
                         }
                         attrsDict["href"] = .string(href)
+                        if let title = attrs["title"] { attrsDict["title"] = .string(title) }
+                    }
+                    // `data-color` is what this serializer writes; a bare
+                    // `background-color` style is what other editors emit.
+                    if markName == "highlight", markType.attrs["color"] != nil {
+                        if let color = attrs["data-color"] {
+                            attrsDict["color"] = .string(color)
+                        } else if let style = attrs["style"],
+                                  let css = styleValue(style, "background-color").flatMap(sanitizeCSSColor) {
+                            attrsDict["color"] = .string(css)
+                        }
                     }
                     openMarks.append((tag: tag, marks: [markType.create(attrsDict)]))
                 }
