@@ -324,6 +324,211 @@ test("HTML tokenizer: malformed fragments never crash") {
     try expectEqual(try HTMLParser.parse("<p>hi", schema: schema), doc(p("hi")))
 }
 
+// MARK: - Untrusted input
+
+/// The href of the first link mark in a document, or nil if nothing is linked.
+private func firstHref(_ d: Node) -> String? {
+    var found: String?
+    d.descendants { node, _, _, _ in
+        if found == nil, let mark = node.marks.first(where: { $0.type.name == "link" }) {
+            found = mark.attrs["href"]?.stringValue ?? ""
+        }
+        return found == nil
+    }
+    return found
+}
+
+/// Every node type name appearing in a document.
+private func nodeNames(_ d: Node) -> Set<String> {
+    var names: Set<String> = []
+    d.descendants { node, _, _, _ in names.insert(node.type.name); return true }
+    return names
+}
+
+test("HTML: script-bearing elements are dropped with their content") {
+    for tag in ["script", "style", "iframe", "object", "embed", "applet", "svg", "noscript", "template"] {
+        let html = "<p>before</p><\(tag)>alert(1)</\(tag)><p>after</p>"
+        let d = try HTMLParser.parse(html, schema: schema)
+        try expect(!d.textContent.contains("alert(1)"), "<\(tag)> content leaked: \(d.textContent)")
+        try expectEqual(d.textContent, "beforeafter", "surrounding content survives")
+    }
+    // Case and whitespace in the tag must not evade the filter.
+    let shouty = try HTMLParser.parse("<p>a</p><SCRIPT >alert(1)</SCRIPT><p>b</p>", schema: schema)
+    try expect(!shouty.textContent.contains("alert(1)"), shouty.textContent)
+}
+
+test("HTML tokenizer: a quoted attribute may contain '>'") {
+    // The tag ends at the first unquoted ">". Ending it at a quoted one splits
+    // the attribute and spills the remainder into the document as text.
+    let d = try HTMLParser.parse("<p><a href=\"https://x.test/a?b=1>2\" title=\"a>b\">link</a> tail</p>",
+                                 schema: schema)
+    try expectEqual(d.textContent, "link tail")
+    try expectEqual(firstHref(d), "https://x.test/a?b=1>2")
+    try expectEqual(try HTMLParser.parse("<p title=\"a>b\">x</p>", schema: schema), doc(p("x")))
+}
+
+test("HTML: script URLs never become links") {
+    let hostile = [
+        "javascript:alert(1)",
+        "JaVaScRiPt:alert(1)",
+        "  javascript:alert(1)",
+        "java\tscript:alert(1)",       // browsers strip control chars before the scheme
+        "java\nscript:alert(1)",
+        "&#106;avascript:alert(1)",    // entity-encoded 'j', decoded by the tokenizer
+        "vbscript:msgbox(1)",
+        "data:text/html,<script>alert(1)</script>",
+    ]
+    for href in hostile {
+        let d = try HTMLParser.parse("<p><a href=\"\(href)\">click</a></p>", schema: schema)
+        try expectNil(firstHref(d))
+        try expectEqual(d.textContent, "click", "the text survives, only the link is dropped")
+    }
+}
+
+test("HTML: ordinary links are untouched") {
+    for href in ["https://example.com/a?b=1&c=2", "http://x.test", "mailto:a@b.test",
+                 "tel:+15551234", "/relative/path", "../up", "notes/a:b", "#anchor"] {
+        let d = try HTMLParser.parse("<p><a href=\"\(href)\">t</a></p>", schema: schema)
+        try expectEqual(firstHref(d), href, "\(href) should survive")
+    }
+}
+
+test("HTML: script image sources are dropped, real ones kept") {
+    for src in ["javascript:alert(1)", "data:text/html,<script>alert(1)</script>",
+                "data:image/svg+xml,<svg onload=alert(1)>", "vbscript:x"] {
+        let d = try HTMLParser.parse("<p>a<img src=\"\(src)\">b</p>", schema: schema)
+        try expect(!nodeNames(d).contains("image"), "\(src) should not become an image")
+    }
+    for src in ["https://example.com/a.png", "cat.png", "file:///tmp/a.png",
+                "data:image/png;base64,iVBORw0KGgo="] {
+        let d = try HTMLParser.parse("<p><img src=\"\(src)\"></p>", schema: schema)
+        try expect(nodeNames(d).contains("image"), "\(src) should survive")
+    }
+}
+
+test("HTML: a wiki link with a script target degrades to plain text") {
+    let d = try HTMLParser.parse(
+        "<p><a href=\"javascript:alert(1)\" data-wikilink=\"javascript:alert(1)\">Page</a></p>", schema: schema)
+    try expect(!nodeNames(d).contains("wikiLink"))
+    try expectEqual(d.textContent, "Page")
+}
+
+test("HTML: style values that aren't colors are dropped") {
+    // A color round-trips back into a `style` attribute, so anything else CSS
+    // can express would ride along with it.
+    for value in ["url(javascript:alert(1))", "expression(alert(1))", "red/*x*/"] {
+        let d = try HTMLParser.parse("<p><span style=\"color:\(value)\">x</span></p>", schema: schema)
+        var marks: Set<String> = []
+        d.descendants { node, _, _, _ in
+            for m in node.marks { marks.insert(m.type.name) }
+            return true
+        }
+        try expect(!marks.contains("textColor"), "\(value) should not become a color")
+        try expect(!HTMLSerializer.serialize(d).contains("javascript"), "and must not round-trip")
+    }
+    // A declaration the parser doesn't read is dropped with the rest of the
+    // rule, so smuggling one in alongside a valid color doesn't carry it over.
+    let smuggled = try HTMLParser.parse(
+        "<p><span style=\"color:red;background:url(//evil.test)\">x</span></p>", schema: schema)
+    let html = HTMLSerializer.serialize(smuggled)
+    try expect(html.contains("color:red"), "the color itself survives: \(html)")
+    try expect(!html.contains("evil.test") && !html.contains("url("), "nothing else does: \(html)")
+    // Real colors still work.
+    for value in ["#ff0000", "#f00", "red", "rgb(255, 0, 0)", "rgba(255,0,0,0.5)"] {
+        let d = try HTMLParser.parse("<p><span style=\"color:\(value)\">x</span></p>", schema: schema)
+        try expect(HTMLSerializer.serialize(d).contains("color:\(value)"), "\(value) should survive")
+    }
+}
+
+test("Markdown: script URLs never become links or images") {
+    let d = try MarkdownParser.parse("[click](javascript:alert(1)) and ![x](data:text/html,<script>)", schema: schema)
+    try expectNil(firstHref(d))
+    try expect(!nodeNames(d).contains("image"))
+    try expect(d.textContent.contains("click"), "the link text survives")
+    // Ordinary links are untouched.
+    let ok = try MarkdownParser.parse("[a](https://example.com)", schema: schema)
+    try expectEqual(firstHref(ok), "https://example.com")
+}
+
+test("HTML nesting: past the limit it throws instead of overflowing the stack") {
+    // Parsing descends one stack frame per nested element, so this used to be a
+    // hard crash somewhere past ~3,000 — uncatchable, and reachable from pasted
+    // markup.
+    let deep = String(repeating: "<div>", count: 300) + "x" + String(repeating: "</div>", count: 300)
+    var thrown: HTMLParseError?
+    do { _ = try HTMLParser.parse(deep, schema: schema) } catch let error as HTMLParseError { thrown = error }
+    try expectEqual(thrown, .nestingTooDeep(depth: HTMLParser.maxNestingDepth + 1,
+                                            limit: HTMLParser.maxNestingDepth))
+
+    // Unclosed opens nest just as deep, and used to crash the same way.
+    for count in [1_000, 100_000] {
+        var threw = false
+        do { _ = try HTMLParser.parse(String(repeating: "<div>", count: count) + "x", schema: schema) }
+        catch is HTMLParseError { threw = true }
+        try expect(threw, "\(count) unclosed <div>s should be rejected, not parsed")
+    }
+}
+
+test("HTML nesting: ordinary documents are unaffected by the limit") {
+    // Right up to the limit still parses — the guard rejects only the absurd.
+    let atLimit = String(repeating: "<div>", count: HTMLParser.maxNestingDepth)
+        + "x" + String(repeating: "</div>", count: HTMLParser.maxNestingDepth)
+    try expectEqual(try HTMLParser.parse(atLimit, schema: schema).textContent, "x")
+
+    // Depth is nesting, not element count: a flat document of thousands of
+    // siblings — including void elements, which never close — is fine.
+    let wide = String(repeating: "<p>x</p>", count: 2_000)
+    try expectEqual(try HTMLParser.parse(wide, schema: schema).childCount, 2_000)
+    let images = "<p>" + String(repeating: "<img src=\"a.png\">", count: 2_000) + "</p>"
+    _ = try HTMLParser.parse(images, schema: schema)
+    // Stray closing tags must not drive the counter negative and mask real depth.
+    let strays = String(repeating: "</div>", count: 500) + String(repeating: "<div>", count: 10) + "x"
+    _ = try HTMLParser.parse(strays, schema: schema)
+}
+
+test("HTML entities: the named long tail decodes, not just the markup five") {
+    let d = try HTMLParser.parse("<p>Tom &amp; Jerry&#8217;s caf&#xe9; &mdash; done</p>", schema: schema)
+    try expectEqual(d.textContent, "Tom & Jerry\u{2019}s café — done")
+
+    // The names that actually show up in pasted prose.
+    let cases: [(String, String)] = [
+        ("&mdash;", "—"), ("&ndash;", "–"), ("&hellip;", "…"),
+        ("&rsquo;", "\u{2019}"), ("&lsquo;", "\u{2018}"),
+        ("&ldquo;", "\u{201C}"), ("&rdquo;", "\u{201D}"),
+        ("&eacute;", "é"), ("&uuml;", "ü"), ("&ccedil;", "ç"), ("&ntilde;", "ñ"),
+        ("&nbsp;", "\u{00A0}"), ("&copy;", "©"), ("&trade;", "™"), ("&euro;", "€"),
+        ("&laquo;", "«"), ("&bull;", "•"), ("&deg;", "°"), ("&frac12;", "½"),
+        ("&rarr;", "→"), ("&times;", "×"), ("&sect;", "§"),
+    ]
+    for (entity, expected) in cases {
+        let parsed = try HTMLParser.parse("<p>\(entity)</p>", schema: schema)
+        try expectEqual(parsed.textContent, expected, "\(entity) should decode")
+    }
+}
+
+test("HTML entities: an unknown name stays literal") {
+    for source in ["&notanentity;", "&fooooo;", "&;", "&mdash", "& amp;"] {
+        let d = try HTMLParser.parse("<p>x\(source)y</p>", schema: schema)
+        try expectEqual(d.textContent, "x\(source)y", "\(source) should pass through untouched")
+    }
+}
+
+test("HTML entities: decoding is a single pass") {
+    // `&amp;mdash;` is the *text* "&mdash;", not an em dash — decoding the
+    // output of a decode would silently corrupt escaped source.
+    try expectEqual(try HTMLParser.parse("<p>&amp;mdash;</p>", schema: schema).textContent, "&mdash;")
+    try expectEqual(try HTMLParser.parse("<p>&amp;amp;</p>", schema: schema).textContent, "&amp;")
+    try expectEqual(try HTMLParser.parse("<p>&amp;#8217;</p>", schema: schema).textContent, "&#8217;")
+}
+
+test("HTML entities: round-trip through the serializer stays stable") {
+    // Serializing re-escapes only the markup characters, so a decoded em dash
+    // survives as itself and a literal ampersand survives as `&amp;`.
+    let d = doc(p("Tom & Jerry\u{2019}s café — done"))
+    let back = try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema)
+    try expectEqual(back, d)
+}
+
 test("HTML paste: Apple Notes via RTF→Cocoa HTML Writer (doctype + p/span/ul)") {
     // The exact shape NSAttributedString emits for Apple Notes' RTF: a <!DOCTYPE>,
     // a <head><style>, and <p class><span class> / <ul class><li class> bodies.

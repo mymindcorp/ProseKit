@@ -163,6 +163,20 @@ public enum HTMLSerializer {
     }
 }
 
+/// Why HTML couldn't be parsed into a document.
+public enum HTMLParseError: Error, CustomStringConvertible, Equatable {
+    /// The markup nests deeper than `HTMLParser.maxNestingDepth`. Parsing it
+    /// would have recursed far enough to overflow the stack.
+    case nestingTooDeep(depth: Int, limit: Int)
+
+    public var description: String {
+        switch self {
+        case let .nestingTooDeep(depth, limit):
+            return "HTMLParseError: markup nests at least \(depth) elements deep (limit \(limit))"
+        }
+    }
+}
+
 // MARK: - Parse
 
 /// A tiny HTML tokenizer + parser sufficient for clipboard interchange of the
@@ -174,8 +188,21 @@ public enum HTMLParser {
         case text(String)
     }
 
+    /// The deepest element nesting `parse` will accept.
+    ///
+    /// Parsing descends recursively, one Swift stack frame per nested element,
+    /// so pathological input — hand-crafted, or a generator gone wrong — can
+    /// overflow the stack, which is a crash rather than a catchable error. This
+    /// is checked up front against the token stream so the failure arrives as a
+    /// thrown error instead. Real documents nest a dozen or so levels deep;
+    /// anything near this limit is malformed by any reasonable measure.
+    public static let maxNestingDepth = 256
+
     public static func parse(_ html: String, schema: Schema, config: HTMLConfig = .default) throws -> Node {
         let tokens = tokenize(html)
+        if let depth = excessiveNestingDepth(tokens) {
+            throw HTMLParseError.nestingTooDeep(depth: depth, limit: maxNestingDepth)
+        }
         var blocks = parseBlocks(tokens, schema, config)
         if blocks.isEmpty, let p = schema.nodes["paragraph"]?.createAndFill() {
             blocks = [p]
@@ -183,10 +210,40 @@ public enum HTMLParser {
         return try schema.node("doc", [:], content: Fragment.from(blocks))
     }
 
+    /// The depth at which `tokens` exceed `maxNestingDepth`, or nil if they
+    /// never do. Scans the flat token stream, so it costs one pass and runs
+    /// before any recursion has a chance to overflow the stack.
+    private static func excessiveNestingDepth(_ tokens: [Token]) -> Int? {
+        var depth = 0
+        for token in tokens {
+            switch token {
+            case let .open(_, _, selfClosing):
+                // The tokenizer already reports void elements (`<br>`, `<img>`,
+                // legal without a slash) as self-closing, so a flat document
+                // full of images doesn't read as infinitely nested.
+                guard !selfClosing else { continue }
+                depth += 1
+                if depth > maxNestingDepth { return depth }
+            case .close:
+                depth = max(0, depth - 1)
+            case .text:
+                continue
+            }
+        }
+        return nil
+    }
+
     // Tags whose children are spliced in transparently (document/section wrappers).
     private static let transparentWrappers: Set<String> = ["html", "body", "tbody", "thead", "tfoot"]
     // Tags dropped entirely along with their content (document metadata, CSS, JS).
-    private static let skippedWrappers: Set<String> = ["head", "style", "script", "title", "noscript", "colgroup"]
+    /// Tags dropped entirely along with their content. Beyond document metadata
+    /// and CSS/JS, this covers the embedding elements — an `<iframe>` or an
+    /// `<svg>` is a document of its own that can carry script, and none of them
+    /// have a representation in the schema anyway.
+    private static let skippedWrappers: Set<String> = [
+        "head", "style", "script", "title", "noscript", "colgroup",
+        "iframe", "frame", "frameset", "object", "embed", "applet", "svg", "template",
+    ]
     private static let blockTags: Set<String> = [
         "p", "div", "ul", "ol", "li", "table", "tr", "td", "th", "tbody", "thead", "tfoot",
         "blockquote", "pre", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article",
@@ -499,10 +556,14 @@ public enum HTMLParser {
                     if !selfClosing {
                         var marks: [Mark] = []
                         if let style = attrs["style"] {
-                            if let c = styleValue(style, "background-color"), let mt = schema.marks["backgroundColor"] {
+                            // Colors are re-serialized into a `style` attribute, so
+                            // anything CSS can express would round-trip with them.
+                            if let c = styleValue(style, "background-color").flatMap(sanitizeCSSColor),
+                               let mt = schema.marks["backgroundColor"] {
                                 marks.append(mt.create(["color": .string(c)]))
                             }
-                            if let c = styleValue(style, "color"), let mt = schema.marks["textColor"] {
+                            if let c = styleValue(style, "color").flatMap(sanitizeCSSColor),
+                               let mt = schema.marks["textColor"] {
                                 marks.append(mt.create(["color": .string(c)]))
                             }
                         }
@@ -511,9 +572,16 @@ public enum HTMLParser {
                     i += 1; continue
                 }
                 if tag == "a", attrs["data-wikilink"] != nil || schema.nodes["wikiLink"] != nil, attrs["data-wikilink"] != nil {
-                    let target = attrs["data-wikilink"] ?? attrs["href"] ?? ""
+                    let rawTarget = attrs["data-wikilink"] ?? attrs["href"] ?? ""
                     let close = matchingClose(tokens, i, tag)
                     let label = innerText(tokens, i + 1, close)
+                    // A wiki target is normally a page name, but it falls back to
+                    // the href and is serialized back into one — so it gets the
+                    // same treatment. Unsafe targets degrade to plain text.
+                    guard let target = sanitizeURL(rawTarget, for: .link) else {
+                        if !label.isEmpty { result.append(schema.text(label, currentMarks())) }
+                        i = close + 1; continue
+                    }
                     if let wl = try? schema.nodes["wikiLink"]?.create(["target": .string(target), "label": .string(label)]) {
                         result.append(wl); i = close + 1; continue
                     }
@@ -521,7 +589,15 @@ public enum HTMLParser {
                 // A self-closing mark tag opens no lasting scope.
                 if !selfClosing, let markName = config.tagToMark[tag], let markType = schema.marks[markName] {
                     var attrsDict: Attrs = [:]
-                    if markName == "link" { attrsDict["href"] = .string(attrs["href"] ?? "") }
+                    if markName == "link" {
+                        // A `javascript:` href would become a link the editor
+                        // hands to the system on tap. Drop the mark, keep the text.
+                        guard let href = sanitizeURL(attrs["href"] ?? "", for: .link) else {
+                            openMarks.append((tag: tag, marks: []))
+                            i += 1; continue
+                        }
+                        attrsDict["href"] = .string(href)
+                    }
                     openMarks.append((tag: tag, marks: [markType.create(attrsDict)]))
                 }
                 i += 1
@@ -538,7 +614,10 @@ public enum HTMLParser {
     }
 
     private static func makeImage(_ attrs: [String: String], _ schema: Schema) -> Node? {
-        guard let type = schema.nodes["image"], let src = attrs["src"] else { return nil }
+        // A `data:text/html` or `data:image/svg+xml` source is a script the
+        // moment anything renders it; an unsafe source drops the image.
+        guard let type = schema.nodes["image"], let raw = attrs["src"],
+              let src = sanitizeURL(raw, for: .image) else { return nil }
         var a: Attrs = ["src": .string(src)]
         if let alt = attrs["alt"] { a["alt"] = .string(alt) }
         if let title = attrs["title"] { a["title"] = .string(title) }
@@ -593,9 +672,22 @@ public enum HTMLParser {
                     i = skipDeclaration(chars, from: i)
                     continue
                 }
-                // find end of tag
+                // Find the end of the tag, ignoring any ">" inside a quoted
+                // attribute value — `href="data:text/html,<b>"` is one tag, not
+                // a tag that ends in the middle of its own href.
                 var j = i + 1
-                while j < chars.count && chars[j] != ">" { j += 1 }
+                var quote: Character?
+                while j < chars.count {
+                    let c = chars[j]
+                    if let open = quote {
+                        if c == open { quote = nil }
+                    } else if c == "\"" || c == "'" {
+                        quote = c
+                    } else if c == ">" {
+                        break
+                    }
+                    j += 1
+                }
                 let raw = String(chars[(i + 1)..<min(j, chars.count)])
                 if raw.hasPrefix("/") {
                     tokens.append(.close(tag: raw.dropFirst().trimmingCharacters(in: .whitespaces).lowercased()))
@@ -691,8 +783,53 @@ public enum HTMLParser {
         return (name.lowercased(), attrs, selfClosing)
     }
 
+    /// The named character references that actually turn up in web article text.
+    ///
+    /// Not the full HTML5 set (~2,200 names, most of them mathematical): this is
+    /// the long tail that matters for pasted prose — typographic punctuation,
+    /// currency and symbols, and the accented Latin letters. Anything missing
+    /// still round-trips as its literal source rather than being mangled, and
+    /// numeric references (`&#8217;` / `&#xe9;`) are handled by the scanner
+    /// itself, so they need no entries here.
     private static let namedEntities: [String: Character] = [
-        "lt": "<", "gt": ">", "quot": "\"", "apos": "'", "amp": "&", "nbsp": "\u{00A0}",
+        // Markup delimiters.
+        "lt": "<", "gt": ">", "quot": "\"", "apos": "'", "amp": "&",
+
+        // Spaces and invisible formatting.
+        "nbsp": "\u{00A0}", "ensp": "\u{2002}", "emsp": "\u{2003}", "thinsp": "\u{2009}",
+        "shy": "\u{00AD}", "zwnj": "\u{200C}", "zwj": "\u{200D}",
+
+        // Typographic punctuation — the bulk of what breaks in practice.
+        "mdash": "—", "ndash": "–", "hellip": "…",
+        "lsquo": "\u{2018}", "rsquo": "\u{2019}", "ldquo": "\u{201C}", "rdquo": "\u{201D}",
+        "sbquo": "\u{201A}", "bdquo": "\u{201E}", "lsaquo": "\u{2039}", "rsaquo": "\u{203A}",
+        "laquo": "«", "raquo": "»", "bull": "•", "middot": "·",
+        "dagger": "†", "Dagger": "‡", "prime": "′", "Prime": "″",
+        "iexcl": "¡", "iquest": "¿", "para": "¶", "sect": "§", "brvbar": "¦",
+
+        // Symbols, currency, and the handful of maths that shows up in prose.
+        "copy": "©", "reg": "®", "trade": "™", "deg": "°", "micro": "µ",
+        "plusmn": "±", "times": "×", "divide": "÷", "minus": "−",
+        "frac12": "½", "frac14": "¼", "frac34": "¾", "sup1": "¹", "sup2": "²", "sup3": "³",
+        "cent": "¢", "pound": "£", "yen": "¥", "euro": "€", "curren": "¤",
+        "infin": "∞", "ne": "≠", "le": "≤", "ge": "≥",
+        "larr": "←", "uarr": "↑", "rarr": "→", "darr": "↓", "harr": "↔",
+
+        // Accented Latin letters.
+        "aacute": "á", "agrave": "à", "acirc": "â", "auml": "ä", "atilde": "ã", "aring": "å",
+        "eacute": "é", "egrave": "è", "ecirc": "ê", "euml": "ë",
+        "iacute": "í", "igrave": "ì", "icirc": "î", "iuml": "ï",
+        "oacute": "ó", "ograve": "ò", "ocirc": "ô", "ouml": "ö", "otilde": "õ", "oslash": "ø",
+        "uacute": "ú", "ugrave": "ù", "ucirc": "û", "uuml": "ü",
+        "yacute": "ý", "yuml": "ÿ", "ccedil": "ç", "ntilde": "ñ",
+        "szlig": "ß", "aelig": "æ", "oelig": "œ", "thorn": "þ", "eth": "ð",
+        "Aacute": "Á", "Agrave": "À", "Acirc": "Â", "Auml": "Ä", "Atilde": "Ã", "Aring": "Å",
+        "Eacute": "É", "Egrave": "È", "Ecirc": "Ê", "Euml": "Ë",
+        "Iacute": "Í", "Igrave": "Ì", "Icirc": "Î", "Iuml": "Ï",
+        "Oacute": "Ó", "Ograve": "Ò", "Ocirc": "Ô", "Ouml": "Ö", "Otilde": "Õ", "Oslash": "Ø",
+        "Uacute": "Ú", "Ugrave": "Ù", "Ucirc": "Û", "Uuml": "Ü",
+        "Yacute": "Ý", "Ccedil": "Ç", "Ntilde": "Ñ",
+        "AElig": "Æ", "OElig": "Œ", "THORN": "Þ", "ETH": "Ð",
     ]
 
     static func decodeEntities(_ s: String) -> String {
