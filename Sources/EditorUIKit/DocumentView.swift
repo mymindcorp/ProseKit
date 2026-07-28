@@ -28,6 +28,18 @@ public final class DocumentView: UIView {
     /// ids — it sees all the node's attrs). nil falls back to the node's `src` as
     /// data:/http(s)/file/absolute path.
     public var imageURLResolver: ImageURLResolver?
+
+    /// Optional hook to typeset `inlineMath` / `blockMath` nodes — assign
+    /// `EditorMath.makeMathRenderer()`. Nil (the default) draws each formula's
+    /// LaTeX source as monospaced text, which is what a read-only view showing
+    /// a document full of maths would otherwise be stuck with.
+    ///
+    /// Setting it drops the typeset-block cache: an inline formula is laid out
+    /// into its paragraph's cached block, so the cache would otherwise keep
+    /// serving the un-rendered version.
+    public var mathRenderer: MathRenderer? {
+        didSet { blockCache.clear(); invalidateLayout() }
+    }
     /// Supplies the view used for each task-item checkbox — the same hook as the
     /// editable `EditorTextView`. When nil, `DefaultTaskCheckboxView` is used.
     /// Checkboxes here are read-only: they render and reflect the document's
@@ -146,7 +158,8 @@ public final class DocumentView: UIView {
         if let layout, layoutWidth == bounds.width { return layout }
         let l = DocumentLayout(doc: document, width: max(bounds.width, 1), theme: theme,
                                imageProvider: { [weak self] node in self?.resolveImage(node) },
-                               blockCache: blockCache, previous: layout)
+                               blockCache: blockCache, previous: layout,
+                               mathRenderer: mathRenderer)
         layout = l
         layoutWidth = bounds.width
         loadPendingImages(l.pendingImages)
