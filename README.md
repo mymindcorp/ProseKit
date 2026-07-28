@@ -167,6 +167,13 @@ Leave it unset and a tap just places the caret. The demo app's "Math" document w
 
 Both nodes round-trip through HTML (`<span data-type="inline-math" data-latex="…">`) and Markdown (`$…$` and `$$…$$`).
 
+Tables and augmented matrices use `array`'s column spec, with `|` for vertical rules and `\hline` for horizontal ones:
+
+```latex
+\left[\begin{array}{cc|c} 1 & 2 & 3 \\ 4 & 5 & 6 \end{array}\right]
+\begin{array}{|l|r|} \hline a & 1 \\ \hline b & 22 \\ \hline \end{array}
+```
+
 ## Building & testing
 
 The library and its tests build with plain SwiftPM; the demo needs Xcode's `xcodebuild`. See [AGENTS.md](AGENTS.md) for exact commands.

@@ -31,6 +31,13 @@ func parseError(_ latex: String) -> String? {
     typesetter().layout(latex, display: false).error
 }
 
+/// The filled rectangles a box draws — fraction bars, overlines, array rules.
+func ruleRects(_ box: MathBox) -> [CGRect] {
+    box.drawItems.compactMap { if case let .rule(rect) = $0 { return rect } else { return nil } }
+}
+
+func ruleCount(_ box: MathBox) -> Int { ruleRects(box).count }
+
 registerParserTests()
 registerLayoutTests()
 registerCorpusTests()

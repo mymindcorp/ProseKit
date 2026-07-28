@@ -51,8 +51,11 @@ public struct MathAtom {
         case ruled(over: Bool, [MathAtom])
         /// Explicit horizontal space, in em.
         case space(Double)
-        /// A matrix / cases / aligned environment.
-        case matrix(rows: [[[MathAtom]]], left: String?, right: String?, alignment: MatrixAlignment)
+        /// A matrix / cases / aligned environment. `hlines` holds the row
+        /// indices `\hline` puts a horizontal rule above, with `rows.count`
+        /// meaning a rule below the last row.
+        case matrix(rows: [[[MathAtom]]], left: String?, right: String?,
+                    alignment: MatrixAlignment, hlines: Set<Int>)
         /// An explicit `\displaystyle` / `\scriptstyle` switch over a group.
         case styled(MathStyle, [MathAtom])
         /// A formula that failed to parse — drawn verbatim in the error color.
@@ -68,6 +71,66 @@ public enum MatrixAlignment: Sendable {
     case cases
     /// `aligned` / `align` — columns alternate right, left, right, left…
     case alternating
+    /// `array` — per-column alignment and vertical rules, from its column spec.
+    case array(ArrayColumns)
+}
+
+/// The column layout an `array` environment declares in its spec — the `{lc|r}`
+/// argument of `\begin{array}`.
+public struct ArrayColumns: Sendable, Equatable {
+    public enum Alignment: Sendable { case left, center, right }
+
+    /// One entry per declared column. A body with more columns than the spec
+    /// declares centers the extras, as TeX does for an over-wide row.
+    public var alignments: [Alignment]
+    /// Where vertical rules sit, as column indices: `i` is a rule *before*
+    /// column `i`, and `alignments.count` a rule after the last column.
+    public var rules: Set<Int>
+
+    /// The alignment of column `index`, defaulting to centered.
+    func alignment(at index: Int) -> Alignment {
+        index < alignments.count ? alignments[index] : .center
+    }
+
+    /// Parse a column spec. Alignment letters and `|` are honored; the sizing
+    /// forms (`p{2cm}`, `@{…}`) are accepted and their braced arguments skipped,
+    /// so the `c` in `p{2cm}` isn't mistaken for a centered column.
+    public init(spec: String) {
+        var alignments: [Alignment] = []
+        var rules: Set<Int> = []
+        let chars = Array(spec)
+        var i = 0
+        /// The index just past the group starting at `open`.
+        func skipBraced(_ open: Int) -> Int {
+            var depth = 0, j = open
+            while j < chars.count {
+                if chars[j] == "{" { depth += 1 }
+                if chars[j] == "}" { depth -= 1; if depth == 0 { return j + 1 } }
+                j += 1
+            }
+            return chars.count
+        }
+        while i < chars.count {
+            switch chars[i] {
+            case "l": alignments.append(.left); i += 1
+            case "c": alignments.append(.center); i += 1
+            case "r": alignments.append(.right); i += 1
+            case "|": rules.insert(alignments.count); i += 1
+            // A fixed-width column takes a braced argument and reads as
+            // left-aligned. (`where` would bind to the last pattern only, so the
+            // brace check goes in the body.)
+            case "p", "m", "b":
+                alignments.append(.left)
+                i = (i + 1 < chars.count && chars[i + 1] == "{") ? skipBraced(i + 1) : i + 1
+            case "{":
+                i = skipBraced(i)
+            default:
+                i += 1
+            }
+        }
+        self.alignments = alignments
+        self.rules = rules
+    }
 }
 
 /// TeX's four typesetting styles. Display is the standalone (block) form;
@@ -485,14 +548,23 @@ struct LatexParser {
         guard let (left, right) = Self.environmentDelimiters[name] else {
             throw LatexError(message: "unknown environment '\(name)'")
         }
-        // `array` takes a column spec we accept and ignore beyond its alignment.
-        if name == "array" { _ = try? parseRawGroup() }
-        let alignment: MatrixAlignment = name == "cases" ? .cases
+        var alignment: MatrixAlignment = name == "cases" ? .cases
             : (name.hasPrefix("align") ? .alternating : .center)
+        // `array` declares its columns — alignments and vertical rules.
+        if name == "array" {
+            alignment = .array(ArrayColumns(spec: (try? parseRawGroup()) ?? ""))
+        }
 
         var rows: [[[MathAtom]]] = []
         var row: [[MathAtom]] = []
+        var hlines: Set<Int> = []
         while true {
+            // `\hline` sits between rows, so it's read at the start of the row
+            // it precedes — several in a row are legal and collapse to one.
+            if row.isEmpty {
+                skipSpaces()
+                while peekCommand() == "hline" { _ = takeCommand(); hlines.insert(rows.count); skipSpaces() }
+            }
             let cell = try parseList(until: ["&", "\\", "end", "}"])
             row.append(cell)
             skipSpaces()
@@ -512,8 +584,16 @@ struct LatexParser {
         let closing = try parseRawGroup()
         guard closing == name else { throw LatexError(message: "\\end{\(closing)} closes \\begin{\(name)}") }
 
+        // A trailing `\hline` after the last `\\` opened an empty row; drop it
+        // and keep the rule, which belongs below the final row.
+        if let last = rows.last, last.count == 1, last[0].isEmpty, hlines.contains(rows.count - 1) {
+            hlines.remove(rows.count - 1)
+            rows.removeLast()
+            hlines.insert(rows.count)
+        }
         return MathAtom(.matrix(rows: rows, left: left.isEmpty ? nil : left,
-                                right: right.isEmpty ? nil : right, alignment: alignment),
+                                right: right.isEmpty ? nil : right,
+                                alignment: alignment, hlines: hlines),
                         .inner)
     }
 }

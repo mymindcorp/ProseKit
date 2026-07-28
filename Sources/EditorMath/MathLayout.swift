@@ -48,6 +48,9 @@ enum TeXMetrics {
     static let nullDelimiterSpace: CGFloat = 0.12
     /// How much a big operator's glyph grows in display style.
     static let displayOperatorScale: CGFloat = 1.4
+    /// The vertical rules an `array` column spec draws (TeX's `\arrayrulewidth`,
+    /// 0.4pt, as a fraction of a 17pt em).
+    static let arrayRuleWidth: CGFloat = 0.024
 }
 
 /// A thin/medium/thick space, in TeX's mu (1 mu = 1/18 em).
@@ -260,8 +263,9 @@ public final class MathTypesetter {
         case let .space(width):
             return .space(CGFloat(width) * em(ctx.style))
 
-        case let .matrix(rows, left, right, alignment):
-            return layoutMatrix(rows, left: left, right: right, alignment: alignment, ctx)
+        case let .matrix(rows, left, right, alignment, hlines):
+            return layoutMatrix(rows, left: left, right: right, alignment: alignment,
+                                hlines: hlines, ctx)
 
         case let .styled(style, inner):
             return layout(inner, ctx.with(style: style))
@@ -624,7 +628,8 @@ public final class MathTypesetter {
     // MARK: - Matrices
 
     private func layoutMatrix(_ rows: [[[MathAtom]]], left: String?, right: String?,
-                              alignment: MatrixAlignment, _ ctx: Context) -> MathBox {
+                              alignment: MatrixAlignment, hlines: Set<Int>,
+                              _ ctx: Context) -> MathBox {
         let unit = em(ctx.style)
         // Cells of a display-style matrix are set in text style, as TeX does.
         let cellCtx = ctx.with(style: ctx.style == .display ? .text : ctx.style)
@@ -636,21 +641,35 @@ public final class MathTypesetter {
         for row in cells {
             for (c, cell) in row.enumerated() { columnWidths[c] = max(columnWidths[c], cell.width) }
         }
-        let columnGap: CGFloat = (alignment == .cases ? 1.0 : 0.9) * unit
+        // An `array` brings its own column spec; the rest have a fixed shape.
+        var columns: ArrayColumns?
+        var isCases = false
+        switch alignment {
+        case let .array(spec): columns = spec
+        case .cases: isCases = true
+        default: break
+        }
+        let columnGap: CGFloat = (isCases ? 1.0 : 0.9) * unit
         let rowGap: CGFloat = 0.35 * unit
-        let totalWidth = columnWidths.reduce(0, +)
-            + CGFloat(max(0, columnCount - 1)) * columnGap
+        // A rule on an outer edge needs room of its own, or the content would
+        // sit flush against it.
+        let rulesAt = columns?.rules ?? []
+        let leadingPad = rulesAt.contains(0) ? columnGap / 2 : 0
+        let trailingPad = rulesAt.contains(columnCount) ? columnGap / 2 : 0
+        let totalWidth = leadingPad + columnWidths.reduce(0, +)
+            + CGFloat(max(0, columnCount - 1)) * columnGap + trailingPad
 
         // Stack the rows, then shift the pile so its vertical center is on the axis.
         var stacked = MathBox(width: totalWidth)
         var y: CGFloat = 0
-        var rowTops: [CGFloat] = []
+        // The y of each inter-row boundary: index i is above row i, and the last
+        // entry is below the final row.
+        var boundaries: [CGFloat] = [0]
         for row in cells {
             let ascent = row.map(\.ascent).max() ?? 0
             let descent = row.map(\.descent).max() ?? 0
             y -= ascent
-            rowTops.append(y)
-            var x: CGFloat = 0
+            var x: CGFloat = leadingPad
             for (c, cell) in row.enumerated() {
                 let columnWidth = columnWidths[c]
                 let dx: CGFloat
@@ -660,17 +679,65 @@ public final class MathTypesetter {
                 // `aligned` puts the last column of each pair flush right against
                 // the relation that follows it.
                 case .alternating: dx = c % 2 == 0 ? x + (columnWidth - cell.width) : x
+                case let .array(spec):
+                    switch spec.alignment(at: c) {
+                    case .left: dx = x
+                    case .center: dx = x + (columnWidth - cell.width) / 2
+                    case .right: dx = x + (columnWidth - cell.width)
+                    }
                 }
                 stacked.overlay(cell, dx: dx, dy: y)
                 x += columnWidth + columnGap
             }
             y -= descent + rowGap
+            // Midway through the gap this row leaves behind.
+            boundaries.append(y + rowGap / 2)
         }
         // The loop leaves a trailing gap below the last row; the pile's real
         // height is the accumulated advance less that gap. Getting this wrong
         // mis-centers the pile on the axis — and the delimiters, which center on
         // the axis directly, don't follow it.
         let pileHeight = -y - rowGap
+        // The pile ends where the last row's ink does, not half a gap below it.
+        if boundaries.count > 1 { boundaries[boundaries.count - 1] = -pileHeight }
+
+        // Vertical rules from the column spec, spanning the pile. Added straight
+        // to `items` rather than overlaid: they reach exactly as far as the rows
+        // already do, so they contribute no ink beyond them.
+        if !rulesAt.isEmpty {
+            let ruleWidth = TeXMetrics.arrayRuleWidth * unit
+            for index in rulesAt.sorted() where index >= 0 && index <= columnCount {
+                let center: CGFloat
+                if index == 0 {
+                    center = leadingPad / 2
+                } else if index == columnCount {
+                    center = totalWidth - trailingPad / 2
+                } else {
+                    // Midway through the gap between the two columns it divides.
+                    center = leadingPad + columnWidths[0..<index].reduce(0, +)
+                        + CGFloat(index) * columnGap - columnGap / 2
+                }
+                // Exactly the pile's extent: the box's own metrics, and what the
+                // enclosing delimiters size themselves to.
+                stacked.items.append(.rule(CGRect(x: center - ruleWidth / 2, y: -pileHeight,
+                                                  width: ruleWidth, height: pileHeight)))
+            }
+        }
+
+        if !hlines.isEmpty {
+            let ruleWidth = TeXMetrics.arrayRuleWidth * unit
+            for index in hlines.sorted() where index >= 0 && index < boundaries.count {
+                stacked.items.append(.rule(CGRect(x: 0, y: boundaries[index] - ruleWidth / 2,
+                                                  width: totalWidth, height: ruleWidth)))
+            }
+            // A rule is centered on its boundary, so the outermost two put half
+            // their width past the pile — real ink the box has to declare.
+            if hlines.contains(0) { stacked.ascent = max(stacked.ascent, ruleWidth / 2) }
+            if hlines.contains(boundaries.count - 1) {
+                stacked.descent = max(stacked.descent, pileHeight + ruleWidth / 2)
+            }
+        }
+
         let axis = TeXMetrics.axisHeight * unit
         let shift = pileHeight / 2 + axis
         var body = MathBox(width: totalWidth, ascent: stacked.ascent + shift,
