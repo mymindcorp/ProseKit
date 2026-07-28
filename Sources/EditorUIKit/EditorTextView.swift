@@ -308,6 +308,38 @@ open class EditorTextView: UIView, UIKeyInput {
         setNeedsRebuild()
     }
 
+    /// Re-resolve every image and lay out again.
+    ///
+    /// Images are resolved *during* layout, so a host that didn't have the bytes
+    /// yet got a placeholder — and since the document itself didn't change when
+    /// the bytes arrived, nothing would otherwise trigger a relayout. Call this
+    /// when `imageData` can answer for a node it previously couldn't, or when the
+    /// bytes behind a node have changed.
+    ///
+    /// Images already loaded from a `src` URL are kept; this re-asks the host
+    /// hook, it doesn't re-download.
+    public func reloadImages() {
+        // Decoded host bytes are cached per node, so a stale decode would
+        // survive the relayout and defeat the point of the call.
+        hostImageCache.removeAll()
+        invalidateImageLayout()
+    }
+
+    /// Drop every layout artifact that has an image baked into it, and rebuild.
+    ///
+    /// A block-level image is resolved fresh each pass, but an *inline* one is
+    /// typeset into its paragraph's cached block — which is keyed by the node and
+    /// the width, neither of which changed when the bytes arrived. Without
+    /// clearing that cache the paragraph comes back with the placeholder still in
+    /// it, however thoroughly the document layout is discarded.
+    private func invalidateImageLayout(clearingTypesetBlocks: Bool = true) {
+        // Only inline images live inside a typeset block; a block-level one is
+        // resolved fresh each pass, so its arrival needn't cost a re-typeset of
+        // every paragraph on screen.
+        if clearingTypesetBlocks { blockCache.clear() }
+        invalidateLayout()
+    }
+
     // A flat text projection with exactly one character per document position
     // (real characters for text, a placeholder per node-boundary/atom token).
     // This keeps `text(in:).count == offset(from:to:)`, the invariant UIKit's
@@ -431,6 +463,7 @@ open class EditorTextView: UIView, UIKeyInput {
     private func loadPendingImages(_ nodes: [Node]) {
         for node in nodes {
             let src = node.attrs["src"]?.stringValue ?? ""
+            let isInline = node.type.spec.inline
             guard !src.isEmpty, imageCache[src] == nil, imageTasks[src] == nil,
                   let url = resolveImageURL(node, resolver: imageURLResolver) else { continue }
             imageTasks[src] = Task { [weak self] in
@@ -441,7 +474,10 @@ open class EditorTextView: UIView, UIKeyInput {
                     self.imageTasks[src] = nil
                     if let image {
                         self.imageCache[src] = image
-                        self.setNeedsRebuild()
+                        // `setNeedsRebuild` only redraws — `ensureLayout` keys on
+                        // the document revision, which a finished download
+                        // doesn't move, so the placeholder would stand.
+                        self.invalidateImageLayout(clearingTypesetBlocks: isInline)
                     }
                 }
             }

@@ -124,6 +124,7 @@ override func draw(_ rect: CGRect) {
 
 ## Customizing
 
+- **Images** — `imageData` supplies bytes for an image node, `imageURLResolver` maps a node to a loadable URL, and `onImageDrop` persists dropped/pasted bytes. Images resolve *during* layout, so if the bytes weren't available yet the node laid out at a placeholder's size; call `reloadImages()` once they are and the document re-lays out around them. Images the renderer loads from a `src` URL adopt themselves.
 - **Theme & fonts** — `EditorTextView.theme` / `DocumentView.theme` (a `TextTheme`): colors, spacing, and a custom typeface via `theme.fontName`, `theme.monoFontName`, and `theme.headingScale`. Dynamic Type is honored by default.
 - **Suggestion menus** — any extension can provide a `SuggestionSource` and the renderer shows a popup for it. The `/` slash menu (`SlashMenuExtension`, `atLineStart` by default) and `[[` wiki links (`WikiLinkExtension(suggestions:)`) ship in `fullKit`; use `fullKit(wikiLinkSuggestions:)` to supply the candidate list.
 - **Collapsible sections** — Tiptap's Details extension (`details` / `detailsSummary` / `detailsContent`, in `fullKit`): `editor.run("toggleDetails")` (also `Mod-Alt-d`, or `/details`) wraps the selected blocks in a section, and `toggleDetailsOpen` folds it. The renderer draws a disclosure triangle, and a closed section's body isn't laid out at all. Serializes to `<details><summary>…</summary>…</details>` in both HTML and Markdown.
