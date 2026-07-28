@@ -41,7 +41,8 @@ let schema: Schema = {
         ("tableHeader", NodeSpec(content: "block+", attrs: cellAttrs, isolating: true)),
     ]
     let marks: [(String, MarkSpec)] = [
-        ("bold", MarkSpec()), ("italic", MarkSpec()), ("strike", MarkSpec()), ("highlight", MarkSpec()),
+        ("bold", MarkSpec()), ("italic", MarkSpec()), ("strike", MarkSpec()),
+        ("highlight", MarkSpec(attrs: ["color": AttributeSpec(default: .null)])),
         ("underline", MarkSpec()),
         ("subscript", MarkSpec(excludes: "subscript superscript")),
         ("superscript", MarkSpec(excludes: "subscript superscript")),
@@ -324,6 +325,360 @@ test("HTML tokenizer: malformed fragments never crash") {
     // Regression for the trap this test originally caught: an unterminated open
     // tag as the final token must recover, keeping its content.
     try expectEqual(try HTMLParser.parse("<p>hi", schema: schema), doc(p("hi")))
+}
+
+// MARK: - Per-node-type parse coverage
+
+/// Every node type in a document, so a test can assert on its shape.
+private func shape(_ d: Node) -> [String] {
+    var names: [String] = []
+    d.descendants { node, _, _, _ in
+        if !node.isText { names.append(node.type.name) }
+        return true
+    }
+    return names
+}
+
+/// An HTML form that must parse to each node type in the schema.
+///
+/// Driven by `schema.nodes` rather than a hand-kept list, so adding a node type
+/// without a way to parse HTML into it fails here instead of being noticed when
+/// a paste silently loses it.
+private let htmlProducingNode: [String: String] = [
+    "paragraph": "<p>x</p>",
+    "heading": "<h2>x</h2>",
+    "blockquote": "<blockquote><p>x</p></blockquote>",
+    "codeBlock": "<pre><code>x</code></pre>",
+    "horizontalRule": "<hr>",
+    "hardBreak": "<p>a<br>b</p>",
+    "image": "<p><img src=\"a.png\" alt=\"pic\"></p>",
+    "wikiLink": "<p><a href=\"Page\" data-wikilink=\"Page\">Page</a></p>",
+    "mention": "<p><span data-mention=\"u1\">@u1</span></p>",
+    "bulletList": "<ul><li>x</li></ul>",
+    "orderedList": "<ol><li>x</li></ol>",
+    "listItem": "<ul><li>x</li></ul>",
+    "taskList": "<ul data-type=\"taskList\"><li data-type=\"taskItem\" data-checked=\"true\">x</li></ul>",
+    "taskItem": "<ul data-type=\"taskList\"><li data-type=\"taskItem\" data-checked=\"true\">x</li></ul>",
+    "details": "<details open><summary>s</summary><p>b</p></details>",
+    "detailsSummary": "<details><summary>s</summary><p>b</p></details>",
+    "detailsContent": "<details><summary>s</summary><p>b</p></details>",
+    "inlineMath": "<p><span data-type=\"inline-math\" data-latex=\"x^2\">$x^2$</span></p>",
+    "blockMath": "<div data-type=\"block-math\" data-latex=\"x^2\">$$x^2$$</div>",
+    "table": "<table><tr><td>x</td></tr></table>",
+    "tableRow": "<table><tr><td>x</td></tr></table>",
+    "tableCell": "<table><tr><td>x</td></tr></table>",
+    "tableHeader": "<table><tr><th>x</th></tr></table>",
+]
+
+/// Node types with no HTML element of their own: the document itself, and text,
+/// which is character data rather than a tag.
+private let nodesWithoutTags: Set<String> = ["doc", "text"]
+
+test("HTML: every node type in the schema can be parsed into") {
+    var missing: [String] = []
+    var notProduced: [String] = []
+    for name in schema.nodes.keys.sorted() where !nodesWithoutTags.contains(name) {
+        guard let html = htmlProducingNode[name] else { missing.append(name); continue }
+        let d = try HTMLParser.parse(html, schema: schema)
+        try d.check()
+        if !shape(d).contains(name) { notProduced.append("\(name) — \(html) gave \(shape(d))") }
+    }
+    try expect(missing.isEmpty, "no HTML sample for: \(missing.joined(separator: ", "))")
+    try expect(notProduced.isEmpty, "didn't parse into the node:\n  " + notProduced.joined(separator: "\n  "))
+}
+
+test("HTML: every mark type in the schema can be parsed into") {
+    let htmlProducingMark: [String: String] = [
+        "bold": "<p><strong>x</strong></p>",
+        "italic": "<p><em>x</em></p>",
+        "strike": "<p><s>x</s></p>",
+        "underline": "<p><u>x</u></p>",
+        "highlight": "<p><mark>x</mark></p>",
+        "code": "<p><code>x</code></p>",
+        "link": "<p><a href=\"https://x.test\">x</a></p>",
+        "subscript": "<p><sub>x</sub></p>",
+        "superscript": "<p><sup>x</sup></p>",
+        "textColor": "<p><span style=\"color:#ff0000\">x</span></p>",
+        "backgroundColor": "<p><span style=\"background-color:#ff0000\">x</span></p>",
+    ]
+    var problems: [String] = []
+    for name in schema.marks.keys.sorted() {
+        guard let html = htmlProducingMark[name] else { problems.append("no sample for \(name)"); continue }
+        let d = try HTMLParser.parse(html, schema: schema)
+        try d.check()
+        var found = false
+        d.descendants { node, _, _, _ in
+            if node.marks.contains(where: { $0.type.name == name }) { found = true }
+            return !found
+        }
+        if !found { problems.append("\(html) didn't produce a \(name) mark") }
+    }
+    try expect(problems.isEmpty, problems.joined(separator: "\n  "))
+}
+
+test("HTML: highlight colors survive a round-trip") {
+    // The colour is a named style the theme resolves, and it used to be dropped
+    // on the way out — every highlight came back as the default one.
+    for color in ["yellow", "green", "blue", "pink", "orange", "purple"] {
+        let d = doc(p(t("a "), schema.text("lit", [schema.mark("highlight", ["color": .string(color)])]), t(" b")))
+        let html = HTMLSerializer.serialize(d)
+        try expect(html.contains("data-color=\"\(color)\""), "\(color) wasn't serialized: \(html)")
+        try expectEqual(try HTMLParser.parse(html, schema: schema), d, "\(color) didn't come back")
+    }
+    // A highlight with no colour stays plain, and doesn't gain an empty attribute.
+    let plain = doc(p(schema.text("lit", [schema.mark("highlight")])))
+    try expectEqual(HTMLSerializer.serialize(plain), "<p><mark>lit</mark></p>")
+    try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(plain), schema: schema), plain)
+}
+
+test("HTML: a highlight color that is real CSS also carries a style") {
+    // So the highlight is visible when pasted somewhere that doesn't know the
+    // theme's names.
+    let named = doc(p(schema.text("x", [schema.mark("highlight", ["color": .string("yellow")])])))
+    try expect(HTMLSerializer.serialize(named).contains("style=\"background-color:yellow\""),
+               HTMLSerializer.serialize(named))
+    // A name that isn't a CSS colour gets `data-color` only — never a bogus
+    // declaration. The value still round-trips: `data-color` is inert (a data
+    // attribute, escaped, and only ever used as a key into the theme's colour
+    // table), so the thing to keep out of the output is the *style*.
+    for color in ["brand-accent-2", "url(javascript:alert(1))", "red;x:y"] {
+        let d = doc(p(schema.text("x", [schema.mark("highlight", ["color": .string(color)])])))
+        let html = HTMLSerializer.serialize(d)
+        try expect(!html.contains("style="), "\(color) shouldn't produce a style: \(html)")
+        try expectEqual(try HTMLParser.parse(html, schema: schema), d, "\(color) should still round-trip")
+    }
+    // …and reading such a mark back never produces a style either.
+    let reparsed = try HTMLParser.parse(
+        "<p><mark data-color=\"url(javascript:alert(1))\">x</mark></p>", schema: schema)
+    try expect(!HTMLSerializer.serialize(reparsed).contains("style="),
+               HTMLSerializer.serialize(reparsed))
+}
+
+test("HTML: a highlight from another editor is read from its style") {
+    // Other editors write the colour as a style with no `data-color`.
+    let d = try HTMLParser.parse("<p><mark style=\"background-color:#ffff00\">x</mark></p>", schema: schema)
+    var color: String?
+    d.descendants { node, _, _, _ in
+        if let m = node.marks.first(where: { $0.type.name == "highlight" }) {
+            color = m.attrs["color"]?.stringValue
+        }
+        return color == nil
+    }
+    try expectEqual(color, "#ffff00")
+}
+
+test("HTML: link titles survive a round-trip") {
+    // Same class of bug as the highlight colour: an attribute the mark carries
+    // that the serializer didn't write.
+    let d = doc(p(schema.text("x", [schema.mark("link", ["href": .string("https://x.test"),
+                                                         "title": .string("A title")])])))
+    let html = HTMLSerializer.serialize(d)
+    try expect(html.contains("title=\"A title\""), html)
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+    // A link with no title doesn't gain an empty one.
+    let bare = doc(p(schema.text("x", [schema.mark("link", ["href": .string("https://x.test")])])))
+    try expect(!HTMLSerializer.serialize(bare).contains("title="), HTMLSerializer.serialize(bare))
+    try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(bare), schema: schema), bare)
+}
+
+test("HTML: every attribute a mark carries survives a round-trip") {
+    // Driven by the schema, so a mark that gains an attribute without the
+    // serializer learning about it fails here rather than losing data quietly.
+    let sampleAttrs: [String: Attrs] = [
+        "highlight": ["color": .string("green")],
+        "link": ["href": .string("https://x.test"), "title": .string("T")],
+        "textColor": ["color": .string("#ff0000")],
+        "backgroundColor": ["color": .string("#00ff00")],
+    ]
+    var problems: [String] = []
+    for (name, markType) in schema.marks.sorted(by: { $0.key < $1.key }) where !markType.attrs.isEmpty {
+        guard let attrs = sampleAttrs[name] else {
+            problems.append("\(name) has attributes but no sample here")
+            continue
+        }
+        for declared in markType.attrs.keys where attrs[declared] == nil {
+            problems.append("\(name).\(declared) isn't covered by the sample")
+        }
+        let d = doc(p(schema.text("x", [schema.mark(name, attrs)])))
+        let back = try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema)
+        if back != d { problems.append("\(name) lost attributes: \(HTMLSerializer.serialize(d))") }
+    }
+    try expect(problems.isEmpty, problems.joined(separator: "\n  "))
+}
+
+test("HTML: every node type survives a serialize/parse round-trip") {
+    // Parsing into the node isn't enough — it has to come back out again and
+    // read the same, which is what a copy/paste between documents relies on.
+    for name in schema.nodes.keys.sorted() where !nodesWithoutTags.contains(name) {
+        guard let html = htmlProducingNode[name] else { continue }
+        let once = try HTMLParser.parse(html, schema: schema)
+        let twice = try HTMLParser.parse(HTMLSerializer.serialize(once), schema: schema)
+        try expectEqual(twice, once, "\(name) isn't stable across a round-trip")
+    }
+}
+
+test("HTML: every node type is coerced into place when it arrives bare") {
+    // The same elements again, but stripped of the ancestors that make them
+    // legal — what a partial selection copy actually produces.
+    let bare = [
+        "<li>x</li>", "<td>x</td>", "<th>x</th>", "<tr><td>x</td></tr>",
+        "<summary>s</summary>", "<div data-type=\"detailsContent\"><p>b</p></div>",
+        "<li data-type=\"taskItem\" data-checked=\"true\">x</li>",
+        "<img src=\"a.png\">", "<br>",
+        "<span data-type=\"inline-math\" data-latex=\"x\">$x$</span>",
+        "<span data-mention=\"u1\">@u1</span>",
+        "<a href=\"Page\" data-wikilink=\"Page\">Page</a>",
+    ]
+    for html in bare {
+        let d = try HTMLParser.parse(html, schema: schema)
+        try d.check()
+        try expect(d.childCount > 0, "\(html) produced an empty document")
+    }
+}
+
+// MARK: - Structural coercion
+
+test("HTML: a parsed document is always valid, whatever the fragment") {
+    // Partial copies out of a page produce these: two cells, one bullet, a row
+    // on its own. Parsed literally each puts a node somewhere no schema allows.
+    let fragments = [
+        "<li>item</li>",
+        "<li>one</li><li>two</li>",
+        "<td>cell</td>",
+        "<td>a</td><td>b</td>",
+        "<tr><td>a</td></tr>",
+        "<tr><td>a</td></tr><tr><td>b</td></tr>",
+        "<th>head</th>",
+        "<summary>title</summary>",
+        "<dt>term</dt><dd>definition</dd>",
+        "bare text",
+        "<span>inline only</span>",
+        "<b>bold</b> and <i>italic</i>",
+        "",
+        "<div></div>",
+        "<table><td>skipped row</td></table>",
+        "<ul><p>not an item</p></ul>",
+    ]
+    for html in fragments {
+        let d = try HTMLParser.parse(html, schema: schema)
+        // The point of the whole pass: what comes back can be handed to the
+        // editor without it having to defend itself.
+        try d.check()
+    }
+}
+
+test("HTML: a stray list item becomes a list") {
+    try expectEqual(try HTMLParser.parse("<li>item</li>", schema: schema),
+                    doc(node("bulletList", [:], [node("listItem", [:], [p("item")])])))
+}
+
+test("HTML: adjacent stray list items share one list") {
+    let d = try HTMLParser.parse("<li>one</li><li>two</li>", schema: schema)
+    try expectEqual(d, doc(node("bulletList", [:], [
+        node("listItem", [:], [p("one")]),
+        node("listItem", [:], [p("two")]),
+    ])), "two loose items are one list of two, not two lists of one")
+}
+
+test("HTML: a stray table cell gets the table and row it needs") {
+    let d = try HTMLParser.parse("<td>cell</td>", schema: schema)
+    try expectEqual(shape(d), ["table", "tableRow", "tableCell", "paragraph"])
+    try expectEqual(d.textContent, "cell")
+}
+
+test("HTML: adjacent stray cells share one row") {
+    let d = try HTMLParser.parse("<td>a</td><td>b</td>", schema: schema)
+    try expectEqual(shape(d), ["table", "tableRow", "tableCell", "paragraph", "tableCell", "paragraph"],
+                    "one row of two cells")
+}
+
+test("HTML: a stray row gets its table") {
+    let d = try HTMLParser.parse("<tr><td>a</td></tr><tr><td>b</td></tr>", schema: schema)
+    try expectEqual(Array(shape(d)[0..<2]), ["table", "tableRow"])
+    try expectEqual(shape(d).filter { $0 == "table" }.count, 1, "both rows in one table")
+    try expectEqual(shape(d).filter { $0 == "tableRow" }.count, 2)
+}
+
+test("HTML: an element with no place here keeps its content") {
+    // `detailsSummary` can't sit at the top level and can't be wrapped into one,
+    // so the pass falls back to what was inside it.
+    let d = try HTMLParser.parse("<summary>title</summary>", schema: schema)
+    try d.check()
+    try expectEqual(d.textContent, "title")
+    // Same for elements the parser has no mapping for at all.
+    try expectEqual(try HTMLParser.parse("<dt>term</dt><dd>definition</dd>", schema: schema).textContent,
+                    "termdefinition")
+}
+
+test("HTML: coercion doesn't disturb markup that was already valid") {
+    // The pass runs on every parse, so the ordinary shapes must come through
+    // with exactly the structure they had — no wrapper the fitter added on the
+    // way past, nothing reordered.
+    let cases: [(String, [String])] = [
+        ("<p>a</p>", ["paragraph"]),
+        ("<h2>Title</h2><p>body</p>", ["heading", "paragraph"]),
+        ("<ul><li>one</li><li>two</li></ul>",
+         ["bulletList", "listItem", "paragraph", "listItem", "paragraph"]),
+        ("<ol><li>one</li></ol>", ["orderedList", "listItem", "paragraph"]),
+        ("<blockquote><p>quoted</p></blockquote>", ["blockquote", "paragraph"]),
+        ("<table><tr><td>a</td><td>b</td></tr></table>",
+         ["table", "tableRow", "tableCell", "paragraph", "tableCell", "paragraph"]),
+        ("<pre><code>code</code></pre>", ["codeBlock"]),
+        ("<hr>", ["horizontalRule"]),
+    ]
+    for (html, expected) in cases {
+        let d = try HTMLParser.parse(html, schema: schema)
+        try d.check()
+        try expectEqual(shape(d), expected, "\(html) came back restructured")
+        // And the result is a fixed point: serializing and re-parsing it changes
+        // nothing. (The serialized form isn't always byte-identical to the
+        // input — `<li>one</li>` is shorthand for a list item holding a
+        // paragraph — but the document it describes is.)
+        try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema), d,
+                        "\(html) isn't stable across a round-trip")
+    }
+}
+
+test("HTML: a mis-nested list item is fitted rather than dropped") {
+    // A `<p>` directly inside a `<ul>` isn't legal content for a list.
+    let d = try HTMLParser.parse("<ul><p>loose</p><li>item</li></ul>", schema: schema)
+    try d.check()
+    try expect(d.textContent.contains("loose"), "the paragraph's text survives: \(d.textContent)")
+    try expect(d.textContent.contains("item"))
+}
+
+test("HTML: an empty document still parses to something valid") {
+    for html in ["", "   ", "<div></div>", "<!-- just a comment -->"] {
+        let d = try HTMLParser.parse(html, schema: schema)
+        try d.check()
+        try expect(d.childCount >= 1, "a document is never empty: \(html)")
+    }
+}
+
+test("HTML: a schema with no place for the content still yields a valid document") {
+    // Paragraphs only — tables, lists and images have nowhere to go.
+    let plain = try Schema(nodes: [
+        ("doc", NodeSpec(content: "block+")),
+        ("paragraph", NodeSpec(content: "inline*", group: "block")),
+        ("text", NodeSpec(group: "inline")),
+    ], marks: [], topNode: "doc")
+    for html in ["<td>cell</td>", "<li>item</li>", "<table><tr><td>x</td></tr></table>",
+                 "<ul><li>a</li><li>b</li></ul>", "<img src=\"a.png\">"] {
+        let d = try HTMLParser.parse(html, schema: plain)
+        try d.check()
+    }
+    // And the text is kept, not dropped on the floor.
+    try expect(try HTMLParser.parse("<td>cell</td>", schema: plain).textContent.contains("cell"))
+}
+
+test("HTML: fragments round-trip once coerced") {
+    // Having been fitted, the result is ordinary markup — parsing it again is
+    // a no-op rather than another round of restructuring.
+    for html in ["<li>item</li>", "<td>a</td><td>b</td>", "<tr><td>x</td></tr>", "bare text"] {
+        let once = try HTMLParser.parse(html, schema: schema)
+        let twice = try HTMLParser.parse(HTMLSerializer.serialize(once), schema: schema)
+        try expectEqual(twice, once, "\(html) should be stable on a second pass")
+    }
 }
 
 // MARK: - Untrusted input

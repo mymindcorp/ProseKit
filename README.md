@@ -23,6 +23,8 @@ Each module ports a corresponding ProseMirror package; [docs/upstream-versions.m
 
 ## Using the editor (no UI required)
 
+HTML arriving from outside — a paste, a share sheet, a sync peer — is fitted to the schema on the way in: a bare `<li>` or `<td>` from a partial copy becomes a real list or table rather than an invalid document, and `HTMLParser.parse` either returns a document that passes `check()` or throws.
+
 `Editor` owns the document and state. You change it by running named commands or dispatching transactions — all of this works headlessly (it's how the tests drive it).
 
 ```swift
