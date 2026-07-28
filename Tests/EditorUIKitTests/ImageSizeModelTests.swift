@@ -203,6 +203,90 @@ final class ImageSizeModelTests: XCTestCase {
         XCTAssertEqual(image.attrs["height"], .null)
     }
 
+    // MARK: - The original-image model
+
+    func testTheOriginalsAspectSizesAPlaceholderBeforeAnyBytesExist() throws {
+        // Only a width is pinned, and nothing has loaded — without the original's
+        // dimensions the placeholder would have to guess its own shape.
+        let model = ImageModel(path: "originals/a.raw", width: 4000, height: 1000)
+        let rect = try drawnRect(blockView(["width": .int(200), "model": model.attributeValue]))
+        XCTAssertEqual(rect.width, 200, accuracy: 0.5)
+        XCTAssertEqual(rect.height, 50, accuracy: 0.5, "4:1 original, so 200 wide is 50 tall")
+    }
+
+    func testWithNoDisplaySizeThePlaceholderUsesTheOriginalsSize() throws {
+        let model = ImageModel(path: "originals/a.raw", width: 150, height: 75)
+        let rect = try drawnRect(blockView(["model": model.attributeValue]))
+        XCTAssertEqual(rect.width, 150, accuracy: 0.5)
+        XCTAssertEqual(rect.height, 75, accuracy: 0.5)
+    }
+
+    func testTheLoadedImageOutranksTheOriginalForAspect() throws {
+        // The bytes being drawn are the truth about their own shape; the model
+        // describes a different (original) image.
+        let model = ImageModel(path: "originals/a.raw", width: 4000, height: 1000)
+        let rect = try drawnRect(blockView(["width": .int(100), "model": model.attributeValue],
+                                           bytes: png()))
+        XCTAssertEqual(rect.height, 50, accuracy: 0.5, "the loaded 2:1 image wins, not the 4:1 original")
+    }
+
+    func testAMalformedModelIsIgnoredRatherThanTrusted() throws {
+        // A document from elsewhere can put anything in an object attribute.
+        let malformed: [AttributeValue] = [
+            .string("not an object"),
+            .object(["path": .string("a.raw")]),                       // no dimensions
+            .object(["width": .int(10), "height": .int(10)]),          // no path
+            .object(["path": .string("a.raw"), "width": .int(0), "height": .int(0)]),
+            .object(["path": .int(5)]),
+        ]
+        for value in malformed {
+            let rect = try drawnRect(blockView(["model": value]))
+            XCTAssertEqual(rect.width, DocumentLayout.placeholderSize.width, accuracy: 0.5,
+                           "\(value) should fall back, not be trusted")
+        }
+    }
+
+    func testTheModelIsReadBackAsATypedValue() throws {
+        let editor = try Editor(extensions: fullKit())
+        let model = ImageModel(path: "originals/DSC_0001.raw", width: 4000, height: 3000)
+        XCTAssertTrue(editor.insertImage(src: "thumb.jpg", width: 300, model: model))
+        var image: Node?
+        editor.doc.descendants { node, _, _, _ in
+            if node.type.name == "image" { image = node }
+            return image == nil
+        }
+        XCTAssertEqual(try XCTUnwrap(image).imageModel, model)
+        // The presentation is untouched by it.
+        XCTAssertEqual(image?.attrs["src"], .string("thumb.jpg"))
+        XCTAssertEqual(image?.attrs["width"], .int(300))
+    }
+
+    func testTheModelIsOptionalAndSettableAfterTheFact() throws {
+        let editor = try Editor(extensions: fullKit())
+        XCTAssertTrue(editor.insertImage(src: "a.jpg"))
+        var pos = 0
+        editor.doc.descendants { node, at, _, _ in
+            if node.type.name == "image" { pos = at }
+            return true
+        }
+        XCTAssertNil(editor.doc.nodeAt(pos)?.imageModel, "absent unless asked for")
+
+        let model = ImageModel(path: "o.raw", width: 10, height: 20)
+        XCTAssertTrue(editor.setImageModel(model, at: pos))
+        XCTAssertEqual(editor.doc.nodeAt(pos)?.imageModel, model)
+
+        XCTAssertTrue(editor.setImageModel(nil, at: pos))
+        XCTAssertNil(editor.doc.nodeAt(pos)?.imageModel)
+        XCTAssertEqual(editor.doc.nodeAt(pos)?.attrs["model"], .null)
+    }
+
+    func testAModelWithNoDimensionsOmitsThemRatherThanNullingThem() throws {
+        let model = ImageModel(path: "o.raw")
+        guard case let .object(fields) = model.attributeValue else { return XCTFail("not an object") }
+        XCTAssertEqual(fields.keys.sorted(), ["path"])
+        XCTAssertEqual(ImageModel(model.attributeValue), model, "and reads back the same")
+    }
+
     // MARK: - The command
 
     func testSetImageSizeWritesAndClearsBothDimensions() throws {

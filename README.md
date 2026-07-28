@@ -126,6 +126,14 @@ override func draw(_ rect: CGRect) {
 
 - **Images** — `imageData` supplies bytes for an image node, `imageURLResolver` maps a node to a loadable URL, and `onImageDrop` persists dropped/pasted bytes. Images resolve *during* layout, so if the bytes weren't available yet the node laid out at a placeholder's size; call `reloadImages()` once they are and the document re-lays out around them. Images the renderer loads from a `src` URL adopt themselves.
 - **Images** — the `image` node carries `src` plus an optional display size, `width` and `height` in points. Both are optional and independent: pin one and the other follows the image's aspect ratio, pin both for an exact box, pin neither for the natural size. `editor.insertImage(src:width:height:)` and `editor.setImageSize(width:height:)` set them. Supplying the size when it's known lets the placeholder reserve the right box, so the document doesn't reflow once the bytes load.
+
+  An image can also record the **original** it was made from, separately from what's drawn: `model` is an `ImageModel` — a `path` plus the original's intrinsic `width`/`height`. `src` is often a downscaled rendition; this keeps track of what it came from, so the original can be exported or re-derived, and its dimensions give the renderer a correct aspect ratio before any bytes have loaded.
+
+  ```swift
+  editor.insertImage(src: "thumb.jpg", width: 300,
+                     model: ImageModel(path: "originals/DSC_0001.raw", width: 4000, height: 3000))
+  image.imageModel?.path   // reading it back
+  ```
 - **Theme & fonts** — `EditorTextView.theme` / `DocumentView.theme` (a `TextTheme`): colors, spacing, and a custom typeface via `theme.fontName`, `theme.monoFontName`, and `theme.headingScale`. Dynamic Type is honored by default.
 - **Suggestion menus** — any extension can provide a `SuggestionSource` and the renderer shows a popup for it. The `/` slash menu (`SlashMenuExtension`, `atLineStart` by default) and `[[` wiki links (`WikiLinkExtension(suggestions:)`) ship in `fullKit`; use `fullKit(wikiLinkSuggestions:)` to supply the candidate list.
 - **Collapsible sections** — Tiptap's Details extension (`details` / `detailsSummary` / `detailsContent`, in `fullKit`): `editor.run("toggleDetails")` (also `Mod-Alt-d`, or `/details`) wraps the selected blocks in a section, and `toggleDetailsOpen` folds it. The renderer draws a disclosure triangle, and a closed section's body isn't laid out at all. Serializes to `<details><summary>…</summary>…</details>` in both HTML and Markdown.

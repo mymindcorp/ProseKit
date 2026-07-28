@@ -29,21 +29,77 @@ public final class ImageExtension: NodeExtension {
                 // nothing reflows when the bytes arrive.
                 "width": AttributeSpec(default: .null),
                 "height": AttributeSpec(default: .null),
+                // The original image behind the presentation: `{ path, width,
+                // height }`. `src` is what gets drawn — often a derived,
+                // downscaled rendition — while this records what it was made
+                // from, so the original can be exported, re-derived at another
+                // size, or reasoned about without loading it. See `ImageModel`.
+                "model": AttributeSpec(default: .null),
             ],
             draggable: true)
     }
     public var html: HTMLSpec { HTMLSpec(tag: "img") }
 }
 
+/// The original image behind an `image` node's presentation.
+///
+/// `src` and the display `width`/`height` describe what the reader sees; this
+/// describes what it came from. Keeping both means a downscaled rendition can
+/// be drawn without losing track of the original — its intrinsic size is also
+/// what lets the renderer reserve a correctly-proportioned box before any bytes
+/// have loaded.
+///
+/// Stored as an object attribute, so it round-trips through ProseMirror JSON as
+/// a nested object rather than as encoded text.
+public struct ImageModel: Hashable, Sendable {
+    /// Where the original lives — whatever the host's resolver understands.
+    public var path: String
+    /// The original's intrinsic size in pixels, when known.
+    public var width: Int?
+    public var height: Int?
+
+    public init(path: String, width: Int? = nil, height: Int? = nil) {
+        self.path = path
+        self.width = width
+        self.height = height
+    }
+
+    /// Read a model back out of an attribute value. Nil when absent, or when
+    /// it isn't an object with a `path` — a document from elsewhere can put
+    /// anything here.
+    public init?(_ value: AttributeValue?) {
+        guard case let .object(fields)? = value,
+              case let .string(path)? = fields["path"] else { return nil }
+        self.path = path
+        self.width = fields["width"]?.intValue
+        self.height = fields["height"]?.intValue
+    }
+
+    /// The attribute value to store on the node. Absent dimensions are omitted
+    /// rather than written as null, so the attribute stays the shape it reads as.
+    public var attributeValue: AttributeValue {
+        var fields: [String: AttributeValue] = ["path": .string(path)]
+        if let width { fields["width"] = .int(width) }
+        if let height { fields["height"] = .int(height) }
+        return .object(fields)
+    }
+}
+
+public extension Node {
+    /// The original image behind this `image` node, if it records one.
+    var imageModel: ImageModel? { ImageModel(attrs["model"]) }
+}
+
 /// Insert an image at the current selection.
 public func insertImage(_ type: NodeType, src: String, alt: String? = nil, title: String? = nil,
-                        width: Int? = nil, height: Int? = nil) -> Command {
+                        width: Int? = nil, height: Int? = nil, model: ImageModel? = nil) -> Command {
     { state, dispatch, _ in
         var attrs: Attrs = ["src": .string(src)]
         if let alt { attrs["alt"] = .string(alt) }
         if let title { attrs["title"] = .string(title) }
         if let width { attrs["width"] = .int(width) }
         if let height { attrs["height"] = .int(height) }
+        if let model { attrs["model"] = model.attributeValue }
         guard let node = try? type.create(attrs) else { return false }
         dispatch?(state.tr.replaceSelectionWith(node).scrollIntoView())
         return true
@@ -67,6 +123,19 @@ public func setImageSize(_ type: NodeType, width: Int?, height: Int?, pos: Int? 
     }
 }
 
+/// Set (or, with nil, clear) the original-image model on an image node.
+public func setImageModel(_ type: NodeType, _ model: ImageModel?, pos: Int? = nil) -> Command {
+    { state, dispatch, _ in
+        guard let target = pos ?? imageNodePos(state, type),
+              let node = state.doc.nodeAt(target), node.type === type else { return false }
+        if let dispatch,
+           let tr = try? state.tr.setNodeAttribute(target, "model", model?.attributeValue ?? .null) {
+            dispatch(tr.scrollIntoView())
+        }
+        return true
+    }
+}
+
 /// The position of the image the selection addresses: the node a
 /// `NodeSelection` covers, else the one immediately after or before the cursor.
 private func imageNodePos(_ state: EditorState, _ type: NodeType) -> Int? {
@@ -84,10 +153,17 @@ public extension Editor {
     /// straight away, so the document doesn't reflow once the bytes load.
     @discardableResult
     func insertImage(src: String, alt: String? = nil, title: String? = nil,
-                     width: Int? = nil, height: Int? = nil) -> Bool {
+                     width: Int? = nil, height: Int? = nil, model: ImageModel? = nil) -> Bool {
         guard let type = schema.nodes["image"] else { return false }
         return run(SchemaKit.insertImage(type, src: src, alt: alt, title: title,
-                                         width: width, height: height))
+                                         width: width, height: height, model: model))
+    }
+
+    /// Record (or clear) the original image behind the addressed image node.
+    @discardableResult
+    func setImageModel(_ model: ImageModel?, at pos: Int? = nil) -> Bool {
+        guard let type = schema.nodes["image"] else { return false }
+        return run(SchemaKit.setImageModel(type, model, pos: pos))
     }
 
     /// Set the displayed size of the addressed image. A nil dimension is

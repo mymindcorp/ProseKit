@@ -623,13 +623,18 @@ final class DocumentLayout {
     static func imageDisplaySize(_ node: Node, natural: CGSize?, available: CGFloat) -> CGSize {
         let attrWidth = node.attrs["width"]?.intValue.map { CGFloat($0) }
         let attrHeight = node.attrs["height"]?.intValue.map { CGFloat($0) }
-        // Prefer the loaded image's aspect, then the model's, then a plausible
-        // default for a placeholder with nothing else to go on.
+        // The original image's own dimensions, when the node records them. This
+        // is what a placeholder has to go on before any bytes exist — without
+        // it, an image sized only by its width has to guess its own shape.
+        let original = originalImageSize(node)
+
+        // Prefer the loaded image's aspect, then the original's, then a
+        // plausible default for a placeholder with nothing else to go on.
         let aspect: CGFloat
         if let natural, natural.width > 0, natural.height > 0 {
             aspect = natural.width / natural.height
-        } else if let attrWidth, let attrHeight, attrHeight > 0 {
-            aspect = attrWidth / attrHeight
+        } else if let original, original.width > 0, original.height > 0 {
+            aspect = original.width / original.height
         } else {
             aspect = placeholderSize.width / placeholderSize.height
         }
@@ -643,7 +648,9 @@ final class DocumentLayout {
         case let (nil, pinnedHeight?):
             (width, height) = (pinnedHeight * aspect, pinnedHeight)
         case (nil, nil):
-            let size = natural ?? placeholderSize
+            // No display size: the loaded image, else the original's dimensions,
+            // else the fallback box.
+            let size = natural ?? original ?? placeholderSize
             (width, height) = (size.width, size.height)
         }
         if width > available, width > 0 {
@@ -655,6 +662,22 @@ final class DocumentLayout {
 
     /// The box an image with neither a size nor bytes yet falls back to.
     static let placeholderSize = CGSize(width: 200, height: 120)
+
+    /// The intrinsic size recorded in the node's `model` attribute — the
+    /// original image behind the one being drawn. Read structurally rather than
+    /// through `SchemaKit.ImageModel`, since the renderer sits below it; a
+    /// malformed or partial value simply reads as nil.
+    private static func originalImageSize(_ node: Node) -> CGSize? {
+        // The `path` is required even though only the dimensions are used here:
+        // without it this isn't a model, and sizing from an object that
+        // `ImageModel` rejects would have the two layers disagreeing about the
+        // same attribute.
+        guard case let .object(model)? = node.attrs["model"],
+              case .string = model["path"] ?? .null,
+              let width = model["width"]?.intValue, let height = model["height"]?.intValue,
+              width > 0, height > 0 else { return nil }
+        return CGSize(width: CGFloat(width), height: CGFloat(height))
+    }
 
     private func layoutList(_ node: Node, docPos: Int, x: CGFloat, width: CGFloat, y: CGFloat) -> CGFloat {
         var y = y
