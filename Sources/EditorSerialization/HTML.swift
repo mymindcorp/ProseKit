@@ -104,6 +104,7 @@ public enum HTMLSerializer {
             if let alt = node.attrs["alt"]?.stringValue { attrs += " alt=\"\(escapeAttribute(alt))\"" }
             if let title = node.attrs["title"]?.stringValue { attrs += " title=\"\(escapeAttribute(title))\"" }
             if let w = node.attrs["width"]?.intValue { attrs += " width=\"\(w)\"" }
+            if let h = node.attrs["height"]?.intValue { attrs += " height=\"\(h)\"" }
             return "<img\(attrs)>"
         case "wikiLink":
             let target = node.attrs["target"]?.stringValue ?? ""
@@ -688,6 +689,7 @@ public enum HTMLParser {
         if let alt = attrs["alt"] { a["alt"] = .string(alt) }
         if let title = attrs["title"] { a["title"] = .string(title) }
         if let w = attrs["width"].flatMap({ Int($0) }) { a["width"] = .int(w) }
+        if let h = attrs["height"].flatMap({ Int($0) }) { a["height"] = .int(h) }
         return try? type.create(a)
     }
 

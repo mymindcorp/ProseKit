@@ -559,24 +559,20 @@ final class DocumentLayout {
             return lineY + 9
         case "image":
             let src = node.attrs["src"]?.stringValue ?? ""
-            // An explicit width attr (drag-to-resize) wins, always capped to the
-            // content area; otherwise fall back to the natural width.
-            let attrWidth = node.attrs["width"]?.intValue.map { CGFloat($0) }
-            if let image = imageProvider(node) {
-                let target = attrWidth ?? image.size.width
-                let displayWidth = min(max(target, 1), width)
-                let scale = image.size.width > 0 ? displayWidth / image.size.width : 1
-                let size = CGSize(width: displayWidth, height: image.size.height * scale)
+            let image = imageProvider(node)
+            let size = Self.imageDisplaySize(node, natural: image?.size, available: width)
+            if let image {
                 decorations.append(.image(image, CGRect(x: x, y: y, width: size.width, height: size.height)))
                 return y + size.height
             }
-            let h: CGFloat = 120
-            let displayWidth = min(max(attrWidth ?? 200, 1), width)
-            decorations.append(.stroke(CGRect(x: x, y: y, width: displayWidth, height: h), theme.quoteBarColor, 1))
+            // The placeholder reserves the box the image will occupy, so a
+            // document whose images carry a size doesn't move when they load.
+            decorations.append(.stroke(CGRect(x: x, y: y, width: size.width, height: size.height),
+                                       theme.quoteBarColor, 1))
             let alt = node.attrs["alt"]?.stringValue ?? src
             decorations.append(.text("🖼 \(alt)", CGPoint(x: x + 8, y: y + 8), [.font: theme.bodyFont, .foregroundColor: theme.codeColor]))
             if !src.isEmpty { pendingImages.append(node) }
-            return y + h
+            return y + size.height
         case "blockMath":
             // Display math is centered in the content column, like a figure.
             let latex = node.attrs["latex"]?.stringValue ?? ""
@@ -612,6 +608,53 @@ final class DocumentLayout {
         // typo reads as "not a formula" rather than as an odd-looking one.
         return mathRenderer(latex, display, theme.bodyFont, theme.codeColor) ?? rendering
     }
+
+    /// The box an image draws in.
+    ///
+    /// The node's `width`/`height` are the model. Either may be absent and is
+    /// then derived from the other and the aspect ratio, so a host can pin one
+    /// dimension and let the image keep its proportions; with neither set the
+    /// image draws at its natural size. The result is always capped to the
+    /// available width, scaled so the proportions chosen above survive.
+    ///
+    /// `natural` is nil until the bytes have loaded — the same rule then sizes
+    /// the placeholder, which is what stops the document reflowing when they
+    /// arrive.
+    static func imageDisplaySize(_ node: Node, natural: CGSize?, available: CGFloat) -> CGSize {
+        let attrWidth = node.attrs["width"]?.intValue.map { CGFloat($0) }
+        let attrHeight = node.attrs["height"]?.intValue.map { CGFloat($0) }
+        // Prefer the loaded image's aspect, then the model's, then a plausible
+        // default for a placeholder with nothing else to go on.
+        let aspect: CGFloat
+        if let natural, natural.width > 0, natural.height > 0 {
+            aspect = natural.width / natural.height
+        } else if let attrWidth, let attrHeight, attrHeight > 0 {
+            aspect = attrWidth / attrHeight
+        } else {
+            aspect = placeholderSize.width / placeholderSize.height
+        }
+
+        var width: CGFloat, height: CGFloat
+        switch (attrWidth, attrHeight) {
+        case let (pinnedWidth?, pinnedHeight?):
+            (width, height) = (pinnedWidth, pinnedHeight) // both pinned: the model wins
+        case let (pinnedWidth?, nil):
+            (width, height) = (pinnedWidth, pinnedWidth / max(aspect, 0.0001))
+        case let (nil, pinnedHeight?):
+            (width, height) = (pinnedHeight * aspect, pinnedHeight)
+        case (nil, nil):
+            let size = natural ?? placeholderSize
+            (width, height) = (size.width, size.height)
+        }
+        if width > available, width > 0 {
+            height *= available / width
+            width = available
+        }
+        return CGSize(width: max(1, width), height: max(1, height))
+    }
+
+    /// The box an image with neither a size nor bytes yet falls back to.
+    static let placeholderSize = CGSize(width: 200, height: 120)
 
     private func layoutList(_ node: Node, docPos: Int, x: CGFloat, width: CGFloat, y: CGFloat) -> CGFloat {
         var y = y
@@ -940,11 +983,11 @@ final class DocumentLayout {
                 segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: 1, text: nil))
                 docPos += 1
             } else if child.type.name == "image", let image = imageProvider(child) {
-                // Inline image: reserve its (scaled) box via a run delegate, and
-                // record it to draw at its run position after line breaking.
-                let maxWidth = min(width, image.size.width)
-                let scale = image.size.width > 0 ? maxWidth / image.size.width : 1
-                let size = CGSize(width: maxWidth, height: image.size.height * scale)
+                // Inline image: reserve its box via a run delegate, and record it
+                // to draw at its run position after line breaking. Sized by the
+                // same rule as a block image — `width`/`height` mean the same
+                // thing wherever the image sits, and used to be ignored here.
+                let size = Self.imageDisplaySize(child, natural: image.size, available: width)
                 let delegate = makeImageRunDelegate(size)
                 let attrStart = result.length
                 result.append(NSAttributedString(string: "\u{fffc}", attributes: [kCTRunDelegateAttributeName as NSAttributedString.Key: delegate]))

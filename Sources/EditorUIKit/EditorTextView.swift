@@ -1543,12 +1543,21 @@ open class EditorTextView: UIView, UIKeyInput {
 
     /// Set the `width` attr of the image at `pos`, clamped to [40, content width].
     /// Internal so the resize gesture can be exercised in tests.
+    ///
+    /// An image whose height is also pinned has it scaled by the same factor —
+    /// dragging the handle resizes the image rather than distorting it.
     func setImageWidth(_ pos: Int, to width: CGFloat) {
         let clamped = max(40, min(width, ensureLayout().contentWidth))
         guard let node = editor.doc.nodeAt(pos), node.type.name == "image" else { return }
-        if let tr = try? editor.state.tr.setNodeAttribute(pos, "width", .int(Int(clamped.rounded()))) {
-            editor.dispatch(tr)
+        let tr = editor.state.tr
+        let newWidth = Int(clamped.rounded())
+        guard (try? tr.setNodeAttribute(pos, "width", .int(newWidth))) != nil else { return }
+        if let oldWidth = node.attrs["width"]?.intValue, oldWidth > 0,
+           let oldHeight = node.attrs["height"]?.intValue {
+            let scaled = Int((CGFloat(oldHeight) * clamped / CGFloat(oldWidth)).rounded())
+            _ = try? tr.setNodeAttribute(pos, "height", .int(max(1, scaled)))
         }
+        editor.dispatch(tr)
     }
 
     // The column-resize pan, gated by the gesture delegate to begin only on a
