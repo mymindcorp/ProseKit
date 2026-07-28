@@ -31,6 +31,16 @@ public enum MarkdownSerializer {
         case "orderedList":
             let start = node.attrs["order"]?.intValue ?? 1
             return (0..<node.childCount).map { "\(start + $0). " + listItemText(node.child($0)) }.joined(separator: "\n")
+        case "details":
+            // Markdown has no collapsible section; emit the HTML block form that
+            // GitHub-flavored Markdown (and our parser) understands.
+            let open = node.attrs["open"]?.boolValue ?? false
+            let summary = node.childCount > 0 ? serializeInline(node.child(0).content) : ""
+            let content = node.childCount > 1 ? node.child(1) : nil
+            let body = content.map { c in
+                (0..<c.childCount).map { serializeBlock(c.child($0), indent: indent) }.joined(separator: "\n\n")
+            } ?? ""
+            return "<details\(open ? " open" : "")>\n<summary>\(summary)</summary>\n\n\(body)\n\n</details>"
         default:
             return serializeInline(node.content)
         }
@@ -127,6 +137,27 @@ public enum MarkdownParser {
                 if let cb = try? schema.node("codeBlock", [:], content: content) { blocks.append(cb) }
                 continue
             }
+            // A `<details>` HTML block (what the serializer emits for a
+            // collapsible section, and the GFM convention for one).
+            if trimmed.lowercased().hasPrefix("<details") {
+                var inner: [String] = []
+                let open = detailsIsOpen(trimmed)
+                i += 1
+                var depth = 1
+                while i < lines.count {
+                    let t = lines[i].trimmingCharacters(in: .whitespaces).lowercased()
+                    if t.hasPrefix("<details") { depth += 1 }
+                    if t.hasPrefix("</details>") {
+                        depth -= 1
+                        if depth == 0 { i += 1; break }
+                    }
+                    inner.append(lines[i]); i += 1
+                }
+                if let section = try makeDetails(inner, open: open, schema: schema) {
+                    blocks.append(contentsOf: section)
+                }
+                continue
+            }
             // Horizontal rule
             if trimmed == "---" || trimmed == "***" || trimmed == "___" {
                 if let hr = try? schema.node("horizontalRule") { blocks.append(hr) }
@@ -174,6 +205,7 @@ public enum MarkdownParser {
             while i < lines.count {
                 let t = lines[i].trimmingCharacters(in: .whitespaces)
                 if t.isEmpty || t.hasPrefix("#") || t.hasPrefix(">") || t.hasPrefix("```")
+                    || t.lowercased().hasPrefix("<details") || t.lowercased().hasPrefix("</details>")
                     || bulletMatch(t) != nil || orderedMatch(t) != nil { break }
                 para.append(t); i += 1
             }
@@ -184,6 +216,48 @@ public enum MarkdownParser {
         }
         if blocks.isEmpty, let p = schema.nodes["paragraph"]?.createAndFill() { blocks = [p] }
         return try schema.node("doc", [:], content: Fragment.from(blocks))
+    }
+
+    /// Whether a `<details …>` opening line carries the `open` attribute.
+    private static func detailsIsOpen(_ line: String) -> Bool {
+        let body = line.lowercased().dropFirst("<details".count)
+        return body.contains("open")
+    }
+
+    /// Build `details(detailsSummary, detailsContent)` from the lines inside a
+    /// `<details>` block. Without those nodes in the schema (or without a
+    /// `<summary>`), it degrades to a paragraph plus the body blocks.
+    private static func makeDetails(_ lines: [String], open: Bool, schema: Schema) throws -> [Node]? {
+        var summaryText = ""
+        var body: [String] = []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if summaryText.isEmpty, trimmed.lowercased().hasPrefix("<summary>") {
+                var s = String(trimmed.dropFirst("<summary>".count))
+                if let close = s.range(of: "</summary>", options: [.backwards, .caseInsensitive]) {
+                    s = String(s[..<close.lowerBound])
+                }
+                summaryText = s
+                continue
+            }
+            body.append(line)
+        }
+        let bodyDoc = try parse(body.joined(separator: "\n"), schema: schema)
+        let summaryInline = parseInline(summaryText, schema)
+        guard let detailsType = schema.nodes["details"],
+              let summaryType = schema.nodes["detailsSummary"],
+              let contentType = schema.nodes["detailsContent"] else {
+            var out: [Node] = []
+            if !summaryInline.isEmpty, let para = try? schema.node("paragraph", [:], content: Fragment.from(summaryInline)) {
+                out.append(para)
+            }
+            return out + (0..<bodyDoc.childCount).map { bodyDoc.child($0) }
+        }
+        guard let summary = (try? summaryType.create([:], content: Fragment.from(summaryInline))) ?? summaryType.createAndFill(),
+              let content = (try? contentType.create([:], content: bodyDoc.content)) ?? contentType.createAndFill(),
+              let node = try? detailsType.create(["open": .bool(open)], content: Fragment.from([summary, content]))
+        else { return nil }
+        return [node]
     }
 
     private static func headingMatch(_ line: String) -> (level: Int, text: String)? {

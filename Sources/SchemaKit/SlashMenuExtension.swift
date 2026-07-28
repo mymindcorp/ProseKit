@@ -123,6 +123,7 @@ public func defaultSlashCommands() -> [SlashCommandItem] {
         SlashCommandItem(title: "Quote", keywords: ["blockquote", "citation"], command: "toggleBlockquote", icon: "text.quote", subtitle: "Capture a quotation"),
         SlashCommandItem(title: "Code Block", keywords: ["code", "pre", "snippet"], command: "toggleCodeBlock", icon: "chevron.left.forwardslash.chevron.right", subtitle: "A formatted code snippet"),
         SlashCommandItem(title: "Divider", keywords: ["hr", "rule", "separator", "line"], command: "setHorizontalRule", icon: "minus", subtitle: "A horizontal rule"),
+        SlashCommandItem(title: "Details", keywords: ["toggle", "collapse", "accordion", "disclosure", "summary"], command: "toggleDetails", icon: "chevron.right.square", subtitle: "A collapsible section"),
     ]
 }
 

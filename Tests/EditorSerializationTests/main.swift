@@ -30,6 +30,9 @@ let schema: Schema = {
         ("listItem", NodeSpec(content: "paragraph block*", defining: true)),
         ("taskList", NodeSpec(content: "taskItem+", group: "block")),
         ("taskItem", NodeSpec(content: "paragraph block*", attrs: ["checked": AttributeSpec(default: .bool(false))], defining: true)),
+        ("details", NodeSpec(content: "detailsSummary detailsContent", group: "block", attrs: ["open": AttributeSpec(default: .bool(false))], defining: true, isolating: true)),
+        ("detailsSummary", NodeSpec(content: "inline*", selectable: false, defining: true, isolating: true)),
+        ("detailsContent", NodeSpec(content: "block+", selectable: false, defining: true)),
         ("table", NodeSpec(content: "tableRow+", group: "block", isolating: true)),
         ("tableRow", NodeSpec(content: "(tableCell | tableHeader)+")),
         ("tableCell", NodeSpec(content: "block+", attrs: cellAttrs, isolating: true)),
@@ -447,6 +450,72 @@ test("Markdown code fence round-trip") {
     try expectEqual(back, d)
 }
 
+// MARK: - Details (collapsible sections)
+
+func details(_ summary: String, _ body: [Node], open: Bool = false) -> Node {
+    node("details", ["open": .bool(open)], [
+        node("detailsSummary", [:], summary.isEmpty ? [] : [t(summary)]),
+        node("detailsContent", [:], body),
+    ])
+}
+
+test("HTML serialize details") {
+    let d = doc(details("More", [p("hidden")], open: true))
+    try expectEqual(HTMLSerializer.serialize(d),
+                    "<details open><summary>More</summary><div data-type=\"detailsContent\"><p>hidden</p></div></details>")
+    let closed = doc(details("More", [p("hidden")]))
+    try expect(!HTMLSerializer.serialize(closed).contains("<details open>"))
+}
+
+test("HTML details round-trip (open and closed)") {
+    for open in [true, false] {
+        let d = doc(details("Summary text", [p("one"), h(3, "two")], open: open))
+        let back = try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema)
+        try expectEqual(back, d)
+    }
+}
+
+test("HTML parses hand-written <details> (no data-type div)") {
+    let d = try HTMLParser.parse("<details><summary>Title</summary><p>body</p></details>", schema: schema)
+    try expectEqual(d, doc(details("Title", [p("body")])))
+}
+
+test("HTML parses a <details> without a summary") {
+    let d = try HTMLParser.parse("<details><p>body</p></details>", schema: schema)
+    try expectEqual(d, doc(details("", [p("body")])))
+}
+
+test("HTML details keeps its content in a schema without details nodes") {
+    // A schema whose only blocks are paragraphs: the section degrades to text.
+    let plain = try Schema(nodes: [
+        ("doc", NodeSpec(content: "block+")),
+        ("paragraph", NodeSpec(content: "inline*", group: "block")),
+        ("text", NodeSpec(group: "inline")),
+    ], marks: [], topNode: "doc")
+    let d = try HTMLParser.parse("<details><summary>Title</summary><p>body</p></details>", schema: plain)
+    try expectEqual(d.childCount, 2)
+    try expectEqual(d.child(0).textContent, "Title")
+    try expectEqual(d.child(1).textContent, "body")
+}
+
+test("Markdown details round-trip") {
+    let d = doc(p("before"), details("Summary", [p("one"), p("two")], open: true), p("after"))
+    let md = MarkdownSerializer.serialize(d)
+    try expect(md.contains("<details open>"), md)
+    try expect(md.contains("<summary>Summary</summary>"), md)
+    let back = try MarkdownParser.parse(md, schema: schema)
+    try expectEqual(back, d)
+}
+
+test("Markdown details round-trip (closed, nested list)") {
+    let d = doc(details("Items", [node("bulletList", [:], [
+        node("listItem", [:], [p("a")]),
+        node("listItem", [:], [p("b")]),
+    ])]))
+    let back = try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema)
+    try expectEqual(back, d)
+}
+
 test("property: random docs round-trip through HTML and JSON") {
     var rngState: UInt64 = 0xFEED_FACE
     func rnd(_ n: Int) -> Int {
@@ -484,7 +553,7 @@ test("property: random docs round-trip through HTML and JSON") {
     }
     func rndPara() -> Node { node("paragraph", [:], rndInline()) }
     func rndBlock(_ depth: Int) -> Node {
-        switch rnd(depth > 0 ? 8 : 6) {
+        switch rnd(depth > 0 ? 9 : 6) {
         case 0: return node("heading", ["level": .int(1 + rnd(6))], [schema.text(rndText())])
         case 1: return node("codeBlock", [:], [schema.text(rndText())])
         case 2: return node("horizontalRule")
@@ -496,6 +565,10 @@ test("property: random docs round-trip through HTML and JSON") {
         })
         case 5: return rndPara()
         case 6: return node("blockquote", [:], (0...rnd(1)).map { _ in rndBlock(depth - 1) })
+        case 7: return node("details", ["open": .bool(rnd(2) == 0)], [
+            node("detailsSummary", [:], rndInline()),
+            node("detailsContent", [:], (0...rnd(1)).map { _ in rndBlock(depth - 1) }),
+        ])
         default: return node("table", [:], (0...rnd(1)).map { _ in
             node("tableRow", [:], (0...1).map { _ in node("tableCell", [:], [rndPara()]) })
         })

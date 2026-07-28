@@ -27,6 +27,7 @@ public struct HTMLConfig: Sendable {
             "horizontalRule": "hr", "hardBreak": "br", "image": "img",
             "table": "table", "tableRow": "tr", "tableCell": "td", "tableHeader": "th",
             "taskList": "ul", "taskItem": "li",
+            "details": "details", "detailsSummary": "summary", "detailsContent": "div",
             "wikiLink": "a", "mention": "span",
         ]
         let markTags: [String: String] = [
@@ -38,7 +39,8 @@ public struct HTMLConfig: Sendable {
         var tagToNode: [String: String] = [:]
         // taskList/taskItem also use ul/li but need a data-type to round-trip,
         // so they don't claim the reverse mapping (ul→bulletList, li→listItem).
-        let noReverse: Set<String> = ["wikiLink", "mention", "taskList", "taskItem"]
+        // detailsContent is a data-typed <div>, parsed as part of its <details>.
+        let noReverse: Set<String> = ["wikiLink", "mention", "taskList", "taskItem", "detailsContent"]
         for (n, t) in nodeTags where !noReverse.contains(n) { tagToNode[t] = n }
         for h in 1...6 { tagToNode["h\(h)"] = "heading" }
         tagToNode["pre"] = "codeBlock"
@@ -114,6 +116,13 @@ public enum HTMLSerializer {
             let checked = node.attrs["checked"]?.boolValue ?? false
             let box = "<input type=\"checkbox\"\(checked ? " checked=\"checked\"" : "")>"
             return "<li data-type=\"taskItem\" data-checked=\"\(checked)\"\(idAttr(node, config))>\(box)\(serializeFragment(node.content, config))</li>"
+        case "details":
+            let open = node.attrs["open"]?.boolValue ?? false
+            return "<details\(open ? " open" : "")\(idAttr(node, config))>\(serializeFragment(node.content, config))</details>"
+        case "detailsSummary":
+            return "<summary\(idAttr(node, config))>\(serializeFragment(node.content, config))</summary>"
+        case "detailsContent":
+            return "<div data-type=\"detailsContent\"\(idAttr(node, config))>\(serializeFragment(node.content, config))</div>"
         case "tableCell", "tableHeader":
             let tag = node.type.name == "tableHeader" ? "th" : "td"
             var a = ""
@@ -262,6 +271,8 @@ public enum HTMLParser {
         case "bulletList", "orderedList":
             // ul/ol may actually be a task list (Tiptap data-type, or items with checkboxes).
             return (one(parseList(tag, attrs, tokens, start, end, schema, config)), end + 1)
+        case "details":
+            return (parseDetails(attrs, tokens, start, end, schema, config), end + 1)
         case "tableCell", "tableHeader":
             let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
             var a: Attrs = idAttrs(attrs, nodeName!, schema, config)
@@ -350,6 +361,53 @@ public enum HTMLParser {
         let a = idAttrs(attrs, name, schema, config)
         if let n = try? type.create(a, content: Fragment.from(children)) { return n }
         return type.createAndFill(a, content: Fragment.from(children))
+    }
+
+    /// Parse a `<details>` into `details(detailsSummary, detailsContent)`. The
+    /// `<summary>` (missing in hand-written HTML) becomes the summary; everything
+    /// else becomes the content — whether or not it came wrapped in our
+    /// `data-type="detailsContent"` div (that div flattens through `parseBlocks`).
+    /// With a schema that has no details nodes, the section degrades to the
+    /// summary as a paragraph followed by its body blocks.
+    private static func parseDetails(_ attrs: [String: String], _ tokens: [Token], _ start: Int, _ end: Int,
+                                     _ schema: Schema, _ config: HTMLConfig) -> [Node] {
+        var summaryTokens: [Token] = []
+        var summaryAttrs: [String: String] = [:]
+        var bodyTokens: [Token] = []
+        var i = start + 1
+        while i < end {
+            if case let .open(t, sAttrs, selfClosing) = tokens[i], t == "summary", !selfClosing, summaryTokens.isEmpty {
+                let sEnd = matchingClose(tokens, i, "summary")
+                summaryTokens = Array(tokens[(i + 1)..<min(sEnd, end)])
+                summaryAttrs = sAttrs
+                i = min(sEnd, end) + 1
+                continue
+            }
+            bodyTokens.append(tokens[i])
+            i += 1
+        }
+        let summaryInline = parseInline(summaryTokens, schema, config)
+        let body = parseBlocks(bodyTokens, schema, config)
+        guard let detailsType = schema.nodes["details"],
+              let summaryType = schema.nodes["detailsSummary"],
+              let contentType = schema.nodes["detailsContent"] else {
+            // No details in this schema: keep the text rather than dropping it.
+            var out: [Node] = []
+            if !summaryInline.isEmpty, let para = try? schema.node("paragraph", [:], content: Fragment.from(summaryInline)) {
+                out.append(para)
+            }
+            return out + body
+        }
+        let summaryNodeAttrs = idAttrs(summaryAttrs, "detailsSummary", schema, config)
+        guard let summary = (try? summaryType.create(summaryNodeAttrs, content: Fragment.from(summaryInline)))
+                ?? summaryType.createAndFill(summaryNodeAttrs),
+              let content = (try? contentType.create([:], content: Fragment.from(body)))
+                ?? contentType.createAndFill([:], content: Fragment.from(body))
+        else { return body }
+        var a: Attrs = ["open": .bool(attrs["open"] != nil)]
+        a.merge(idAttrs(attrs, "details", schema, config)) { _, new in new }
+        guard let node = try? detailsType.create(a, content: Fragment.from([summary, content])) else { return body }
+        return [node]
     }
 
     private static func parseTaskItem(_ tokens: [Token], _ liStart: Int, _ liEnd: Int, _ liAttrs: [String: String], _ schema: Schema, _ config: HTMLConfig) -> Node? {

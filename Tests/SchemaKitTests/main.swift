@@ -206,6 +206,7 @@ test("mention: @ mid-word doesn't trigger") {
 registerM5Tests()
 registerTaskTests()
 registerTypographyTests()
+registerDetailsTests()
 registerSearchTests()
 registerMarkdownShortcutTests()
 registerHighlightTests()

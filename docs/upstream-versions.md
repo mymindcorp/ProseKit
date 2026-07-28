@@ -40,6 +40,11 @@ Use it to find what's new when re-auditing: read each package's CHANGELOG from t
   accepts e.g. a string `order` on an ordered list. Lower severity here because
   `AttributeValue` is a closed enum and consumers read defensively
   (`intValue ?? 1`), but an invalid doc round-trips without error.
+- **Details `persist` option** (Tiptap `Details`): Tiptap keeps a section's
+  open/closed state in its DOM node view unless `persist: true` adds an `open`
+  attribute. `SchemaKit`'s `DetailsExtension` always stores `open` in the
+  document — there is no node view here to hold view-only state, and the
+  CoreText renderer reads the attribute to decide whether to lay out the body.
 - **Remote steps via `maybeStep`** (prosemirror-collab): upstream's
   `receiveTransaction` uses `tr.step` and throws when an authority-confirmed step
   fails to apply; the Swift port uses `maybeStep`, silently skipping it. A failure
