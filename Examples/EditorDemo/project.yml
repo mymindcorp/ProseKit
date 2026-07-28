@@ -20,6 +20,10 @@ targets:
         product: SchemaKit
       - package: ProseKit
         product: EditorSerialization
+      - package: ProseKit
+        product: EditorSyntax
+      - package: ProseKit
+        product: EditorMath
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.processor.EditorDemo

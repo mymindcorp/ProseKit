@@ -27,6 +27,7 @@ Use it to find what's new when re-auditing: read each package's CHANGELOG from t
 | `EditorChangeset` | `prosemirror-changeset` | **2.3.1** | 2026-07-04 | Typed close tokens (2.3.1) and multi-range steps (2.0.4) confirmed present, regression tests already ported. `Change` JSON serialization (2.4.0) is a feature, add on demand. |
 | `SchemaKit` (lists) | `prosemirror-schema-list` | **1.5.1** | 2026-07-04 | `liftListItem` type-guarded join (1.5.1), adjacent-sublists join (1.2.2), and `splitListItem` sublist fix (1.1.5) confirmed present. See "Known gaps" re attr validation (1.4.1). |
 | `EditorSerialization` | `prosemirror-markdown` + custom HTML | n/a | — | HTML/Markdown serializers are hand-written for this editor's shapes, not direct ports; no upstream version to track. |
+| `EditorMath` | none (TeX/KaTeX box model) | n/a | 2026-07-27 | Not a ProseMirror port. The typesetter implements the algorithms and font parameters from *The TeXbook* Appendix G — the same ones KaTeX implements — written from the published specification, not translated from KaTeX's source. The `SchemaKit` extension follows Tiptap's *documented* Mathematics API (node names, `latex` attribute, `data-type` HTML, command set); see the note in `MathematicsExtension.swift`. |
 
 ## Known gaps / intentional deviations
 

@@ -68,6 +68,8 @@ enum DecorationItem {
     case text(String, CGPoint, [NSAttributedString.Key: Any])
     case stroke(CGRect, UIColor, CGFloat)
     case image(UIImage, CGRect)
+    /// A typeset formula, drawn by its renderer at the rect's top-left.
+    case math(MathRendering, CGRect)
     case roundedFill(CGRect, UIColor, CGFloat)
     case roundedStroke(CGRect, UIColor, CGFloat, CGFloat)
     case checkmark(CGRect, UIColor, CGFloat)
@@ -82,6 +84,13 @@ struct LocalTextBlock {
     let attributed: NSAttributedString
     let height: CGFloat
     let imageAtoms: [(attrIndex: Int, image: UIImage, size: CGSize)]
+    /// Inline formulas, drawn at their run position once line breaking has
+    /// placed them. Unlike an image atom these carry their own baseline, so the
+    /// formula lines up with the text rather than sitting on top of it.
+    /// `docOffset` is relative to the block's content start — this struct is
+    /// cached by (node, width) and reused wherever that node sits, so it must
+    /// hold nothing absolute.
+    let mathAtoms: [(attrIndex: Int, docOffset: Int, rendering: MathRendering)]
 }
 
 /// Caches typeset blocks by (node, width). Mark-and-sweep keeps it bounded to
@@ -165,6 +174,8 @@ final class DocumentLayout {
     /// Tappable details disclosure triangles: their hit rect, the `details`
     /// node's document position, and whether it is currently open.
     private(set) var disclosures: [(rect: CGRect, pos: Int, open: Bool)] = []
+    /// Drawn rects of `inlineMath` / `blockMath` nodes, for tap activation.
+    private(set) var mathTargets: [(rect: CGRect, pos: Int)] = []
     /// Highlight-mark ranges (document positions) and their colors, drawn as a
     /// background behind the text (CoreText ignores `.backgroundColor`).
     private(set) var highlights: [(from: Int, to: Int, color: UIColor)] = []
@@ -197,6 +208,9 @@ final class DocumentLayout {
     /// Optional host hook returning a badge label (e.g. detected language) for a
     /// code block, given its text and `language` attribute. Nil = no badge.
     private let codeLanguageLabel: ((String, String?) -> String?)?
+    /// Optional host hook to typeset `inlineMath` / `blockMath` nodes. Nil (or a
+    /// nil return) falls back to drawing the raw LaTeX source.
+    private let mathRenderer: MathRenderer?
 
     /// One top-level child's fully-positioned output. Kept so an edit can reuse
     /// the unchanged blocks (prefix as-is, suffix shifted) instead of re-laying
@@ -210,6 +224,7 @@ final class DocumentLayout {
         let decorations: [DecorationItem]
         let checkboxes: [(rect: CGRect, pos: Int, checked: Bool)]
         var disclosures: [(rect: CGRect, pos: Int, open: Bool)] = []
+        var mathTargets: [(rect: CGRect, pos: Int)] = []
         let highlights: [(from: Int, to: Int, color: UIColor)]
         var codeBackgrounds: [(from: Int, to: Int, color: UIColor)] = []
         let tables: [TableInfo]
@@ -226,13 +241,15 @@ final class DocumentLayout {
     init(doc: Node, width: CGFloat, theme: TextTheme, imageProvider: @escaping (Node) -> UIImage? = { _ in nil },
          blockCache: TextBlockLayoutCache? = nil, previous: DocumentLayout? = nil,
          realizeWindow: ClosedRange<CGFloat>? = nil, syntaxHighlighter: SyntaxHighlighter? = nil,
-         codeLanguageLabel: ((String, String?) -> String?)? = nil) {
+         codeLanguageLabel: ((String, String?) -> String?)? = nil,
+         mathRenderer: MathRenderer? = nil) {
         self.theme = theme
         self.width = width
         self.imageProvider = imageProvider
         self.blockCache = blockCache
         self.syntaxHighlighter = syntaxHighlighter
         self.codeLanguageLabel = codeLanguageLabel
+        self.mathRenderer = mathRenderer
         blockCache?.syncTheme(theme) // drop stale-styled blocks when the theme changes
         blockCache?.beginPass()
         let contentWidth = width - theme.pageInsets.left - theme.pageInsets.right
@@ -312,11 +329,13 @@ final class DocumentLayout {
         let (b0, d0, c0, h0, t0) = (blocks.count, decorations.count, checkboxes.count, highlights.count, tables.count)
         let cb0 = codeBackgrounds.count
         let dc0 = disclosures.count
+        let m0 = mathTargets.count
         y += theme.spacingBefore(child, isFirst: isFirst)
         y = layoutBlock(child, docPos: docPos, x: x, width: width, y: y)
         return TopEntry(node: child, docStart: docPos, topY: topY, height: y - topY,
                         blocks: Array(blocks[b0...]), decorations: Array(decorations[d0...]),
                         checkboxes: Array(checkboxes[c0...]), disclosures: Array(disclosures[dc0...]),
+                        mathTargets: Array(mathTargets[m0...]),
                         highlights: Array(highlights[h0...]),
                         codeBackgrounds: Array(codeBackgrounds[cb0...]),
                         tables: Array(tables[t0...]))
@@ -324,7 +343,7 @@ final class DocumentLayout {
 
     private func append(_ e: TopEntry) {
         blocks += e.blocks; decorations += e.decorations; checkboxes += e.checkboxes
-        disclosures += e.disclosures
+        disclosures += e.disclosures; mathTargets += e.mathTargets
         highlights += e.highlights; codeBackgrounds += e.codeBackgrounds; tables += e.tables
     }
 
@@ -338,6 +357,7 @@ final class DocumentLayout {
                         decorations: e.decorations.isEmpty ? e.decorations : e.decorations.map { shiftDeco($0, dy: dy) },
                         checkboxes: e.checkboxes.isEmpty ? e.checkboxes : e.checkboxes.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos, checked: $0.checked) },
                         disclosures: e.disclosures.isEmpty ? e.disclosures : e.disclosures.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos, open: $0.open) },
+                        mathTargets: e.mathTargets.isEmpty ? e.mathTargets : e.mathTargets.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos) },
                         highlights: e.highlights.isEmpty ? e.highlights : e.highlights.map { (from: $0.from + dPos, to: $0.to + dPos, color: $0.color) },
                         codeBackgrounds: e.codeBackgrounds.isEmpty ? e.codeBackgrounds : e.codeBackgrounds.map { (from: $0.from + dPos, to: $0.to + dPos, color: $0.color) },
                         tables: e.tables.isEmpty ? e.tables : e.tables.map { TableInfo(tablePos: $0.tablePos + dPos, originX: $0.originX, widths: $0.widths, top: $0.top + dy, bottom: $0.bottom + dy) },
@@ -403,7 +423,8 @@ final class DocumentLayout {
         guard hit else { return false }
 
         let old = entries
-        entries = []; blocks = []; decorations = []; checkboxes = []; disclosures = []; highlights = []; codeBackgrounds = []; tables = []; pendingImages = []
+        entries = []; blocks = []; decorations = []; checkboxes = []; disclosures = []; mathTargets = []
+        highlights = []; codeBackgrounds = []; tables = []; pendingImages = []
         let x = theme.pageInsets.left
         let contentWidth = width - theme.pageInsets.left - theme.pageInsets.right
         var y = theme.pageInsets.top
@@ -469,6 +490,7 @@ final class DocumentLayout {
         case let .stroke(r, c, w): return .stroke(r.offsetBy(dx: 0, dy: dy), c, w)
         case let .text(s, p, a): return .text(s, CGPoint(x: p.x, y: p.y + dy), a)
         case let .image(img, r): return .image(img, r.offsetBy(dx: 0, dy: dy))
+        case let .math(m, r): return .math(m, r.offsetBy(dx: 0, dy: dy))
         case let .roundedFill(r, c, rad): return .roundedFill(r.offsetBy(dx: 0, dy: dy), c, rad)
         case let .roundedStroke(r, c, w, rad): return .roundedStroke(r.offsetBy(dx: 0, dy: dy), c, w, rad)
         case let .checkmark(r, c, w): return .checkmark(r.offsetBy(dx: 0, dy: dy), c, w)
@@ -555,11 +577,40 @@ final class DocumentLayout {
             decorations.append(.text("🖼 \(alt)", CGPoint(x: x + 8, y: y + 8), [.font: theme.bodyFont, .foregroundColor: theme.codeColor]))
             if !src.isEmpty { pendingImages.append(node) }
             return y + h
+        case "blockMath":
+            // Display math is centered in the content column, like a figure.
+            let latex = node.attrs["latex"]?.stringValue ?? ""
+            let padding: CGFloat = 6
+            guard let rendering = renderMath(latex, display: true) else {
+                decorations.append(.text(latex, CGPoint(x: x, y: y + padding),
+                                         [.font: theme.monoFont, .foregroundColor: theme.codeColor]))
+                return y + padding * 2 + theme.monoFont.lineHeight
+            }
+            let originX = x + max(0, (width - rendering.size.width) / 2)
+            let rect = CGRect(x: originX, y: y + padding,
+                              width: rendering.size.width, height: rendering.size.height)
+            decorations.append(.math(rendering, rect))
+            // The whole row is the tap target, not just the (often narrow) ink.
+            mathTargets.append((rect: CGRect(x: x, y: y, width: width,
+                                             height: rect.height + padding * 2), pos: docPos))
+            return y + rendering.size.height + padding * 2
         case "table":
             return layoutTable(node, docPos: docPos, x: x, width: width, y: y)
         default:
             return layoutFragment(node.content, docPos: docPos + 1, x: x, width: width, y: y, isFirst: true)
         }
+    }
+
+    /// Typeset a formula through the host's hook, in the theme's body font and
+    /// text color (errors in the code color, so a typo reads as "not a formula"
+    /// rather than as a formula that happens to look odd).
+    private func renderMath(_ latex: String, display: Bool) -> MathRendering? {
+        guard let mathRenderer, !latex.isEmpty else { return nil }
+        guard let rendering = mathRenderer(latex, display, theme.bodyFont, theme.textColor) else { return nil }
+        guard rendering.isError else { return rendering }
+        // The source didn't parse: draw it in the muted code color instead, so a
+        // typo reads as "not a formula" rather than as an odd-looking one.
+        return mathRenderer(latex, display, theme.bodyFont, theme.codeColor) ?? rendering
     }
 
     private func layoutList(_ node: Node, docPos: Int, x: CGFloat, width: CGFloat, y: CGFloat) -> CGFloat {
@@ -632,6 +683,12 @@ final class DocumentLayout {
                                y: y + theme.paragraphSpacing, isFirst: true)
         }
         return y
+    }
+
+    /// The document position of the math node drawn under `point`, if any.
+    func math(at point: CGPoint) -> Int? {
+        for target in mathTargets where target.rect.contains(point) { return target.pos }
+        return nil
     }
 
     /// The details node whose disclosure triangle contains the point, if any.
@@ -743,6 +800,16 @@ final class DocumentLayout {
             let top = line.baselineOrigin.y - atom.size.height
             decorations.append(.image(atom.image, CGRect(x: line.baselineOrigin.x + xOffset, y: top, width: atom.size.width, height: atom.size.height)))
         }
+        for atom in local.mathAtoms {
+            guard let line = lines.first(where: { NSLocationInRange(atom.attrIndex, $0.stringRange) }) else { continue }
+            let xOffset = CTLineGetOffsetForStringIndex(line.ctLine, atom.attrIndex, nil)
+            // The formula's own baseline sits on the line's baseline.
+            let top = line.baselineOrigin.y - atom.rendering.ascent
+            let rect = CGRect(x: line.baselineOrigin.x + xOffset, y: top,
+                              width: atom.rendering.size.width, height: atom.rendering.size.height)
+            decorations.append(.math(atom.rendering, rect))
+            mathTargets.append((rect: rect, pos: contentStart + atom.docOffset))
+        }
 
         let frame = CGRect(x: x, y: y, width: width, height: local.height)
         blocks.append(TextBlock(
@@ -758,7 +825,7 @@ final class DocumentLayout {
     /// Typeset a text block in LOCAL coordinates (top at y = 0), independent of
     /// its eventual position — cacheable by (node, width).
     private func typesetBlock(_ node: Node, contentStart: Int, width: CGFloat) -> LocalTextBlock {
-        let (attr, segments, imageAtoms) = buildAttributed(node, contentStart: contentStart, width: width)
+        let (attr, segments, imageAtoms, mathAtoms) = buildAttributed(node, contentStart: contentStart, width: width)
         let rtl = isRightToLeft(attr.string)
         let base = NSMutableAttributedString(attributedString:
             attr.length == 0 ? NSAttributedString(string: " ", attributes: [.font: theme.blockFont(node)]) : attr)
@@ -806,13 +873,18 @@ final class DocumentLayout {
                                     stringRange: NSRange(location: length, length: 0), height: lineHeight, ascent: ascent))
             lineY += lineHeight
         }
-        return LocalTextBlock(lines: lines, segments: segments, attributed: base, height: lineY, imageAtoms: imageAtoms)
+        return LocalTextBlock(lines: lines, segments: segments, attributed: base, height: lineY,
+                              imageAtoms: imageAtoms, mathAtoms: mathAtoms)
     }
 
-    private func buildAttributed(_ node: Node, contentStart: Int, width: CGFloat) -> (NSMutableAttributedString, [Segment], [(attrIndex: Int, image: UIImage, size: CGSize)]) {
+    private func buildAttributed(_ node: Node, contentStart: Int, width: CGFloat)
+        -> (NSMutableAttributedString, [Segment],
+            [(attrIndex: Int, image: UIImage, size: CGSize)],
+            [(attrIndex: Int, docOffset: Int, rendering: MathRendering)]) {
         let result = NSMutableAttributedString()
         var segments: [Segment] = []
         var imageAtoms: [(attrIndex: Int, image: UIImage, size: CGSize)] = []
+        var mathAtoms: [(attrIndex: Int, docOffset: Int, rendering: MathRendering)] = []
         let blockFont = theme.blockFont(node)
         var docPos = contentStart
 
@@ -855,6 +927,18 @@ final class DocumentLayout {
                 result.append(NSAttributedString(string: "\u{2028}", attributes: [.font: blockFont]))
                 segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: 1, text: "\u{2028}"))
                 docPos += 1
+            } else if child.type.name == "inlineMath",
+                      let rendering = renderMath(child.attrs["latex"]?.stringValue ?? "", display: false) {
+                // Reserve the formula's box on its own baseline, so the line's
+                // ascent grows to fit it and the text next to it stays aligned.
+                let ascent = rendering.ascent
+                let descent = rendering.size.height - ascent
+                let delegate = makeBoxRunDelegate(width: rendering.size.width, ascent: ascent, descent: descent)
+                let attrStart = result.length
+                result.append(NSAttributedString(string: "\u{fffc}", attributes: [kCTRunDelegateAttributeName as NSAttributedString.Key: delegate]))
+                mathAtoms.append((attrIndex: attrStart, docOffset: docPos - contentStart, rendering: rendering))
+                segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: 1, text: nil))
+                docPos += 1
             } else if child.type.name == "image", let image = imageProvider(child) {
                 // Inline image: reserve its (scaled) box via a run delegate, and
                 // record it to draw at its run position after line breaking.
@@ -868,13 +952,21 @@ final class DocumentLayout {
                 segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: 1, text: nil))
                 docPos += 1
             } else {
-                // wikiLink, or an image still loading: show a text placeholder.
-                let display = child.type.name == "wikiLink"
-                    ? (child.attrs["label"]?.stringValue ?? child.attrs["target"]?.stringValue ?? "link")
-                    : "🖼"
+                // wikiLink, an image still loading, or math with no renderer
+                // wired up: show a text placeholder.
+                let display: String
+                switch child.type.name {
+                case "wikiLink":
+                    display = child.attrs["label"]?.stringValue ?? child.attrs["target"]?.stringValue ?? "link"
+                case "inlineMath":
+                    display = "$" + (child.attrs["latex"]?.stringValue ?? "") + "$"
+                default:
+                    display = "🖼"
+                }
                 var atomAttrs: [NSAttributedString.Key: Any] = child.type.name == "wikiLink"
                     ? [.font: blockFont, .foregroundColor: theme.linkColor]
-                    : [.font: blockFont, .foregroundColor: theme.codeColor]
+                    : [.font: child.type.name == "inlineMath" ? theme.monoFont : blockFont,
+                       .foregroundColor: theme.codeColor]
                 if child.type.name == "wikiLink", theme.linkUnderline {
                     atomAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
                 }
@@ -907,7 +999,7 @@ final class DocumentLayout {
                 }
             }
         }
-        return (result, segments, imageAtoms)
+        return (result, segments, imageAtoms, mathAtoms)
     }
 
     // MARK: - Geometry queries
@@ -1169,6 +1261,9 @@ final class DocumentLayout {
             case let .image(image, rect):
                 guard visible(rect.minY, rect.maxY) else { continue }
                 image.draw(in: rect)
+            case let .math(rendering, rect):
+                guard visible(rect.minY, rect.maxY) else { continue }
+                rendering.draw(ctx, rect.origin)
             case let .roundedFill(rect, color, radius):
                 guard visible(rect.minY, rect.maxY) else { continue }
                 color.setFill()
@@ -1250,22 +1345,33 @@ private func isRightToLeft(_ text: String) -> Bool {
     return false
 }
 
-/// Holds an inline image's reserved size for its CoreText run delegate.
-private final class ImageRunBox {
-    let size: CGSize
-    init(_ size: CGSize) { self.size = size }
+/// Holds an inline atom's reserved metrics for its CoreText run delegate.
+private final class AtomRunBox {
+    let width: CGFloat
+    let ascent: CGFloat
+    let descent: CGFloat
+    init(width: CGFloat, ascent: CGFloat, descent: CGFloat) {
+        self.width = width
+        self.ascent = ascent
+        self.descent = descent
+    }
 }
 
-/// Build a CoreText run delegate that reserves a box of the given size for an
-/// inline image, so the typesetter lays out around it.
-private func makeImageRunDelegate(_ size: CGSize) -> CTRunDelegate {
-    let box = ImageRunBox(size)
+/// Build a CoreText run delegate that reserves a box of the given metrics, so
+/// the typesetter lays out around an inline atom it can't measure itself.
+private func makeBoxRunDelegate(width: CGFloat, ascent: CGFloat, descent: CGFloat) -> CTRunDelegate {
+    let box = AtomRunBox(width: width, ascent: ascent, descent: descent)
     var callbacks = CTRunDelegateCallbacks(
         version: kCTRunDelegateCurrentVersion,
-        dealloc: { refCon in Unmanaged<ImageRunBox>.fromOpaque(refCon).release() },
-        getAscent: { refCon in Unmanaged<ImageRunBox>.fromOpaque(refCon).takeUnretainedValue().size.height },
-        getDescent: { _ in CGFloat(0) },
-        getWidth: { refCon in Unmanaged<ImageRunBox>.fromOpaque(refCon).takeUnretainedValue().size.width })
+        dealloc: { refCon in Unmanaged<AtomRunBox>.fromOpaque(refCon).release() },
+        getAscent: { refCon in Unmanaged<AtomRunBox>.fromOpaque(refCon).takeUnretainedValue().ascent },
+        getDescent: { refCon in Unmanaged<AtomRunBox>.fromOpaque(refCon).takeUnretainedValue().descent },
+        getWidth: { refCon in Unmanaged<AtomRunBox>.fromOpaque(refCon).takeUnretainedValue().width })
     return CTRunDelegateCreate(&callbacks, Unmanaged.passRetained(box).toOpaque())!
+}
+
+/// An inline image hangs from the baseline, so it reserves height above it only.
+private func makeImageRunDelegate(_ size: CGSize) -> CTRunDelegate {
+    makeBoxRunDelegate(width: size.width, ascent: size.height, descent: 0)
 }
 #endif

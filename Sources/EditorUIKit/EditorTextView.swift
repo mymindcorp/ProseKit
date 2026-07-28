@@ -45,6 +45,7 @@ open class EditorTextView: UIView, UIKeyInput {
     private weak var blockDragRecognizer: UIGestureRecognizer?
     private weak var imageResizeRecognizer: UIGestureRecognizer?
     private weak var disclosureTapRecognizer: UIGestureRecognizer?
+    private weak var mathTapRecognizer: UIGestureRecognizer?
 
     /// When true, each top-level block shows a drag handle in the left gutter
     /// that reorders the block by dragging. Off by default.
@@ -153,12 +154,15 @@ open class EditorTextView: UIView, UIKeyInput {
         tripleTap.numberOfTapsRequired = 3
         // Tapping a details disclosure triangle folds/unfolds that section.
         let disclosureTap = UITapGestureRecognizer(target: self, action: #selector(handleDisclosureTap(_:)))
+        // Tapping a rendered formula hands it to the host (to edit its LaTeX).
+        let mathTap = UITapGestureRecognizer(target: self, action: #selector(handleMathTap(_:)))
         columnResizeRecognizer = columnResize
         linkTapRecognizer = linkTap
         blockDragRecognizer = blockDrag
         imageResizeRecognizer = imageResize
         disclosureTapRecognizer = disclosureTap
-        for recognizer in [columnResize, linkTap, blockDrag, imageResize, disclosureTap, tripleTap] as [UIGestureRecognizer] {
+        mathTapRecognizer = mathTap
+        for recognizer in [columnResize, linkTap, blockDrag, imageResize, disclosureTap, mathTap, tripleTap] as [UIGestureRecognizer] {
             recognizer.delegate = self
             recognizer.cancelsTouchesInView = false
             addGestureRecognizer(recognizer)
@@ -203,6 +207,19 @@ open class EditorTextView: UIView, UIKeyInput {
     public var codeLanguageLabel: CodeLanguageLabelProvider? {
         didSet { invalidateLayout() }
     }
+
+    /// Optional hook to typeset `inlineMath` / `blockMath` nodes — assign
+    /// `EditorMath.makeMathRenderer()`. Nil (the default) draws each formula's
+    /// LaTeX source as monospaced text instead.
+    public var mathRenderer: MathRenderer? {
+        didSet { blockCache.clear(); invalidateLayout() }
+    }
+
+    /// Called when the user taps a rendered formula — Tiptap's math `onClick`.
+    /// Typically opens an editor for the node's `latex` and writes the result
+    /// back with `updateInlineMath` / `updateBlockMath`. Unset (the default),
+    /// a tap just places the caret as usual.
+    public var onActivateMath: MathActivationHandler?
 
     /// Vertical scroll offset; the host feeds the enclosing scroll view's offset
     /// so the view renders only the visible window (bounded layer + culling).
@@ -336,7 +353,8 @@ open class EditorTextView: UIView, UIKeyInput {
         let l = DocumentLayout(doc: editor.doc, width: max(bounds.width, 1), theme: theme,
                                imageProvider: { [weak self] node in self?.resolveImage(node) },
                                blockCache: blockCache, previous: layout, realizeWindow: realizeWindow(),
-                               syntaxHighlighter: syntaxHighlighter, codeLanguageLabel: codeLanguageLabel)
+                               syntaxHighlighter: syntaxHighlighter, codeLanguageLabel: codeLanguageLabel,
+                               mathRenderer: mathRenderer)
         layout = l
         lastLayoutWidth = bounds.width
         layoutVersion = docVersion
@@ -1214,6 +1232,32 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Test hook: drive a disclosure toggle by document position.
     func toggleDetailsForTesting(at pos: Int) { toggleDetails(at: pos) }
 
+    /// A tap on a rendered formula: select it and hand it to the host.
+    @objc private func handleMathTap(_ gesture: UITapGestureRecognizer) {
+        guard let pos = ensureLayout().math(at: docPoint(gesture.location(in: self))) else { return }
+        activateMath(at: pos)
+    }
+
+    /// Hand the math node at `docPos` to `onActivateMath`, selecting it first so
+    /// the handler's `updateInlineMath()` (which addresses the selection when
+    /// given no position) targets the formula the user actually tapped.
+    func activateMath(at docPos: Int) {
+        guard let onActivateMath, let node = editor.doc.nodeAt(docPos),
+              node.type.name == "inlineMath" || node.type.name == "blockMath" else { return }
+        if !isFirstResponder { becomeFirstResponder() }
+        editor.dispatch(editor.state.tr.setSelection(NodeSelection(editor.doc.resolve(docPos))))
+        onActivateMath(node, docPos)
+    }
+
+    /// Test hook: drive math activation by document position.
+    func activateMathForTesting(at docPos: Int) { activateMath(at: docPos) }
+
+    /// The document position of the math node drawn at a point in view
+    /// coordinates, if any — for hosts driving their own hit-testing.
+    public func mathNodePosition(at point: CGPoint) -> Int? {
+        ensureLayout().math(at: docPoint(point))
+    }
+
     private func toggleDetails(at pos: Int) {
         let open = editor.doc.nodeAt(pos)?.attrs["open"]?.boolValue ?? false
         guard let tr = setDetailsOpen(editor.state, pos: pos, open: !open) else { return }
@@ -1493,6 +1537,11 @@ open class EditorTextView: UIView, UIKeyInput {
         if gesture === blockDragRecognizer { return blockHandleHit(at: gesture.location(in: self)) != nil }
         if gesture === imageResizeRecognizer { return imageResizeHit(at: gesture.location(in: self)) != nil }
         if gesture === disclosureTapRecognizer { return ensureLayout().disclosure(at: point) != nil }
+        // Only claim the tap when a host actually wants it; otherwise a tap on a
+        // formula should place the caret like any other tap.
+        if gesture === mathTapRecognizer {
+            return onActivateMath != nil && ensureLayout().math(at: point) != nil
+        }
         if gesture === linkTapRecognizer {
             guard isCommandClick(gesture), let pos = ensureLayout().position(at: point) else { return false }
             return linkInfo(at: pos) != nil

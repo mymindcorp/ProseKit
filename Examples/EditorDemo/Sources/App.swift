@@ -6,6 +6,7 @@ import SchemaKit
 import EditorSerialization
 import EditorUIKit
 import EditorSyntax
+import EditorMath
 import UniformTypeIdentifiers
 
 @main
@@ -38,6 +39,7 @@ let demoDocuments: [(name: String, build: @Sendable (Schema) -> Node)] = [
     ("Format", formattingDocument),
     ("Tables", tablesDocument),
     ("Code", codeDocument),
+    ("Math", mathDocument),
 ]
 
 /// Inline formatting controls — the editor supports these marks but not fonts
@@ -604,6 +606,28 @@ struct EditorContainer: UIViewRepresentable {
         // only affects code blocks; detection only switches when confident.
         textView.syntaxHighlighter = makeSyntaxHighlighter()
         textView.codeLanguageLabel = makeCodeLanguageLabel()
+        // Opt into native LaTeX typesetting for the math nodes. Without this,
+        // formulas render as their monospaced source.
+        textView.mathRenderer = makeMathRenderer()
+        // Tapping a formula opens a prompt for its LaTeX — the same flow
+        // Tiptap's math `onClick` documentation demonstrates.
+        textView.onActivateMath = { [weak textView] node, pos in
+            guard let textView else { return }
+            let isInline = node.type.name == "inlineMath"
+            let alert = UIAlertController(title: "Edit \(isInline ? "inline " : "")equation",
+                                          message: "LaTeX source", preferredStyle: .alert)
+            alert.addTextField { $0.text = node.attrs["latex"]?.stringValue ?? "" }
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+            alert.addAction(UIAlertAction(title: "Save", style: .default) { _ in
+                guard let latex = alert.textFields?.first?.text, !latex.isEmpty else { return }
+                if isInline {
+                    textView.editor.updateInlineMath(latex: latex, at: pos)
+                } else {
+                    textView.editor.updateBlockMath(latex: latex, at: pos)
+                }
+            })
+            textView.window?.rootViewController?.present(alert, animated: true)
+        }
         // Persist dropped/pasted images (incl. from Apple Notes) to a file and
         // reference them by path, instead of embedding huge data: URLs. The
         // built-in loader then loads the file:// src.
@@ -900,6 +924,38 @@ func formattingDocument(_ schema: Schema) -> Node {
         b.n("codeBlock", [:], [b.t("func greet(_ name: String) {\n    print(\"hello, \\(name)\")\n}")]),
         b.n("horizontalRule", [:], []),
         b.p(b.t("Text after the horizontal rule.")),
+    ])
+}
+
+/// 7) LaTeX math, typeset natively by EditorMath — `blockMath` on its own row
+/// and `inlineMath` within a line. Type `$x^2$` to make one, or `/equation`.
+func mathDocument(_ schema: Schema) -> Node {
+    let b = B(schema)
+    func block(_ latex: String) -> Node { b.n("blockMath", ["latex": .string(latex)]) }
+    func inline(_ latex: String) -> Node { b.n("inlineMath", ["latex": .string(latex)]) }
+    return b.n("doc", [:], [
+        b.heading(1, "Mathematics"),
+        b.p(b.t("Formulas are stored as LaTeX and typeset natively — no web view. "),
+            b.t("An inline one like "), inline("e^{i\\pi} + 1 = 0"),
+            b.t(" shares the line's baseline; a block one gets its own row.")),
+        b.heading(3, "Display math"),
+        block("\\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}"),
+        block("\\sum_{n=1}^{\\infty} \\frac{1}{n^2} = \\frac{\\pi^2}{6}"),
+        block("\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}"),
+        b.heading(3, "Matrices and cases"),
+        block("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}"),
+        block("f(x) = \\begin{cases} 1 & x > 0 \\\\ 0 & x \\le 0 \\end{cases}"),
+        b.heading(3, "Inline within prose"),
+        b.p(b.t("Given "), inline("\\varepsilon > 0"), b.t(", choose "), inline("\\delta"),
+            b.t(" so that "), inline("|f(x) - L| < \\varepsilon"), b.t(" whenever "),
+            inline("0 < |x - a| < \\delta"), b.t(".")),
+        b.p(b.t("Set notation ("), inline("\\mathbb{R} \\subset \\mathbb{C}"),
+            b.t("), accents ("), inline("\\vec{v} \\cdot \\hat{n}"),
+            b.t("), and functions ("), inline("\\sin^2\\theta + \\cos^2\\theta = 1"),
+            b.t(") all work.")),
+        b.heading(3, "Source that doesn't parse"),
+        b.p(b.t("Invalid LaTeX is shown verbatim in the muted code color rather than mis-rendered:")),
+        block("\\frac{a}"),
     ])
 }
 

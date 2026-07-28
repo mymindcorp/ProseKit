@@ -26,6 +26,14 @@ public typealias CodeLanguageLabelProvider = (_ code: String, _ language: String
 /// recycles the returned views.
 public typealias CheckboxViewProvider = () -> any TaskCheckboxView
 
+/// Handles a tap on a rendered formula — Tiptap's `onClick` for the math nodes.
+/// The host typically opens an editor for the node's `latex` attribute and
+/// writes the result back with `updateInlineMath` / `updateBlockMath`.
+///
+/// `node` is the `inlineMath` or `blockMath` node and `pos` its document
+/// position, so the handler can address it without re-deriving either.
+public typealias MathActivationHandler = (_ node: Node, _ pos: Int) -> Void
+
 /// An image that arrived by drop or paste, with its raw bytes and (when known)
 /// its uniform type identifier and a suggested file name.
 public struct DroppedImage: Sendable {

@@ -16,6 +16,8 @@ Everything except the renderer is pure, cross-platform Swift (value-typed docume
 | `EditorSerialization` | ProseMirror-JSON, HTML, Markdown |
 | `EditorUIKit` | the CoreText renderer: `EditorTextView` (editable) + `DocumentView` (read-only) |
 | `EditorCollab` | rebaseable collaborative steps |
+| `EditorSyntax` | optional: code-block syntax highlighting for the renderer's hook |
+| `EditorMath` | optional: a native TeX typesetter for the renderer's math hook |
 
 Each module ports a corresponding ProseMirror package; [docs/upstream-versions.md](docs/upstream-versions.md) tracks how far up each one has been reviewed/ported, so future ports know what's new to look for.
 
@@ -28,8 +30,8 @@ import SchemaKit
 
 // Build an editor from a set of extensions.
 //   starterKit() — paragraphs, headings, lists, marks, blockquote, code, …
-//   fullKit()    — starterKit + tables, task lists, collapsible details, images,
-//                  wiki links, slash menu, collab cursors
+//   fullKit()    — starterKit + tables, task lists, collapsible details, math,
+//                  images, wiki links, slash menu, collab cursors
 let editor = try Editor(extensions: starterKit())
 
 // Set the document: any node built against the editor's schema.
@@ -125,7 +127,45 @@ override func draw(_ rect: CGRect) {
 - **Theme & fonts** — `EditorTextView.theme` / `DocumentView.theme` (a `TextTheme`): colors, spacing, and a custom typeface via `theme.fontName`, `theme.monoFontName`, and `theme.headingScale`. Dynamic Type is honored by default.
 - **Suggestion menus** — any extension can provide a `SuggestionSource` and the renderer shows a popup for it. The `/` slash menu (`SlashMenuExtension`, `atLineStart` by default) and `[[` wiki links (`WikiLinkExtension(suggestions:)`) ship in `fullKit`; use `fullKit(wikiLinkSuggestions:)` to supply the candidate list.
 - **Collapsible sections** — Tiptap's Details extension (`details` / `detailsSummary` / `detailsContent`, in `fullKit`): `editor.run("toggleDetails")` (also `Mod-Alt-d`, or `/details`) wraps the selected blocks in a section, and `toggleDetailsOpen` folds it. The renderer draws a disclosure triangle, and a closed section's body isn't laid out at all. Serializes to `<details><summary>…</summary>…</details>` in both HTML and Markdown.
+- **Mathematics** — Tiptap's Mathematics extension (`inlineMath` / `blockMath`, in `fullKit`). See below.
 - **Collaboration cursors** — `editor.setCollabCursor(id:anchor:head:color:label:)` draws another participant's caret (and selection); its position maps through every transaction. See the demo's "🤖 Agent" toggle for a worked example.
+
+### Mathematics
+
+Formulas are stored as LaTeX in a `latex` attribute on two atom nodes — `inlineMath`, which sits in a line of text, and `blockMath`, which takes its own row — matching Tiptap's Mathematics extension. Typing `$x^2$` converts inline; `$$…$$` alone in a block converts to display math. `/equation` inserts one from the slash menu.
+
+```swift
+editor.insertInlineMath(latex: "e^{i\\pi} + 1 = 0")
+editor.insertBlockMath(latex: "\\sum_{n=1}^{\\infty} \\frac{1}{n^2} = \\frac{\\pi^2}{6}")
+editor.updateInlineMath(latex: "x^3", at: pos)   // pos optional: defaults to the addressed node
+editor.deleteBlockMath()
+editor.migrateMathStrings()   // convert `$…$` runs in an older document into nodes
+```
+
+Rendering is opt-in, through `EditorMath` — a native TeX typesetter (no web view, no JavaScript) that implements KaTeX's box model with the same font parameters, drawing vectors through CoreText:
+
+```swift
+import EditorMath
+
+editorView.mathRenderer = makeMathRenderer()
+```
+
+Without it, each formula draws its LaTeX source as monospaced text. Source the parser rejects is drawn verbatim in the muted code color rather than silently mis-rendered — KaTeX's `throwOnError: false` behavior.
+
+Tapping a formula routes to `onActivateMath` (Tiptap's math `onClick`). The tap selects the node first, so a position-less `updateInlineMath` lands on the formula the user tapped:
+
+```swift
+editorView.onActivateMath = { node, pos in
+    let latex = node.attrs["latex"]?.stringValue ?? ""
+    presentEditor(for: latex) { edited in
+        editor.updateInlineMath(latex: edited, at: pos)
+    }
+}
+```
+
+Leave it unset and a tap just places the caret. The demo app's "Math" document wires it to a prompt.
+
+Both nodes round-trip through HTML (`<span data-type="inline-math" data-latex="…">`) and Markdown (`$…$` and `$$…$$`).
 
 ## Building & testing
 

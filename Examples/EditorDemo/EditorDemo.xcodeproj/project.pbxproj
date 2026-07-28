@@ -8,10 +8,11 @@
 
 /* Begin PBXBuildFile section */
 		5A3907A7CDDDBCE4D0AFEE26 /* SchemaKit in Frameworks */ = {isa = PBXBuildFile; productRef = BA5025BD668EA3CE832294E2 /* SchemaKit */; };
+		918F9546E159EEEB8E137991 /* EditorSyntax in Frameworks */ = {isa = PBXBuildFile; productRef = 5BB6AE926AA8F4D58F782925 /* EditorSyntax */; };
+		A4129D830C8EFE60706AA6DC /* EditorMath in Frameworks */ = {isa = PBXBuildFile; productRef = 05F7A8993440D3461202BB2E /* EditorMath */; };
 		AFBF2302D1CB88A78691E3B6 /* EditorUIKit in Frameworks */ = {isa = PBXBuildFile; productRef = 19BA9BED7783674E6633DB53 /* EditorUIKit */; };
 		CC3F882277935F81F4F6CA24 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = C38094E21AAF9D1B26EE9FA4 /* App.swift */; };
 		D52EB5A2D3E9EF4F3B0D7D08 /* EditorSerialization in Frameworks */ = {isa = PBXBuildFile; productRef = F2E3F86748440B91FEE6F64A /* EditorSerialization */; };
-		ED17A5701234567890ABCD01 /* EditorSyntax in Frameworks */ = {isa = PBXBuildFile; productRef = ED17A5701234567890ABCD02 /* EditorSyntax */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,7 +29,8 @@
 				AFBF2302D1CB88A78691E3B6 /* EditorUIKit in Frameworks */,
 				5A3907A7CDDDBCE4D0AFEE26 /* SchemaKit in Frameworks */,
 				D52EB5A2D3E9EF4F3B0D7D08 /* EditorSerialization in Frameworks */,
-				ED17A5701234567890ABCD01 /* EditorSyntax in Frameworks */,
+				918F9546E159EEEB8E137991 /* EditorSyntax in Frameworks */,
+				A4129D830C8EFE60706AA6DC /* EditorMath in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -87,7 +89,8 @@
 				19BA9BED7783674E6633DB53 /* EditorUIKit */,
 				BA5025BD668EA3CE832294E2 /* SchemaKit */,
 				F2E3F86748440B91FEE6F64A /* EditorSerialization */,
-				ED17A5701234567890ABCD02 /* EditorSyntax */,
+				5BB6AE926AA8F4D58F782925 /* EditorSyntax */,
+				05F7A8993440D3461202BB2E /* EditorMath */,
 			);
 			productName = EditorDemo;
 			productReference = ABCC030F750627BD1A854BD2 /* EditorDemo.app */;
@@ -338,9 +341,17 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		05F7A8993440D3461202BB2E /* EditorMath */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EditorMath;
+		};
 		19BA9BED7783674E6633DB53 /* EditorUIKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = EditorUIKit;
+		};
+		5BB6AE926AA8F4D58F782925 /* EditorSyntax */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EditorSyntax;
 		};
 		BA5025BD668EA3CE832294E2 /* SchemaKit */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -349,10 +360,6 @@
 		F2E3F86748440B91FEE6F64A /* EditorSerialization */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = EditorSerialization;
-		};
-		ED17A5701234567890ABCD02 /* EditorSyntax */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = EditorSyntax;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
