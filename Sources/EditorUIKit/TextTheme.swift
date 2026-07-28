@@ -116,6 +116,10 @@ public struct TextTheme: Sendable, Equatable {
             return UIFont.systemFont(ofSize: fixedBodyFontSize * headingScale[level - 1], weight: .bold)
         case "codeBlock":
             return monoFont
+        case "detailsSummary":
+            // The always-visible title of a collapsible section reads as a label.
+            let descriptor = bodyFont.fontDescriptor.withSymbolicTraits(.traitBold) ?? bodyFont.fontDescriptor
+            return UIFont(descriptor: descriptor, size: bodyFont.pointSize)
         default:
             return bodyFont
         }

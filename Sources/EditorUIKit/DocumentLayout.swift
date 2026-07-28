@@ -162,6 +162,9 @@ final class DocumentLayout {
     /// Tappable task-item checkboxes: their hit rect, the task item's document
     /// position, and current checked state.
     private(set) var checkboxes: [(rect: CGRect, pos: Int, checked: Bool)] = []
+    /// Tappable details disclosure triangles: their hit rect, the `details`
+    /// node's document position, and whether it is currently open.
+    private(set) var disclosures: [(rect: CGRect, pos: Int, open: Bool)] = []
     /// Highlight-mark ranges (document positions) and their colors, drawn as a
     /// background behind the text (CoreText ignores `.backgroundColor`).
     private(set) var highlights: [(from: Int, to: Int, color: UIColor)] = []
@@ -206,6 +209,7 @@ final class DocumentLayout {
         let blocks: [TextBlock]
         let decorations: [DecorationItem]
         let checkboxes: [(rect: CGRect, pos: Int, checked: Bool)]
+        var disclosures: [(rect: CGRect, pos: Int, open: Bool)] = []
         let highlights: [(from: Int, to: Int, color: UIColor)]
         var codeBackgrounds: [(from: Int, to: Int, color: UIColor)] = []
         let tables: [TableInfo]
@@ -307,17 +311,20 @@ final class DocumentLayout {
         let topY = y
         let (b0, d0, c0, h0, t0) = (blocks.count, decorations.count, checkboxes.count, highlights.count, tables.count)
         let cb0 = codeBackgrounds.count
+        let dc0 = disclosures.count
         y += theme.spacingBefore(child, isFirst: isFirst)
         y = layoutBlock(child, docPos: docPos, x: x, width: width, y: y)
         return TopEntry(node: child, docStart: docPos, topY: topY, height: y - topY,
                         blocks: Array(blocks[b0...]), decorations: Array(decorations[d0...]),
-                        checkboxes: Array(checkboxes[c0...]), highlights: Array(highlights[h0...]),
+                        checkboxes: Array(checkboxes[c0...]), disclosures: Array(disclosures[dc0...]),
+                        highlights: Array(highlights[h0...]),
                         codeBackgrounds: Array(codeBackgrounds[cb0...]),
                         tables: Array(tables[t0...]))
     }
 
     private func append(_ e: TopEntry) {
         blocks += e.blocks; decorations += e.decorations; checkboxes += e.checkboxes
+        disclosures += e.disclosures
         highlights += e.highlights; codeBackgrounds += e.codeBackgrounds; tables += e.tables
     }
 
@@ -330,6 +337,7 @@ final class DocumentLayout {
                         blocks: e.blocks.isEmpty ? e.blocks : e.blocks.map { shiftBlock($0, dPos: dPos, dy: dy) },
                         decorations: e.decorations.isEmpty ? e.decorations : e.decorations.map { shiftDeco($0, dy: dy) },
                         checkboxes: e.checkboxes.isEmpty ? e.checkboxes : e.checkboxes.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos, checked: $0.checked) },
+                        disclosures: e.disclosures.isEmpty ? e.disclosures : e.disclosures.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos, open: $0.open) },
                         highlights: e.highlights.isEmpty ? e.highlights : e.highlights.map { (from: $0.from + dPos, to: $0.to + dPos, color: $0.color) },
                         codeBackgrounds: e.codeBackgrounds.isEmpty ? e.codeBackgrounds : e.codeBackgrounds.map { (from: $0.from + dPos, to: $0.to + dPos, color: $0.color) },
                         tables: e.tables.isEmpty ? e.tables : e.tables.map { TableInfo(tablePos: $0.tablePos + dPos, originX: $0.originX, widths: $0.widths, top: $0.top + dy, bottom: $0.bottom + dy) },
@@ -370,7 +378,11 @@ final class DocumentLayout {
         let avgChar = max(font.pointSize * 0.5, 1)
         let usableWidth = max(width - theme.pageInsets.left - theme.pageInsets.right, avgChar)
         let charsPerLine = max(Int(usableWidth / avgChar), 1)
-        let textLength = max(child.textContent.count, 1)
+        // A closed details shows only its summary — its hidden body isn't laid out.
+        let visibleText = child.type.name == "details" && !(child.attrs["open"]?.boolValue ?? false)
+            ? (child.firstChild?.textContent ?? "")
+            : child.textContent
+        let textLength = max(visibleText.count, 1)
         let lines = Int(ceil(Double(textLength) / Double(charsPerLine)))
         return CGFloat(max(lines, 1)) * lineHeight + theme.paragraphSpacing
     }
@@ -391,7 +403,7 @@ final class DocumentLayout {
         guard hit else { return false }
 
         let old = entries
-        entries = []; blocks = []; decorations = []; checkboxes = []; highlights = []; codeBackgrounds = []; tables = []; pendingImages = []
+        entries = []; blocks = []; decorations = []; checkboxes = []; disclosures = []; highlights = []; codeBackgrounds = []; tables = []; pendingImages = []
         let x = theme.pageInsets.left
         let contentWidth = width - theme.pageInsets.left - theme.pageInsets.right
         var y = theme.pageInsets.top
@@ -517,6 +529,8 @@ final class DocumentLayout {
             return layoutTaskList(node, docPos: docPos, x: x, width: width, y: y)
         case "listItem", "taskItem":
             return layoutFragment(node.content, docPos: docPos + 1, x: x, width: width, y: y, isFirst: true)
+        case "details":
+            return layoutDetails(node, docPos: docPos, x: x, width: width, y: y)
         case "horizontalRule":
             let lineY = y + 8
             decorations.append(.fill(CGRect(x: x, y: lineY, width: width, height: 1), theme.quoteBarColor))
@@ -586,6 +600,44 @@ final class DocumentLayout {
             pos += item.nodeSize
         }
         return y
+    }
+
+    /// A collapsible section: a disclosure triangle in the gutter, the summary
+    /// as a text block beside it, and — only while open — the content indented
+    /// beneath. A closed section lays out no content at all, so its hidden text
+    /// costs nothing to render.
+    private func layoutDetails(_ node: Node, docPos: Int, x: CGFloat, width: CGFloat, y: CGFloat) -> CGFloat {
+        let open = node.attrs["open"]?.boolValue ?? false
+        let indent = theme.listIndent
+        let innerX = x + indent
+        let innerWidth = width - indent
+        var y = y
+        var pos = docPos + 1 // inside the details, before the summary
+        // The triangle sits on the summary's first line, right-aligned in the gutter.
+        let glyph = open ? "▼" : "▶"
+        let glyphAttrs: [NSAttributedString.Key: Any] = [.font: theme.bodyFont, .foregroundColor: theme.codeColor]
+        let glyphSize = (glyph as NSString).size(withAttributes: glyphAttrs)
+        decorations.append(.text(glyph, CGPoint(x: innerX - glyphSize.width - 8, y: y), glyphAttrs))
+        disclosures.append((rect: CGRect(x: innerX - glyphSize.width - 8, y: y,
+                                         width: glyphSize.width, height: glyphSize.height).insetBy(dx: -8, dy: -8),
+                            pos: docPos, open: open))
+        if node.childCount > 0 {
+            let summary = node.child(0)
+            y = layoutTextBlock(summary, docPos: pos + 1, x: innerX, width: innerWidth, y: y)
+            pos += summary.nodeSize
+        }
+        if open, node.childCount > 1 {
+            let content = node.child(1)
+            y = layoutFragment(content.content, docPos: pos + 1, x: innerX, width: innerWidth,
+                               y: y + theme.paragraphSpacing, isFirst: true)
+        }
+        return y
+    }
+
+    /// The details node whose disclosure triangle contains the point, if any.
+    func disclosure(at point: CGPoint) -> (pos: Int, open: Bool)? {
+        for d in disclosures where d.rect.contains(point) { return (d.pos, d.open) }
+        return nil
     }
 
     /// The checkmark glyph for a checkbox of the given rect — shared between

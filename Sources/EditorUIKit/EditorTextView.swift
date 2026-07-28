@@ -44,6 +44,7 @@ open class EditorTextView: UIView, UIKeyInput {
     private weak var linkTapRecognizer: UIGestureRecognizer?
     private weak var blockDragRecognizer: UIGestureRecognizer?
     private weak var imageResizeRecognizer: UIGestureRecognizer?
+    private weak var disclosureTapRecognizer: UIGestureRecognizer?
 
     /// When true, each top-level block shows a drag handle in the left gutter
     /// that reorders the block by dragging. Off by default.
@@ -150,11 +151,14 @@ open class EditorTextView: UIView, UIKeyInput {
         // caret/word) — matching Notes and other rich editors.
         let tripleTap = UITapGestureRecognizer(target: self, action: #selector(handleTripleTap(_:)))
         tripleTap.numberOfTapsRequired = 3
+        // Tapping a details disclosure triangle folds/unfolds that section.
+        let disclosureTap = UITapGestureRecognizer(target: self, action: #selector(handleDisclosureTap(_:)))
         columnResizeRecognizer = columnResize
         linkTapRecognizer = linkTap
         blockDragRecognizer = blockDrag
         imageResizeRecognizer = imageResize
-        for recognizer in [columnResize, linkTap, blockDrag, imageResize, tripleTap] as [UIGestureRecognizer] {
+        disclosureTapRecognizer = disclosureTap
+        for recognizer in [columnResize, linkTap, blockDrag, imageResize, disclosureTap, tripleTap] as [UIGestureRecognizer] {
             recognizer.delegate = self
             recognizer.cancelsTouchesInView = false
             addGestureRecognizer(recognizer)
@@ -1198,6 +1202,24 @@ open class EditorTextView: UIView, UIKeyInput {
         }
     }
 
+    // MARK: - Details disclosure
+
+    /// Tapping the disclosure triangle folds/unfolds that collapsible section.
+    @objc private func handleDisclosureTap(_ gesture: UITapGestureRecognizer) {
+        let point = docPoint(gesture.location(in: self))
+        guard let hit = ensureLayout().disclosure(at: point) else { return }
+        toggleDetails(at: hit.pos)
+    }
+
+    /// Test hook: drive a disclosure toggle by document position.
+    func toggleDetailsForTesting(at pos: Int) { toggleDetails(at: pos) }
+
+    private func toggleDetails(at pos: Int) {
+        let open = editor.doc.nodeAt(pos)?.attrs["open"]?.boolValue ?? false
+        guard let tr = setDetailsOpen(editor.state, pos: pos, open: !open) else { return }
+        editor.dispatch(tr)
+    }
+
     /// Open a link the pointer activated. Gated to begin only on a Cmd-held
     /// click over a link (so ordinary taps still place the caret natively).
     @objc private func handleLinkTap(_ gesture: UITapGestureRecognizer) {
@@ -1470,6 +1492,7 @@ open class EditorTextView: UIView, UIKeyInput {
         if gesture === columnResizeRecognizer { return columnBorderHit(at: point) != nil }
         if gesture === blockDragRecognizer { return blockHandleHit(at: gesture.location(in: self)) != nil }
         if gesture === imageResizeRecognizer { return imageResizeHit(at: gesture.location(in: self)) != nil }
+        if gesture === disclosureTapRecognizer { return ensureLayout().disclosure(at: point) != nil }
         if gesture === linkTapRecognizer {
             guard isCommandClick(gesture), let pos = ensureLayout().position(at: point) else { return false }
             return linkInfo(at: pos) != nil

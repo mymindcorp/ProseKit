@@ -28,7 +28,8 @@ import SchemaKit
 
 // Build an editor from a set of extensions.
 //   starterKit() — paragraphs, headings, lists, marks, blockquote, code, …
-//   fullKit()    — starterKit + tables, task lists, images, wiki links, slash menu, collab cursors
+//   fullKit()    — starterKit + tables, task lists, collapsible details, images,
+//                  wiki links, slash menu, collab cursors
 let editor = try Editor(extensions: starterKit())
 
 // Set the document: any node built against the editor's schema.
@@ -123,6 +124,7 @@ override func draw(_ rect: CGRect) {
 
 - **Theme & fonts** — `EditorTextView.theme` / `DocumentView.theme` (a `TextTheme`): colors, spacing, and a custom typeface via `theme.fontName`, `theme.monoFontName`, and `theme.headingScale`. Dynamic Type is honored by default.
 - **Suggestion menus** — any extension can provide a `SuggestionSource` and the renderer shows a popup for it. The `/` slash menu (`SlashMenuExtension`, `atLineStart` by default) and `[[` wiki links (`WikiLinkExtension(suggestions:)`) ship in `fullKit`; use `fullKit(wikiLinkSuggestions:)` to supply the candidate list.
+- **Collapsible sections** — Tiptap's Details extension (`details` / `detailsSummary` / `detailsContent`, in `fullKit`): `editor.run("toggleDetails")` (also `Mod-Alt-d`, or `/details`) wraps the selected blocks in a section, and `toggleDetailsOpen` folds it. The renderer draws a disclosure triangle, and a closed section's body isn't laid out at all. Serializes to `<details><summary>…</summary>…</details>` in both HTML and Markdown.
 - **Collaboration cursors** — `editor.setCollabCursor(id:anchor:head:color:label:)` draws another participant's caret (and selection); its position maps through every transaction. See the demo's "🤖 Agent" toggle for a worked example.
 
 ## Building & testing
