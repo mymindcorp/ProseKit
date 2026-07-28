@@ -104,6 +104,15 @@ public enum HTMLSerializer {
             if let alt = node.attrs["alt"]?.stringValue { attrs += " alt=\"\(escapeAttribute(alt))\"" }
             if let title = node.attrs["title"]?.stringValue { attrs += " title=\"\(escapeAttribute(title))\"" }
             if let w = node.attrs["width"]?.intValue { attrs += " width=\"\(w)\"" }
+            if let h = node.attrs["height"]?.intValue { attrs += " height=\"\(h)\"" }
+            // The original behind this rendition, as flat `data-` attributes —
+            // readable markup, and no JSON to escape inside an attribute.
+            if case let .object(model)? = node.attrs["model"],
+               case let .string(path)? = model["path"] {
+                attrs += " data-model-path=\"\(escapeAttribute(path))\""
+                if let w = model["width"]?.intValue { attrs += " data-model-width=\"\(w)\"" }
+                if let h = model["height"]?.intValue { attrs += " data-model-height=\"\(h)\"" }
+            }
             return "<img\(attrs)>"
         case "wikiLink":
             let target = node.attrs["target"]?.stringValue ?? ""
@@ -742,6 +751,13 @@ public enum HTMLParser {
         if let alt = attrs["alt"] { a["alt"] = .string(alt) }
         if let title = attrs["title"] { a["title"] = .string(title) }
         if let w = attrs["width"].flatMap({ Int($0) }) { a["width"] = .int(w) }
+        if let h = attrs["height"].flatMap({ Int($0) }) { a["height"] = .int(h) }
+        if let path = attrs["data-model-path"], !path.isEmpty {
+            var model: [String: AttributeValue] = ["path": .string(path)]
+            if let w = attrs["data-model-width"].flatMap({ Int($0) }) { model["width"] = .int(w) }
+            if let h = attrs["data-model-height"].flatMap({ Int($0) }) { model["height"] = .int(h) }
+            a["model"] = .object(model)
+        }
         return try? type.create(a)
     }
 

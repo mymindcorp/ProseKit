@@ -22,7 +22,7 @@ let schema: Schema = {
         ("horizontalRule", NodeSpec(group: "block")),
         ("text", NodeSpec(group: "inline")),
         ("hardBreak", NodeSpec(group: "inline", inline: true)),
-        ("image", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["src": AttributeSpec(), "alt": AttributeSpec(default: .null), "title": AttributeSpec(default: .null)])),
+        ("image", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["src": AttributeSpec(), "alt": AttributeSpec(default: .null), "title": AttributeSpec(default: .null), "width": AttributeSpec(default: .null), "height": AttributeSpec(default: .null), "model": AttributeSpec(default: .null)])),
         ("wikiLink", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["target": AttributeSpec(), "label": AttributeSpec(default: .null)], leafText: { $0.attrs["label"]?.stringValue ?? $0.attrs["target"]?.stringValue ?? "" })),
         ("mention", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["id": AttributeSpec(), "label": AttributeSpec(default: .null)], leafText: { "@" + ($0.attrs["label"]?.stringValue ?? $0.attrs["id"]?.stringValue ?? "") })),
         ("bulletList", NodeSpec(content: "listItem+", group: "block")),
@@ -110,6 +110,84 @@ test("HTML round-trip with image + blockquote") {
     let html = HTMLSerializer.serialize(d)
     let back = try HTMLParser.parse(html, schema: schema)
     try expectEqual(back, d)
+}
+
+test("HTML: an image's size model round-trips") {
+    // `width`/`height` are the image's display size in points. Either can stand
+    // alone — the renderer derives the other from the aspect ratio — so all four
+    // combinations have to survive the trip.
+    let sizes: [(Attrs, String)] = [
+        ([:], ""),
+        (["width": .int(320)], " width=\"320\""),
+        (["height": .int(240)], " height=\"240\""),
+        (["width": .int(320), "height": .int(240)], " width=\"320\" height=\"240\""),
+    ]
+    for (size, expected) in sizes {
+        var attrs: Attrs = ["src": .string("a.png")]
+        attrs.merge(size) { _, new in new }
+        let d = doc(p(node("image", attrs)))
+        let html = HTMLSerializer.serialize(d)
+        try expectEqual(html, "<p><img src=\"a.png\"\(expected)></p>")
+        try expectEqual(try HTMLParser.parse(html, schema: schema), d, "\(size) didn't come back")
+    }
+}
+
+test("HTML: an image's original-image model round-trips") {
+    // `src` and width/height are the presentation; `model` is what it was made
+    // from, and has to survive independently of it.
+    let model: AttributeValue = .object([
+        "path": .string("originals/DSC_0001.raw"), "width": .int(4000), "height": .int(3000),
+    ])
+    let d = doc(p(node("image", ["src": .string("thumb.jpg"), "width": .int(300),
+                                 "height": .int(225), "model": model])))
+    let html = HTMLSerializer.serialize(d)
+    try expect(html.contains("data-model-path=\"originals/DSC_0001.raw\""), html)
+    try expect(html.contains("data-model-width=\"4000\"") && html.contains("data-model-height=\"3000\""), html)
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+}
+
+test("HTML: an original-image model with only a path round-trips") {
+    // The dimensions are optional; an absent one must not come back as a null
+    // field, which wouldn't compare equal to the node that was written.
+    let d = doc(p(node("image", ["src": .string("a.jpg"),
+                                 "model": .object(["path": .string("orig.raw")])])))
+    let html = HTMLSerializer.serialize(d)
+    try expect(!html.contains("data-model-width"), html)
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+}
+
+test("HTML: an image with no model stays without one") {
+    let d = doc(p(node("image", ["src": .string("a.jpg")])))
+    let html = HTMLSerializer.serialize(d)
+    try expectEqual(html, "<p><img src=\"a.jpg\"></p>")
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+    try expectEqual(try HTMLParser.parse(html, schema: schema).child(0).child(0).attrs["model"], .null)
+}
+
+test("JSON: an image's model is a nested object, not encoded text") {
+    let d = doc(p(node("image", ["src": .string("a.jpg"),
+                                 "model": .object(["path": .string("o.raw"), "width": .int(10)])])))
+    let json = try DocumentJSON.string(d)
+    try expect(json.contains("\"model\""), json)
+    try expect(json.contains("\"path\""), "the model nests as an object: \(json)")
+    try expectEqual(try DocumentJSON.decode(schema, json), d)
+}
+
+test("HTML: a non-numeric image size is ignored rather than stored") {
+    // Real markup carries `width="50%"` and `width="auto"`; neither is a point
+    // value, and storing one would make the renderer size from nonsense.
+    for value in ["50%", "auto", "", "abc", "-10"] {
+        let d = try HTMLParser.parse("<p><img src=\"a.png\" width=\"\(value)\"></p>", schema: schema)
+        try d.check()
+        let image = d.child(0).child(0)
+        try expectEqual(image.type.name, "image")
+        if value == "-10" {
+            // Negative numbers do parse as ints; the renderer clamps them.
+            try expectEqual(image.attrs["width"], .int(-10))
+        } else {
+            try expectEqual(image.attrs["width"], .null, "\(value) should not become a width")
+        }
+    }
 }
 
 test("HTML highlight round-trip (<mark>)") {
