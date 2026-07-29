@@ -80,7 +80,9 @@ let package = Package(
             path: "Tests/EditorCommandsTests"),
         .executableTarget(
             name: "SchemaKitTests",
-            dependencies: ["SchemaKit", "EditorHistory", "TestHarness"],
+            // EditorMath so the MathML import can be checked against the very
+            // parser that has to render its output.
+            dependencies: ["SchemaKit", "EditorHistory", "EditorMath", "TestHarness"],
             path: "Tests/SchemaKitTests",
             resources: [.copy("highlight-doc.json")]),
         .executableTarget(

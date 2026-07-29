@@ -436,6 +436,22 @@ public enum HTMLParser {
                     result.append(math.node)
                     i = math.next; continue
                 }
+                // Pasted MathML — from a page, a word processor, or another editor.
+                if tag == "math" {
+                    if let math = makeMathML(tokens, i, schema, config) {
+                        result.append(math.node)
+                        i = math.next
+                    } else {
+                        i = matchingClose(tokens, i, tag) + 1
+                    }
+                    continue
+                }
+                // KaTeX and MathJax emit the formula twice: once as MathML and
+                // once as visual glyphs marked `aria-hidden`. Keeping both would
+                // duplicate every pasted formula as nonsense text.
+                if attrs["aria-hidden"] == "true" {
+                    i = matchingClose(tokens, i, tag) + 1; continue
+                }
                 // Document/section wrappers (incl. <html>/<body> from full-document
                 // clipboard HTML, e.g. Apple Notes): splice their children in.
                 if transparentWrappers.contains(tag) {
@@ -625,6 +641,19 @@ public enum HTMLParser {
                 if let math = makeMath(attrs, tokens, i, schema, config) {
                     result.append(math.node); i = math.next; continue
                 }
+                if tag == "math" {
+                    if let math = makeMathML(tokens, i, schema, config) {
+                        result.append(math.node); i = math.next
+                    } else {
+                        i = matchingClose(tokens, i, tag) + 1
+                    }
+                    continue
+                }
+                // The visual half of a KaTeX/MathJax formula, duplicating the
+                // MathML beside it.
+                if attrs["aria-hidden"] == "true" {
+                    i = matchingClose(tokens, i, tag) + 1; continue
+                }
                 if tag == "span", let id = attrs["data-mention"], schema.nodes["mention"] != nil {
                     let close = matchingClose(tokens, i, tag)
                     var label = innerText(tokens, i + 1, close)
@@ -732,6 +761,26 @@ public enum HTMLParser {
         return (node, close + 1)
     }
 
+    /// A math node from a `<math>` element — the LaTeX read from its TeX
+    /// annotation, its `alttext`, or converted from its presentation markup.
+    ///
+    /// Returns nil when nothing usable can be read out, and the caller then
+    /// drops the element: a formula that arrives as scraped prose ("x2+1") is
+    /// worse than one that doesn't arrive.
+    private static func makeMathML(_ tokens: [Token], _ start: Int,
+                                   _ schema: Schema, _ config: HTMLConfig) -> (node: Node, next: Int)? {
+        guard case let .open(tag, _, selfClosing) = tokens[start], tag == "math", !selfClosing else { return nil }
+        let close = matchingClose(tokens, start, tag)
+        guard let converted = MathML.latex(tokens, from: start, to: close) else { return nil }
+        // Display maths wants the block node, inline maths the inline one; fall
+        // back to whichever this schema actually has.
+        let preferred = converted.display ? "blockMath" : "inlineMath"
+        let fallback = converted.display ? "inlineMath" : "blockMath"
+        guard let type = schema.nodes[preferred] ?? schema.nodes[fallback],
+              let node = try? type.create(["latex": .string(converted.latex)]) else { return nil }
+        return (node, close + 1)
+    }
+
     /// Strip surrounding `$$`/`$` from a math element's display text.
     private static func unfence(_ text: String) -> String {
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -761,7 +810,7 @@ public enum HTMLParser {
         return try? type.create(a)
     }
 
-    private static func innerText(_ tokens: [Token], _ start: Int, _ end: Int) -> String {
+    static func innerText(_ tokens: [Token], _ start: Int, _ end: Int) -> String {
         var text = ""
         var i = start
         while i < end {
@@ -771,7 +820,7 @@ public enum HTMLParser {
         return text
     }
 
-    private static func matchingClose(_ tokens: [Token], _ openIndex: Int, _ tag: String) -> Int {
+    static func matchingClose(_ tokens: [Token], _ openIndex: Int, _ tag: String) -> Int {
         guard case let .open(_, _, selfClosing) = tokens[openIndex], !selfClosing else { return openIndex }
         var depth = 0
         var i = openIndex
