@@ -180,6 +180,8 @@ Leave it unset and a tap just places the caret. The demo app's "Math" document w
 
 Both nodes round-trip through HTML (`<span data-type="inline-math" data-latex="…">`) and Markdown (`$…$` and `$$…$$`).
 
+Pasted **MathML** becomes a math node. Where the source carries the original TeX — MathJax and KaTeX in an `<annotation>`, Wikipedia in `alttext` — that's used verbatim; markup without one is converted from presentation MathML. Either way what's stored is LaTeX, so it round-trips as `data-latex` like any other formula.
+
 Tables and augmented matrices use `array`'s column spec, with `|` for vertical rules and `\hline` for horizontal ones:
 
 ```latex
