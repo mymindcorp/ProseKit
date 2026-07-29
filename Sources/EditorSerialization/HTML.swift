@@ -415,10 +415,61 @@ public enum HTMLParser {
         }
     }
 
+    /// Elements that belong inside a paragraph rather than beside one.
+    ///
+    /// Everything else keeps the old treatment — parsed as a block, or as an
+    /// unknown container whose children are parsed as blocks — so an unfamiliar
+    /// wrapper can't be mistaken for a run of text.
+    private static let inlineTags: Set<String> = [
+        "strong", "b", "em", "i", "s", "del", "strike", "u", "mark", "code", "a",
+        "sub", "sup", "span", "br", "img", "math", "small", "abbr", "cite", "q",
+        "time", "kbd", "samp", "var", "big", "font", "wbr", "bdi", "bdo", "ruby",
+    ]
+
     private static func parseBlocks(_ tokens: [Token], _ schema: Schema, _ config: HTMLConfig) -> [Node] {
         var result: [Node] = []
+        // Consecutive inline tokens belong to one paragraph. Without this each
+        // element became its own block and its marks were lost, so
+        // `<li>a <strong>b</strong> c</li>` came back as three unformatted
+        // paragraphs — only `<p>` and `<div>` ever routed through `parseInline`.
+        var inlineRun: [Token] = []
+        func flushInline() {
+            guard !inlineRun.isEmpty else { return }
+            let inline = parseInline(inlineRun, schema, config)
+            inlineRun = []
+            guard !inline.isEmpty else { return }
+            // Whitespace between two blocks isn't a paragraph.
+            if inline.allSatisfy(\.isText),
+               inline.map({ $0.text ?? "" }).joined().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return
+            }
+            result.append(contentsOf: textblockSplittingBlocks(inline) {
+                try? schema.node("paragraph", [:], content: Fragment.from($0))
+            })
+        }
+
         var i = 0
         while i < tokens.count {
+            if case .text = tokens[i] {
+                inlineRun.append(tokens[i]); i += 1; continue
+            }
+            if case let .open(tag, _, selfClosing) = tokens[i] {
+                // An inline element mid-run stays in the paragraph. A `<math>`
+                // standing alone still reaches the block handling below, so
+                // display maths becomes a block node rather than a paragraph.
+                if inlineTags.contains(tag), !(tag == "math" && inlineRun.isEmpty) {
+                    if selfClosing {
+                        inlineRun.append(tokens[i]); i += 1
+                    } else {
+                        let close = min(matchingClose(tokens, i, tag), tokens.count - 1)
+                        inlineRun.append(contentsOf: tokens[i...close])
+                        i = close + 1
+                    }
+                    continue
+                }
+            }
+            if case .close = tokens[i] { i += 1; continue }
+            flushInline()
             if case let .open(tag, attrs, _) = tokens[i] {
                 // A `data-type="block-math"` div, before the generic <div> branch
                 // below would turn it into a paragraph of its `$$…$$` text.
@@ -472,6 +523,7 @@ public enum HTMLParser {
                 i = next
             } else { i += 1 }
         }
+        flushInline()
         return result
     }
 

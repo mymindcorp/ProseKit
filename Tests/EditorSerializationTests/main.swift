@@ -759,6 +759,119 @@ test("HTML: fragments round-trip once coerced") {
     }
 }
 
+// MARK: - Inline content inside containers
+
+test("HTML: inline markup inside a list item keeps its marks") {
+    // `<li>` content was parsed as blocks, so each inline element became its own
+    // unformatted paragraph — pasting a bulleted list from a page lost every
+    // bold, link and italic in it.
+    let d = try HTMLParser.parse("<ul><li>a <strong>bold</strong> c</li></ul>", schema: schema)
+    try d.check()
+    try expectEqual(d, doc(node("bulletList", [:], [
+        node("listItem", [:], [p(t("a "), strong("bold"), t(" c"))]),
+    ])))
+}
+
+test("HTML: inline markup keeps its marks in every container") {
+    let cases: [(String, [String], String)] = [
+        ("<ul><li>a <strong>b</strong> c</li></ul>",
+         ["bulletList", "listItem", "paragraph"], "bold"),
+        ("<ol><li>a <em>b</em></li></ol>", ["orderedList", "listItem", "paragraph"], "italic"),
+        ("<blockquote>a <em>b</em> c</blockquote>", ["blockquote", "paragraph"], "italic"),
+        ("<table><tr><td>a <strong>b</strong></td></tr></table>",
+         ["table", "tableRow", "tableCell", "paragraph"], "bold"),
+        ("<table><tr><th>a <code>b</code></th></tr></table>",
+         ["table", "tableRow", "tableHeader", "paragraph"], "code"),
+    ]
+    for (html, expectedShape, expectedMark) in cases {
+        let d = try HTMLParser.parse(html, schema: schema)
+        try d.check()
+        try expectEqual(shape(d), expectedShape, "\(html) came back fragmented")
+        var marks: Set<String> = []
+        d.descendants { node, _, _, _ in
+            for mark in node.marks { marks.insert(mark.type.name) }
+            return true
+        }
+        try expect(marks.contains(expectedMark), "\(html) lost its \(expectedMark)")
+    }
+}
+
+test("HTML: a bare inline fragment is one paragraph, not one per element") {
+    // What a partial-selection copy out of a page produces.
+    let d = try HTMLParser.parse("<strong>bold</strong> and <em>italic</em>", schema: schema)
+    try d.check()
+    try expectEqual(d, doc(p(strong("bold"), t(" and "), em("italic"))))
+}
+
+test("HTML: a link inside a list item survives with its href") {
+    let d = try HTMLParser.parse(
+        "<ul><li>see <a href=\"https://x.test\">this</a></li></ul>", schema: schema)
+    try d.check()
+    try expectEqual(firstHref(d), "https://x.test")
+    try expectEqual(shape(d), ["bulletList", "listItem", "paragraph"])
+}
+
+test("HTML: an inline formula inside a list item stays in its paragraph") {
+    let d = try HTMLParser.parse(
+        "<ul><li>when <span data-type=\"inline-math\" data-latex=\"x^2\">$x^2$</span> holds</li></ul>",
+        schema: schema)
+    try d.check()
+    try expectEqual(shape(d), ["bulletList", "listItem", "paragraph", "inlineMath"])
+    try expectEqual(d.textContent, "when $x^2$ holds")
+}
+
+test("HTML: whitespace between blocks doesn't become a paragraph") {
+    // Inline runs are now gathered up, so the newline between two blocks must
+    // not be mistaken for content.
+    for html in ["<p>a</p>\n<p>b</p>", "<p>a</p>   <p>b</p>", "<ul><li>a</li>\n<li>b</li></ul>"] {
+        let d = try HTMLParser.parse(html, schema: schema)
+        try d.check()
+        try expect(!d.textContent.contains("\n"), "\(html) kept the separator as text")
+        for i in 0..<d.childCount where d.child(i).type.name == "paragraph" {
+            try expect(d.child(i).content.size > 0, "\(html) produced an empty paragraph")
+        }
+    }
+    try expectEqual(shape(try HTMLParser.parse("<p>a</p>\n<p>b</p>", schema: schema)),
+                    ["paragraph", "paragraph"])
+}
+
+test("HTML: block children of a container still parse as blocks") {
+    // The grouping must not swallow real block structure.
+    let d = try HTMLParser.parse("<ul><li><p>one</p><p>two</p></li></ul>", schema: schema)
+    try d.check()
+    try expectEqual(shape(d), ["bulletList", "listItem", "paragraph", "paragraph"])
+}
+
+test("HTML: mixed inline and block content in one container keeps both") {
+    let d = try HTMLParser.parse("<blockquote>lead <strong>in</strong><p>then a block</p></blockquote>",
+                                 schema: schema)
+    try d.check()
+    try expectEqual(shape(d), ["blockquote", "paragraph", "paragraph"])
+    try expect(d.textContent.contains("lead in"), d.textContent)
+    try expect(d.textContent.contains("then a block"), d.textContent)
+    var marks: Set<String> = []
+    d.descendants { node, _, _, _ in
+        for mark in node.marks { marks.insert(mark.type.name) }
+        return true
+    }
+    try expect(marks.contains("bold"), "the inline run keeps its mark")
+}
+
+test("HTML: an unknown container is still treated as one") {
+    // Only known inline elements join a run; anything else keeps the old
+    // treatment, so an unfamiliar wrapper can't be read as a line of text.
+    let d = try HTMLParser.parse("<section><p>a</p><p>b</p></section>", schema: schema)
+    try d.check()
+    try expectEqual(shape(d), ["paragraph", "paragraph"])
+}
+
+test("HTML: a block image inside a list item is lifted, not dropped") {
+    let d = try HTMLParser.parse("<ul><li>text <img src=\"a.png\"></li></ul>", schema: schema)
+    try d.check()
+    try expect(shape(d).contains("image"), "\(shape(d))")
+    try expect(d.textContent.contains("text"), d.textContent)
+}
+
 // MARK: - Untrusted input
 
 /// The href of the first link mark in a document, or nil if nothing is linked.
