@@ -4,6 +4,7 @@ import DocumentModel
 import EditorStateKit
 import SchemaKit
 import EditorMath
+import EditorStateKit
 @testable import EditorUIKit
 
 @MainActor
@@ -113,6 +114,80 @@ final class MathRenderTests: XCTestCase {
         let rendering = try XCTUnwrap(renderer("\\frac{a}", false, UIFont.systemFont(ofSize: 17), .label))
         XCTAssertTrue(rendering.isError)
         XCTAssertGreaterThan(rendering.size.width, 0, "the verbatim source is still drawn")
+    }
+
+    // MARK: - The renderer's cache
+
+    func testTheSameFormulaAtTwoSizesRendersAtTwoSizes() throws {
+        // Laid-out formulas are cached, so the key has to include the font size.
+        // A key that didn't would serve the first size for every later one, and
+        // every formula in the document would be the wrong size but consistent
+        // — which is exactly the kind of bug that looks like a theme problem.
+        let renderer = makeMathRenderer()
+        let small = try XCTUnwrap(renderer("x^2", false, UIFont.systemFont(ofSize: 12), .label))
+        let large = try XCTUnwrap(renderer("x^2", false, UIFont.systemFont(ofSize: 36), .label))
+        XCTAssertGreaterThan(large.size.width, small.size.width * 2)
+        XCTAssertGreaterThan(large.ascent, small.ascent)
+    }
+
+    func testDisplayAndInlineOfTheSameSourceDifferAndDontShareACacheEntry() throws {
+        let renderer = makeMathRenderer()
+        let font = UIFont.systemFont(ofSize: 17)
+        let inline = try XCTUnwrap(renderer("\\sum_{i=1}^{n} i", false, font, .label))
+        let display = try XCTUnwrap(renderer("\\sum_{i=1}^{n} i", true, font, .label))
+        XCTAssertGreaterThan(display.size.height, inline.size.height,
+                             "display style stacks the limits; the two can't share an entry")
+    }
+
+    func testRepeatingAFormulaGivesTheSameGeometry() throws {
+        // The cached result has to be usable as-is, since a second occurrence of
+        // a formula is laid out from the cache rather than re-typeset.
+        let renderer = makeMathRenderer()
+        let font = UIFont.systemFont(ofSize: 17)
+        let first = try XCTUnwrap(renderer("\\frac{a}{b}", true, font, .label))
+        for _ in 0..<5 {
+            let again = try XCTUnwrap(renderer("\\frac{a}{b}", true, font, .label))
+            XCTAssertEqual(again.size.width, first.size.width, accuracy: 0.001)
+            XCTAssertEqual(again.size.height, first.size.height, accuracy: 0.001)
+            XCTAssertEqual(again.ascent, first.ascent, accuracy: 0.001)
+        }
+    }
+
+    func testTheColourIsNotCachedWithTheGeometry() throws {
+        // Colour is resolved when drawing, so light and dark share one entry —
+        // a theme switch must not need a re-layout.
+        let renderer = makeMathRenderer()
+        let font = UIFont.systemFont(ofSize: 17)
+        let dark = try XCTUnwrap(renderer("x^2", false, font, .white))
+        let light = try XCTUnwrap(renderer("x^2", false, font, .black))
+        XCTAssertEqual(dark.size, light.size, "same geometry regardless of colour")
+    }
+
+    func testDeletingBackwardOverAnInlineFormulaRemovesIt() throws {
+        // The formula is an atom, so there is no caret position inside it to
+        // delete into character by character.
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            try s.node("paragraph", [:], content: Fragment.from([
+                s.text("ab"), try s.node("inlineMath", ["latex": .string("x^2")]),
+            ])),
+        ])))
+        let view = EditorTextView(editor: editor)
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 480)
+        view.layoutIfNeeded()
+        // Put the caret directly after the formula.
+        let end = editor.doc.content.size - 1
+        editor.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.doc, end)))
+
+        view.deleteBackward()
+        var stillThere = false
+        editor.doc.descendants { node, _, _, _ in
+            if node.type.name == "inlineMath" { stillThere = true }
+            return true
+        }
+        XCTAssertFalse(stillThere, "the formula went")
+        XCTAssertEqual(editor.doc.child(0).textContent, "ab", "and took nothing else with it")
     }
 
     // MARK: - Activation (Tiptap's onClick)
