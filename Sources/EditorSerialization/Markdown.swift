@@ -31,6 +31,13 @@ public enum MarkdownSerializer {
         case "orderedList":
             let start = node.attrs["order"]?.intValue ?? 1
             return (0..<node.childCount).map { "\(start + $0). " + listItemText(node.child($0)) }.joined(separator: "\n")
+        case "image":
+            // An image is block-level in the default schema, and without a case
+            // here it fell through to serializing an atom's content — which is
+            // empty, so every image simply disappeared.
+            let src = node.attrs["src"]?.stringValue ?? ""
+            let alt = node.attrs["alt"]?.stringValue ?? ""
+            return "![\(alt)](\(src))"
         case "blockMath":
             // The `$$…$$` display-math convention shared by Pandoc, MathJax, and
             // most Markdown renderers with math support.
@@ -120,6 +127,21 @@ public extension Node {
 
 // MARK: - Parse
 
+/// Why Markdown couldn't be parsed into a document.
+public enum MarkdownParseError: Error, CustomStringConvertible, Equatable {
+    /// The parsed content couldn't be fitted to the schema. Structural coercion
+    /// handles the shapes Markdown produces, so this means the schema itself
+    /// can't express the document — a bug rather than bad input.
+    case invalidDocument(String)
+
+    public var description: String {
+        switch self {
+        case let .invalidDocument(reason):
+            return "MarkdownParseError: parsed content isn't a valid document — \(reason)"
+        }
+    }
+}
+
 public enum MarkdownParser {
     public static func parse(_ markdown: String, schema: Schema) throws -> Node {
         let lines = markdown.components(separatedBy: "\n")
@@ -195,9 +217,9 @@ public enum MarkdownParser {
             // Heading
             if let m = headingMatch(trimmed) {
                 let inline = parseInline(m.text, schema)
-                if let h = try? schema.node("heading", ["level": .int(m.level)], content: Fragment.from(inline)) {
-                    blocks.append(h)
-                }
+                blocks.append(contentsOf: textblockSplittingBlocks(inline) {
+                    try? schema.node("heading", ["level": .int(m.level)], content: Fragment.from($0))
+                })
                 i += 1; continue
             }
             // Blockquote
@@ -241,10 +263,29 @@ public enum MarkdownParser {
             // Keep line breaks so the inline parser can turn a trailing `\` into a
             // hard break and collapse other soft wraps into spaces.
             let inline = parseInline(para.joined(separator: "\n"), schema)
-            if let p = try? schema.node("paragraph", [:], content: Fragment.from(inline)) { blocks.append(p) }
+            // `![alt](src)` reads as inline content, but an image is block-level
+            // in the default schema — so it becomes its own block rather than an
+            // invalid child of the paragraph.
+            blocks.append(contentsOf: textblockSplittingBlocks(inline) {
+                try? schema.node("paragraph", [:], content: Fragment.from($0))
+            })
         }
-        if blocks.isEmpty, let p = schema.nodes["paragraph"]?.createAndFill() { blocks = [p] }
-        return try schema.node("doc", [:], content: Fragment.from(blocks))
+        // Markdown's shapes don't always fit the schema: `![alt](src)` parses as
+        // inline content, but an image is block-level in the default schema, so
+        // the paragraph built around it would be invalid. Fit the blocks the
+        // same way the HTML parser does rather than returning something the
+        // editor can't use.
+        var fitted = fitContent(blocks, into: schema.topNodeType, schema: schema)
+        if fitted.isEmpty, let p = schema.nodes["paragraph"]?.createAndFill() { fitted = [p] }
+        let doc = try schema.node("doc", [:], content: Fragment.from(fitted))
+        // `create` computes attributes but doesn't check content, so without
+        // this an invalid document would be returned silently.
+        do {
+            try doc.check()
+        } catch {
+            throw MarkdownParseError.invalidDocument(String(describing: error))
+        }
+        return doc
     }
 
     /// Whether a `<details …>` opening line carries the `open` attribute.
@@ -340,8 +381,14 @@ public enum MarkdownParser {
         var itemNodes: [Node] = []
         for text in items {
             let inline = parseInline(text, schema)
-            guard let p = try? schema.node("paragraph", [:], content: Fragment.from(inline)) else { continue }
-            guard let item = try? itemType.create([:], content: Fragment.from([p])) else { continue }
+            // A list item holds blocks, so a block-level image in its text
+            // becomes a sibling block rather than an invalid child of the
+            // paragraph. `fitContent` then puts the item's content in order.
+            let blocks = textblockSplittingBlocks(inline) {
+                try? schema.node("paragraph", [:], content: Fragment.from($0))
+            }
+            let content = fitContent(blocks, into: itemType, schema: schema)
+            guard let item = try? itemType.create([:], content: Fragment.from(content)) else { continue }
             itemNodes.append(item)
         }
         let listName = ordered ? "orderedList" : "bulletList"

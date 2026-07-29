@@ -158,6 +158,83 @@ private extension Editor {
     }
 }
 
+func registerMarkdownImageTests() {
+    test("markdown: a block image survives serialization") {
+        // Images are block-level in the default schema, and `serializeBlock`
+        // had no case for them — so they fell through to serializing an atom's
+        // (empty) content and every image vanished from the output.
+        let editor = try imageEditor()
+        editor.setContent(try imageDoc(editor.schema, [
+            "src": .string("photo.jpg"), "alt": .string("a photo"),
+        ]))
+        try expectEqual(editor.getMarkdown(), "![a photo](photo.jpg)")
+    }
+
+    test("markdown: a block image survives a round-trip") {
+        let editor = try imageEditor()
+        let source = try imageDoc(editor.schema, ["src": .string("photo.jpg"), "alt": .string("pic")])
+        editor.setContent(source)
+        let restored = try MarkdownParser.parse(editor.getMarkdown(), schema: editor.schema)
+        try restored.check()
+        try expectEqual(firstImage(restored)?.attrs["src"], .string("photo.jpg"))
+        try expectEqual(firstImage(restored)?.attrs["alt"], .string("pic"))
+    }
+
+    test("markdown: images among other blocks keep their place") {
+        let editor = try imageEditor()
+        let s = editor.schema
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            try s.node("paragraph", [:], content: Fragment.from([s.text("before")])),
+            try s.node("image", ["src": .string("a.jpg"), "alt": .string("one")]),
+            try s.node("image", ["src": .string("b.jpg"), "alt": .string("two")]),
+            try s.node("paragraph", [:], content: Fragment.from([s.text("after")])),
+        ])))
+        let markdown = editor.getMarkdown()
+        try expectEqual(markdown, "before\n\n![one](a.jpg)\n\n![two](b.jpg)\n\nafter")
+        let restored = try MarkdownParser.parse(markdown, schema: s)
+        try restored.check()
+        try expectEqual(restored.childCount, 4)
+    }
+
+    test("markdown: parsing an image yields a valid document") {
+        // `![alt](src)` reads as inline content, but an image is block-level in
+        // the default schema — so the paragraph built around it was invalid,
+        // and nothing checked before handing it back.
+        let editor = try imageEditor()
+        for markdown in ["![pic](a.jpg)", "text ![pic](a.jpg) more", "- ![pic](a.jpg)",
+                         "> ![pic](a.jpg)", "# ![pic](a.jpg)"] {
+            let doc = try MarkdownParser.parse(markdown, schema: editor.schema)
+            try doc.check()
+            try expect(doc.childCount > 0, markdown)
+        }
+    }
+
+    test("markdown: an image among text is lifted out rather than invalidating it") {
+        let editor = try imageEditor()
+        let doc = try MarkdownParser.parse("before ![pic](a.jpg) after", schema: editor.schema)
+        try doc.check()
+        try expect(doc.textContent.contains("before"), doc.textContent)
+        try expect(doc.textContent.contains("after"))
+        var names: [String] = []
+        doc.descendants { node, _, _, _ in
+            if !node.isText { names.append(node.type.name) }
+            return true
+        }
+        try expect(names.contains("image"), "the image survives: \(names)")
+    }
+
+    test("markdown: an inline-image schema keeps the image in its paragraph") {
+        // The same Markdown, in a schema where images are inline, must stay one
+        // paragraph rather than being split apart.
+        let editor = try Editor(extensions: starterKit() + [ImageExtension(inline: true)])
+        let doc = try MarkdownParser.parse("before ![pic](a.jpg) after", schema: editor.schema)
+        try doc.check()
+        try expectEqual(doc.childCount, 1)
+        try expectEqual(doc.child(0).type.name, "paragraph")
+        try expectEqual(doc.child(0).childCount, 3, "text, image, text")
+    }
+}
+
 func registerImageModelMarkdownTests() {
     test("image model: Markdown carries only what its image syntax can express") {
         // `![alt](src)` has no slot for a size or an original, so the model is
