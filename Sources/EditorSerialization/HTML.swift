@@ -338,17 +338,7 @@ public enum HTMLParser {
     /// atoms (e.g. a block `image`) so each becomes its own sibling rather than an
     /// invalid child of the textblock. With an inline-image schema nothing splits.
     private static func textblockSplittingBlocks(_ inline: [Node], wrap: ([Node]) -> Node?) -> [Node] {
-        guard inline.contains(where: { $0.type.isBlock }) else {
-            return one(wrap(inline)) // no block atoms → a single (possibly empty) textblock
-        }
-        var out: [Node] = []
-        var run: [Node] = []
-        func flush() { if !run.isEmpty { out.append(contentsOf: one(wrap(run))); run = [] } }
-        for node in inline {
-            if node.type.isBlock { flush(); out.append(node) } else { run.append(node) }
-        }
-        flush()
-        return out
+        EditorSerialization.textblockSplittingBlocks(inline, wrap: wrap)
     }
 
     // Parse a single block-level element starting at `start`, yielding zero or

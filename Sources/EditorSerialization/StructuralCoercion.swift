@@ -126,3 +126,26 @@ private struct ContentFitter {
         return innermostContent(child, levels: levels - 1)
     }
 }
+
+/// Wrap inline content as a textblock, split around any block-level nodes so
+/// each becomes its own sibling rather than an invalid child.
+///
+/// Both parsers can produce a block node in an inline position: HTML from an
+/// `<img>` inside a `<p>`, Markdown from `![alt](src)` in a line of prose. In a
+/// schema where images are inline nothing splits, and the run stays one block.
+func textblockSplittingBlocks(_ inline: [Node], wrap: ([Node]) -> Node?) -> [Node] {
+    guard inline.contains(where: { $0.type.isBlock }) else {
+        return [wrap(inline)].compactMap { $0 } // no block nodes → a single textblock
+    }
+    var out: [Node] = []
+    var run: [Node] = []
+    func flush() {
+        if !run.isEmpty, let block = wrap(run) { out.append(block) }
+        run = []
+    }
+    for node in inline {
+        if node.type.isBlock { flush(); out.append(node) } else { run.append(node) }
+    }
+    flush()
+    return out
+}
