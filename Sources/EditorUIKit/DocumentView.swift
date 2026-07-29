@@ -40,6 +40,24 @@ public final class DocumentView: UIView {
     public var mathRenderer: MathRenderer? {
         didSet { blockCache.clear(); invalidateLayout() }
     }
+
+    /// Optional hook to syntax-highlight code blocks — assign
+    /// `EditorSyntax.makeSyntaxHighlighter()`. Nil (the default) renders code as
+    /// plain monospaced text.
+    ///
+    /// Like the math renderer, setting it drops the typeset-block cache: a code
+    /// block's colours are baked into its cached block, so the cache would
+    /// otherwise keep serving the un-highlighted version.
+    public var syntaxHighlighter: SyntaxHighlighter? {
+        didSet { blockCache.clear(); invalidateLayout() }
+    }
+
+    /// Optional hook returning a badge label for a code block (e.g. its detected
+    /// or explicit language) — assign `EditorSyntax.makeCodeLanguageLabel()`.
+    /// Nil, or a nil return, draws no badge.
+    public var codeLanguageLabel: CodeLanguageLabelProvider? {
+        didSet { invalidateLayout() }
+    }
     /// Supplies the view used for each task-item checkbox — the same hook as the
     /// editable `EditorTextView`. When nil, `DefaultTaskCheckboxView` is used.
     /// Checkboxes here are read-only: they render and reflect the document's
@@ -159,6 +177,8 @@ public final class DocumentView: UIView {
         let l = DocumentLayout(doc: document, width: max(bounds.width, 1), theme: theme,
                                imageProvider: { [weak self] node in self?.resolveImage(node) },
                                blockCache: blockCache, previous: layout,
+                               syntaxHighlighter: syntaxHighlighter,
+                               codeLanguageLabel: codeLanguageLabel,
                                mathRenderer: mathRenderer)
         layout = l
         layoutWidth = bounds.width
