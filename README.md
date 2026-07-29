@@ -161,6 +161,10 @@ import EditorMath
 
 editorView.mathRenderer = makeMathRenderer()
 documentView.mathRenderer = makeMathRenderer()   // the read-only renderer too
+
+// and, from EditorSyntax, for either view:
+documentView.syntaxHighlighter = makeSyntaxHighlighter()
+documentView.codeLanguageLabel = makeCodeLanguageLabel()
 ```
 
 Without it, each formula draws its LaTeX source as monospaced text. Source the parser rejects is drawn verbatim in the muted code color rather than silently mis-rendered — KaTeX's `throwOnError: false` behavior.
