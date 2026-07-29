@@ -69,7 +69,18 @@ private struct ContentFitter {
                 return
             }
         }
-        // 3. Nothing fits, but its children might.
+        // 3. Legal once whatever the container requires first is put in front of
+        //    it. A list item must begin with a paragraph, so a block-level image
+        //    at the start of one belongs after an empty paragraph rather than
+        //    being dropped for arriving too early.
+        if let fill = match.fillBefore(Fragment.from(node)), fill.childCount > 0,
+           let next = match.matchFragment(fill)?.matchType(node.type) {
+            for i in 0..<fill.childCount { placed.append((fill.child(i), [])) }
+            placed.append((node, []))
+            match = next
+            return
+        }
+        // 4. Nothing fits, but its children might.
         guard depth < Self.maxUnwrapDepth, node.childCount > 0 else { return }
         for i in 0..<node.childCount { place(node.child(i), depth: depth + 1) }
     }
