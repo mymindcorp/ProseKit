@@ -313,7 +313,12 @@ public enum MarkdownParser {
             body.append(line)
         }
         let bodyDoc = try parse(body.joined(separator: "\n"), schema: schema)
-        let summaryInline = parseInline(summaryText, schema)
+        let parsedSummary = parseInline(summaryText, schema)
+        // A summary holds inline content only, so anything block-level in it —
+        // `<summary>![pic](a.jpg)</summary>` in the default schema — moves to
+        // the top of the body rather than making the summary invalid.
+        let summaryInline = parsedSummary.filter { !$0.type.isBlock }
+        let liftedFromSummary = parsedSummary.filter { $0.type.isBlock }
         guard let detailsType = schema.nodes["details"],
               let summaryType = schema.nodes["detailsSummary"],
               let contentType = schema.nodes["detailsContent"] else {
@@ -321,10 +326,12 @@ public enum MarkdownParser {
             if !summaryInline.isEmpty, let para = try? schema.node("paragraph", [:], content: Fragment.from(summaryInline)) {
                 out.append(para)
             }
-            return out + (0..<bodyDoc.childCount).map { bodyDoc.child($0) }
+            return out + liftedFromSummary + (0..<bodyDoc.childCount).map { bodyDoc.child($0) }
         }
+        let bodyBlocks = liftedFromSummary + (0..<bodyDoc.childCount).map { bodyDoc.child($0) }
         guard let summary = (try? summaryType.create([:], content: Fragment.from(summaryInline))) ?? summaryType.createAndFill(),
-              let content = (try? contentType.create([:], content: bodyDoc.content)) ?? contentType.createAndFill(),
+              let content = (try? contentType.create([:], content: Fragment.from(fitContent(bodyBlocks, into: contentType, schema: schema))))
+                ?? contentType.createAndFill(),
               let node = try? detailsType.create(["open": .bool(open)], content: Fragment.from([summary, content]))
         else { return nil }
         return [node]

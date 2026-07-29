@@ -235,6 +235,125 @@ func registerMarkdownImageTests() {
     }
 }
 
+func registerMarkdownImageEdgeTests() {
+    test("markdown: several images in one line keep their order") {
+        let editor = try imageEditor()
+        let doc = try MarkdownParser.parse("![one](a.jpg) middle ![two](b.jpg)", schema: editor.schema)
+        try doc.check()
+        var sources: [String] = []
+        doc.descendants { node, _, _, _ in
+            if node.type.name == "image" { sources.append(node.attrs["src"]?.stringValue ?? "") }
+            return true
+        }
+        try expectEqual(sources, ["a.jpg", "b.jpg"])
+        try expect(doc.textContent.contains("middle"), doc.textContent)
+    }
+
+    test("markdown: a leading or trailing image leaves no empty paragraph") {
+        let editor = try imageEditor()
+        for markdown in ["![pic](a.jpg) after", "before ![pic](a.jpg)", "![pic](a.jpg)"] {
+            let doc = try MarkdownParser.parse(markdown, schema: editor.schema)
+            try doc.check()
+            for i in 0..<doc.childCount {
+                let child = doc.child(i)
+                try expect(child.type.name != "paragraph" || child.content.size > 0,
+                           "\(markdown) produced an empty paragraph")
+            }
+        }
+    }
+
+    test("markdown: an image inside a blockquote stays valid") {
+        let editor = try imageEditor()
+        let doc = try MarkdownParser.parse("> before ![pic](a.jpg) after", schema: editor.schema)
+        try doc.check()
+        try expect(doc.textContent.contains("before"), doc.textContent)
+    }
+
+    test("markdown: an image inside a details summary stays valid") {
+        // A summary holds inline content only, so a block-level image there is
+        // the same problem one more level down.
+        let editor = try imageEditor()
+        let doc = try MarkdownParser.parse(
+            "<details>\n<summary>![pic](a.jpg)</summary>\n\nbody\n\n</details>", schema: editor.schema)
+        try doc.check()
+        try expect(doc.textContent.contains("body"), doc.textContent)
+    }
+
+    test("markdown: images settle after one round-trip and stay put") {
+        // The first pass carries the source's own spacing — splitting
+        // `before ![pic](a.jpg) after` leaves "before " and " after" with the
+        // spaces that separated them from the image, and serializing writes
+        // them out. Re-parsing trims. So the *second* pass onwards is the fixed
+        // point; what matters is that it never drifts again.
+        let editor = try imageEditor()
+        for markdown in ["![pic](a.jpg)", "before ![pic](a.jpg) after"] {
+            editor.setContent(try MarkdownParser.parse(markdown, schema: editor.schema))
+            editor.setContent(try MarkdownParser.parse(editor.getMarkdown(), schema: editor.schema))
+            let settled = editor.getMarkdown()
+            for pass in 1...3 {
+                editor.setContent(try MarkdownParser.parse(editor.getMarkdown(), schema: editor.schema))
+                try expectEqual(editor.getMarkdown(), settled, "\(markdown) drifted on pass \(pass)")
+            }
+            try expect(settled.contains("![pic](a.jpg)"), "the image is still there: \(settled)")
+        }
+    }
+
+    test("markdown: an image in a list item survives, but leaves the list") {
+        // A block-level image can't sit in a list item until a paragraph has
+        // opened it, so the item becomes [paragraph, image] — and Markdown's
+        // list syntax here can't express a multi-block item, so serializing
+        // puts the image after the list instead of inside it.
+        //
+        // The image is kept and the document stays valid; only its nesting is
+        // lost. Writing multi-block list items would be a separate change.
+        let editor = try imageEditor()
+        let doc = try MarkdownParser.parse("- ![pic](a.jpg)", schema: editor.schema)
+        try doc.check()
+        editor.setContent(doc)
+        let again = try MarkdownParser.parse(editor.getMarkdown(), schema: editor.schema)
+        try again.check()
+        var sources: [String] = []
+        again.descendants { node, _, _, _ in
+            if node.type.name == "image" { sources.append(node.attrs["src"]?.stringValue ?? "") }
+            return true
+        }
+        try expectEqual(sources, ["a.jpg"], "the image itself is never lost")
+    }
+
+    test("markdown: a document with no images is untouched by the splitting") {
+        // The splitter runs on every paragraph, so ordinary prose must come
+        // through with exactly the structure it had.
+        let editor = try imageEditor()
+        let markdown = "# Title\n\nSome **bold** text.\n\n- one\n- two\n\n> quoted"
+        let doc = try MarkdownParser.parse(markdown, schema: editor.schema)
+        try doc.check()
+        var names: [String] = []
+        doc.descendants { node, _, _, _ in
+            if !node.isText { names.append(node.type.name) }
+            return true
+        }
+        try expectEqual(names, ["heading", "paragraph", "bulletList", "listItem", "paragraph",
+                                "listItem", "paragraph", "blockquote", "paragraph"])
+    }
+
+    test("html: lifting a block image out of a paragraph still works") {
+        // The splitter is now shared with the Markdown parser; HTML's behaviour
+        // must be exactly what it was.
+        let editor = try imageEditor()
+        let doc = try HTMLParser.parse("<p>before <img src=\"a.jpg\"> after</p>", schema: editor.schema)
+        try doc.check()
+        var names: [String] = []
+        doc.descendants { node, _, _, _ in
+            if !node.isText { names.append(node.type.name) }
+            return true
+        }
+        try expectEqual(names, ["paragraph", "image", "paragraph"])
+        // Each side keeps the space that separated it from the image, so the
+        // concatenated text has both — the paragraphs are "before " and " after".
+        try expectEqual(doc.textContent, "before  after")
+    }
+}
+
 func registerImageModelMarkdownTests() {
     test("image model: Markdown carries only what its image syntax can express") {
         // `![alt](src)` has no slot for a size or an original, so the model is
