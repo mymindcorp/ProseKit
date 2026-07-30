@@ -497,6 +497,40 @@ test("HTML paste: CDATA section containing '>' is skipped whole") {
     try expectEqual(back, doc(p("a"), p("b")))
 }
 
+test("HTML tokenizer: raw multi-byte text survives slicing") {
+    // The tokenizer scans UTF-8 bytes and cuts text at "<". These characters are
+    // two, three and four bytes wide, so a cut that landed mid-sequence would
+    // corrupt them — and unlike the &eacute; cases, they arrive raw in the markup.
+    let back = try HTMLParser.parse(
+        "<p>emoji 👨‍👩‍👧 accents éü CJK 日本語 math ∑∫</p>", schema: schema)
+    try expectEqual(back, doc(p("emoji 👨‍👩‍👧 accents éü CJK 日本語 math ∑∫")))
+}
+
+test("HTML tokenizer: multi-byte text abutting tag boundaries") {
+    // Each cut is immediately before or after a multi-byte character.
+    let back = try HTMLParser.parse("<p>日</p><p>本<strong>語</strong>👍</p>", schema: schema)
+    try expectEqual(back, doc(p("日"), p(t("本"), strong("語"), t("👍"))))
+}
+
+test("HTML tokenizer: multi-byte inside attribute values") {
+    let back = try HTMLParser.parse(
+        "<p><img src=\"café.png\" alt=\"日本語 &gt; ∑\" title='a>b'></p>", schema: schema)
+    let image = back.child(0).child(0)
+    try expectEqual(image.type.name, "image")
+    try expectEqual(image.attrs["src"], .string("café.png"))
+    try expectEqual(image.attrs["alt"], .string("日本語 > ∑"))
+}
+
+test("HTML tokenizer: a combining mark after '>' does not hide the tag end") {
+    // Tokenizing over bytes matches the spec, which works in code points. Reading
+    // Characters used to fuse ">" with a following combining mark into a single
+    // grapheme, so the ">" never compared equal and the tag looked unterminated.
+    let back = try HTMLParser.parse("<p>a</p>\u{0301}<p>b</p>", schema: schema)
+    try expectEqual(back.childCount, 3)
+    try expectEqual(back.child(0), p("a"))
+    try expectEqual(back.child(2), p("b"))
+}
+
 test("HTML entities: &nbsp; and numeric references decode") {
     let back = try HTMLParser.parse("<p>a&nbsp;b &#65;&#x42; &amp;lt;</p>", schema: schema)
     try expectEqual(back, doc(p("a\u{00A0}b AB &lt;")))
