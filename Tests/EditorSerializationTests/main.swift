@@ -74,6 +74,42 @@ test("JSON round-trip") {
     try expectEqual(d, back)
 }
 
+test("JSON decodes every attribute value type") {
+    // The decoder identifies types from Foundation's parse rather than by trying
+    // each case, so pin the discriminations that are easy to get wrong: bools
+    // must not read as numbers, and whole numbers must stay ints.
+    let value = try DocumentJSON.attributeValue(from: try JSONSerialization.jsonObject(
+        with: Data(#"{"t":true,"f":false,"i":42,"neg":-7,"d":1.5,"s":"x","n":null,"a":[1,"two",false],"o":{"k":"v"}}"#.utf8)))
+    guard case let .object(o) = value else {
+        try expect(false, "expected an object")
+        return
+    }
+    try expectEqual(o["t"], .bool(true))
+    try expectEqual(o["f"], .bool(false))
+    try expectEqual(o["i"], .int(42))
+    try expectEqual(o["neg"], .int(-7))
+    try expectEqual(o["d"], .double(1.5))
+    try expectEqual(o["s"], .string("x"))
+    try expectEqual(o["n"], .null)
+    try expectEqual(o["a"], .array([.int(1), .string("two"), .bool(false)]))
+    try expectEqual(o["o"], .object(["k": .string("v")]))
+}
+
+test("JSON round-trips escapes, unicode and attribute types") {
+    let d = doc(
+        h(2, "Quote \" backslash \\ newline \n tab \t"),
+        p(t("emoji 👨‍👩‍👧 accents éü CJK 日本語 math ∑∫")),
+        p(node("image", ["src": .string("https://example.test/a?b=1&c=2"), "alt": .null])))
+    let back = try DocumentJSON.decode(schema, try DocumentJSON.string(d))
+    try expectEqual(d, back)
+}
+
+test("JSON decode rejects malformed input") {
+    try expectThrows { _ = try DocumentJSON.decode(schema, "{\"type\":") }
+    try expectThrows { _ = try DocumentJSON.decode(schema, "[1,2]") }
+    try expectThrows { _ = try DocumentJSON.decode(schema, "") }
+}
+
 test("JSON is valid parseable JSON") {
     let d = doc(p("hi"))
     let data = try DocumentJSON.encode(d)
@@ -1470,4 +1506,5 @@ registerProseTests()
 registerPMMarkdownTests()
 registerAppleNotesDocTests()
 
+registerBench()
 TestSuite.main("EditorSerializationTests", collector.all)

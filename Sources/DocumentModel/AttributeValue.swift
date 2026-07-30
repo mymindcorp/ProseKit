@@ -87,20 +87,23 @@ public extension AttributeValue {
 extension AttributeValue: Codable {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
+        // Each mismatch costs a thrown error, so the cases are ordered by how
+        // often they turn up in a document: objects, arrays and strings first.
+        // `Int` must still be tried before `Double`, or whole numbers widen.
         if container.decodeNil() {
             self = .null
+        } else if let o = try? container.decode([String: AttributeValue].self) {
+            self = .object(o)
+        } else if let a = try? container.decode([AttributeValue].self) {
+            self = .array(a)
+        } else if let s = try? container.decode(String.self) {
+            self = .string(s)
         } else if let b = try? container.decode(Bool.self) {
             self = .bool(b)
         } else if let i = try? container.decode(Int.self) {
             self = .int(i)
         } else if let d = try? container.decode(Double.self) {
             self = .double(d)
-        } else if let s = try? container.decode(String.self) {
-            self = .string(s)
-        } else if let a = try? container.decode([AttributeValue].self) {
-            self = .array(a)
-        } else if let o = try? container.decode([String: AttributeValue].self) {
-            self = .object(o)
         } else {
             throw DecodingError.dataCorruptedError(
                 in: container,
