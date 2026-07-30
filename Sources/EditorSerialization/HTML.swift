@@ -884,6 +884,9 @@ public enum HTMLParser {
 
     // MARK: Tokenizer
 
+    /// Exposed for benchmarking the tokenizer separately from the parse.
+    public static func tokenCountForBenchmark(_ html: String) -> Int { tokenize(html).count }
+
     static func tokenize(_ html: String) -> [Token] {
         var tokens: [Token] = []
         let chars = Array(html)
