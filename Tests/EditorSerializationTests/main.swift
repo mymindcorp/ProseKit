@@ -1420,6 +1420,273 @@ test("Markdown leaves a lone $ alone") {
     try expectEqual(d, doc(p("costs $5 today")))
 }
 
+// Round-tripping math is the point of the $-conventions, so these cover the
+// shapes that broke it: prose that merely contains dollars, formulas that
+// contain a delimiter, empty formulas, and math nested in a list.
+
+test("Markdown round-trip: prose containing dollar signs is not math") {
+    // Pandoc: "$20,000 and $30,000 won't parse as math" — the closing "$" needs
+    // a non-space to its left and no digit to its right. We also escape dollars
+    // on the way out, so our own output never depends on that rule alone.
+    for text in ["costs $5 and $6 today", "$20,000 and $30,000", "a $ b $ c", "$"] {
+        let d = doc(p(text))
+        let md = MarkdownSerializer.serialize(d)
+        try expectEqual(try MarkdownParser.parse(md, schema: schema), d, "text: \(text)")
+    }
+}
+
+test("Markdown parses unescaped prose dollars as text, not math") {
+    // Hand-written Markdown that never saw our escaping still has to read right.
+    try expectEqual(try MarkdownParser.parse("costs $5 and $6 today", schema: schema),
+                    doc(p("costs $5 and $6 today")))
+    try expectEqual(try MarkdownParser.parse("$20,000 and $30,000", schema: schema),
+                    doc(p("$20,000 and $30,000")))
+    // A space after the opening delimiter also disqualifies it.
+    try expectEqual(try MarkdownParser.parse("a $ x $ b", schema: schema),
+                    doc(p("a $ x $ b")))
+}
+
+test("Markdown round-trip: a dollar inside a formula") {
+    // "\$" is how TeX spells a dollar, and it survives as written. A bare "$"
+    // isn't valid TeX and normalizes to the escaped form.
+    let escaped = doc(p(inlineMath("\\$5")))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(escaped), schema: schema),
+                    escaped)
+    let bare = doc(p(inlineMath("a$b")))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(bare), schema: schema),
+                    doc(p(inlineMath("a\\$b"))))
+}
+
+test("Markdown round-trip: empty formulas") {
+    // Block math keeps its node; inline math has no spelling for empty, so it
+    // drops rather than emitting a "$$" that would swallow what follows.
+    let block = doc(blockMath(""))
+    try expectEqual(MarkdownSerializer.serialize(block), "$$\n\n$$")
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(block), schema: schema),
+                    block)
+    let inline = doc(p(t("a "), inlineMath(""), t(" b")))
+    try expectEqual(MarkdownSerializer.serialize(inline), "a  b")
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(inline), schema: schema),
+                    doc(p("a  b")))
+}
+
+test("Markdown round-trip: math inside a list item") {
+    // CommonMark keeps a block in the item only while every line is indented to
+    // the content column, so the closing "$$" has to be indented too.
+    let bullet = doc(node("bulletList", [:], [
+        node("listItem", [:], [p("a"), blockMath("x^2")]),
+    ]))
+    let md = MarkdownSerializer.serialize(bullet)
+    try expect(md.contains("\n  $$"), "closing fence not indented into the item: \(md)")
+    try expectEqual(try MarkdownParser.parse(md, schema: schema), bullet)
+
+    let ordered = doc(node("orderedList", ["order": .int(1)], [
+        node("listItem", [:], [p("a"), blockMath("y")]),
+    ]))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(ordered), schema: schema),
+                    ordered)
+}
+
+test("Markdown round-trip: inline math in a list item") {
+    let d = doc(node("bulletList", [:], [
+        node("listItem", [:], [p(t("let "), inlineMath("x^2"))]),
+    ]))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: formulas with awkward sources") {
+    for latex in ["\\frac{a}{b}", "a_b^*c*", "\\alpha \\beta", "x < y > z", "a \\$ b"] {
+        let d = doc(p(t("see "), inlineMath(latex), t(" ok")), blockMath(latex))
+        try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d,
+                        "latex: \(latex)")
+    }
+}
+
+test("Markdown round-trip: block math beside other blocks") {
+    let d = doc(p("a"), blockMath("x"), p("b"), blockMath("y"), blockMath("z"),
+                node("blockquote", [:], [blockMath("q")]))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown: a newline in inline math folds to a space") {
+    // Inline math is single-line in every dialect; TeX reads a newline as
+    // whitespace, so folding it preserves the formula and makes it stable.
+    let d = doc(p(inlineMath("a\nb")))
+    let once = try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema)
+    try expectEqual(once, doc(p(inlineMath("a b"))))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(once), schema: schema), once)
+}
+
+test("Markdown: surrounding whitespace in a display formula is trimmed") {
+    // Pandoc allows the $$ delimiters to be separated from the formula by
+    // whitespace, so it isn't part of the source. Normalizing once is stable.
+    let d = doc(blockMath("  x^2  "))
+    let once = try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema)
+    try expectEqual(once, doc(blockMath("x^2")))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(once), schema: schema), once)
+}
+
+test("Markdown round-trip: a fenced code block inside a list item") {
+    // Same continuation-line machinery the formula case needs.
+    let d = doc(node("bulletList", [:], [
+        node("listItem", [:], [p("a"), node("codeBlock", [:], [t("x = 1")])]),
+    ]))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: two paragraphs in one list item") {
+    let d = doc(node("bulletList", [:], [
+        node("listItem", [:], [p("foo"), p("bar")]),
+        node("listItem", [:], [p("baz")]),
+    ]))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown: a dollar in a code span stays literal") {
+    let d = doc(p(t("cost "), schema.text("$5", [schema.mark("code")])))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: math in a heading") {
+    let d = doc(node("heading", ["level": .int(2)], [t("on "), inlineMath("x^2")]), p("after"))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: math in a blockquote paragraph") {
+    let d = doc(node("blockquote", [:], [p(t("see "), inlineMath("x^2")), blockMath("y")]))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: math in a nested blockquote") {
+    let d = doc(node("blockquote", [:], [node("blockquote", [:], [blockMath("x^2")])]))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: math in a task list item") {
+    let d = doc(node("taskList", [:], [
+        node("taskItem", ["checked": .bool(true)], [p(t("done "), inlineMath("x^2"))]),
+        node("taskItem", ["checked": .bool(false)], [p(t("todo "), inlineMath("y"))]),
+    ]))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: a plain task list") {
+    let d = doc(node("taskList", [:], [
+        node("taskItem", ["checked": .bool(false)], [p("todo")]),
+        node("taskItem", ["checked": .bool(true)], [p("done")]),
+    ]))
+    try expectEqual(MarkdownSerializer.serialize(d), "- [ ] todo\n- [x] done")
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown parses an upper-case [X] checkbox") {
+    let d = try MarkdownParser.parse("- [X] done", schema: schema)
+    try expectEqual(d.child(0).child(0).attrs["checked"], .bool(true))
+}
+
+test("Markdown keeps brackets literal when only some items are checkboxes") {
+    // A half-checkbox list isn't a task list; the brackets stay text.
+    let d = try MarkdownParser.parse("- [ ] a\n- b", schema: schema)
+    try expectEqual(d.child(0).type.name, "bulletList")
+    try expectEqual(d.child(0).child(0).textContent, "[ ] a")
+}
+
+test("Markdown task lists are inert in a schema without the nodes") {
+    let plain = try Schema(nodes: [
+        ("doc", NodeSpec(content: "block+")),
+        ("paragraph", NodeSpec(content: "inline*", group: "block")),
+        ("text", NodeSpec(group: "inline")),
+        ("bulletList", NodeSpec(content: "listItem+", group: "block")),
+        ("listItem", NodeSpec(content: "paragraph block*")),
+    ], marks: [], topNode: "doc")
+    let d = try MarkdownParser.parse("- [x] a", schema: plain)
+    try expectEqual(d.child(0).type.name, "bulletList")
+    try expectEqual(d.child(0).child(0).textContent, "[x] a")
+}
+
+test("Markdown round-trip: math in an ordered list that doesn't start at 1") {
+    let d = doc(node("orderedList", ["order": .int(7)], [
+        node("listItem", [:], [p("a"), blockMath("x^2")]),
+        node("listItem", [:], [p(t("b "), inlineMath("y"))]),
+    ]))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: a display formula whose lines look like Markdown") {
+    // Everything between the fences is formula source, so a line that reads as a
+    // list item, heading, quote or rule must come back verbatim.
+    let latex = "- a\n# b\n1. c\n> d\n---\n``` e"
+    let d = doc(blockMath(latex))
+    let back = try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema)
+    try expectEqual(back, d)
+    try expectEqual(back.child(0).attrs["latex"], .string(latex))
+}
+
+test("Markdown round-trip: a multi-line matrix formula") {
+    let d = doc(blockMath("\\begin{matrix}\na & b \\\\\nc & d\n\\end{matrix}"))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: formula source containing Markdown punctuation") {
+    for latex in ["a `code` b", "[x](y)", "**b**", "a | b", "~~s~~", "<tag>", "50\\% \\& more"] {
+        let d = doc(p(t("see "), inlineMath(latex)))
+        try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d,
+                        "latex: \(latex)")
+    }
+}
+
+test("Markdown round-trip: formula source with non-ASCII") {
+    let d = doc(p(inlineMath("\\text{日本語} α β"), t(" and émoji 👍")),
+                blockMath("∑_{i=1}^{n} x_i"))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: several formulas and dollars in one paragraph") {
+    let d = doc(p(t("costs $5, "), inlineMath("a"), t(" then $6 and "), inlineMath("b"), t(" for $7")))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: literal $$ in prose is not a fence") {
+    let d = doc(p("a $$ b"), p("$$"), p(t("x"), node("hardBreak", [:], []), t("$9")))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: a formula at the very start and end of a document") {
+    let d = doc(blockMath("first"), p(t("mid "), inlineMath("m")), blockMath("last"))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: an empty formula beside a real one") {
+    let d = doc(p(t("a "), inlineMath(""), inlineMath("x"), t(" b")), blockMath(""), blockMath("y"))
+    let back = try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema)
+    // The empty inline formula has no spelling and drops; everything else stands.
+    try expectEqual(back, doc(p(t("a "), inlineMath("x"), t(" b")), blockMath(""), blockMath("y")))
+}
+
+test("Markdown parses math adjacent to text without spaces") {
+    // Pandoc puts no constraint on what precedes the opening $ or follows the
+    // closing one, beyond the closing $ not being followed by a digit.
+    try expectEqual(try MarkdownParser.parse("a$b$c", schema: schema),
+                    doc(p(t("a"), inlineMath("b"), t("c"))))
+    // ...and a digit after the closing $ disqualifies it.
+    try expectEqual(try MarkdownParser.parse("a$b$9", schema: schema), doc(p("a$b$9")))
+}
+
+test("Markdown parses escaped dollars as literal text, never math") {
+    try expectEqual(try MarkdownParser.parse("\\$x\\$", schema: schema), doc(p("$x$")))
+    try expectEqual(try MarkdownParser.parse("\\$5 and \\$6", schema: schema), doc(p("$5 and $6")))
+}
+
+test("Markdown serializing math twice produces the same text") {
+    let d = doc(h(2, "Formulas"),
+                p(t("inline "), inlineMath("x^2"), t(" and $5")),
+                blockMath("E = mc^2"),
+                node("bulletList", [:], [node("listItem", [:], [p("a"), blockMath("y")])]))
+    let once = MarkdownSerializer.serialize(d)
+    let twice = MarkdownSerializer.serialize(try MarkdownParser.parse(once, schema: schema))
+    try expectEqual(twice, once)
+}
+
 test("Markdown math is inert in a schema without the nodes") {
     let plain = try Schema(nodes: [
         ("doc", NodeSpec(content: "block+")),

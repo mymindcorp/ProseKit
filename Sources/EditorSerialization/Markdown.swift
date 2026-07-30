@@ -27,10 +27,23 @@ public enum MarkdownSerializer {
         case "horizontalRule":
             return "---"
         case "bulletList":
-            return (0..<node.childCount).map { "- " + listItemText(node.child($0)) }.joined(separator: "\n")
+            return (0..<node.childCount).map { "- " + listItemText(node.child($0), continuation: "  ") }
+                .joined(separator: "\n")
+        case "taskList":
+            // GitHub's checkbox syntax. Without this the list fell to the default
+            // branch and serialized to nothing at all, taking its contents with it.
+            return (0..<node.childCount).map { i -> String in
+                let item = node.child(i)
+                let box = (item.attrs["checked"]?.boolValue ?? false) ? "- [x] " : "- [ ] "
+                return box + listItemText(item, continuation: "  ")
+            }.joined(separator: "\n")
         case "orderedList":
             let start = node.attrs["order"]?.intValue ?? 1
-            return (0..<node.childCount).map { "\(start + $0). " + listItemText(node.child($0)) }.joined(separator: "\n")
+            return (0..<node.childCount).map { i in
+                let marker = "\(start + i). "
+                return marker + listItemText(node.child(i),
+                                             continuation: String(repeating: " ", count: marker.count))
+            }.joined(separator: "\n")
         case "image":
             // An image is block-level in the default schema, and without a case
             // here it fell through to serializing an atom's content — which is
@@ -41,6 +54,8 @@ public enum MarkdownSerializer {
         case "blockMath":
             // The `$$…$$` display-math convention shared by Pandoc, MathJax, and
             // most Markdown renderers with math support.
+            // No escaping needed: display math ends at a line that *starts* with
+            // "$$", so dollars inside the formula are already safe.
             return "$$\n\(node.attrs["latex"]?.stringValue ?? "")\n$$"
         case "details":
             // Markdown has no collapsible section; emit the HTML block form that
@@ -78,8 +93,21 @@ public enum MarkdownSerializer {
         return s
     }
 
-    static func listItemText(_ item: Node) -> String {
-        (0..<item.childCount).map { serializeBlock(item.child($0), indent: "  ") }.joined(separator: "\n  ")
+    /// CommonMark keeps a block in a list item only while every one of its lines
+    /// is indented to the content column — "indenting subsequent lines of Ls by
+    /// W + N spaces". Indenting just the first line of each child left the rest
+    /// of a multi-line block (a `$$` formula, a fenced code block) sitting at
+    /// column 0, where it reads as a sibling of the list rather than part of it.
+    static func listItemText(_ item: Node, continuation: String) -> String {
+        // Blocks are separated by a blank line here as everywhere else, or two
+        // paragraphs in one item would read back as a single paragraph.
+        let body = (0..<item.childCount)
+            .map { serializeBlock(item.child($0), indent: continuation) }
+            .joined(separator: "\n\n")
+        let lines = body.components(separatedBy: "\n")
+        guard lines.count > 1 else { return body }
+        return ([lines[0]] + lines.dropFirst().map { $0.isEmpty ? "" : continuation + $0 })
+            .joined(separator: "\n")
     }
 
     static func serializeInline(_ fragment: Fragment) -> String {
@@ -87,7 +115,12 @@ public enum MarkdownSerializer {
         for i in 0..<fragment.childCount {
             let node = fragment.child(i)
             if node.isText {
-                out += applyMarks(node.text ?? "", node.marks)
+                // A code span is literal, so an escape inside one would be read
+                // back as a backslash; everywhere else a bare "$" risks pairing
+                // with a later one and turning prose into a formula.
+                let isCode = node.marks.contains { $0.type.name == "code" }
+                let text = node.text ?? ""
+                out += applyMarks(isCode ? text : escapeDollars(text), node.marks)
             } else if node.type.name == "hardBreak" {
                 out += "\\\n"
             } else if node.type.name == "image" {
@@ -99,8 +132,40 @@ public enum MarkdownSerializer {
                 if let label = node.attrs["label"]?.stringValue { out += "[[\(target)|\(label)]]" }
                 else { out += "[[\(target)]]" }
             } else if node.type.name == "inlineMath" {
-                out += "$\(node.attrs["latex"]?.stringValue ?? "")$"
+                // An empty formula has no spelling: "$$" opens display math, and
+                // no dialect accepts "$$" as empty inline math. Emitting nothing
+                // beats emitting a stray delimiter that swallows what follows.
+                let latex = inlineMathSource(node.attrs["latex"]?.stringValue ?? "")
+                if !latex.isEmpty { out += "$\(latex)$" }
             }
+        }
+        return out
+    }
+
+    /// `$` is ASCII punctuation, so CommonMark lets it be backslash-escaped, and
+    /// that's what Pandoc prescribes for a literal dollar. Without it, prose like
+    /// "costs $5 and $6" pairs its two dollars into a formula when read back.
+    static func escapeDollars(_ text: String) -> String {
+        text.contains("$") ? text.replacingOccurrences(of: "$", with: "\\$") : text
+    }
+
+    /// Prepare a formula for `$…$`. A bare `$` would close the math early, so it
+    /// becomes `\$` — already-escaped dollars are left alone, so a formula that
+    /// spells its dollar correctly round-trips unchanged. Inline math is a single
+    /// line by definition, and TeX treats a newline as whitespace, so folding one
+    /// to a space keeps the formula's meaning.
+    static func inlineMathSource(_ latex: String) -> String {
+        var out = ""
+        var escaped = false
+        for c in latex {
+            if c == "$" && !escaped {
+                out += "\\$"
+            } else if c == "\n" {
+                out += " "
+            } else {
+                out.append(c)
+            }
+            escaped = (c == "\\" && !escaped)
         }
         return out
     }
@@ -182,8 +247,11 @@ public enum MarkdownParser {
                     i += 1 // consume the closing fence
                     latex = body.joined(separator: "\n")
                 }
+                // An empty formula is a valid node — the editor makes one every
+                // time a formula is inserted before anything is typed — so an
+                // empty fence has to survive the round trip rather than vanish.
                 latex = latex.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !latex.isEmpty, let math = try? schema.node("blockMath", ["latex": .string(latex)]) {
+                if let math = try? schema.node("blockMath", ["latex": .string(latex)]) {
                     blocks.append(math)
                 }
                 continue
@@ -239,7 +307,8 @@ public enum MarkdownParser {
             // Lists
             if let bullet = bulletMatch(trimmed) {
                 let (items, next) = collectList(lines, i, ordered: false)
-                if let list = makeList(items, ordered: false, schema: schema) { blocks.append(list) }
+                if let list = makeTaskList(items, schema: schema)
+                    ?? makeList(items, ordered: false, schema: schema) { blocks.append(list) }
                 i = next
                 _ = bullet
                 continue
@@ -359,35 +428,114 @@ public enum MarkdownParser {
         return Int(digits)
     }
 
-    private static func collectList(_ lines: [String], _ start: Int, ordered: Bool) -> (items: [String], next: Int) {
-        var items: [String] = []
+    /// Gather a list's items, each as its own lines. An item owns the lines
+    /// below it that are indented to its content column — CommonMark's "W + N"
+    /// rule — so a formula or code fence written under a bullet stays part of
+    /// that bullet instead of ending the list.
+    private static func collectList(_ lines: [String], _ start: Int, ordered: Bool) -> (items: [[String]], next: Int) {
+        var items: [[String]] = []
+        var indents: [Int] = []
         var i = start
         func isItem(_ t: String) -> Bool { ordered ? orderedMatch(t) != nil : bulletMatch(t) != nil }
+        func indentWidth(_ line: String) -> Int { line.prefix(while: { $0 == " " }).count }
+        func continues(_ line: String) -> Bool {
+            guard let indent = indents.last else { return false }
+            return indentWidth(line) >= indent
+        }
         while i < lines.count {
-            let t = lines[i].trimmingCharacters(in: .whitespaces)
+            let raw = lines[i]
+            let t = raw.trimmingCharacters(in: .whitespaces)
             if t.isEmpty {
-                // A blank line continues the list (loose list) only if another item
-                // of the same kind follows; otherwise the list ends here.
+                // A blank line continues the list when another item follows, or
+                // when the next line is still indented inside the current item
+                // (a loose item holding more than one block).
                 var j = i + 1
                 while j < lines.count, lines[j].trimmingCharacters(in: .whitespaces).isEmpty { j += 1 }
-                if j < lines.count, isItem(lines[j].trimmingCharacters(in: .whitespaces)) { i = j; continue }
+                guard j < lines.count else { break }
+                if isItem(lines[j].trimmingCharacters(in: .whitespaces)) { i = j; continue }
+                if continues(lines[j]) {
+                    items[items.count - 1].append("")
+                    i = j
+                    continue
+                }
                 break
             }
-            if ordered, orderedMatch(t) != nil {
-                items.append(String(t.drop(while: { $0.isNumber }).dropFirst(2)))
+            if isItem(t) {
+                if ordered {
+                    let digits = t.prefix(while: { $0.isNumber }).count
+                    items.append([String(t.drop(while: { $0.isNumber }).dropFirst(2))])
+                    indents.append(digits + 2)
+                } else {
+                    items.append([bulletMatch(t) ?? ""])
+                    indents.append(2)
+                }
                 i += 1
-            } else if !ordered, let text = bulletMatch(t) {
-                items.append(text); i += 1
-            } else { break }
+                continue
+            }
+            if !items.isEmpty, continues(raw) {
+                items[items.count - 1].append(String(raw.dropFirst(indents[indents.count - 1])))
+                i += 1
+                continue
+            }
+            break
         }
         return (items, i)
     }
 
-    private static func makeList(_ items: [String], ordered: Bool, schema: Schema, start: Int = 1) -> Node? {
+    /// A checkbox at the head of a list item, as GitHub writes them. Returns the
+    /// checked state and the rest of the line.
+    private static func taskMarker(_ line: String) -> (checked: Bool, rest: String)? {
+        let boxes: [(String, Bool)] = [("[ ] ", false), ("[x] ", true), ("[X] ", true),
+                                       ("[ ]", false), ("[x]", true), ("[X]", true)]
+        for (box, checked) in boxes where line.hasPrefix(box) {
+            return (checked, String(line.dropFirst(box.count)))
+        }
+        return nil
+    }
+
+    /// Build a `taskList` when every item carries a checkbox and the schema has
+    /// the nodes; otherwise nil, so the caller falls back to a plain list and the
+    /// brackets stay literal text.
+    private static func makeTaskList(_ items: [[String]], schema: Schema) -> Node? {
+        guard let listType = schema.nodes["taskList"], let itemType = schema.nodes["taskItem"],
+              !items.isEmpty, items.allSatisfy({ taskMarker($0.first ?? "") != nil }) else { return nil }
+        var itemNodes: [Node] = []
+        for var lines in items {
+            guard let marker = taskMarker(lines[0]) else { return nil }
+            lines[0] = marker.rest
+            let content = fitContent(itemBlocks(lines, schema: schema), into: itemType, schema: schema)
+            guard let item = try? itemType.create(["checked": .bool(marker.checked)],
+                                                  content: Fragment.from(content)) else { return nil }
+            itemNodes.append(item)
+        }
+        return try? listType.create([:], content: Fragment.from(itemNodes))
+    }
+
+    /// The blocks of one list item. An item that carried continuation lines is
+    /// parsed as a document, the way a blockquote's contents are.
+    private static func itemBlocks(_ lines: [String], schema: Schema) -> [Node] {
+        if lines.count > 1 {
+            let inner = (try? parse(lines.joined(separator: "\n"), schema: schema))?.content
+            return inner.map { frag in (0..<frag.childCount).map { frag.child($0) } } ?? []
+        }
+        let inline = parseInline(lines[0], schema)
+        return textblockSplittingBlocks(inline) {
+            try? schema.node("paragraph", [:], content: Fragment.from($0))
+        }
+    }
+
+    private static func makeList(_ items: [[String]], ordered: Bool, schema: Schema, start: Int = 1) -> Node? {
         guard let itemType = schema.nodes["listItem"] else { return nil }
         var itemNodes: [Node] = []
-        for text in items {
-            let inline = parseInline(text, schema)
+        for lines in items {
+            if lines.count > 1 {
+                let content = fitContent(itemBlocks(lines, schema: schema), into: itemType, schema: schema)
+                if let item = try? itemType.create([:], content: Fragment.from(content)) {
+                    itemNodes.append(item)
+                }
+                continue
+            }
+            let inline = parseInline(lines[0], schema)
             // A list item holds blocks, so a block-level image in its text
             // becomes a sibling block rather than an invalid child of the
             // paragraph. `fitContent` then puts the item's content in order.
@@ -505,9 +653,9 @@ public enum MarkdownParser {
             }
             // Inline math $ $ — only when the schema has the node, so a lone `$`
             // (or a price like "$5 and $6") stays literal text elsewhere.
-            if c == "$", let type = schema.nodes["inlineMath"], i + 1 < chars.count, chars[i + 1] != "$",
-               let close = findChar(chars, i + 1, "$"), close > i + 1,
-               !chars[(i + 1)..<close].contains("\n"),
+            if c == "$", let type = schema.nodes["inlineMath"],
+               i + 1 < chars.count, chars[i + 1] != "$", !chars[i + 1].isWhitespace,
+               let close = findMathClose(chars, i + 1),
                let math = try? type.create(["latex": .string(String(chars[(i + 1)..<close]))]) {
                 flush()
                 nodes.append(math)
@@ -536,6 +684,26 @@ public enum MarkdownParser {
         let text = String(chars[(start + 1)..<closeBracket])
         let url = String(chars[(closeBracket + 2)..<closeParen])
         return (text, url, closeParen + 1)
+    }
+
+    /// The closing `$` of inline math, following Pandoc's `tex_math_dollars`:
+    /// the next unescaped `$` with a non-space immediately to its left and no
+    /// digit immediately to its right. Those two conditions are what stop
+    /// "costs $5 and $6" from pairing its dollars into a formula. Returns nil at
+    /// end of line — inline math never spans lines.
+    private static func findMathClose(_ chars: [Character], _ from: Int) -> Int? {
+        var i = from
+        while i < chars.count {
+            let c = chars[i]
+            if c == "\n" { return nil }
+            if c == "\\" { i += 2; continue }  // an escaped "$" doesn't close
+            if c == "$", !chars[i - 1].isWhitespace,
+               i + 1 >= chars.count || !(chars[i + 1].isASCII && chars[i + 1].isNumber) {
+                return i
+            }
+            i += 1
+        }
+        return nil
     }
 
     private static func findChar(_ chars: [Character], _ from: Int, _ ch: Character) -> Int? {

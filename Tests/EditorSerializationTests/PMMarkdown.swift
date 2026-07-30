@@ -46,11 +46,13 @@ func registerPMMarkdownTests() {
     parses("an ordered list", "1. Hello\n\n2. Goodbye",
            doc(ol(li(p("Hello")), li(p("Goodbye")))))
     // KNOWN LIMITATIONS of the simplified (non-CommonMark) parser, documented not
-    // asserted: indentation-based nesting isn't tracked, so a nested bullet list
-    // ("* foo\n\n  * bar") parses flat, and a 4-space-indented code block parses as
-    // a paragraph (only fenced ``` code blocks are recognized). Both still
-    // round-trip self-consistently (covered below); proper indentation handling is
-    // a larger block-parser feature.
+    // asserted: a nested bullet list ("* foo\n\n  * bar") parses flat, because an
+    // indented line that itself looks like a list item is read as the next item
+    // rather than as the current one's content; and a 4-space-indented code block
+    // parses as a paragraph (only fenced ``` code blocks are recognized). Both
+    // still round-trip self-consistently (covered below). Indented continuation
+    // lines that aren't list markers — a paragraph, a fenced code block, a $$
+    // formula — are kept inside their item.
     parses("inline marks", "Hello. Some *em* text, some **strong** text, and some `code`",
            doc(p(t("Hello. Some "), em("em"), t(" text, some "), strong("strong"), t(" text, and some "), codeM("code"))))
     parses("links", "My [link](foo) goes to foo", doc(p(t("My "), a("link"), t(" goes to foo"))))
