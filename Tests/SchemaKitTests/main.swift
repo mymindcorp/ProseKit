@@ -232,6 +232,7 @@ registerPMTableMoveTests()
 registerPMColumnResizingTests()
 registerSuggestionModeTests()
 registerPolishCoverageTests()
+registerFigureTests()
 
 // Shared builders for the checklist-import tests below.
 private let clSchema = try! makeFullEditor().schema

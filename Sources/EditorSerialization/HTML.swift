@@ -28,6 +28,7 @@ public struct HTMLConfig: Sendable {
             "table": "table", "tableRow": "tr", "tableCell": "td", "tableHeader": "th",
             "taskList": "ul", "taskItem": "li",
             "details": "details", "detailsSummary": "summary", "detailsContent": "div",
+            "figure": "figure", "figcaption": "figcaption",
             "inlineMath": "span", "blockMath": "div",
             "wikiLink": "a", "mention": "span",
         ]
@@ -397,7 +398,21 @@ public enum HTMLParser {
                 if let filled = type.createAndFill(a, content: Fragment.from(children)) { return ([filled], end + 1) }
             }
             return (parsed, end + 1)
-        case "blockquote", "listItem", "table", "tableRow":
+        case "figcaption":
+            // A textblock like a paragraph, but keeping its own type.
+            let inline = parseInline(Array(tokens[(start + 1)..<end]), schema, config)
+            let a = idAttrs(attrs, "figcaption", schema, config)
+            guard schema.nodes["figcaption"] != nil else {
+                // No caption node: keep the words as a paragraph rather than
+                // dropping them on the floor.
+                return (textblockSplittingBlocks(inline) {
+                    try? schema.node("paragraph", [:], content: Fragment.from($0))
+                }, end + 1)
+            }
+            return (textblockSplittingBlocks(inline) {
+                try? schema.node("figcaption", a, content: Fragment.from($0))
+            }, end + 1)
+        case "blockquote", "listItem", "table", "tableRow", "figure":
             let parsed = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
             let name = nodeName!
             let a = idAttrs(attrs, name, schema, config)

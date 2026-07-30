@@ -33,6 +33,8 @@ let schema: Schema = {
         ("details", NodeSpec(content: "detailsSummary detailsContent", group: "block", attrs: ["open": AttributeSpec(default: .bool(false))], defining: true, isolating: true)),
         ("detailsSummary", NodeSpec(content: "inline*", selectable: false, defining: true, isolating: true)),
         ("detailsContent", NodeSpec(content: "block+", selectable: false, defining: true)),
+        ("figure", NodeSpec(content: "block+ figcaption?", group: "block", defining: true, isolating: true)),
+        ("figcaption", NodeSpec(content: "inline*", selectable: false, defining: true, isolating: true)),
         ("inlineMath", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["latex": AttributeSpec(default: .string(""))], leafText: { "$" + ($0.attrs["latex"]?.stringValue ?? "") + "$" })),
         ("blockMath", NodeSpec(group: "block", atom: true, attrs: ["latex": AttributeSpec(default: .string(""))], leafText: { "$$" + ($0.attrs["latex"]?.stringValue ?? "") + "$$" })),
         ("table", NodeSpec(content: "tableRow+", group: "block", isolating: true)),
@@ -478,6 +480,8 @@ private let htmlProducingNode: [String: String] = [
     "detailsContent": "<details><summary>s</summary><p>b</p></details>",
     "inlineMath": "<p><span data-type=\"inline-math\" data-latex=\"x^2\">$x^2$</span></p>",
     "blockMath": "<div data-type=\"block-math\" data-latex=\"x^2\">$$x^2$$</div>",
+    "figure": "<figure><p>body</p><figcaption>A cat</figcaption></figure>",
+    "figcaption": "<figure><p>body</p><figcaption>A cat</figcaption></figure>",
     "table": "<table><tr><td>x</td></tr></table>",
     "tableRow": "<table><tr><td>x</td></tr></table>",
     "tableCell": "<table><tr><td>x</td></tr></table>",
@@ -1685,6 +1689,126 @@ test("Markdown serializing math twice produces the same text") {
     let once = MarkdownSerializer.serialize(d)
     let twice = MarkdownSerializer.serialize(try MarkdownParser.parse(once, schema: schema))
     try expectEqual(twice, once)
+}
+
+// MARK: - Figures
+
+func figure(_ children: Node...) -> Node { node("figure", [:], children) }
+func figcaption(_ s: String) -> Node { node("figcaption", [:], [t(s)]) }
+
+/// The schema a host gets without opting into the figure extension.
+let noFigureSchema: Schema = {
+    try! Schema(nodes: [
+        ("doc", NodeSpec(content: "block+")),
+        ("paragraph", NodeSpec(content: "inline*", group: "block")),
+        ("text", NodeSpec(group: "inline")),
+        ("image", NodeSpec(group: "inline", inline: true, atom: true,
+                           attrs: ["src": AttributeSpec(), "alt": AttributeSpec(default: .null),
+                                   "title": AttributeSpec(default: .null)])),
+    ], marks: [], topNode: "doc")
+}()
+
+test("HTML round-trip: a figure with a caption") {
+    let d = doc(figure(p(node("image", ["src": .string("a.png"), "alt": .string("cat")])),
+                       figcaption("A cat")))
+    let html = HTMLSerializer.serialize(d)
+    try expect(html.contains("<figure>"), "got: \(html)")
+    try expect(html.contains("<figcaption>A cat</figcaption>"), "got: \(html)")
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+}
+
+test("HTML round-trip: a figure without a caption") {
+    let d = doc(figure(p(node("image", ["src": .string("a.png")]))))
+    try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema), d)
+}
+
+test("HTML: a figure's caption keeps its inline markup") {
+    let d = doc(figure(p("body"), node("figcaption", [:], [t("see "), strong("this"), t(" one")])))
+    try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema), d)
+}
+
+test("HTML: pasted figure markup becomes a figure") {
+    // The shape essentially every article on the web uses.
+    let d = try HTMLParser.parse(
+        "<figure><img src=\"a.png\" alt=\"cat\"><figcaption>A <em>cat</em></figcaption></figure>",
+        schema: schema)
+    try expectEqual(d.child(0).type.name, "figure")
+    try expectEqual(d.child(0).lastChild?.type.name, "figcaption")
+    try expectEqual(d.child(0).lastChild?.textContent, "A cat")
+}
+
+test("HTML: a figure degrades to its contents without the nodes") {
+    // A host that hasn't opted in must keep the image and the caption's words
+    // rather than losing them — the same "keep what was inside it" rule the
+    // other unknown containers follow.
+    let d = try HTMLParser.parse(
+        "<p>before</p><figure><img src=\"a.png\"><figcaption>A cat</figcaption></figure>",
+        schema: noFigureSchema)
+    try expect(!d.textContent.contains("figure"), "leaked markup: \(d.textContent)")
+    try expect(d.textContent.contains("A cat"), "caption lost: \(d.textContent)")
+    let hasImage = (0..<d.childCount).contains { i in
+        let block = d.child(i)
+        return (0..<block.childCount).contains { block.child($0).type.name == "image" }
+    }
+    try expect(hasImage, "image lost")
+}
+
+test("Markdown round-trip: a figure with a caption") {
+    let d = doc(figure(p("body text"), figcaption("A cat")))
+    try expectEqual(MarkdownSerializer.serialize(d), "^^^\nbody text\n^^^ A cat")
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: a figure without a caption") {
+    let d = doc(figure(p("body text")))
+    try expectEqual(MarkdownSerializer.serialize(d), "^^^\nbody text\n^^^")
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: a figure holding several blocks") {
+    let d = doc(figure(h(2, "Title"), p("one"), p("two"), figcaption("caption")))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: a figure holding an image and a formula") {
+    let d = doc(figure(p(node("image", ["src": .string("a.png"), "alt": .string("cat")])),
+                       blockMath("E = mc^2"),
+                       figcaption("mass–energy")))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown: a figure caption keeps its inline markup") {
+    let d = doc(figure(p("body"), node("figcaption", [:], [t("a "), em("caption"), t(" here")])))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown parses Markdig's caption on the opening fence") {
+    // Markdig accepts it on either fence; we write the closing one but read both.
+    let d = try MarkdownParser.parse("^^^ A cat\nbody\n^^^", schema: schema)
+    try expectEqual(d, doc(figure(p("body"), figcaption("A cat"))))
+}
+
+test("Markdown: an unterminated figure fence still yields a figure") {
+    try expectEqual(try MarkdownParser.parse("^^^\nbody", schema: schema),
+                    doc(figure(p("body"))))
+}
+
+test("Markdown: figures are inert in a schema without the nodes") {
+    // "^^^" is a Markdig extension, not CommonMark, so it must stay literal for
+    // a host that hasn't registered the nodes.
+    let d = try MarkdownParser.parse("^^^\nbody\n^^^ A cat", schema: noFigureSchema)
+    try expect(d.textContent.contains("^^^"), "fence was consumed: \(d.textContent)")
+    try expect(d.textContent.contains("body"), "body lost: \(d.textContent)")
+}
+
+test("Markdown round-trip: prose that starts with a figure fence") {
+    // With the nodes registered, a paragraph opening with "^^^" would be read
+    // back as a fence, so it's escaped on the way out — "^" is ASCII
+    // punctuation, so "\^" is a CommonMark escape like "\$".
+    let d = doc(p("^^^ not a figure"), p("a ^^^ b"), p("^^^"))
+    let md = MarkdownSerializer.serialize(d)
+    try expect(md.hasPrefix("\\^^^"), "leading fence not escaped: \(md)")
+    try expectEqual(try MarkdownParser.parse(md, schema: schema), d)
 }
 
 test("Markdown math is inert in a schema without the nodes") {

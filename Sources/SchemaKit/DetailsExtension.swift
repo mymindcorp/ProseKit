@@ -205,15 +205,6 @@ func backspaceOutOfSummary(_ summaryType: NodeType, _ detailsType: NodeType, _ p
     }
 }
 
-/// The depth of the nearest ancestor (or self) of the given type, if any.
-private func ancestorDepth(_ pos: ResolvedPos, _ type: NodeType) -> Int? {
-    var depth = pos.depth
-    while depth > 0 {
-        if pos.node(depth).type === type { return depth }
-        depth -= 1
-    }
-    return nil
-}
 
 /// The details extensions (section + summary + content).
 public func detailsExtensions() -> [any Extension] {
