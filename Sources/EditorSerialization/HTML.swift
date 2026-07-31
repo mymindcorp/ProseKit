@@ -902,18 +902,28 @@ public enum HTMLParser {
     /// Exposed for benchmarking the tokenizer separately from the parse.
     public static func tokenCountForBenchmark(_ html: String) -> Int { tokenize(html).count }
 
+    /// Tokenizing works on UTF-8 bytes rather than `Character`s. Every byte the
+    /// scanner makes a decision on is ASCII, and no byte of a multi-byte UTF-8
+    /// sequence is ever ASCII, so the two agree on where tags and text begin —
+    /// without paying to break 200 KB of markup into grapheme clusters first.
+    /// It also matches the HTML spec, which tokenizes over code points: a
+    /// combining mark after a `>` used to fuse into one `Character` and hide the
+    /// tag's end.
     static func tokenize(_ html: String) -> [Token] {
         var tokens: [Token] = []
-        let chars = Array(html)
+        let chars = Array(html.utf8)
+        let lt = UInt8(ascii: "<"), gt = UInt8(ascii: ">")
+        let bang = UInt8(ascii: "!"), question = UInt8(ascii: "?")
+        let doubleQuote = UInt8(ascii: "\""), singleQuote = UInt8(ascii: "'")
         var i = 0
         while i < chars.count {
-            if chars[i] == "<" {
+            if chars[i] == lt {
                 // Markup declarations, comments, CDATA, and processing
                 // instructions: <!DOCTYPE …>, <!-- … -->, <![CDATA[ … ]]>, <? … >.
                 // These aren't elements — skip them (a leading <!DOCTYPE> from
                 // Cocoa's HTML writer / Apple Notes would otherwise swallow the
                 // whole document).
-                if i + 1 < chars.count, chars[i + 1] == "!" || chars[i + 1] == "?" {
+                if i + 1 < chars.count, chars[i + 1] == bang || chars[i + 1] == question {
                     i = skipDeclaration(chars, from: i)
                     continue
                 }
@@ -921,19 +931,19 @@ public enum HTMLParser {
                 // attribute value — `href="data:text/html,<b>"` is one tag, not
                 // a tag that ends in the middle of its own href.
                 var j = i + 1
-                var quote: Character?
+                var quote: UInt8?
                 while j < chars.count {
                     let c = chars[j]
                     if let open = quote {
                         if c == open { quote = nil }
-                    } else if c == "\"" || c == "'" {
+                    } else if c == doubleQuote || c == singleQuote {
                         quote = c
-                    } else if c == ">" {
+                    } else if c == gt {
                         break
                     }
                     j += 1
                 }
-                let raw = String(chars[(i + 1)..<min(j, chars.count)])
+                let raw = String(decoding: chars[(i + 1)..<min(j, chars.count)], as: UTF8.self)
                 if raw.hasPrefix("/") {
                     tokens.append(.close(tag: raw.dropFirst().trimmingCharacters(in: .whitespaces).lowercased()))
                 } else {
@@ -943,9 +953,8 @@ public enum HTMLParser {
                 i = j + 1
             } else {
                 var j = i
-                while j < chars.count && chars[j] != "<" { j += 1 }
-                let text = String(chars[i..<j])
-                tokens.append(.text(text))
+                while j < chars.count && chars[j] != lt { j += 1 }
+                tokens.append(.text(String(decoding: chars[i..<j], as: UTF8.self)))
                 i = j
             }
         }
@@ -958,10 +967,10 @@ public enum HTMLParser {
     /// CDATA, and the first ">" for everything else (DOCTYPEs and processing
     /// instructions — matching browsers' bogus-comment state). An unterminated
     /// construct consumes to end of input, as in browsers.
-    private static func skipDeclaration(_ chars: [Character], from start: Int) -> Int {
+    private static func skipDeclaration(_ chars: [UInt8], from start: Int) -> Int {
         func match(_ s: String, at j: Int) -> Bool {
             var k = j
-            for c in s {
+            for c in s.utf8 {
                 guard k < chars.count, chars[k] == c else { return false }
                 k += 1
             }
@@ -989,7 +998,7 @@ public enum HTMLParser {
             return chars.count
         }
         var j = start + 1
-        while j < chars.count, chars[j] != ">" { j += 1 }
+        while j < chars.count, chars[j] != UInt8(ascii: ">") { j += 1 }
         return min(j + 1, chars.count)
     }
 
