@@ -1486,6 +1486,17 @@ test("HTML math escapes source with markup characters") {
     try expectEqual(try HTMLParser.parse(html, schema: schema), d)
 }
 
+test("HTML math decodes its source exactly once") {
+    // The tokenizer already entity-decodes attribute values; decoding again
+    // would turn an escaped `&lt;` in a formula into a real `<`.
+    let d = try HTMLParser.parse(
+        "<p><span data-type=\"inline-math\" data-latex=\"a &amp;lt; b\">$x$</span></p>", schema: schema)
+    try expectEqual(d.child(0).child(0).attrs["latex"], .string("a &lt; b"))
+    // And a single escape still round-trips through the serializer.
+    let source = doc(p(inlineMath("a < b & \"c\"")))
+    try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(source), schema: schema), source)
+}
+
 test("HTML math falls back to the $-fenced text when data-latex is absent") {
     // Hand-written or third-party markup that only carries the display text.
     let inline = try HTMLParser.parse("<p><span data-type=\"inline-math\">$x^2$</span></p>", schema: schema)

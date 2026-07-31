@@ -810,8 +810,9 @@ public enum HTMLParser {
         guard let type = schema.nodes[name] else { return nil }
         guard case let .open(tag, _, selfClosing) = tokens[start] else { return nil }
         let close = selfClosing ? start : matchingClose(tokens, start, tag)
-        let latex = attrs["data-latex"].map(decodeEntities)
-            ?? unfence(innerText(tokens, start + 1, close))
+        // Attribute values are already entity-decoded by the tokenizer, so
+        // decoding again here would turn `&amp;lt;` in a formula into `<`.
+        let latex = attrs["data-latex"] ?? unfence(innerText(tokens, start + 1, close))
         var a: Attrs = ["latex": .string(latex)]
         a.merge(idAttrs(attrs, name, schema, config)) { _, new in new }
         guard let node = try? type.create(a) else { return nil }
