@@ -57,6 +57,25 @@ public enum MarkdownSerializer {
             // No escaping needed: display math ends at a line that *starts* with
             // "$$", so dollars inside the formula are already safe.
             return "$$\n\(node.attrs["latex"]?.stringValue ?? "")\n$$"
+        case "figure":
+            // Markdig's figure fence: `^^^` around the content, with the caption
+            // trailing the closing fence. Unlike `details` — which has no
+            // Markdown spelling at all and falls back to raw HTML — a figure has
+            // one, so it reads as Markdown when the nodes are registered. It is
+            // a Markdig extension rather than CommonMark, so only our own parser
+            // and Markdig will understand it; other readers see literal text.
+            var body: [String] = []
+            var caption = ""
+            for i in 0..<node.childCount {
+                let child = node.child(i)
+                if child.type.name == "figcaption" {
+                    caption = serializeInline(child.content)
+                } else {
+                    body.append(serializeBlock(child, indent: indent))
+                }
+            }
+            let fenceEnd = caption.isEmpty ? "^^^" : "^^^ \(caption)"
+            return "^^^\n\(body.joined(separator: "\n\n"))\n\(fenceEnd)"
         case "details":
             // Markdown has no collapsible section; emit the HTML block form that
             // GitHub-flavored Markdown (and our parser) understands.
@@ -84,6 +103,9 @@ public enum MarkdownSerializer {
             if n <= 6, n == chars.count || chars[n] == " " { return "\\" + s }
         }
         if first == ">" { return "\\" + s }
+        // A figure fence, when the figure nodes are registered. ("$$" needs no
+        // case here — dollars are already escaped everywhere in prose.)
+        if s.hasPrefix("^^^") { return "\\" + s }
         if first == "-" || first == "*" || first == "+", chars.count > 1, chars[1] == " " { return "\\" + s }
         var n = 0
         while n < chars.count, chars[n].isNumber { n += 1 }
@@ -228,6 +250,31 @@ public enum MarkdownParser {
                 let text = code.joined(separator: "\n")
                 let content = text.isEmpty ? Fragment.empty : Fragment.from([schema.text(text)])
                 if let cb = try? schema.node("codeBlock", [:], content: content) { blocks.append(cb) }
+                continue
+            }
+            // Figure fence: `^^^` opens a figure that runs to the closing `^^^`,
+            // which may carry the caption. Only recognized when the schema has
+            // the nodes, so `^^^` stays literal text everywhere else — the same
+            // rule the math fences follow.
+            if trimmed.hasPrefix("^^^"), schema.nodes["figure"] != nil {
+                // Markdig accepts the caption on either fence; prefer the
+                // closing one, which is what we write.
+                var caption = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                var body: [String] = []
+                i += 1
+                while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("^^^") {
+                    body.append(lines[i])
+                    i += 1
+                }
+                if i < lines.count {
+                    let closing = lines[i].trimmingCharacters(in: .whitespaces)
+                    let trailing = String(closing.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                    if !trailing.isEmpty { caption = trailing }
+                    i += 1  // consume the closing fence
+                }
+                if let figure = makeFigure(body, caption: caption, schema: schema) {
+                    blocks.append(figure)
+                }
                 continue
             }
             // Display-math fence: `$$` on its own line opens a block formula that
@@ -480,6 +527,21 @@ public enum MarkdownParser {
             break
         }
         return (items, i)
+    }
+
+    /// Build a `figure` from a fence's body lines and caption. Returns nil if the
+    /// schema can't hold one, so the caller leaves the text alone.
+    private static func makeFigure(_ body: [String], caption: String, schema: Schema) -> Node? {
+        guard let figureType = schema.nodes["figure"] else { return nil }
+        let inner = (try? parse(body.joined(separator: "\n"), schema: schema))?.content
+        var children = inner.map { frag in (0..<frag.childCount).map { frag.child($0) } } ?? []
+        if !caption.isEmpty, let captionType = schema.nodes["figcaption"],
+           let node = try? captionType.create([:], content: Fragment.from(parseInline(caption, schema))) {
+            children.append(node)
+        }
+        let fitted = fitContent(children, into: figureType, schema: schema)
+        if let figure = try? figureType.create([:], content: Fragment.from(fitted)) { return figure }
+        return figureType.createAndFill([:], content: Fragment.from(fitted))
     }
 
     /// A checkbox at the head of a list item, as GitHub writes them. Returns the

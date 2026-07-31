@@ -40,3 +40,13 @@ public func toggleWrap(_ type: NodeType, _ attrs: Attrs = [:]) -> Command {
         return wrapIn(type, attrs)(state, dispatch, host)
     }
 }
+
+/// The depth of the nearest ancestor (or self) of the given type, if any.
+public func ancestorDepth(_ pos: ResolvedPos, _ type: NodeType) -> Int? {
+    var depth = pos.depth
+    while depth > 0 {
+        if pos.node(depth).type === type { return depth }
+        depth -= 1
+    }
+    return nil
+}
