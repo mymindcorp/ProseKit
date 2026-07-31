@@ -243,7 +243,23 @@ public enum MarkdownSerializer {
     static func applyMarks(_ text: String, _ marks: [Mark]) -> String {
         var result = text
         // link is outermost; code innermost-ish
-        if marks.contains(where: { $0.type.name == "code" }) { result = "`\(result)`" }
+        if marks.contains(where: { $0.type.name == "code" }) {
+            var longest = 0, current = 0
+            for ch in result {
+                current = ch == "`" ? current + 1 : 0
+                longest = max(longest, current)
+            }
+            let fence = String(repeating: "`", count: longest + 1)
+            // Pad when the content would otherwise start or end with a
+            // backtick (which would extend the fence) or with a space (which
+            // the reader strips). Content that is nothing but spaces is left
+            // alone — the reader only strips when there's something between.
+            let allSpaces = !result.isEmpty && result.allSatisfy { $0 == " " }
+            let edgy = result.hasPrefix("`") || result.hasSuffix("`")
+                || result.hasPrefix(" ") || result.hasSuffix(" ")
+            let pad = (!allSpaces && edgy) ? " " : ""
+            result = "\(fence)\(pad)\(result)\(pad)\(fence)"
+        }
         if marks.contains(where: { $0.type.name == "highlight" }) { result = "==\(result)==" }
         if marks.contains(where: { $0.type.name == "strike" }) { result = "~~\(result)~~" }
         if marks.contains(where: { $0.type.name == "bold" }) { result = "**\(result)**" }
@@ -295,7 +311,7 @@ public enum MarkdownParser {
 
             // Code fence: ``` or ~~~, closed by a run of the same character, so
             // a block fenced with one can contain the other.
-            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+            if isOpeningFence(trimmed) {
                 let fence = trimmed.hasPrefix("```") ? "```" : "~~~"
                 var code: [String] = []
                 i += 1
@@ -430,8 +446,8 @@ public enum MarkdownParser {
             i += 1
             while i < lines.count {
                 let t = lines[i].trimmingCharacters(in: .whitespaces)
-                if t.isEmpty || t.hasPrefix("#") || t.hasPrefix(">") || t.hasPrefix("```")
-                    || t.hasPrefix("~~~") || t.hasPrefix("$$") || isThematicBreak(t)
+                if t.isEmpty || t.hasPrefix("#") || t.hasPrefix(">") || isOpeningFence(t)
+                    || t.hasPrefix("$$") || isThematicBreak(t)
                     || t.lowercased().hasPrefix("<details") || t.lowercased().hasPrefix("</details>")
                     || bulletMatch(t) != nil || orderedMatch(t) != nil { break }
                 // Only the leading whitespace is dropped: two or more spaces at
@@ -531,6 +547,17 @@ public enum MarkdownParser {
             }
         }
         return (level, text)
+    }
+
+    /// Whether a line opens a fenced code block.
+    ///
+    /// A backtick fence's info string may not itself contain a backtick — which
+    /// is what keeps a line like ``` `` ``` ``` (an inline code span holding a
+    /// backtick, written with a longer fence) from being read as a code block.
+    private static func isOpeningFence(_ line: String) -> Bool {
+        if line.hasPrefix("~~~") { return true }
+        guard line.hasPrefix("```") else { return false }
+        return !line.drop(while: { $0 == "`" }).contains("`")
     }
 
     /// A thematic break: three or more of `-`, `*` or `_`, optionally separated
@@ -812,21 +839,19 @@ public enum MarkdownParser {
                     i = next; continue
                 }
             }
-            // Bold ** **
-            if c == "*" && i + 1 < chars.count && chars[i + 1] == "*" {
-                // `close > i + 2`: an empty pair is literal text, not an empty mark.
-                if let close = findSeq(chars, i + 2, "**"), close > i + 2 {
-                    flush()
-                    nodes.append(schema.text(unescapeInline(String(chars[(i + 2)..<close])), mark("bold")))
-                    i = close + 2; continue
-                }
-            }
-            // Italic * * or _ _
+            // Emphasis: ** ** for strong, * * or _ _ for italic. A run only
+            // opens when it's left-flanking and only closes when it's
+            // right-flanking, so "a * foo bar*" and "snake_case_name" stay text.
             if c == "*" || c == "_" {
-                if let close = findUnescaped(chars, i + 1, c), close > i + 1 {
+                let run = runLength(chars, i, c)
+                let opens = flanking(chars, i, i + run).canOpen
+                let width = run >= 2 ? 2 : 1
+                // `close > i + width`: an empty pair is text, not an empty mark.
+                if opens, let close = findClosingRun(chars, i + width, c, width), close > i + width {
+                    let inner = unescapeInline(String(chars[(i + width)..<close]))
                     flush()
-                    nodes.append(schema.text(unescapeInline(String(chars[(i + 1)..<close])), mark("italic")))
-                    i = close + 1; continue
+                    nodes.append(schema.text(inner, mark(width == 2 ? "bold" : "italic")))
+                    i = close + width; continue
                 }
             }
             // Strike ~~ ~~
@@ -857,12 +882,25 @@ public enum MarkdownParser {
                 nodes.append(math)
                 i = close + 1; continue
             }
-            // Code ` `
+            // Code span: a run of N backticks closes on the next run of exactly
+            // N, which is how a span holds a backtick of its own. Contents are
+            // literal — no escapes — but line endings read as spaces, and one
+            // space of padding at each end is dropped (it exists so a span can
+            // start or end with a backtick).
             if c == "`" {
-                if let close = findChar(chars, i + 1, "`"), close > i + 1 {
-                    flush()
-                    nodes.append(schema.text(String(chars[(i + 1)..<close]), mark("code")))
-                    i = close + 1; continue
+                let run = runLength(chars, i, "`")
+                if let close = findBacktickRun(chars, i + run, run) {
+                    var content = String(chars[(i + run)..<close])
+                        .replacingOccurrences(of: "\n", with: " ")
+                    if content.count >= 2, content.hasPrefix(" "), content.hasSuffix(" "),
+                       content.contains(where: { $0 != " " }) {
+                        content = String(content.dropFirst().dropLast())
+                    }
+                    if !content.isEmpty {
+                        flush()
+                        nodes.append(schema.text(content, mark("code")))
+                        i = close + run; continue
+                    }
                 }
             }
             buffer.append(c)
@@ -923,6 +961,73 @@ public enum MarkdownParser {
     /// digit immediately to its right. Those two conditions are what stop
     /// "costs $5 and $6" from pairing its dollars into a formula. Returns nil at
     /// end of line — inline math never spans lines.
+    /// Whether a run of `*` or `_` can open and/or close emphasis, by
+    /// CommonMark's delimiter-run rules.
+    ///
+    /// A run is *left-flanking* when it isn't followed by whitespace, and either
+    /// isn't followed by punctuation or is preceded by whitespace or
+    /// punctuation; *right-flanking* is the mirror image. `*` opens when
+    /// left-flanking and closes when right-flanking.
+    ///
+    /// `_` additionally may not open or close inside a word, which is what keeps
+    /// `snake_case_name` from turning into emphasis when it arrives in Markdown
+    /// somebody else wrote.
+    private static func flanking(_ chars: [Character], _ start: Int, _ end: Int)
+        -> (canOpen: Bool, canClose: Bool) {
+        func isPunct(_ c: Character) -> Bool {
+            c.isPunctuation || c.isSymbol || "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~".contains(c)
+        }
+        let before: Character? = start > 0 ? chars[start - 1] : nil
+        let after: Character? = end < chars.count ? chars[end] : nil
+        // Absent means "start/end of line", which counts as whitespace.
+        let spaceBefore = before.map(\.isWhitespace) ?? true
+        let spaceAfter = after.map(\.isWhitespace) ?? true
+        let punctBefore = before.map(isPunct) ?? false
+        let punctAfter = after.map(isPunct) ?? false
+
+        let left = !spaceAfter && (!punctAfter || spaceBefore || punctBefore)
+        let right = !spaceBefore && (!punctBefore || spaceAfter || punctAfter)
+        guard chars[start] == "_" else { return (left, right) }
+        return (left && (!right || punctBefore), right && (!left || punctAfter))
+    }
+
+    /// The length of the run of `ch` starting at `from`.
+    private static func runLength(_ chars: [Character], _ from: Int, _ ch: Character) -> Int {
+        var n = 0
+        while from + n < chars.count, chars[from + n] == ch { n += 1 }
+        return n
+    }
+
+    /// The start of the next run of exactly `length` backticks.
+    private static func findBacktickRun(_ chars: [Character], _ from: Int, _ length: Int) -> Int? {
+        var i = from
+        while i < chars.count {
+            guard chars[i] == "`" else { i += 1; continue }
+            let run = runLength(chars, i, "`")
+            if run == length { return i }
+            i += run
+        }
+        return nil
+    }
+
+    /// The start of the next run of `ch` at least `length` long that can close
+    /// emphasis, skipping escaped delimiters.
+    private static func findClosingRun(_ chars: [Character], _ from: Int,
+                                       _ ch: Character, _ length: Int) -> Int? {
+        var i = from
+        while i < chars.count {
+            if chars[i] == "\\" { i += 2; continue }
+            if chars[i] == ch {
+                let run = runLength(chars, i, ch)
+                if run >= length, flanking(chars, i, i + run).canClose { return i }
+                i += run
+                continue
+            }
+            i += 1
+        }
+        return nil
+    }
+
     /// The next `ch` that isn't backslash-escaped. A closing delimiter has to
     /// skip `\*`, or emphasis ends at an asterisk the author escaped precisely
     /// so that it would be text. (`findSeq` needs no equivalent: an escaped
