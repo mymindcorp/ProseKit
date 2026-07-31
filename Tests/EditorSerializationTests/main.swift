@@ -1711,6 +1711,68 @@ test("Markdown round-trip: text that looks like an autolink") {
     }
 }
 
+test("Markdown parses an indented code block") {
+    try expectEqual(try MarkdownParser.parse("    foo", schema: schema),
+                    doc(node("codeBlock", [:], [t("foo")])))
+    try expectEqual(try MarkdownParser.parse("    a\n    b", schema: schema),
+                    doc(node("codeBlock", [:], [t("a\nb")])))
+    // Indentation beyond four columns is content.
+    try expectEqual(try MarkdownParser.parse("        foo", schema: schema),
+                    doc(node("codeBlock", [:], [t("    foo")])))
+    // A tab reaches the fourth column just as four spaces do.
+    try expectEqual(try MarkdownParser.parse("\tfoo", schema: schema),
+                    doc(node("codeBlock", [:], [t("foo")])))
+}
+
+test("Markdown indentation wins over what the line would otherwise be") {
+    for md in ["    ***", "    # not a heading", "    - not a list", "    > not a quote"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(d.child(0).type.name, "codeBlock", "input: \(md)")
+        try expectEqual(d.child(0).textContent, String(md.dropFirst(4)), "input: \(md)")
+    }
+}
+
+test("Markdown: an indented line cannot interrupt a paragraph") {
+    // It's a lazy continuation of the paragraph, not a code block.
+    try expectEqual(try MarkdownParser.parse("Foo\n    bar", schema: schema), doc(p("Foo bar")))
+    // With a blank line between, it is a code block.
+    try expectEqual(try MarkdownParser.parse("Foo\n\n    bar", schema: schema),
+                    doc(p("Foo"), node("codeBlock", [:], [t("bar")])))
+}
+
+test("Markdown: blank lines inside an indented code block are kept, trailing ones aren't") {
+    try expectEqual(try MarkdownParser.parse("    a\n\n    b", schema: schema),
+                    doc(node("codeBlock", [:], [t("a\n\nb")])))
+    try expectEqual(try MarkdownParser.parse("    a\n\n\nfoo", schema: schema),
+                    doc(node("codeBlock", [:], [t("a")]), p("foo")))
+}
+
+test("Markdown: indented code inside a list item and a blockquote") {
+    let list = try MarkdownParser.parse("- a\n\n      code", schema: schema)
+    let item = list.child(0).child(0)
+    try expectEqual(item.child(item.childCount - 1).type.name, "codeBlock")
+    try expectEqual(item.child(item.childCount - 1).textContent, "code")
+
+    let quote = try MarkdownParser.parse(">     foo", schema: schema)
+    try expectEqual(quote.child(0).type.name, "blockquote")
+    try expectEqual(quote.child(0).child(0).type.name, "codeBlock")
+}
+
+test("Markdown round-trip: a list item whose content is a code block") {
+    // The schema makes a `listItem` start with a paragraph, so such an item
+    // carries an empty one. Writing it out would put a blank line after the
+    // marker and read back as something else.
+    let d = doc(node("bulletList", [:], [
+        node("listItem", [:], [
+            try schema.node("paragraph", [:]),
+            node("codeBlock", [:], [t("x = 1")]),
+        ]),
+    ]))
+    let md = MarkdownSerializer.serialize(d)
+    try expect(!md.hasPrefix("- \n"), "blank line after the marker: \(md.debugDescription)")
+    try expectEqual(try MarkdownParser.parse(md, schema: schema), d)
+}
+
 test("Markdown treats a tab as block structure where a space would be") {
     // CommonMark: "in contexts where spaces help define block structure, tabs
     // behave as if they were replaced by spaces with a tab stop of 4".

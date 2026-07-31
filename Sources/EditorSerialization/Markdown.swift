@@ -133,10 +133,19 @@ public enum MarkdownSerializer {
     /// of a multi-line block (a `$$` formula, a fenced code block) sitting at
     /// column 0, where it reads as a sibling of the list rather than part of it.
     static func listItemText(_ item: Node, continuation: String) -> String {
+        // A `listItem` must begin with a paragraph, so an item whose real
+        // content is a code block carries an empty one that `fitContent` added.
+        // Writing it out would put a blank line after the marker, which reads
+        // back as a different document — and the reader re-inserts the empty
+        // paragraph anyway.
+        var children = (0..<item.childCount).map { item.child($0) }
+        if children.count > 1, children[0].type.name == "paragraph", children[0].content.size == 0 {
+            children.removeFirst()
+        }
         // Blocks are separated by a blank line here as everywhere else, or two
         // paragraphs in one item would read back as a single paragraph.
-        let body = (0..<item.childCount)
-            .map { serializeBlock(item.child($0), indent: continuation) }
+        let body = children
+            .map { serializeBlock($0, indent: continuation) }
             .joined(separator: "\n\n")
         let lines = body.components(separatedBy: "\n")
         guard lines.count > 1 else { return body }
@@ -308,6 +317,37 @@ public enum MarkdownParser {
             let line = lines[i]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { i += 1; continue }
+
+            // Indented code block: four columns of indentation at the start of a
+            // block. Checked before everything else because the indentation wins
+            // over whatever the line would otherwise look like — "    ***" is
+            // code, not a thematic break. (A paragraph can't be interrupted this
+            // way: an indented line inside one is gathered as a lazy
+            // continuation before ever reaching here.)
+            if indentWidth(line) >= 4 {
+                var code: [String] = []
+                var blanks: [String] = []
+                while i < lines.count {
+                    let l = lines[i]
+                    if l.trimmingCharacters(in: .whitespaces).isEmpty {
+                        // A blank line belongs to the block only if indented
+                        // code follows it, so hold it until we know.
+                        blanks.append("")
+                        i += 1
+                        continue
+                    }
+                    guard indentWidth(l) >= 4 else { break }
+                    code.append(contentsOf: blanks)
+                    blanks = []
+                    code.append(String(l.dropFirst(4)))
+                    i += 1
+                }
+                i -= blanks.count  // trailing blanks are not part of the block
+                let text = code.joined(separator: "\n")
+                let content = text.isEmpty ? Fragment.empty : Fragment.from([schema.text(text)])
+                if let cb = try? schema.node("codeBlock", [:], content: content) { blocks.append(cb) }
+                continue
+            }
 
             // Code fence: ``` or ~~~, closed by a run of the same character, so
             // a block fenced with one can contain the other.
@@ -553,6 +593,12 @@ public enum MarkdownParser {
             }
         }
         return (level, text)
+    }
+
+    /// How many columns a line is indented by. Lines are tab-expanded first, so
+    /// this is a plain count of leading spaces.
+    static func indentWidth(_ line: String) -> Int {
+        line.prefix(while: { $0 == " " }).count
     }
 
     /// Expand a line's *leading* tabs to spaces on four-column stops.
