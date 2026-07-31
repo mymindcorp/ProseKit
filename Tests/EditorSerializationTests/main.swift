@@ -1700,6 +1700,69 @@ test("Markdown round-trip: text that looks like an autolink") {
     }
 }
 
+test("Markdown emphasis follows the flanking rules") {
+    // A delimiter only opens when it isn't followed by whitespace, and only
+    // closes when it isn't preceded by whitespace.
+    // (Not "* foo *": at the start of a line that's a bullet list item.)
+    for md in ["a * foo bar*", "a *foo bar *", "x * foo * y", "a*\"foo\"*"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expect(d.child(0).child(0).marks.isEmpty, "input \(md) became emphasis")
+        try expectEqual(d.child(0).textContent, md, "input: \(md)")
+    }
+    // ...and still emphasizes the ordinary cases.
+    try expectEqual(try MarkdownParser.parse("*foo bar*", schema: schema), doc(p(em("foo bar"))))
+    try expectEqual(try MarkdownParser.parse("**foo bar**", schema: schema), doc(p(strong("foo bar"))))
+    try expectEqual(try MarkdownParser.parse("a *foo* b", schema: schema),
+                    doc(p(t("a "), em("foo"), t(" b"))))
+}
+
+test("Markdown: an underscore inside a word is not emphasis") {
+    // The rule that keeps identifiers intact when the Markdown came from
+    // somewhere else — our own output escapes them as well.
+    for md in ["snake_case_name", "a_b_c", "foo_bar_baz"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(d.child(0).textContent, md, "input: \(md)")
+        try expect(d.child(0).child(0).marks.isEmpty, "input \(md) became emphasis")
+    }
+    // An asterisk inside a word does emphasize, which is the spec's rule.
+    try expectEqual(try MarkdownParser.parse("foo*bar*baz", schema: schema),
+                    doc(p(t("foo"), em("bar"), t("baz"))))
+    // ...and an underscore still emphasizes between words.
+    try expectEqual(try MarkdownParser.parse("_foo bar_", schema: schema), doc(p(em("foo bar"))))
+}
+
+test("Markdown code spans use backtick runs") {
+    // A run of N backticks closes on the next run of exactly N, so a span can
+    // hold a backtick; one space of padding at each end is dropped.
+    try expectEqual(try MarkdownParser.parse("`` foo ` bar ``", schema: schema),
+                    doc(p(schema.text("foo ` bar", [schema.mark("code")]))))
+    try expectEqual(try MarkdownParser.parse("` `` `", schema: schema),
+                    doc(p(schema.text("``", [schema.mark("code")]))))
+    try expectEqual(try MarkdownParser.parse("`a`", schema: schema),
+                    doc(p(schema.text("a", [schema.mark("code")]))))
+}
+
+test("Markdown round-trip: code spans containing backticks") {
+    for code in ["a`b", "``", "a ` b", "`lead", "trail`", "plain"] {
+        let d = doc(p(schema.text(code, [schema.mark("code")])))
+        try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d,
+                        "code: \(code)")
+    }
+}
+
+test("Markdown: a backtick fence's info string may not contain a backtick") {
+    // Otherwise a paragraph opening with a long code span — which is how a span
+    // containing backticks is written — would be read as a code block.
+    let d = try MarkdownParser.parse("``` `` ```", schema: schema)
+    try expectEqual(d.child(0).type.name, "paragraph")
+    try expectEqual(d.child(0).child(0).marks.map(\.type.name), ["code"])
+    // A real fence, with and without an info string, still opens a block.
+    try expectEqual(try MarkdownParser.parse("```\nx\n```", schema: schema).child(0).type.name,
+                    "codeBlock")
+    try expectEqual(try MarkdownParser.parse("```swift\nx\n```", schema: schema).child(0).type.name,
+                    "codeBlock")
+}
+
 test("Markdown: a setext underline is no longer eaten by the highlight syntax") {
     // Not parsed as a heading (we don't support setext), but the text survives
     // instead of collapsing into empty <mark> elements.
