@@ -675,9 +675,9 @@ public enum MarkdownParser {
         var indents: [Int] = []
         var i = start
         func isItem(_ t: String) -> Bool { ordered ? orderedMatch(t) != nil : bulletMatch(t) != nil }
-        func indentWidth(_ line: String) -> Int { line.prefix(while: { $0 == " " }).count }
         func continues(_ line: String) -> Bool {
-            guard let indent = indents.last else { return false }
+            guard let indent = indents.last,
+                  !line.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
             return indentWidth(line) >= indent
         }
         while i < lines.count {
@@ -690,28 +690,35 @@ public enum MarkdownParser {
                 var j = i + 1
                 while j < lines.count, lines[j].trimmingCharacters(in: .whitespaces).isEmpty { j += 1 }
                 guard j < lines.count else { break }
-                if isItem(lines[j].trimmingCharacters(in: .whitespaces)) { i = j; continue }
                 if continues(lines[j]) {
                     items[items.count - 1].append("")
                     i = j
                     continue
                 }
+                if isItem(lines[j].trimmingCharacters(in: .whitespaces)) { i = j; continue }
                 break
             }
-            if isItem(t) {
-                if ordered {
-                    let digits = t.prefix(while: { $0.isNumber }).count
-                    items.append([String(t.drop(while: { $0.isNumber }).dropFirst(2))])
-                    indents.append(digits + 2)
-                } else {
-                    items.append([bulletMatch(t) ?? ""])
-                    indents.append(2)
-                }
+            // Checked before the marker test: a line indented to the current
+            // item's content column is that item's content even when it looks
+            // like a marker itself, which is how a nested list is written.
+            if continues(raw) {
+                items[items.count - 1].append(String(raw.dropFirst(indents[indents.count - 1])))
                 i += 1
                 continue
             }
-            if !items.isEmpty, continues(raw) {
-                items[items.count - 1].append(String(raw.dropFirst(indents[indents.count - 1])))
+            if isItem(t) {
+                let markerWidth: Int
+                if ordered {
+                    let digits = t.prefix(while: { $0.isNumber }).count
+                    items.append([String(t.drop(while: { $0.isNumber }).dropFirst(2))])
+                    markerWidth = digits + 2
+                } else {
+                    items.append([bulletMatch(t) ?? ""])
+                    markerWidth = 2
+                }
+                // The content column is where the text after the marker starts,
+                // so an item that is itself indented carries that indent.
+                indents.append(indentWidth(raw) + markerWidth)
                 i += 1
                 continue
             }

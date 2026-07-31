@@ -1711,6 +1711,56 @@ test("Markdown round-trip: text that looks like an autolink") {
     }
 }
 
+test("Markdown parses nested lists by indentation") {
+    // An indented line that looks like a marker is the current item's content,
+    // which is what makes it a nested list rather than a sibling.
+    func shape(_ n: Node) -> [String] {
+        var out = [n.type.name]
+        for i in 0..<n.childCount where !n.child(i).isText { out += shape(n.child(i)) }
+        return out
+    }
+    try expectEqual(shape(try MarkdownParser.parse("* foo\n\n  * bar", schema: schema)),
+                    ["doc", "bulletList", "listItem", "paragraph", "bulletList", "listItem", "paragraph"])
+    // Three levels, without blank lines between them.
+    try expectEqual(shape(try MarkdownParser.parse("- a\n  - b\n    - c", schema: schema)),
+                    ["doc", "bulletList", "listItem", "paragraph",
+                     "bulletList", "listItem", "paragraph",
+                     "bulletList", "listItem", "paragraph"])
+    // An ordered list nests too, and a following unindented marker is a sibling.
+    try expectEqual(shape(try MarkdownParser.parse("1. a\n   1. b", schema: schema)),
+                    ["doc", "orderedList", "listItem", "paragraph",
+                     "orderedList", "listItem", "paragraph"])
+    try expectEqual(shape(try MarkdownParser.parse("- a\n- b", schema: schema)),
+                    ["doc", "bulletList", "listItem", "paragraph", "listItem", "paragraph"])
+}
+
+test("Markdown round-trip: nested lists") {
+    let d = doc(node("bulletList", [:], [
+        node("listItem", [:], [
+            p("a"),
+            node("bulletList", [:], [node("listItem", [:], [p("b")])]),
+        ]),
+        node("listItem", [:], [p("c")]),
+    ]))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+
+    let ordered = doc(node("orderedList", ["order": .int(1)], [
+        node("listItem", [:], [
+            p("a"),
+            node("orderedList", ["order": .int(1)], [node("listItem", [:], [p("b")])]),
+        ]),
+    ]))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(ordered), schema: schema),
+                    ordered)
+}
+
+test("Markdown: an item's content column includes its own indent") {
+    // " - foo" puts content at column 3, so "   - bar" nests inside it.
+    let d = try MarkdownParser.parse(" - foo\n   - bar", schema: schema)
+    try expectEqual(d.child(0).child(0).childCount, 2, "second level didn't nest")
+    try expectEqual(d.child(0).child(0).child(1).type.name, "bulletList")
+}
+
 test("Markdown parses an indented code block") {
     try expectEqual(try MarkdownParser.parse("    foo", schema: schema),
                     doc(node("codeBlock", [:], [t("foo")])))
