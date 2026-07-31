@@ -112,6 +112,87 @@ test("JSON decode rejects malformed input") {
     try expectThrows { _ = try DocumentJSON.decode(schema, "") }
 }
 
+test("JSON encoder matches JSONEncoder byte for byte") {
+    // The writer replaced JSONEncoder, so hold it to that output on the shapes
+    // it has to get right: escapes, control characters, empty containers, key
+    // ordering, and each number type.
+    let cases: [AttributeValue] = [
+        .object(["b": .int(1), "a": .int(2), "C": .int(3), "": .int(4)]),
+        .string(""), .string("quote \" backslash \\ slash /"),
+        .string("newline \n tab \t return \r bell \u{07} nul \u{00} vt \u{0B}"),
+        .string("emoji 👨‍👩‍👧 accents éü CJK 日本語 math ∑∫"),
+        .int(0), .int(-1), .int(Int.max), .int(Int.min),
+        .double(1.5), .double(-0.25), .double(1e100), .double(1e-7),
+        .bool(true), .bool(false), .null,
+        .object(["nested": .array([.object(["deep": .array([.int(1), .null])])])]),
+    ]
+    var mismatches: [String] = []
+    for value in cases {
+        for pretty in [false, true] {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = pretty ? [.prettyPrinted, .sortedKeys] : [.sortedKeys]
+            let expected = String(decoding: try encoder.encode(value), as: UTF8.self)
+            let actual = String(decoding: try DocumentJSON.encode(value, pretty: pretty), as: UTF8.self)
+            if actual != expected {
+                mismatches.append("\(value) pretty=\(pretty): got \(actual), JSONEncoder \(expected)")
+            }
+        }
+    }
+    try expect(mismatches.isEmpty, "\(mismatches.count) mismatch(es):\n" + mismatches.joined(separator: "\n"))
+}
+
+test("JSON encoder writes empty containers compactly") {
+    // The one place the writer deliberately differs from JSONEncoder, which
+    // pretty-prints these as "{\n\n}" and "[\n\n]". Neither can occur in a
+    // document — `attrs` and `content` are omitted when empty — so preferring
+    // the tidier spelling costs nothing.
+    for pretty in [false, true] {
+        try expectEqual(String(decoding: try DocumentJSON.encode(.object([:]), pretty: pretty),
+                               as: UTF8.self), "{}")
+        try expectEqual(String(decoding: try DocumentJSON.encode(.array([]), pretty: pretty),
+                               as: UTF8.self), "[]")
+    }
+}
+
+test("JSON encoder keeps whole doubles distinguishable from ints") {
+    // The second deliberate difference from JSONEncoder, which writes .double(2)
+    // as "2" — that reparses as .int(2), so the value changes type on a round
+    // trip. Writing "2.0" keeps it a double. Same rule covers -0.0, which
+    // JSONEncoder writes as "-0".
+    for (value, text) in [(AttributeValue.double(2), "2.0"), (.double(-0.0), "-0.0")] {
+        let encoded = try DocumentJSON.encode(value)
+        try expectEqual(String(decoding: encoded, as: UTF8.self), text)
+        let reparsed = try DocumentJSON.attributeValue(
+            from: try JSONSerialization.jsonObject(with: encoded, options: [.fragmentsAllowed]))
+        try expectEqual(reparsed, value)
+    }
+}
+
+test("JSON encoder rejects values JSON cannot spell") {
+    for bad: AttributeValue in [.double(.infinity), .double(-.infinity), .double(.nan)] {
+        try expectThrows { _ = try DocumentJSON.encode(bad) }
+    }
+}
+
+test("JSON encodes documents identically to JSONEncoder") {
+    let docs = [
+        doc(p("hi")),
+        doc(h(2, "Title"), p(t("Hello "), strong("world")), node("horizontalRule", [:], [])),
+        doc(node("bulletList", [:], [node("listItem", [:], [p("item")])])),
+        doc(p(node("image", ["src": .string("a.png"), "alt": .null, "width": .int(3)]))),
+        doc(p(t("marks \" and \n newlines"))),
+    ]
+    for d in docs {
+        for pretty in [false, true] {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = pretty ? [.prettyPrinted, .sortedKeys] : [.sortedKeys]
+            let expected = try encoder.encode(AttributeValue.object(d.toJSON()))
+            try expectEqual(try DocumentJSON.string(d, pretty: pretty),
+                            String(decoding: expected, as: UTF8.self), "doc \(d)")
+        }
+    }
+}
+
 test("JSON is valid parseable JSON") {
     let d = doc(p("hi"))
     let data = try DocumentJSON.encode(d)
@@ -416,6 +497,40 @@ test("HTML paste: abruptly-closed empty comments don't swallow content") {
 test("HTML paste: CDATA section containing '>' is skipped whole") {
     let back = try HTMLParser.parse("<p>a</p><![CDATA[x > y]]><p>b</p>", schema: schema)
     try expectEqual(back, doc(p("a"), p("b")))
+}
+
+test("HTML tokenizer: raw multi-byte text survives slicing") {
+    // The tokenizer scans UTF-8 bytes and cuts text at "<". These characters are
+    // two, three and four bytes wide, so a cut that landed mid-sequence would
+    // corrupt them — and unlike the &eacute; cases, they arrive raw in the markup.
+    let back = try HTMLParser.parse(
+        "<p>emoji 👨‍👩‍👧 accents éü CJK 日本語 math ∑∫</p>", schema: schema)
+    try expectEqual(back, doc(p("emoji 👨‍👩‍👧 accents éü CJK 日本語 math ∑∫")))
+}
+
+test("HTML tokenizer: multi-byte text abutting tag boundaries") {
+    // Each cut is immediately before or after a multi-byte character.
+    let back = try HTMLParser.parse("<p>日</p><p>本<strong>語</strong>👍</p>", schema: schema)
+    try expectEqual(back, doc(p("日"), p(t("本"), strong("語"), t("👍"))))
+}
+
+test("HTML tokenizer: multi-byte inside attribute values") {
+    let back = try HTMLParser.parse(
+        "<p><img src=\"café.png\" alt=\"日本語 &gt; ∑\" title='a>b'></p>", schema: schema)
+    let image = back.child(0).child(0)
+    try expectEqual(image.type.name, "image")
+    try expectEqual(image.attrs["src"], .string("café.png"))
+    try expectEqual(image.attrs["alt"], .string("日本語 > ∑"))
+}
+
+test("HTML tokenizer: a combining mark after '>' does not hide the tag end") {
+    // Tokenizing over bytes matches the spec, which works in code points. Reading
+    // Characters used to fuse ">" with a following combining mark into a single
+    // grapheme, so the ">" never compared equal and the tag looked unterminated.
+    let back = try HTMLParser.parse("<p>a</p>\u{0301}<p>b</p>", schema: schema)
+    try expectEqual(back.childCount, 3)
+    try expectEqual(back.child(0), p("a"))
+    try expectEqual(back.child(2), p("b"))
 }
 
 test("HTML entities: &nbsp; and numeric references decode") {

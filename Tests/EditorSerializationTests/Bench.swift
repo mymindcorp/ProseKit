@@ -51,6 +51,12 @@ func registerBench() {
             try time("MarkdownParser.parse") { _ = try MarkdownParser.parse(markdown, schema: schema) }
             var json = ""
             try time("DocumentJSON.string (encode)") { json = try DocumentJSON.string(parsed) }
+            let tree = AttributeValue.object(parsed.toJSON())
+            try time("  of which: the writer") { _ = try DocumentJSON.encode(tree) }
+            try time("  was: JSONEncoder (sortedKeys)") {
+                let e = JSONEncoder(); e.outputFormatting = [.sortedKeys]
+                _ = try e.encode(tree)
+            }
             try time("DocumentJSON.decode") { _ = try DocumentJSON.decode(schema, json) }
             let jsonData = Data(json.utf8)
             var decoded: AttributeValue!
