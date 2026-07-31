@@ -6,209 +6,85 @@ Measured against the [CommonMark 0.31.2 spec test suite](https://spec.commonmark
 Method: parse each example's Markdown with `MarkdownParser`, serialize the
 document with `HTMLSerializer`, and compare against the expected HTML after
 normalizing away pure serializer style (`<hr />` vs `<hr>`, `&quot;` vs `"`,
-whitespace between block tags).
+whitespace between block tags). A second pass checks that our *own* output
+re-reads identically — `parse → serialize → parse == parse`.
 
-**Result: 137/652 (21%) agree. Nothing threw, and nothing crashed** — the 652
-adversarial inputs are all handled safely, which is the property that matters
-most for the paste path.
+**Current: 234/652 agree, 647/652 round-trip stable, nothing throws or crashes.**
 
-The parser is deliberately not a CommonMark implementation, so a low score is
-expected. What follows separates the failures that are **bugs** (we mangle input
-we already claim to support) from **missing features** (constructs we never
-implemented) from **divergences** that follow from the document model and should
-not be "fixed".
+The parser is deliberately not a CommonMark implementation, so a low agreement
+score is expected and isn't the target. Round-trip stability is the number that
+matters for our own documents; agreement matters for Markdown written elsewhere.
 
----
+| | first measurement | now |
+| --- | --- | --- |
+| spec agreement | 137 | **234** |
+| round-trip stable | 609 | **647** |
+| threw or crashed | 0 | 0 |
 
-## A0. The one that matters most: text is corrupted by our own round trip
+## Done
 
-Every gap below is about reading *someone else's* Markdown — except this one,
-which loses the user's own text on a save/load cycle:
+Recorded so the same ground isn't covered twice:
 
-| in the document | after `toMarkdown()` → `parse()` |
-| --- | --- |
-| `snake_case_name` | `snakecasename` |
-| `2 * 3 * 4` | `2  3  4` |
-| `====` | *(empty — the text is gone)* |
-| ``use `a`b` here`` | ``use ab` here`` |
+- **inline delimiters are escaped when serializing** (`\`, `` ` ``, `*`, `_`,
+  `[`, `]`, `$`, `&`, `<`, plus `=`/`~` when doubled) — text used to come back
+  as markup, and `====` and `snake_case_name` lost characters outright
+- **a delimiter pair with nothing between it is text**, not an empty mark
+- **emphasis follows the flanking rules**, including the intra-word underscore
+  rule; a closing run is chosen by scanning for one that can actually close
+- **code spans use backtick runs**, with padding, and a backtick fence's info
+  string may not contain a backtick
+- **character references** are decoded — except those producing control
+  characters, which this model can't represent as text
+- **autolinks**, through the same URL sanitizer the link syntax uses
+- **`~~~` fences**, **link and image titles**, **`<angle>` destinations**,
+  **thematic breaks in every spelling**, **hard breaks from two trailing
+  spaces**, **ATX closing runs**
+- **list items hold multiple blocks**, so a formula or fenced code block written
+  under a bullet stays in that bullet
+- **task lists** round-trip at all — they used to serialize to nothing
 
-One cause: **`MarkdownSerializer` doesn't escape inline Markdown-significant
-characters in text.** It escapes `$` and `^^^` and the leading block markers
-(`escapeDollars`, `escapeLeadingBlockMarker`), but not `_`, `*`, `` ` ``, `=`,
-`[`, or `~`, so anything the parser treats as a delimiter comes back as markup —
-or, when the delimiter is consumed as an empty mark, as nothing at all.
-
-The fix is serializer-side and independent of every parser gap below: escape
-those characters when emitting text, with the same exemption `$` already uses
-for code spans (a code span is literal, so an escape inside one would read back
-as a backslash). That closes the round trip for all four rows above at once.
-`_` alone is worth it — underscores are ordinary in identifiers, filenames and
-URLs, and today they silently vanish.
-
-Parser-side fixes still matter for Markdown written elsewhere, which is what the
-rest of this document covers.
-
----
-
-## A. Bugs — wrong output for input we already support
-
-These corrupt ordinary text. They're independent of any decision about how much
-of CommonMark to support, and each is small.
-
-### A1. `==` in text is eaten by the highlight mark — corrupts setext headings
-
-```
-input:  Foo *bar*\n=========
-want:   <h1>Foo <em>bar</em></h1>
-got:    <p>Foo <em>bar</em> <mark></mark>=</p>
-```
-
-The `==highlight==` syntax (`Markdown.swift`, the `findSeq(chars, i + 2, "==")`
-branch) consumes the `=` run: nine `=` become four empty `<mark>` pairs plus a
-leftover. Any pasted document using setext headings — or a row of `=` as a
-divider — is silently mangled. Highlight should require non-empty content and
-probably shouldn't match across what is otherwise a heading underline.
-
-*Also produces empty marks generally: `**` and `__` alone yield `<em></em>`
-(spec example 46).*
-
-### A2. A link title lands inside the URL
-
-```
-input:  [link](/uri "title")
-want:   <a href="/uri" title="title">link</a>
-got:    <a href="/uri &quot;title&quot;">link</a>
-```
-
-The destination is taken as everything up to `)`, so the title becomes part of
-the href — a broken link, not just a lost title. Titles are common in real
-Markdown. Related: `[link](<>)` keeps the angle brackets literally, and
-`[link]()` drops the link entirely.
-
-### A3. Emphasis ignores the flanking rules
-
-```
-input:  a * foo bar*        want: literal   got: a <em> foo bar</em>
-input:  a*"foo"*            want: literal   got: a<em>"foo"</em>
-input:  *\u{a0}a\u{a0}*     want: literal   got: <em> a </em>
-```
-
-CommonMark only opens emphasis on a *left-flanking* delimiter run (no whitespace
-after the opener) and closes on a *right-flanking* one. We match any `*`…`*`
-pair, so prose containing asterisks — footnote markers, `*` used as a bullet
-mid-sentence, multiplication — turns into emphasis. This is the same class of
-bug as the `$…$` currency case fixed in #26, and the fix has the same shape:
-check the characters adjacent to the delimiter. 111 of the 515 failures are in
-this section, so it's the single biggest lever.
-
-### A4. Multi-backtick code spans are mangled
-
-```
-input:  `` foo ` bar ``     want: <code>foo ` bar</code>
-                            got:  <code></code> foo <code> bar </code>`
-```
-
-Only single-backtick spans are recognized; a run of *n* backticks should open a
-span that closes on the next run of exactly *n*. The current behavior produces
-empty `<code>` elements and scrambles the text — the standard way to write a
-code span containing a backtick.
-
-### A5. Character entities are double-escaped
-
-```
-input:  &amp; &copy; &#35;
-want:   & © #
-got:    &amp;amp; &amp;copy; &amp;#35;
-```
-
-The Markdown parser doesn't decode entities, so the `&` is later escaped on the
-way out and the entity becomes literal text. `HTMLParser.decodeEntities`
-(`HTML.swift:1108`) already handles named, decimal and hex forms and is not
-referenced from `Markdown.swift` at all — reusing it is most of the fix.
-
-### A6. ATX headings keep their closing sequence and leading run
-
-```
-input:  ## foo ##          want: <h2>foo</h2>    got: <h2>foo ##</h2>
-input:  #      foo         want: <h1>foo</h1>    got: <h1>     foo</h1>
-```
-
-An optional closing run of `#` should be stripped, and the space run after the
-opener shouldn't survive into the text.
-
-### A7. Hard line breaks need two trailing spaces
-
-```
-input:  foo␣␣\nbaz         want: foo<br />baz    got: foo baz
-```
-
-We support the backslash form (`foo\`) but not the two-trailing-spaces form,
-which is what most editors emit. Cheap to add where the backslash form is
-handled.
-
----
-
-## B. Missing features, by how often they appear in real documents
-
-Ordered by what actually turns up in pasted Markdown, not by spec example count.
+## What's left, by what it costs
 
 | gap | examples | notes |
 | --- | ---: | --- |
-| **Link reference definitions** (`[foo]: /url "title"` + `[foo]`) | 80 | Common in hand-written docs and everything exported from wikis. Needs a definition pass before inline parsing. |
-| **Raw HTML blocks and inline tags** | 58 | Pasted Markdown containing `<table>`, `<div>`, `<br>` is escaped into visible text. We *do* have a full HTML parser — routing these through it is plausible rather than writing new code. |
-| **Setext headings** (`===` / `---` underlines) | 21 | Blocked on A1 either way. |
-| **Indented code blocks** (4 spaces) | 19 | Already a documented limitation. Note `    ***` currently becomes `<hr>` rather than code. |
-| **Tab expansion** (tabs as 4-column stops) | 12 | Affects indentation decisions everywhere, so worth doing before the indentation-sensitive items above. |
-| **Autolinks** (`<https://example.com>`) | 11 | Left as literal text today. |
-| **`~~~` fenced code** | — | Only ``` fences are recognized (`Markdown.swift`, the `hasPrefix("```")` branch), so a `~~~` block is parsed as Markdown and its contents can turn into blockquotes and emphasis. |
-| **Blockquote lazy continuation** (`> bar\nbaz`) | 11 | The unprefixed line should stay in the quote; we end it and start a paragraph. |
-| **Nested lists by indentation** | — | Partially addressed: indented continuation *blocks* now stay in their item (#26), but an indented line that itself looks like a list marker still starts a sibling item rather than a nested list. |
+| **Emphasis: full delimiter stack** | 58 of 132 | We match pairs with flanking checks. Runs of 3+ (`foo***bar***baz`) need CommonMark's delimiter-stack algorithm, which nests emphasis inside strong. Also the last remaining round-trip instability. |
+| **Link reference definitions** | 80 | `[foo]: /url "title"` plus `[foo]`. Needs a definition-collecting pass before inline parsing. Import-only — nothing we emit uses them. |
+| **Raw HTML blocks and inline tags** | 58 | Pasted Markdown containing `<table>` or `<div>` is escaped into visible text. We already own a full HTML parser, so routing these through it is plausible rather than writing new code. Import-only. |
+| **List structure** | 61 | Tight vs loose (see below), plus indentation-based nesting: an indented line that itself looks like a list marker still starts a sibling item rather than a nested list. |
+| **Setext headings** | 19 | `===` / `---` underlines. `---` is also a thematic break, so this needs precedence: an underline directly after a paragraph wins. |
+| **Indented code blocks** | ~17 | Four-space indentation. Much easier after tab expansion. |
+| **Tab expansion** | 12 | Tabs as four-column stops. Feeds every indentation decision, so worth doing *before* indented code and nested lists. |
+| **Blockquote lazy continuation** | 12 | `> bar\nbaz` — the unprefixed line should stay in the quote. |
 
----
+Suggested order: **tabs**, then **indented code** and **nested lists** (both
+much easier once tabs are normalized), then **setext** and **lazy
+continuation**. Link reference definitions and raw HTML are the two large ones,
+worth doing only if importing third-party Markdown becomes a real workflow.
 
-## C. Divergences to keep, not fix
+## Divergences to keep
 
-These fall out of the document model. Listing them so nobody spends time
-"fixing" them or reads the pass rate as if they were failures.
+These follow from the document model. Listed so nobody spends time "fixing" them
+or reads the agreement score as if they were failures.
 
 - **Tight vs loose lists.** CommonMark emits `<li>one</li>` for a tight list and
   `<li><p>one</p></li>` for a loose one. A ProseMirror `listItem` always holds
   block content, so we always produce the paragraph form. Round-trips fine; only
   the HTML differs.
 - **Exact whitespace and newlines between block elements**, `<hr />` vs `<hr>`,
-  and which characters are entity-escaped. Cosmetic; normalized away in the
-  measurement above.
-- **Raw HTML preserved verbatim.** Even after B's raw-HTML work, anything parsed
-  into the document is re-serialized from the document, so byte-preservation of
-  unknown markup is not a goal.
+  and which characters are entity-escaped. Cosmetic; normalized away above.
+- **Percent-encoding of link destinations.** CommonMark writes `/my uri` as
+  `/my%20uri`; we keep destinations as written, as the HTML parser does.
+- **Raw HTML preserved verbatim.** Even after the raw-HTML work above, anything
+  parsed into the document is re-serialized from the document, so
+  byte-preservation of unknown markup is not a goal.
 
----
+## Keeping it honest
 
-## Suggested order
+Two properties are worth holding onto while changing any of this:
 
-Ordered by whose text is at risk: ours first, then other people's.
-
-1. **A0 — escape inline specials when serializing.** The only item here that
-   loses the user's own content, one small serializer change, and it needs no
-   decision about how much of CommonMark to support. Do this first regardless of
-   what else is picked up.
-2. **A1** (`==` eating `=` runs). A0 stops us *emitting* an unescaped `=` run,
-   but the parser should also refuse to make an empty highlight, so pasted text
-   containing `====` survives.
-3. **A3** (emphasis flanking). The biggest parser lever — 111 of the 515
-   disagreements — and the rule is written out plainly in the spec's "delimiter
-   run" definition. Same bug class as the `$…$` currency case in #26.
-4. **A2, A5, A6, A7** — small and self-contained. A5 in particular is mostly
-   wiring up a decoder that already exists.
-5. **A4** (backtick runs) — self-contained, less common than the above.
-6. **Tab expansion**, then the indentation-sensitive items (indented code,
-   setext, nested lists), which are easier once tabs are normalized.
-7. **Link reference definitions** and **raw HTML**, the two large features. Both
-   are import-fidelity only — nothing we emit needs them.
-
-A useful stopping point is after 3: at that point we no longer damage our own
-documents, and the most common way of misreading other people's is gone.
-
-A useful guard while doing any of this: the 652 examples currently never throw.
-Keeping that true — plus `parse → serialize → parse == parse` over the corpus —
-catches regressions without requiring conformance.
+- the 652 examples currently **never throw and never crash** — the property that
+  matters most for the paste path, where hostile input arrives;
+- **round-trip stability catches what agreement doesn't.** Three changes in this
+  work exist only because that number dropped when a feature went in: leaving
+  control-character references alone, making the link scan escape-aware, and
+  angle-wrapping awkward destinations.
