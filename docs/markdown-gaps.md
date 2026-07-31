@@ -20,6 +20,36 @@ not be "fixed".
 
 ---
 
+## A0. The one that matters most: text is corrupted by our own round trip
+
+Every gap below is about reading *someone else's* Markdown — except this one,
+which loses the user's own text on a save/load cycle:
+
+| in the document | after `toMarkdown()` → `parse()` |
+| --- | --- |
+| `snake_case_name` | `snakecasename` |
+| `2 * 3 * 4` | `2  3  4` |
+| `====` | *(empty — the text is gone)* |
+| ``use `a`b` here`` | ``use ab` here`` |
+
+One cause: **`MarkdownSerializer` doesn't escape inline Markdown-significant
+characters in text.** It escapes `$` and `^^^` and the leading block markers
+(`escapeDollars`, `escapeLeadingBlockMarker`), but not `_`, `*`, `` ` ``, `=`,
+`[`, or `~`, so anything the parser treats as a delimiter comes back as markup —
+or, when the delimiter is consumed as an empty mark, as nothing at all.
+
+The fix is serializer-side and independent of every parser gap below: escape
+those characters when emitting text, with the same exemption `$` already uses
+for code spans (a code span is literal, so an escape inside one would read back
+as a backslash). That closes the round trip for all four rows above at once.
+`_` alone is worth it — underscores are ordinary in identifiers, filenames and
+URLs, and today they silently vanish.
+
+Parser-side fixes still matter for Markdown written elsewhere, which is what the
+rest of this document covers.
+
+---
+
 ## A. Bugs — wrong output for input we already support
 
 These corrupt ordinary text. They're independent of any decision about how much
@@ -156,14 +186,28 @@ These fall out of the document model. Listing them so nobody spends time
 
 ## Suggested order
 
-1. **A1** (`==` eating `=` runs) — actively corrupts text and is contained.
-2. **A5, A6, A7, A2** — small, self-contained, each removes a visible wrongness.
-3. **A3** (emphasis flanking) — biggest single win, and the rule is written out
-   plainly in the CommonMark spec's "delimiter run" definition.
-4. **A4** (backtick runs) — self-contained.
-5. **Tab expansion**, then the indentation-sensitive items (indented code,
+Ordered by whose text is at risk: ours first, then other people's.
+
+1. **A0 — escape inline specials when serializing.** The only item here that
+   loses the user's own content, one small serializer change, and it needs no
+   decision about how much of CommonMark to support. Do this first regardless of
+   what else is picked up.
+2. **A1** (`==` eating `=` runs). A0 stops us *emitting* an unescaped `=` run,
+   but the parser should also refuse to make an empty highlight, so pasted text
+   containing `====` survives.
+3. **A3** (emphasis flanking). The biggest parser lever — 111 of the 515
+   disagreements — and the rule is written out plainly in the spec's "delimiter
+   run" definition. Same bug class as the `$…$` currency case in #26.
+4. **A2, A5, A6, A7** — small and self-contained. A5 in particular is mostly
+   wiring up a decoder that already exists.
+5. **A4** (backtick runs) — self-contained, less common than the above.
+6. **Tab expansion**, then the indentation-sensitive items (indented code,
    setext, nested lists), which are easier once tabs are normalized.
-6. **Link reference definitions** and **raw HTML**, the two large features.
+7. **Link reference definitions** and **raw HTML**, the two large features. Both
+   are import-fidelity only — nothing we emit needs them.
+
+A useful stopping point is after 3: at that point we no longer damage our own
+documents, and the most common way of misreading other people's is gone.
 
 A useful guard while doing any of this: the 652 examples currently never throw.
 Keeping that true — plus `parse → serialize → parse == parse` over the corpus —
