@@ -1582,10 +1582,121 @@ test("Markdown: a lone = or ~ is not escaped") {
 
 test("Markdown: an empty delimiter pair is text, not an empty mark") {
     // "====" used to become two empty highlights and lose the text entirely.
-    for (md, text) in [("====", "===="), ("****", "****"), ("~~~~", "~~~~"), ("``", "``")] {
+    // ("****" and "~~~~" are a thematic break and a fence — covered separately.)
+    for (md, text) in [("====", "===="), ("``", "``"), ("__", "__")] {
         let d = try MarkdownParser.parse(md, schema: schema)
         try expectEqual(d.child(0).textContent, text, "input: \(md)")
         try expect(d.child(0).child(0).marks.isEmpty, "input \(md) produced a mark")
+    }
+}
+
+// MARK: - CommonMark constructs
+
+test("Markdown parses thematic breaks in every spelling") {
+    for md in ["---", "***", "___", "* * *", "- - -", "_____", " ***", "-----"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(d.childCount, 1, "input: \(md)")
+        try expectEqual(d.child(0).type.name, "horizontalRule", "input: \(md)")
+    }
+    // Two isn't enough, and a mixed run isn't a break.
+    try expectEqual(try MarkdownParser.parse("--", schema: schema).child(0).type.name, "paragraph")
+    try expectEqual(try MarkdownParser.parse("-*-", schema: schema).child(0).type.name, "paragraph")
+}
+
+test("Markdown parses a ~~~ fence, including one holding backticks") {
+    try expectEqual(try MarkdownParser.parse("~~~\na + b\n~~~", schema: schema),
+                    doc(node("codeBlock", [:], [t("a + b")])))
+    // A fence closes on its own character, so each can contain the other.
+    try expectEqual(try MarkdownParser.parse("~~~\n```\n~~~", schema: schema),
+                    doc(node("codeBlock", [:], [t("```")])))
+    try expectEqual(try MarkdownParser.parse("```\n~~~\n```", schema: schema),
+                    doc(node("codeBlock", [:], [t("~~~")])))
+}
+
+test("Markdown strips an ATX heading's closing run and spacing") {
+    try expectEqual(try MarkdownParser.parse("## foo ##", schema: schema), doc(h(2, "foo")))
+    try expectEqual(try MarkdownParser.parse("#      foo      ", schema: schema), doc(h(1, "foo")))
+    try expectEqual(try MarkdownParser.parse("# foo #################", schema: schema), doc(h(1, "foo")))
+    // A hash that isn't a trailing run is part of the text.
+    try expectEqual(try MarkdownParser.parse("# foo #bar", schema: schema), doc(h(1, "foo #bar")))
+}
+
+test("Markdown parses a hard break from two trailing spaces") {
+    let d = try MarkdownParser.parse("foo  \nbaz", schema: schema)
+    try expectEqual(d, doc(p(t("foo"), node("hardBreak", [:], []), t("baz"))))
+    // More than two also counts; exactly one is a soft wrap.
+    try expectEqual(try MarkdownParser.parse("foo     \nbaz", schema: schema), d)
+    try expectEqual(try MarkdownParser.parse("foo \nbaz", schema: schema), doc(p("foo baz")))
+}
+
+test("Markdown parses autolinks") {
+    for url in ["http://foo.bar.baz", "https://foo.bar/test?q=1", "mailto:a@b.test"] {
+        let d = try MarkdownParser.parse("<\(url)>", schema: schema)
+        let text = d.child(0).child(0)
+        try expectEqual(text.text, url, "input: \(url)")
+        try expectEqual(text.marks.first?.attrs["href"], .string(url), "input: \(url)")
+    }
+    // Not autolinks: no scheme, a space inside, or ordinary comparison text.
+    for md in ["<foo.bar>", "<http://foo bar>", "a < b and c > d"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expect(d.child(0).child(0).marks.isEmpty, "input \(md) became a link")
+    }
+    // A scheme the URL sanitizer rejects stays text — Markdown arrives from the
+    // same untrusted places HTML does.
+    for md in ["<javascript:alert(1)>", "<irc://foo.bar/baz>"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expect(d.child(0).child(0).marks.isEmpty, "input \(md) became a link")
+    }
+}
+
+test("Markdown round-trip: a link and image title") {
+    let link = doc(p(schema.text("x", [schema.mark("link", ["href": .string("/uri"),
+                                                            "title": .string("the title")])])))
+    try expectEqual(MarkdownSerializer.serialize(link), "[x](/uri \"the title\")")
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(link), schema: schema), link)
+
+    let parsed = try MarkdownParser.parse("[x](/uri \"t\")", schema: schema)
+    try expectEqual(parsed.child(0).child(0).marks.first?.attrs["href"], .string("/uri"))
+    try expectEqual(parsed.child(0).child(0).marks.first?.attrs["title"], .string("t"))
+    // Single quotes too. (The `(title)` spelling is not supported: the
+    // destination scan ends at the first ")", so it would need balanced-paren
+    // scanning for the rarest of the three forms.)
+    for md in ["[x](/uri 't')"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(d.child(0).child(0).marks.first?.attrs["title"], .string("t"), "input: \(md)")
+    }
+}
+
+test("Markdown parses an angle-bracketed link destination") {
+    let d = try MarkdownParser.parse("[x](</my uri>)", schema: schema)
+    // CommonMark percent-encodes the space; we keep destinations as written,
+    // as the HTML parser does, so the space survives instead.
+    try expectEqual(d.child(0).child(0).marks.first?.attrs["href"], .string("/my uri"))
+}
+
+test("Markdown decodes character references") {
+    let d = try MarkdownParser.parse("&amp; &copy; &#35; &#x22; &nbsp;", schema: schema)
+    try expectEqual(d.child(0).textContent, "& © # \" \u{00A0}")
+    // An unknown reference stays literal rather than being mangled.
+    try expectEqual(try MarkdownParser.parse("&bogus; &", schema: schema).child(0).textContent,
+                    "&bogus; &")
+}
+
+test("Markdown round-trip: text that looks like a character reference") {
+    // Decoding means "&amp;" is now markup, so the serializer escapes "&" to
+    // keep literal text literal.
+    for text in ["&amp; and &copy;", "a & b", "&#35;", "AT&T"] {
+        let d = doc(p(text))
+        try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d,
+                        "text: \(text)")
+    }
+}
+
+test("Markdown round-trip: text that looks like an autolink") {
+    for text in ["<https://example.test>", "a < b", "use <div> here"] {
+        let d = doc(p(text))
+        try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d,
+                        "text: \(text)")
     }
 }
 
