@@ -1711,6 +1711,46 @@ test("Markdown round-trip: text that looks like an autolink") {
     }
 }
 
+test("Markdown treats a tab as block structure where a space would be") {
+    // CommonMark: "in contexts where spaces help define block structure, tabs
+    // behave as if they were replaced by spaces with a tab stop of 4".
+    try expectEqual(try MarkdownParser.parse("#\tFoo", schema: schema), doc(h(1, "Foo")))
+    try expectEqual(try MarkdownParser.parse("-\tfoo", schema: schema),
+                    doc(node("bulletList", [:], [node("listItem", [:], [p("foo")])])))
+    try expectEqual(try MarkdownParser.parse("1.\tfoo", schema: schema),
+                    doc(node("orderedList", ["order": .int(1)], [
+                        node("listItem", [:], [p("foo")])])))
+    try expectEqual(try MarkdownParser.parse(">\tfoo", schema: schema),
+                    doc(node("blockquote", [:], [p("foo")])))
+    try expectEqual(try MarkdownParser.parse("*\t*\t*", schema: schema).child(0).type.name,
+                    "horizontalRule")
+}
+
+test("Markdown expands a leading tab to a four-column stop") {
+    // A tab-indented continuation line reaches the item's content column, so it
+    // stays inside the item instead of ending the list.
+    let d = try MarkdownParser.parse("- foo\n\n\tbar", schema: schema)
+    try expectEqual(d.childCount, 1)
+    try expectEqual(d.child(0).type.name, "bulletList")
+    try expectEqual(d.child(0).child(0).childCount, 2, "continuation line left the item")
+    try expectEqual(d.child(0).child(0).textContent, "foobar")
+    // Spaces then a tab reach the same stop, so these behave identically.
+    for indent in ["\t", "  \t", "   \t", "    "] {
+        let same = try MarkdownParser.parse("- foo\n\n\(indent)bar", schema: schema)
+        try expectEqual(same, d, "indent: \(indent.debugDescription)")
+    }
+    // The exact column an expanded tab lands on only becomes observable once
+    // indented code blocks are supported; until then it is exercised through
+    // the indentation decisions above.
+}
+
+test("Markdown leaves a tab inside the text alone") {
+    // Only the indentation run is expanded — a tab in content is the author's.
+    try expectEqual(try MarkdownParser.parse("a\tb", schema: schema).child(0).textContent, "a\tb")
+    let code = try MarkdownParser.parse("```\na\tb\n```", schema: schema)
+    try expectEqual(code.child(0).textContent, "a\tb")
+}
+
 test("Markdown emphasis follows the flanking rules") {
     // A delimiter only opens when it isn't followed by whitespace, and only
     // closes when it isn't preceded by whitespace.
