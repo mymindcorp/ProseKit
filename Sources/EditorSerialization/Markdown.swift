@@ -18,12 +18,20 @@ public enum MarkdownSerializer {
             return escapeLeadingBlockMarker(serializeInline(node.content))
         case "heading":
             let level = node.attrs["level"]?.intValue ?? 1
-            return String(repeating: "#", count: level) + " " + serializeInline(node.content)
+            var text = serializeInline(node.content)
+            // A trailing run of "#" reads as a closing sequence, so escape it.
+            if text.hasSuffix("#") {
+                let run = text.reversed().prefix(while: { $0 == "#" }).count
+                text.insert("\\", at: text.index(text.endIndex, offsetBy: -run))
+            }
+            return String(repeating: "#", count: level) + " " + text
         case "blockquote":
             let inner = (0..<node.childCount).map { serializeBlock(node.child($0), indent: indent) }.joined(separator: "\n\n")
             return inner.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
         case "codeBlock":
-            return "```\n\(node.textContent)\n```"
+            // Fence with the delimiter the code itself doesn't use.
+            let fence = node.textContent.contains("```") ? "~~~" : "```"
+            return "\(fence)\n\(node.textContent)\n\(fence)"
         case "horizontalRule":
             return "---"
         case "bulletList":
@@ -50,7 +58,11 @@ public enum MarkdownSerializer {
             // empty, so every image simply disappeared.
             let src = node.attrs["src"]?.stringValue ?? ""
             let alt = node.attrs["alt"]?.stringValue ?? ""
-            return "![\(alt)](\(src))"
+            if let title = node.attrs["title"]?.stringValue, !title.isEmpty {
+                let q = title.contains("\"") ? "'" : "\""
+                return "![\(alt)](\(destination(src)) \(q)\(title)\(q))"
+            }
+            return "![\(alt)](\(destination(src)))"
         case "blockMath":
             // The `$$…$$` display-math convention shared by Pandoc, MathJax, and
             // most Markdown renderers with math support.
@@ -146,9 +158,16 @@ public enum MarkdownSerializer {
             } else if node.type.name == "hardBreak" {
                 out += "\\\n"
             } else if node.type.name == "image" {
+                // An image can sit inline as well as in its own block, so the
+                // title has to be written on both paths.
                 let src = node.attrs["src"]?.stringValue ?? ""
                 let alt = node.attrs["alt"]?.stringValue ?? ""
-                out += "![\(alt)](\(src))"
+                if let title = node.attrs["title"]?.stringValue, !title.isEmpty {
+                    let q = title.contains("\"") ? "'" : "\""
+                    out += "![\(alt)](\(destination(src)) \(q)\(title)\(q))"
+                } else {
+                    out += "![\(alt)](\(destination(src)))"
+                }
             } else if node.type.name == "wikiLink" {
                 let target = node.attrs["target"]?.stringValue ?? ""
                 if let label = node.attrs["label"]?.stringValue { out += "[[\(target)|\(label)]]" }
@@ -174,7 +193,7 @@ public enum MarkdownSerializer {
     /// marks rather than read as text.
     static func escapeInline(_ text: String) -> String {
         // A backslash has to be escaped too, or it would escape whatever we add.
-        let always: Set<Character> = ["\\", "`", "*", "_", "[", "]", "$"]
+        let always: Set<Character> = ["\\", "`", "*", "_", "[", "]", "$", "&", "<"]
         // These only open markup when doubled (`==highlight==`, `~~strike~~`), so
         // a lone one is left alone — "x = y" shouldn't grow a backslash.
         let whenDoubled: Set<Character> = ["=", "~"]
@@ -214,6 +233,13 @@ public enum MarkdownSerializer {
         return out
     }
 
+    /// A destination that contains a space, a parenthesis or a backslash can't
+    /// be written bare — CommonMark's answer is to wrap it in angle brackets.
+    static func destination(_ url: String) -> String {
+        url.contains(where: { $0 == " " || $0 == "(" || $0 == ")" || $0 == "\\" })
+            ? "<\(url)>" : url
+    }
+
     static func applyMarks(_ text: String, _ marks: [Mark]) -> String {
         var result = text
         // link is outermost; code innermost-ish
@@ -223,7 +249,13 @@ public enum MarkdownSerializer {
         if marks.contains(where: { $0.type.name == "bold" }) { result = "**\(result)**" }
         if marks.contains(where: { $0.type.name == "italic" }) { result = "*\(result)*" }
         if let link = marks.first(where: { $0.type.name == "link" }) {
-            result = "[\(result)](\(link.attrs["href"]?.stringValue ?? ""))"
+            let href = link.attrs["href"]?.stringValue ?? ""
+            if let title = link.attrs["title"]?.stringValue, !title.isEmpty {
+                let q = title.contains("\"") ? "'" : "\""
+                result = "[\(result)](\(destination(href)) \(q)\(title)\(q))"
+            } else {
+                result = "[\(result)](\(destination(href)))"
+            }
         }
         return result
     }
@@ -261,11 +293,13 @@ public enum MarkdownParser {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { i += 1; continue }
 
-            // Code fence
-            if trimmed.hasPrefix("```") {
+            // Code fence: ``` or ~~~, closed by a run of the same character, so
+            // a block fenced with one can contain the other.
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                let fence = trimmed.hasPrefix("```") ? "```" : "~~~"
                 var code: [String] = []
                 i += 1
-                while i < lines.count && !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                while i < lines.count && !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix(fence) {
                     code.append(lines[i]); i += 1
                 }
                 i += 1
@@ -346,8 +380,9 @@ public enum MarkdownParser {
                 }
                 continue
             }
-            // Horizontal rule
-            if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+            // Horizontal rule. Checked before lists: "- - -" and "* * *" are
+            // thematic breaks, not one-item lists.
+            if isThematicBreak(trimmed) {
                 if let hr = try? schema.node("horizontalRule") { blocks.append(hr) }
                 i += 1; continue
             }
@@ -389,14 +424,21 @@ public enum MarkdownParser {
                 continue
             }
             // Paragraph (gather consecutive non-blank, non-special lines)
-            var para: [String] = [trimmed]
+            // The first line keeps its trailing spaces for the same reason the
+            // continuation lines below do: two of them are a hard break.
+            var para: [String] = [String(lines[i].drop(while: { $0 == " " || $0 == "\t" }))]
             i += 1
             while i < lines.count {
                 let t = lines[i].trimmingCharacters(in: .whitespaces)
-                if t.isEmpty || t.hasPrefix("#") || t.hasPrefix(">") || t.hasPrefix("```") || t.hasPrefix("$$")
+                if t.isEmpty || t.hasPrefix("#") || t.hasPrefix(">") || t.hasPrefix("```")
+                    || t.hasPrefix("~~~") || t.hasPrefix("$$") || isThematicBreak(t)
                     || t.lowercased().hasPrefix("<details") || t.lowercased().hasPrefix("</details>")
                     || bulletMatch(t) != nil || orderedMatch(t) != nil { break }
-                para.append(t); i += 1
+                // Only the leading whitespace is dropped: two or more spaces at
+                // the end of a line are a hard break, so they have to survive to
+                // the inline parser.
+                para.append(String(lines[i].drop(while: { $0 == " " || $0 == "\t" })))
+                i += 1
             }
             // Keep line breaks so the inline parser can turn a trailing `\` into a
             // hard break and collapse other soft wraps into spaces.
@@ -479,8 +521,31 @@ public enum MarkdownParser {
         var level = 0
         for c in line { if c == "#" { level += 1 } else { break } }
         guard level >= 1, level <= 6, line.count > level, Array(line)[level] == " " else { return nil }
-        let text = String(line.dropFirst(level + 1))
+        var text = String(line.dropFirst(level + 1)).trimmingCharacters(in: .whitespaces)
+        // An optional closing run of "#" is decoration, not content — but only
+        // when it's a run on its own, so "# foo #bar" keeps its hash.
+        if text.hasSuffix("#") {
+            let withoutRun = String(text.reversed().drop(while: { $0 == "#" }).reversed())
+            if withoutRun.isEmpty || withoutRun.hasSuffix(" ") {
+                text = withoutRun.trimmingCharacters(in: .whitespaces)
+            }
+        }
         return (level, text)
+    }
+
+    /// A thematic break: three or more of `-`, `*` or `_`, optionally separated
+    /// by spaces (`***`, `___`, `* * *`, `- - -`).
+    private static func isThematicBreak(_ line: String) -> Bool {
+        var char: Character?
+        var count = 0
+        for c in line {
+            if c == " " || c == "\t" { continue }
+            guard c == "-" || c == "*" || c == "_" else { return false }
+            if let char, c != char { return false }
+            char = c
+            count += 1
+        }
+        return count >= 3
     }
 
     private static func bulletMatch(_ line: String) -> String? {
@@ -643,6 +708,10 @@ public enum MarkdownParser {
         var i = 0
         var buffer = ""
         func flush(_ marks: [Mark] = []) {
+            // Character references are text, not markup: "&amp;" is an ampersand.
+            // The HTML parser already knows every named, decimal and hex form, so
+            // reuse it rather than growing a second table. Code spans flush their
+            // own literal text and never come through here.
             if !buffer.isEmpty { nodes.append(schema.text(buffer, marks)); buffer = "" }
         }
         func mark(_ name: String, _ attrs: Attrs = [:]) -> [Mark] {
@@ -662,8 +731,43 @@ public enum MarkdownParser {
                 }
                 if asciiPunct.contains(next) { buffer.append(next); i += 2; continue }
             }
-            // Soft line break collapses to a space.
-            if c == "\n" { buffer.append(" "); i += 1; continue }
+            // A line break: two or more spaces before it make it hard (the form
+            // most editors emit), otherwise it is a soft wrap and reads as one
+            // space. Either way the trailing spaces themselves are not content.
+            if c == "\n" {
+                var spaces = 0
+                while buffer.hasSuffix(" ") { buffer.removeLast(); spaces += 1 }
+                if spaces >= 2 {
+                    flush()
+                    if let br = try? schema.nodes["hardBreak"]?.create() { nodes.append(br) }
+                } else {
+                    buffer.append(" ")
+                }
+                i += 1; continue
+            }
+            // A character reference is text: "&amp;" is an ampersand. Decoded
+            // here rather than over the finished buffer so that an escaped "\&"
+            // — already resolved to a literal "&" — isn't decoded a second time.
+            if c == "&", let semi = findChar(chars, i + 1, ";"), semi - i <= 32 {
+                let reference = String(chars[i...semi])
+                let decoded = HTMLParser.decodeEntities(reference)
+                // "&#10;" is a newline, which is block structure in this model,
+                // not text — decoding it would produce a document we can't write
+                // back. Leave those references as written.
+                if decoded != reference, !decoded.unicodeScalars.contains(where: { $0.value < 0x20 }) {
+                    buffer += decoded
+                    i = semi + 1; continue
+                }
+            }
+            // Autolink <scheme:...> — a bare URL in angle brackets.
+            if c == "<", let close = findChar(chars, i + 1, ">"),
+               isAutolink(String(chars[(i + 1)..<close])),
+               let href = sanitizeURL(String(chars[(i + 1)..<close]), for: .link) {
+                flush()
+                let text = String(chars[(i + 1)..<close])
+                nodes.append(schema.text(text, mark("link", ["href": .string(href)])))
+                i = close + 1; continue
+            }
             // Wiki link [[...]]
             if c == "[" && i + 1 < chars.count && chars[i + 1] == "[" {
                 if let close = findSeq(chars, i + 2, "]]") {
@@ -679,25 +783,29 @@ public enum MarkdownParser {
             }
             // Image ![alt](src)
             if c == "!" && i + 1 < chars.count && chars[i + 1] == "[" {
-                if let (alt, url, next) = parseLinkLike(chars, i + 1) {
+                if let (alt, url, title, next) = parseLinkLike(chars, i + 1) {
                     flush()
-                    if let src = sanitizeURL(url, for: .image), let type = schema.nodes["image"],
-                       let img = try? type.create(["src": .string(src), "alt": .string(alt)]) {
-                        nodes.append(img)
+                    var attrs: Attrs = ["src": .null, "alt": .string(unescapeInline(alt))]
+                    if let title { attrs["title"] = .string(title) }
+                    if let src = sanitizeURL(url, for: .image), let type = schema.nodes["image"] {
+                        attrs["src"] = .string(src)
+                        if let img = try? type.create(attrs) { nodes.append(img) }
                     }
                     i = next; continue
                 }
             }
             // Link [text](url)
             if c == "[" {
-                if let (label, url, next) = parseLinkLike(chars, i) {
+                if let (label, url, title, next) = parseLinkLike(chars, i) {
                     flush()
                     // Markdown reaches the editor from the same untrusted places
                     // HTML does, so `[x](javascript:…)` gets the same treatment:
                     // the link is dropped, the text kept.
                     let text = unescapeInline(label)
                     if let href = sanitizeURL(url, for: .link) {
-                        nodes.append(schema.text(text, mark("link", ["href": .string(href)])))
+                        var attrs: Attrs = ["href": .string(href)]
+                        if let title { attrs["title"] = .string(title) }
+                        nodes.append(schema.text(text, mark("link", attrs)))
                     } else if !text.isEmpty {
                         nodes.append(schema.text(text))
                     }
@@ -760,18 +868,54 @@ public enum MarkdownParser {
             buffer.append(c)
             i += 1
         }
+        // Trailing spaces at the very end are not content (two before a newline
+        // were already consumed as a hard break above).
+        while buffer.hasSuffix(" ") { buffer.removeLast() }
         flush()
         return nodes
     }
 
-    private static func parseLinkLike(_ chars: [Character], _ start: Int) -> (text: String, url: String, next: Int)? {
+    /// An autolink's contents: a scheme, then anything but spaces or angles.
+    /// Bare `<tag>` markup and `<a@b.c>` addresses are deliberately not matched.
+    private static func isAutolink(_ s: String) -> Bool {
+        guard let colon = s.firstIndex(of: ":"), colon != s.startIndex else { return false }
+        let scheme = s[s.startIndex..<colon]
+        guard scheme.first?.isLetter == true,
+              scheme.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "+" || $0 == "." || $0 == "-" })
+        else { return false }
+        let rest = s[s.index(after: colon)...]
+        return !rest.isEmpty && !rest.contains(where: { $0 == " " || $0 == "<" || $0 == ">" || $0 == "\n" })
+    }
+
+    private static func parseLinkLike(_ chars: [Character], _ start: Int)
+        -> (text: String, url: String, title: String?, next: Int)? {
         guard chars[start] == "[" else { return nil }
-        guard let closeBracket = findChar(chars, start + 1, "]") else { return nil }
+        guard let closeBracket = findUnescaped(chars, start + 1, "]") else { return nil }
         guard closeBracket + 1 < chars.count, chars[closeBracket + 1] == "(" else { return nil }
-        guard let closeParen = findChar(chars, closeBracket + 2, ")") else { return nil }
+        guard let closeParen = findUnescaped(chars, closeBracket + 2, ")") else { return nil }
         let text = String(chars[(start + 1)..<closeBracket])
-        let url = String(chars[(closeBracket + 2)..<closeParen])
-        return (text, url, closeParen + 1)
+        var url = String(chars[(closeBracket + 2)..<closeParen])
+        var title: String?
+
+        // An optional title follows the destination, quoted with "", '' or ().
+        // Split on the last run of whitespace before the quote so a destination
+        // containing quotes (rare, but legal) isn't cut in half.
+        let trimmed = url.trimmingCharacters(in: .whitespaces)
+        for (open, close) in [("\"", "\""), ("'", "'"), ("(", ")")] where trimmed.hasSuffix(close) {
+            if let openIndex = trimmed.dropLast().lastIndex(of: Character(open)),
+               openIndex > trimmed.startIndex,
+               trimmed[trimmed.index(before: openIndex)] == " " {
+                title = String(trimmed[trimmed.index(after: openIndex)..<trimmed.index(before: trimmed.endIndex)])
+                url = String(trimmed[trimmed.startIndex..<openIndex]).trimmingCharacters(in: .whitespaces)
+                break
+            }
+        }
+        // A destination may be wrapped in angle brackets to allow spaces.
+        let bare = url.trimmingCharacters(in: .whitespaces)
+        if bare.hasPrefix("<"), bare.hasSuffix(">"), !bare.dropFirst().dropLast().contains("\n") {
+            url = String(bare.dropFirst().dropLast())
+        }
+        return (text, url, title, closeParen + 1)
     }
 
     /// The closing `$` of inline math, following Pandoc's `tex_math_dollars`:
