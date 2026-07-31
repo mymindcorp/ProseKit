@@ -538,6 +538,11 @@ final class DocumentLayout {
             return endY
         case "paragraph", "heading":
             return layoutTextBlock(node, docPos: docPos, x: x, width: width, y: y)
+        case "figcaption":
+            // A textblock, so it lays out like a paragraph. Without this it fell
+            // to `default`, which walks a node's *children* as blocks — and a
+            // caption's children are inline, so nothing was drawn at all.
+            return layoutTextBlock(node, docPos: docPos, x: x, width: width, y: y)
         case "blockquote":
             let barX = x
             let innerX = x + theme.quoteIndent
@@ -895,9 +900,10 @@ final class DocumentLayout {
         let rtl = isRightToLeft(attr.string)
         let base = NSMutableAttributedString(attributedString:
             attr.length == 0 ? NSAttributedString(string: " ", attributes: [.font: theme.blockFont(node)]) : attr)
+        let centred = node.type.name == "figcaption" && theme.captionAlignment == .center
         let para = NSMutableParagraphStyle()
         para.baseWritingDirection = rtl ? .rightToLeft : .leftToRight
-        para.alignment = rtl ? .right : .natural
+        para.alignment = centred ? .center : (rtl ? .right : .natural)
         base.addAttribute(.paragraphStyle, value: para, range: NSRange(location: 0, length: base.length))
 
         let typesetter = CTTypesetterCreateWithAttributedString(base as CFAttributedString)
@@ -919,7 +925,11 @@ final class DocumentLayout {
             var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
             CTLineGetTypographicBounds(ctLine, &ascent, &descent, &leading)
             let lineHeight = ascent + descent + leading + theme.lineSpacing
-            let penOffset = rtl ? CGFloat(CTLineGetPenOffsetForFlush(ctLine, 1, Double(width))) : 0
+            // Lines are placed by hand, so alignment has to be applied here:
+            // flush 0.5 centres, 1 pushes to the trailing edge.
+            let penOffset: CGFloat = centred
+                ? CGFloat(CTLineGetPenOffsetForFlush(ctLine, 0.5, Double(width)))
+                : (rtl ? CGFloat(CTLineGetPenOffsetForFlush(ctLine, 1, Double(width))) : 0)
             lines.append(LineLayout(ctLine: ctLine,
                                     baselineOrigin: CGPoint(x: penOffset, y: lineY + ascent),
                                     stringRange: NSRange(location: lineStart, length: count),
@@ -959,9 +969,11 @@ final class DocumentLayout {
             // keeps the default `textColor`. (Marks still win over either.)
             let headingColor = (node.type.name == "heading" && (node.attrs["level"]?.intValue ?? 1) > 1)
                 ? theme.headingColor : nil
+            // A caption is quieter than body text (marks still win over both).
+            let baseColor = node.type.name == "figcaption" ? theme.captionColor : headingColor
             let attrs = node.type.name == "codeBlock"
                 ? [NSAttributedString.Key.font: theme.monoFont, .foregroundColor: theme.textColor]
-                : theme.attributes(for: marks, baseFont: blockFont, baseColor: headingColor)
+                : theme.attributes(for: marks, baseFont: blockFont, baseColor: baseColor)
             // Highlight and backgroundColor marks paint a background behind the
             // run (drawn separately since CoreText ignores `.backgroundColor`).
             if !text.isEmpty {

@@ -48,6 +48,15 @@ public struct TextTheme: Sendable, Equatable {
     /// Optional background "pill" painted behind inline `code` runs (nil = none).
     public var codeBackground: UIColor?
     public var quoteBarColor: UIColor = .separator
+    /// A figure's caption: smaller and quieter than body text, and centred under
+    /// what it describes, which is the convention print and the web share.
+    public var captionColor: UIColor = .secondaryLabel
+    /// Caption size relative to body text, used when Dynamic Type is off or a
+    /// custom face is set (Dynamic Type maps to `.footnote` instead).
+    public var captionScale: CGFloat = 0.85
+    public var captionAlignment: NSTextAlignment = .center
+    /// Gap between a figure's content and its caption.
+    public var captionSpacing: CGFloat = 4
     public var caretColor: UIColor = .tintColor
     public var selectionColor: UIColor = UIColor.tintColor.withAlphaComponent(0.25)
     /// Highlight-mark background colors by name (the `color` attribute). The
@@ -116,6 +125,12 @@ public struct TextTheme: Sendable, Equatable {
             return UIFont.systemFont(ofSize: fixedBodyFontSize * headingScale[level - 1], weight: .bold)
         case "codeBlock":
             return monoFont
+        case "figcaption":
+            if let fontName, let custom = UIFont(name: fontName, size: bodyPointSize * captionScale) {
+                return custom
+            }
+            if dynamicType { return UIFont.preferredFont(forTextStyle: .footnote) }
+            return UIFont.systemFont(ofSize: fixedBodyFontSize * captionScale)
         case "detailsSummary":
             // The always-visible title of a collapsible section reads as a label.
             let descriptor = bodyFont.fontDescriptor.withSymbolicTraits(.traitBold) ?? bodyFont.fontDescriptor
@@ -127,7 +142,10 @@ public struct TextTheme: Sendable, Equatable {
 
     /// Spacing above a block of the given type.
     public func spacingBefore(_ node: Node, isFirst: Bool) -> CGFloat {
-        isFirst ? 0 : paragraphSpacing
+        // A caption belongs to what sits above it, so it tucks up close rather
+        // than floating a full paragraph away.
+        if node.type.name == "figcaption" { return isFirst ? 0 : captionSpacing }
+        return isFirst ? 0 : paragraphSpacing
     }
 
     /// Apply inline marks to a font + attribute dictionary. `baseColor` overrides
