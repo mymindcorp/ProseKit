@@ -301,7 +301,7 @@ public enum MarkdownParseError: Error, CustomStringConvertible, Equatable {
 
 public enum MarkdownParser {
     public static func parse(_ markdown: String, schema: Schema) throws -> Node {
-        let lines = markdown.components(separatedBy: "\n")
+        let lines = markdown.components(separatedBy: "\n").map(expandLeadingTabs)
         var blocks: [Node] = []
         var i = 0
         while i < lines.count {
@@ -416,7 +416,12 @@ public enum MarkdownParser {
                 while i < lines.count && lines[i].trimmingCharacters(in: .whitespaces).hasPrefix(">") {
                     var l = lines[i].trimmingCharacters(in: .whitespaces)
                     l.removeFirst()
+                    // One space after ">" is the marker's own padding. A tab
+                    // there defines the quoted content's indentation, so expand
+                    // it from the column the ">" left us in rather than
+                    // dropping it whole.
                     if l.hasPrefix(" ") { l.removeFirst() }
+                    else if l.hasPrefix("\t") { l = expandLeadingTabs(" " + l).dropFirst(2).description }
                     quote.append(l)
                     i += 1
                 }
@@ -536,7 +541,8 @@ public enum MarkdownParser {
     private static func headingMatch(_ line: String) -> (level: Int, text: String)? {
         var level = 0
         for c in line { if c == "#" { level += 1 } else { break } }
-        guard level >= 1, level <= 6, line.count > level, Array(line)[level] == " " else { return nil }
+        let afterRun = line.count > level ? Array(line)[level] : nil
+        guard level >= 1, level <= 6, afterRun == " " || afterRun == "\t" else { return nil }
         var text = String(line.dropFirst(level + 1)).trimmingCharacters(in: .whitespaces)
         // An optional closing run of "#" is decoration, not content — but only
         // when it's a run on its own, so "# foo #bar" keeps its hash.
@@ -547,6 +553,26 @@ public enum MarkdownParser {
             }
         }
         return (level, text)
+    }
+
+    /// Expand a line's *leading* tabs to spaces on four-column stops.
+    ///
+    /// CommonMark doesn't expand tabs in content — "tabs in lines are not
+    /// expanded to spaces" — but "in contexts where spaces help define block
+    /// structure, tabs behave as if they were replaced by spaces with a tab stop
+    /// of 4 characters". Indentation is exactly such a context, so the leading
+    /// run is expanded and a tab inside the text is left as the author typed it.
+    static func expandLeadingTabs(_ line: String) -> String {
+        guard let first = line.first, first == " " || first == "\t" else { return line }
+        var column = 0
+        var i = line.startIndex
+        while i < line.endIndex {
+            if line[i] == " " { column += 1 }
+            else if line[i] == "\t" { column += 4 - (column % 4) }
+            else { break }
+            i = line.index(after: i)
+        }
+        return String(repeating: " ", count: column) + line[i...]
     }
 
     /// Whether a line opens a fenced code block.
@@ -576,8 +602,11 @@ public enum MarkdownParser {
     }
 
     private static func bulletMatch(_ line: String) -> String? {
-        for prefix in ["- ", "* ", "+ "] where line.hasPrefix(prefix) {
-            return String(line.dropFirst(2))
+        // A tab after the marker separates it from the content, as a space does.
+        for marker in ["-", "*", "+"] where line.hasPrefix(marker) {
+            let rest = line.dropFirst()
+            guard let next = rest.first, next == " " || next == "\t" else { continue }
+            return expandLeadingTabs(String(rest.dropFirst()))
         }
         return nil
     }
@@ -585,7 +614,9 @@ public enum MarkdownParser {
     private static func orderedMatch(_ line: String) -> Int? {
         var digits = ""
         for c in line { if c.isNumber { digits.append(c) } else { break } }
-        guard !digits.isEmpty, line.dropFirst(digits.count).hasPrefix(". ") else { return nil }
+        guard !digits.isEmpty else { return nil }
+        let rest = line.dropFirst(digits.count)
+        guard rest.hasPrefix(". ") || rest.hasPrefix(".\t") else { return nil }
         return Int(digits)
     }
 
