@@ -138,11 +138,11 @@ public enum MarkdownSerializer {
             let node = fragment.child(i)
             if node.isText {
                 // A code span is literal, so an escape inside one would be read
-                // back as a backslash; everywhere else a bare "$" risks pairing
-                // with a later one and turning prose into a formula.
+                // back as a backslash; everywhere else a delimiter character has
+                // to be escaped or it pairs with a later one and becomes markup.
                 let isCode = node.marks.contains { $0.type.name == "code" }
                 let text = node.text ?? ""
-                out += applyMarks(isCode ? text : escapeDollars(text), node.marks)
+                out += applyMarks(isCode ? text : escapeInline(text), node.marks)
             } else if node.type.name == "hardBreak" {
                 out += "\\\n"
             } else if node.type.name == "image" {
@@ -164,11 +164,33 @@ public enum MarkdownSerializer {
         return out
     }
 
-    /// `$` is ASCII punctuation, so CommonMark lets it be backslash-escaped, and
-    /// that's what Pandoc prescribes for a literal dollar. Without it, prose like
-    /// "costs $5 and $6" pairs its two dollars into a formula when read back.
-    static func escapeDollars(_ text: String) -> String {
-        text.contains("$") ? text.replacingOccurrences(of: "$", with: "\\$") : text
+    /// Backslash-escape the characters this parser treats as inline markup, so
+    /// text comes back as text. CommonMark allows any ASCII punctuation to be
+    /// escaped, so the output stays portable.
+    ///
+    /// Without this, a document loses content on a save/load cycle:
+    /// `snake_case_name` came back as `snakecasename`, `2 * 3 * 4` as `2  3  4`,
+    /// and `====` as nothing at all — the delimiters were consumed as (empty)
+    /// marks rather than read as text.
+    static func escapeInline(_ text: String) -> String {
+        // A backslash has to be escaped too, or it would escape whatever we add.
+        let always: Set<Character> = ["\\", "`", "*", "_", "[", "]", "$"]
+        // These only open markup when doubled (`==highlight==`, `~~strike~~`), so
+        // a lone one is left alone — "x = y" shouldn't grow a backslash.
+        let whenDoubled: Set<Character> = ["=", "~"]
+        guard text.contains(where: { always.contains($0) || whenDoubled.contains($0) })
+        else { return text }
+
+        let chars = Array(text)
+        var out = ""
+        out.reserveCapacity(chars.count + 8)
+        for (i, c) in chars.enumerated() {
+            let doubled = whenDoubled.contains(c)
+                && ((i > 0 && chars[i - 1] == c) || (i + 1 < chars.count && chars[i + 1] == c))
+            if always.contains(c) || doubled { out.append("\\") }
+            out.append(c)
+        }
+        return out
     }
 
     /// Prepare a formula for `$…$`. A bare `$` would close the math early, so it
@@ -673,43 +695,47 @@ public enum MarkdownParser {
                     // Markdown reaches the editor from the same untrusted places
                     // HTML does, so `[x](javascript:…)` gets the same treatment:
                     // the link is dropped, the text kept.
+                    let text = unescapeInline(label)
                     if let href = sanitizeURL(url, for: .link) {
-                        nodes.append(schema.text(label, mark("link", ["href": .string(href)])))
-                    } else if !label.isEmpty {
-                        nodes.append(schema.text(label))
+                        nodes.append(schema.text(text, mark("link", ["href": .string(href)])))
+                    } else if !text.isEmpty {
+                        nodes.append(schema.text(text))
                     }
                     i = next; continue
                 }
             }
             // Bold ** **
             if c == "*" && i + 1 < chars.count && chars[i + 1] == "*" {
-                if let close = findSeq(chars, i + 2, "**") {
+                // `close > i + 2`: an empty pair is literal text, not an empty mark.
+                if let close = findSeq(chars, i + 2, "**"), close > i + 2 {
                     flush()
-                    nodes.append(schema.text(String(chars[(i + 2)..<close]), mark("bold")))
+                    nodes.append(schema.text(unescapeInline(String(chars[(i + 2)..<close])), mark("bold")))
                     i = close + 2; continue
                 }
             }
             // Italic * * or _ _
             if c == "*" || c == "_" {
-                if let close = findChar(chars, i + 1, c) {
+                if let close = findUnescaped(chars, i + 1, c), close > i + 1 {
                     flush()
-                    nodes.append(schema.text(String(chars[(i + 1)..<close]), mark("italic")))
+                    nodes.append(schema.text(unescapeInline(String(chars[(i + 1)..<close])), mark("italic")))
                     i = close + 1; continue
                 }
             }
             // Strike ~~ ~~
             if c == "~" && i + 1 < chars.count && chars[i + 1] == "~" {
-                if let close = findSeq(chars, i + 2, "~~") {
+                if let close = findSeq(chars, i + 2, "~~"), close > i + 2 {
                     flush()
-                    nodes.append(schema.text(String(chars[(i + 2)..<close]), mark("strike")))
+                    nodes.append(schema.text(unescapeInline(String(chars[(i + 2)..<close])), mark("strike")))
                     i = close + 2; continue
                 }
             }
             // Highlight == ==
+            // A run of "=" is a setext heading underline or a divider far more
+            // often than it is an empty highlight, so require content.
             if c == "=" && i + 1 < chars.count && chars[i + 1] == "=" {
-                if let close = findSeq(chars, i + 2, "==") {
+                if let close = findSeq(chars, i + 2, "=="), close > i + 2 {
                     flush()
-                    nodes.append(schema.text(String(chars[(i + 2)..<close]), mark("highlight")))
+                    nodes.append(schema.text(unescapeInline(String(chars[(i + 2)..<close])), mark("highlight")))
                     i = close + 2; continue
                 }
             }
@@ -725,7 +751,7 @@ public enum MarkdownParser {
             }
             // Code ` `
             if c == "`" {
-                if let close = findChar(chars, i + 1, "`") {
+                if let close = findChar(chars, i + 1, "`"), close > i + 1 {
                     flush()
                     nodes.append(schema.text(String(chars[(i + 1)..<close]), mark("code")))
                     i = close + 1; continue
@@ -753,6 +779,46 @@ public enum MarkdownParser {
     /// digit immediately to its right. Those two conditions are what stop
     /// "costs $5 and $6" from pairing its dollars into a formula. Returns nil at
     /// end of line — inline math never spans lines.
+    /// The next `ch` that isn't backslash-escaped. A closing delimiter has to
+    /// skip `\*`, or emphasis ends at an asterisk the author escaped precisely
+    /// so that it would be text. (`findSeq` needs no equivalent: an escaped
+    /// delimiter can't form a run of two.)
+    private static func findUnescaped(_ chars: [Character], _ from: Int, _ ch: Character) -> Int? {
+        var i = from
+        while i < chars.count {
+            if chars[i] == "\\" { i += 2; continue }
+            if chars[i] == ch { return i }
+            i += 1
+        }
+        return nil
+    }
+
+    /// Resolve backslash escapes inside a mark's text.
+    ///
+    /// The inline scanner handles escapes as it walks, but a mark's content is
+    /// lifted out as a raw substring, so it never passes through that path — a
+    /// `\*` written inside `**…**` would survive as a literal backslash. Code
+    /// spans are excluded by their callers: they're literal by definition, and
+    /// CommonMark doesn't resolve escapes inside them either.
+    private static func unescapeInline(_ s: String) -> String {
+        guard s.contains("\\") else { return s }
+        let asciiPunct = Set("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
+        var out = ""
+        out.reserveCapacity(s.count)
+        var i = s.startIndex
+        while i < s.endIndex {
+            let next = s.index(after: i)
+            if s[i] == "\\", next < s.endIndex, asciiPunct.contains(s[next]) {
+                out.append(s[next])
+                i = s.index(after: next)
+            } else {
+                out.append(s[i])
+                i = next
+            }
+        }
+        return out
+    }
+
     private static func findMathClose(_ chars: [Character], _ from: Int) -> Int? {
         var i = from
         while i < chars.count {

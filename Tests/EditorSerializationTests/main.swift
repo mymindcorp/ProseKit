@@ -1543,6 +1543,59 @@ test("Markdown leaves a lone $ alone") {
 // shapes that broke it: prose that merely contains dollars, formulas that
 // contain a delimiter, empty formulas, and math nested in a list.
 
+// Text that happens to contain Markdown's delimiters used to come back as
+// markup — or, when a delimiter pair was consumed as an empty mark, as nothing.
+
+test("Markdown round-trip: prose containing inline delimiters") {
+    for text in ["snake_case_name", "2 * 3 * 4", "a_b_c", "5 * 5 = 25",
+                 "use `a`b` here", "====", "~~~", "see [1] and [2]",
+                 "a [link](not) here", "x = y == z", "back\\slash", "*", "_", "`",
+                 "**not bold**", "__not italic__", "==not marked==", "~~not struck~~"] {
+        let d = doc(p(text))
+        let md = MarkdownSerializer.serialize(d)
+        try expectEqual(try MarkdownParser.parse(md, schema: schema), d, "text: \(text)")
+    }
+}
+
+test("Markdown round-trip: delimiters inside marked text") {
+    // A mark's content is lifted out as a raw substring, so it needs escapes
+    // resolved the same way the top-level scanner resolves them — and a closing
+    // delimiter has to skip an escaped one.
+    let d = doc(p(t("a "), strong("bold * with _ marks"), t(" and "), em("it * al"),
+                  t(" and "), schema.text("k", [schema.mark("link", ["href": .string("u")])])))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown: a code span keeps its content literal") {
+    // CommonMark doesn't resolve escapes inside code spans, so we don't escape
+    // on the way out either.
+    let d = doc(p(schema.text("a_b * c", [schema.mark("code")])))
+    try expectEqual(MarkdownSerializer.serialize(d), "`a_b * c`")
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown: a lone = or ~ is not escaped") {
+    // They only mean anything doubled, so ordinary prose stays readable.
+    try expectEqual(MarkdownSerializer.serialize(doc(p("x = y ~ z"))), "x = y ~ z")
+    try expectEqual(MarkdownSerializer.serialize(doc(p("a == b"))), "a \\=\\= b")
+}
+
+test("Markdown: an empty delimiter pair is text, not an empty mark") {
+    // "====" used to become two empty highlights and lose the text entirely.
+    for (md, text) in [("====", "===="), ("****", "****"), ("~~~~", "~~~~"), ("``", "``")] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(d.child(0).textContent, text, "input: \(md)")
+        try expect(d.child(0).child(0).marks.isEmpty, "input \(md) produced a mark")
+    }
+}
+
+test("Markdown: a setext underline is no longer eaten by the highlight syntax") {
+    // Not parsed as a heading (we don't support setext), but the text survives
+    // instead of collapsing into empty <mark> elements.
+    let d = try MarkdownParser.parse("Foo\n=========", schema: schema)
+    try expect(d.child(0).textContent.contains("========="), "got: \(d.child(0).textContent)")
+}
+
 test("Markdown round-trip: prose containing dollar signs is not math") {
     // Pandoc: "$20,000 and $30,000 won't parse as math" — the closing "$" needs
     // a non-space to its left and no digit to its right. We also escape dollars
