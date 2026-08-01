@@ -34,7 +34,8 @@ public enum MarkdownSerializer {
         case "codeBlock":
             // Fence with the delimiter the code itself doesn't use.
             let fence = node.textContent.contains("```") ? "~~~" : "```"
-            return "\(fence)\n\(node.textContent)\n\(fence)"
+            let language = node.attrs["language"]?.stringValue ?? ""
+            return "\(fence)\(language)\n\(node.textContent)\n\(fence)"
         case "horizontalRule":
             return "---"
         case "bulletList":
@@ -487,19 +488,32 @@ public enum MarkdownParser {
                 continue
             }
 
-            // Code fence: ``` or ~~~, closed by a run of the same character, so
-            // a block fenced with one can contain the other.
-            if isOpeningFence(trimmed) {
-                let fence = trimmed.hasPrefix("```") ? "```" : "~~~"
+            // Code fence: ``` or ~~~, closed by a run of the same character at
+            // least as long, so a block fenced with four can hold a run of three
+            // — of either character.
+            if let fence = openingFence(line) {
                 var code: [String] = []
                 i += 1
-                while i < lines.count && !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix(fence) {
-                    code.append(lines[i]); i += 1
+                while i < lines.count, !closesFence(lines[i], fence) {
+                    // An indented fence takes that indentation off its content.
+                    code.append(String(lines[i].dropFirst(
+                        min(fence.indent, indentWidth(lines[i])))))
+                    i += 1
                 }
-                i += 1
+                // An unclosed fence runs to the end of the document.
+                if i < lines.count { i += 1 }
                 let text = code.joined(separator: "\n")
                 let content = text.isEmpty ? Fragment.empty : Fragment.from([schema.text(text)])
-                if let cb = try? schema.node("codeBlock", [:], content: content) { blocks.append(cb) }
+                var attrs: Attrs = [:]
+                // The info string names the language, when the schema keeps one.
+                if !fence.info.isEmpty,
+                   schema.nodes["codeBlock"]?.spec.attrs["language"] != nil {
+                    let language = fence.info.split(whereSeparator: { $0.isWhitespace }).first
+                    if let language {
+                        attrs["language"] = .string(HTMLParser.decodeEntities(String(language)))
+                    }
+                }
+                if let cb = try? schema.node("codeBlock", attrs, content: content) { blocks.append(cb) }
                 continue
             }
             // Figure fence: `^^^` opens a figure that runs to the closing `^^^`,
@@ -790,6 +804,38 @@ public enum MarkdownParser {
     /// A backtick fence's info string may not itself contain a backtick — which
     /// is what keeps a line like ``` `` ``` ``` (an inline code span holding a
     /// backtick, written with a longer fence) from being read as a code block.
+    /// An opening code fence: which character, how long, how far indented, and
+    /// the info string after it.
+    struct CodeFence {
+        let character: Character
+        let length: Int
+        let indent: Int
+        let info: String
+    }
+
+    /// The fence a line opens, if it opens one. Indented four columns it would
+    /// be code, and a backtick fence's info string may not contain a backtick.
+    static func openingFence(_ line: String) -> CodeFence? {
+        let indent = indentWidth(line)
+        guard indent <= 3 else { return nil }
+        let rest = line.dropFirst(indent)
+        guard let character = rest.first, character == "`" || character == "~" else { return nil }
+        let length = rest.prefix(while: { $0 == character }).count
+        guard length >= 3 else { return nil }
+        let info = String(rest.dropFirst(length)).trimmingCharacters(in: .whitespaces)
+        if character == "`", info.contains("`") { return nil }
+        return CodeFence(character: character, length: length, indent: indent, info: info)
+    }
+
+    /// Whether a line closes the given fence: the same character, at least as
+    /// long, and nothing else on the line — a closing fence carries no info
+    /// string, which is what lets a block hold a shorter run of its own fence.
+    static func closesFence(_ line: String, _ fence: CodeFence) -> Bool {
+        guard indentWidth(line) <= 3 else { return false }
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        return trimmed.count >= fence.length && trimmed.allSatisfy { $0 == fence.character }
+    }
+
     private static func isOpeningFence(_ line: String) -> Bool {
         if line.hasPrefix("~~~") { return true }
         guard line.hasPrefix("```") else { return false }
