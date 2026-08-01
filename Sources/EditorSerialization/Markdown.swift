@@ -1406,7 +1406,13 @@ public enum MarkdownParser {
               bytes[closeBracket + 1] == UInt8(ascii: "(") else { return nil }
         guard let closeParen = findLinkClose(bytes, closeBracket + 2) else { return nil }
         let label = slice(bytes, (start + 1)..<closeBracket)
-        let (url, title) = splitDestinationAndTitle(slice(bytes, (closeBracket + 2)..<closeParen))
+        let inside = slice(bytes, (closeBracket + 2)..<closeParen)
+        let (url, title) = splitDestinationAndTitle(inside)
+        // A destination that isn't in angle brackets may not contain spaces.
+        // Without this, `[a](url &quot;tit&quot;)` — whose "title" is spelled
+        // with entities, so isn't one — would still parse as a link.
+        if title == nil, url.contains(" "),
+           !inside.trimmingCharacters(in: .whitespaces).hasPrefix("<") { return nil }
         return (label, url, title, closeParen + 1)
     }
 
@@ -1561,7 +1567,8 @@ public enum MarkdownParser {
         if head.hasPrefix("<"), let close = head.firstIndex(of: ">") {
             let rest = String(head[head.index(after: close)...]).trimmingCharacters(in: .whitespaces)
             let destination = String(head[head.index(after: head.startIndex)..<close])
-            return (destination, rest.isEmpty ? nil : titleOnly(rest))
+            return (HTMLParser.decodeEntities(destination),
+                    rest.isEmpty ? nil : titleOnly(rest).map(HTMLParser.decodeEntities))
         }
         // The title is quoted with "", '' or (). Split on the whitespace before
         // the quote, so a destination that itself contains one isn't cut in half.
@@ -1580,7 +1587,11 @@ public enum MarkdownParser {
         if bare.hasPrefix("<"), bare.hasSuffix(">"), !bare.dropFirst().dropLast().contains("\n") {
             url = String(bare.dropFirst().dropLast())
         }
-        return (url.trimmingCharacters(in: .whitespaces), title)
+        // Character references are resolved here, after the destination and
+        // title have been told apart — an entity is text, never a delimiter, so
+        // `[a](url &quot;tit&quot;)` must not read as if it carried a title.
+        return (HTMLParser.decodeEntities(url.trimmingCharacters(in: .whitespaces)),
+                title.map(HTMLParser.decodeEntities))
     }
 
     /// The closing `$` of inline math, following Pandoc's `tex_math_dollars`:

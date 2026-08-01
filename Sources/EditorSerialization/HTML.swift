@@ -1115,18 +1115,32 @@ public enum HTMLParser {
         "AElig": "Æ", "OElig": "Œ", "THORN": "Þ", "ETH": "Ð",
     ]
 
+    /// A numeric reference's character. Zero, a surrogate, and anything past the
+    /// last code point are all errors that both HTML and CommonMark resolve to
+    /// the replacement character rather than dropping.
+    private static func scalarForReference(_ value: UInt32) -> Character {
+        guard value != 0, let scalar = Unicode.Scalar(value) else { return "\u{FFFD}" }
+        return Character(scalar)
+    }
+
+    /// How far to look for an entity's ";": the longest name we know, or enough
+    /// for a numeric reference, whichever is longer.
+    private static let entityWindow: Int = max(
+        (namedEntities.keys.map(\.count).max() ?? 0) + 1, 12)
+
     static func decodeEntities(_ s: String) -> String {
         guard s.contains("&") else { return s }
         var out = ""
         out.reserveCapacity(s.count)
         var i = s.startIndex
         while i < s.endIndex {
-            // An entity is "&" + a short name or numeric reference + ";". Search
-            // for the ";" only within the longest legal entity (10 chars) — an
-            // unbounded scan is quadratic on '&'-dense text like URL lists.
+            // An entity is "&" + a name or numeric reference + ";". Search for the
+            // ";" only within the longest one that could match — an unbounded
+            // scan is quadratic on '&'-dense text like URL lists. Numeric
+            // references can be longer than any name, hence the floor.
             guard s[i] == "&" else { out.append(s[i]); i = s.index(after: i); continue }
             let next = s.index(after: i)
-            let windowEnd = s.index(next, offsetBy: 10, limitedBy: s.endIndex) ?? s.endIndex
+            let windowEnd = s.index(next, offsetBy: entityWindow, limitedBy: s.endIndex) ?? s.endIndex
             guard let semi = s[next..<windowEnd].firstIndex(of: ";")
             else { out.append(s[i]); i = next; continue }
             let name = s[next..<semi]
@@ -1134,9 +1148,9 @@ public enum HTMLParser {
             if let c = namedEntities[String(name)] {
                 decoded = c
             } else if name.hasPrefix("#x") || name.hasPrefix("#X") {
-                if let v = UInt32(name.dropFirst(2), radix: 16), let u = Unicode.Scalar(v) { decoded = Character(u) }
+                decoded = UInt32(name.dropFirst(2), radix: 16).map(scalarForReference)
             } else if name.hasPrefix("#") {
-                if let v = UInt32(name.dropFirst()), let u = Unicode.Scalar(v) { decoded = Character(u) }
+                decoded = UInt32(name.dropFirst()).map(scalarForReference)
             }
             if let decoded {
                 out.append(decoded)
