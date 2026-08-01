@@ -456,17 +456,35 @@ public enum MarkdownParser {
             // Blockquote
             if trimmed.hasPrefix(">") {
                 var quote: [String] = []
-                while i < lines.count && lines[i].trimmingCharacters(in: .whitespaces).hasPrefix(">") {
-                    var l = lines[i].trimmingCharacters(in: .whitespaces)
-                    l.removeFirst()
-                    // One space after ">" is the marker's own padding. A tab
-                    // there defines the quoted content's indentation, so expand
-                    // it from the column the ">" left us in rather than
-                    // dropping it whole.
-                    if l.hasPrefix(" ") { l.removeFirst() }
-                    else if l.hasPrefix("\t") { l = expandLeadingTabs(" " + l).dropFirst(2).description }
-                    quote.append(l)
-                    i += 1
+                // Whether the previous quoted line was an open paragraph, which
+                // is what an unprefixed line is allowed to continue.
+                var inParagraph = false
+                while i < lines.count {
+                    let t = lines[i].trimmingCharacters(in: .whitespaces)
+                    if t.hasPrefix(">") {
+                        var l = t
+                        l.removeFirst()
+                        // One space after ">" is the marker's own padding. A tab
+                        // there defines the quoted content's indentation, so
+                        // expand it from the column the ">" left us in rather
+                        // than dropping it whole.
+                        if l.hasPrefix(" ") { l.removeFirst() }
+                        else if l.hasPrefix("\t") { l = expandLeadingTabs(" " + l).dropFirst(2).description }
+                        quote.append(l)
+                        let inner = l.trimmingCharacters(in: .whitespaces)
+                        inParagraph = !inner.isEmpty && !startsBlock(inner)
+                        i += 1
+                        continue
+                    }
+                    // Lazy continuation: a line without the marker continues a
+                    // paragraph inside the quote, but can't start a block there
+                    // — "> foo\n- bar" is a quote followed by a list.
+                    if inParagraph, !t.isEmpty, !startsBlock(t) {
+                        quote.append(t)
+                        i += 1
+                        continue
+                    }
+                    break
                 }
                 let inner = try parse(quote.joined(separator: "\n"), schema: schema)
                 if let bq = try? schema.node("blockquote", [:], content: inner.content) { blocks.append(bq) }
@@ -494,10 +512,7 @@ public enum MarkdownParser {
             i += 1
             while i < lines.count {
                 let t = lines[i].trimmingCharacters(in: .whitespaces)
-                if t.isEmpty || t.hasPrefix("#") || t.hasPrefix(">") || isOpeningFence(t)
-                    || t.hasPrefix("$$") || isThematicBreak(t) || setextUnderline(lines[i]) != nil
-                    || t.lowercased().hasPrefix("<details") || t.lowercased().hasPrefix("</details>")
-                    || bulletMatch(t) != nil || orderedMatch(t) != nil { break }
+                if t.isEmpty || startsBlock(t) { break }
                 // Only the leading whitespace is dropped: two or more spaces at
                 // the end of a line are a hard break, so they have to survive to
                 // the inline parser.
@@ -644,6 +659,18 @@ public enum MarkdownParser {
         if line.hasPrefix("~~~") { return true }
         guard line.hasPrefix("```") else { return false }
         return !line.drop(while: { $0 == "`" }).contains("`")
+    }
+
+    /// Whether a line begins a block of its own, rather than continuing the
+    /// paragraph above it. Shared by the paragraph gather and by a blockquote's
+    /// lazy continuation, so the two always agree on where a paragraph ends.
+    private static func startsBlock(_ trimmed: String) -> Bool {
+        trimmed.hasPrefix("#") || trimmed.hasPrefix(">") || isOpeningFence(trimmed)
+            || trimmed.hasPrefix("$$") || isThematicBreak(trimmed)
+            || setextUnderline(trimmed) != nil
+            || bulletMatch(trimmed) != nil || orderedMatch(trimmed) != nil
+            || trimmed.lowercased().hasPrefix("<details")
+            || trimmed.lowercased().hasPrefix("</details>")
     }
 
     /// A setext heading's underline: a run of `=` (level 1) or `-` (level 2),

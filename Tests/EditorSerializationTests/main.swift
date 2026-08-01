@@ -1711,6 +1711,46 @@ test("Markdown round-trip: text that looks like an autolink") {
     }
 }
 
+test("Markdown continues a blockquote's paragraph without the marker") {
+    // CommonMark's lazy continuation: the second line has no ">" but continues
+    // the paragraph inside the quote.
+    try expectEqual(try MarkdownParser.parse("> bar\nbaz", schema: schema),
+                    doc(node("blockquote", [:], [p("bar baz")])))
+    try expectEqual(try MarkdownParser.parse("> bar\nbaz\n> foo", schema: schema),
+                    doc(node("blockquote", [:], [p("bar baz foo")])))
+    // A heading inside the quote still ends at its own line.
+    try expectEqual(try MarkdownParser.parse("> # Foo\n> bar\nbaz", schema: schema),
+                    doc(node("blockquote", [:], [h(1, "Foo"), p("bar baz")])))
+}
+
+test("Markdown: a lazy line can't start a block inside a quote") {
+    // Only a paragraph continues lazily; anything that begins a block ends the
+    // quote instead.
+    try expectEqual(try MarkdownParser.parse("> bar\n- baz", schema: schema),
+                    doc(node("blockquote", [:], [p("bar")]),
+                        node("bulletList", [:], [node("listItem", [:], [p("baz")])])))
+    try expectEqual(try MarkdownParser.parse("> foo\n---", schema: schema),
+                    doc(node("blockquote", [:], [p("foo")]),
+                        node("horizontalRule", [:], [])))
+    try expectEqual(try MarkdownParser.parse("> foo\n# bar", schema: schema),
+                    doc(node("blockquote", [:], [p("foo")]), h(1, "bar")))
+    // A blank line ends the quote outright.
+    try expectEqual(try MarkdownParser.parse("> bar\n\nbaz", schema: schema),
+                    doc(node("blockquote", [:], [p("bar")]), p("baz")))
+    // A list inside the quote isn't continued by an unprefixed marker either.
+    try expectEqual(try MarkdownParser.parse("> - foo\n- bar", schema: schema),
+                    doc(node("blockquote", [:], [
+                            node("bulletList", [:], [node("listItem", [:], [p("foo")])])]),
+                        node("bulletList", [:], [node("listItem", [:], [p("bar")])])))
+}
+
+test("Markdown round-trip: a quote written with lazy continuation") {
+    // We always write the marker on every line, so both spellings converge.
+    let d = try MarkdownParser.parse("> bar\nbaz", schema: schema)
+    try expectEqual(MarkdownSerializer.serialize(d), "> bar baz")
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
 test("Markdown parses setext headings") {
     try expectEqual(try MarkdownParser.parse("Foo\n===", schema: schema), doc(h(1, "Foo")))
     try expectEqual(try MarkdownParser.parse("Foo\n---", schema: schema), doc(h(2, "Foo")))
