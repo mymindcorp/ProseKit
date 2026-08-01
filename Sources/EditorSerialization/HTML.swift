@@ -136,6 +136,25 @@ public enum HTMLSerializer {
         return " \(config.idHTMLAttr)=\"\(escapeAttribute(id))\""
     }
 
+    /// Whether a list item holds nothing — one empty paragraph, which is there
+    /// because `listItem` has to begin with one, not because anything was
+    /// written in it.
+    private static func isEmptyItem(_ item: Node) -> Bool {
+        item.content.childCount == 1 && item.content.child(0).type.name == "paragraph"
+            && item.content.child(0).content.size == 0
+    }
+
+    /// An item's blocks, without the empty paragraph `listItem`'s "paragraph
+    /// block*" shape forces in front of content that isn't one — a code block
+    /// written as the first thing in an item, say.
+    private static func itemBlocks(_ item: Node) -> [Node] {
+        var blocks = (0..<item.content.childCount).map { item.content.child($0) }
+        if blocks.count > 1, blocks[0].type.name == "paragraph", blocks[0].content.size == 0 {
+            blocks.removeFirst()
+        }
+        return blocks
+    }
+
     /// A list's items. In a tight list — one written with no blank lines
     /// between its items — a paragraph inside an item is unwrapped, which is
     /// how Markdown renders one and what a reader expects to see.
@@ -149,9 +168,9 @@ public enum HTMLSerializer {
             guard item.type.name == "listItem" else {
                 out += serializeNode(item, config); continue
             }
+            if isEmptyItem(item) { out += "<li\(idAttr(item, config))></li>"; continue }
             var inner = ""
-            for j in 0..<item.content.childCount {
-                let block = item.content.child(j)
+            for block in itemBlocks(item) {
                 inner += block.type.name == "paragraph"
                     ? serializeFragment(block.content, config)
                     : serializeNode(block, config)
@@ -176,6 +195,11 @@ public enum HTMLSerializer {
             return "<ol\(startAttr)\(idAttr(node, config))>\(listItems(node, config))</ol>"
         case "bulletList":
             return "<ul\(idAttr(node, config))>\(listItems(node, config))</ul>"
+        case "listItem" where isEmptyItem(node):
+            return "<li\(idAttr(node, config))></li>"
+        case "listItem":
+            return "<li\(idAttr(node, config))>"
+                + itemBlocks(node).map { serializeNode($0, config) }.joined() + "</li>"
         case "heading":
             let level = node.attrs["level"]?.intValue ?? 1
             return "<h\(level)\(idAttr(node, config))>\(serializeFragment(node.content, config))</h\(level)>"

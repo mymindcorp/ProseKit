@@ -3382,5 +3382,98 @@ test("A list made by the editor is loose, as documents written before this were"
     try expectEqual(HTMLSerializer.serialize(doc(list)), "<ul><li><p>a</p></li></ul>")
 }
 
+// MARK: - Lists: things the model can express that it wasn't
+
+test("Markdown: a list item's content can be a block") {
+    // A one-line item used to be inline whatever it said, so a heading, a
+    // nested list or a rule written straight after the marker stayed text.
+    // `listItem` is "paragraph block*", so the block sits after the empty
+    // paragraph the schema insists on; `content` skips it.
+    func content(_ item: Node) -> Node {
+        let blocks = (0..<item.childCount).map { item.child($0) }
+        return blocks.first { !($0.type.name == "paragraph" && $0.content.size == 0) } ?? blocks[0]
+    }
+    let heading = try MarkdownParser.parse("- # Foo", schema: schema)
+    try expectEqual(content(heading.child(0).child(0)).type.name, "heading")
+    let nested = try MarkdownParser.parse("- - foo", schema: schema)
+    try expectEqual(content(nested.child(0).child(0)).type.name, "bulletList")
+    let rule = try MarkdownParser.parse("- Foo\n- * * *", schema: schema)
+    try expectEqual(content(rule.child(0).child(1)).type.name, "horizontalRule")
+    // Nesting keeps going, and a marker that couldn't have interrupted a
+    // paragraph still starts a list here.
+    let deep = try MarkdownParser.parse("1. - 2. foo", schema: schema)
+    let inner = content(content(deep.child(0).child(0)).child(0))
+    try expectEqual(inner.type.name, "orderedList")
+    try expectEqual(inner.attrs["order"]?.intValue, 2)
+}
+
+test("Markdown: only a list that could interrupt a paragraph ends one") {
+    // An ordered list has to be numbered 1, so prose that happens to end on a
+    // number stays one paragraph.
+    try expectEqual(try MarkdownParser.parse("The number of windows is\n14. The number of doors is 6.",
+                                             schema: schema),
+                    doc(p("The number of windows is 14. The number of doors is 6.")))
+    // ...but a list numbered 1 does interrupt.
+    let one = try MarkdownParser.parse("foo\n1. bar", schema: schema)
+    try expectEqual(one.childCount, 2)
+    try expectEqual(one.child(1).type.name, "orderedList")
+    // An empty item never interrupts.
+    try expectEqual(try MarkdownParser.parse("foo\n*", schema: schema), doc(p("foo *")))
+    try expectEqual(try MarkdownParser.parse("foo\n1.", schema: schema), doc(p("foo 1.")))
+}
+
+test("Markdown: changing the marker starts a new list") {
+    let bullets = try MarkdownParser.parse("- foo\n- bar\n+ baz", schema: schema)
+    try expectEqual(bullets.childCount, 2)
+    try expectEqual(bullets.child(0).childCount, 2)
+    try expectEqual(bullets.child(1).childCount, 1)
+    // Both are still tight: the marker changed, no blank line was involved.
+    try expectEqual(bullets.child(0).attrs["tight"]?.boolValue, true)
+    let ordered = try MarkdownParser.parse("1. foo\n2. bar\n3) baz", schema: schema)
+    try expectEqual(ordered.childCount, 2)
+    try expectEqual(ordered.child(1).attrs["order"]?.intValue, 3)
+}
+
+test("Markdown: two lists in a row are written so they stay two") {
+    // Same marker twice would read back as one list.
+    let d = try MarkdownParser.parse("- foo\n+ bar", schema: schema)
+    try expectEqual(d.toMarkdown(), "- foo\n\n+ bar")
+    try expectEqual(try MarkdownParser.parse(d.toMarkdown(), schema: schema), d)
+    let ordered = try MarkdownParser.parse("1. foo\n1) bar", schema: schema)
+    try expectEqual(try MarkdownParser.parse(ordered.toMarkdown(), schema: schema), ordered)
+}
+
+test("Markdown: a rule inside a list item avoids the marker's character") {
+    // "- ---" is a thematic break, not an item holding one.
+    let d = try MarkdownParser.parse("- Foo\n- * * *", schema: schema)
+    try expect(d.toMarkdown().contains("***"), "wrote: \(d.toMarkdown())")
+    try expectEqual(try MarkdownParser.parse(d.toMarkdown(), schema: schema), d)
+}
+
+test("HTML: an empty list item is an empty <li>") {
+    let d = try MarkdownParser.parse("* a\n*\n\n* c", schema: schema)
+    try expectEqual(HTMLSerializer.serialize(d),
+                    "<ul><li><p>a</p></li><li></li><li><p>c</p></li></ul>")
+}
+
+test("HTML: the paragraph a list item is forced to start with isn't rendered") {
+    // `listItem` is "paragraph block*", so an item whose real content is a code
+    // block carries an empty paragraph in front of it. That's schema
+    // bookkeeping, not something anyone wrote.
+    let d = try MarkdownParser.parse("1. ```\n   foo\n   ```\n\n   bar", schema: schema)
+    try expectEqual(HTMLSerializer.serialize(d),
+                    "<ol><li><pre><code>foo</code></pre><p>bar</p></li></ol>")
+}
+
+test("Markdown round-trip: the list fixes") {
+    for md in ["- # Foo", "- - foo", "- Foo\n- * * *", "1. - 2. foo", "foo\n1. bar",
+               "- foo\n- bar\n+ baz", "1. foo\n2. bar\n3) baz", "* a\n*\n\n* c",
+               "1. ```\n   foo\n   ```\n\n   bar", "The number is\n14. The doors are 6."] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(try MarkdownParser.parse(d.toMarkdown(), schema: schema), d,
+                        "round-trip changed \(md.debugDescription); rewrote as:\n\(d.toMarkdown())")
+    }
+}
+
 registerBench()
 TestSuite.main("EditorSerializationTests", collector.all)
