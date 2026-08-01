@@ -222,6 +222,50 @@ test("HTML round-trip (headings, marks, lists)") {
     try expectEqual(back, d)
 }
 
+test("HTML: a mark spanning several nodes is written once around the run") {
+    // It used to be applied per node, giving `<em>foo </em><em><a>bar</a></em>`.
+    let d = try MarkdownParser.parse("*foo [bar](/url)*", schema: schema)
+    try expectEqual(HTMLSerializer.serialize(d), "<p><em>foo <a href=\"/url\">bar</a></em></p>")
+    try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema), d)
+}
+
+test("HTML: a mark stays open across a node that can't carry it") {
+    // `code` excludes every other mark, so the span itself isn't bold — but
+    // `<strong>foo <code>code</code> bar</strong>` is what should be written,
+    // and closing the strong around the span would be wrong.
+    let d = try MarkdownParser.parse("**foo `code` bar**", schema: schema)
+    try expectEqual(HTMLSerializer.serialize(d),
+                    "<p><strong>foo <code>code</code> bar</strong></p>")
+    try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema), d)
+}
+
+test("HTML: nested and adjacent marks") {
+    for (md, html) in [("**foo *bar* baz**", "<p><strong>foo <em>bar</em> baz</strong></p>"),
+                       ("***both***", "<p><strong><em>both</em></strong></p>"),
+                       ("*a* *b*", "<p><em>a</em> <em>b</em></p>")] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(HTMLSerializer.serialize(d), html, "input: \(md)")
+        try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema), d,
+                        "input: \(md)")
+    }
+}
+
+test("HTML: bold code pastes instead of failing the whole document") {
+    // The marks a page nests aren't always ones the schema can hold together —
+    // `code` excludes everything — and combining them blindly produced a set the
+    // document model rejects, so the entire paste threw.
+    for html in ["<p><strong><code>x</code></strong></p>",
+                 "<p><em><code>y</code></em></p>",
+                 "<p><strong>a<code>b</code>c</strong></p>",
+                 "<p><a href=\"/u\"><code>z</code></a></p>"] {
+        let d = try HTMLParser.parse(html, schema: schema)
+        try expect(!d.textContent.isEmpty, "lost the text: \(html)")
+    }
+    // The excluded mark is the one dropped; the code span survives.
+    let d = try HTMLParser.parse("<p><strong><code>x</code></strong></p>", schema: schema)
+    try expectEqual(d.child(0).child(0).marks.map(\.type.name), ["code"])
+}
+
 test("HTML round-trip with image + blockquote") {
     let d = doc(
         node("blockquote", [:], [p("quoted")]),

@@ -72,10 +72,59 @@ public enum HTMLSerializer {
 
     static func serializeFragment(_ fragment: Fragment, _ config: HTMLConfig) -> String {
         var out = ""
-        // Group inline runs vs block nodes naturally by recursion.
-        for i in 0..<fragment.childCount {
-            out += serializeNode(fragment.child(i), config)
+        // A mark can cover several nodes — bold across a link and the text after
+        // it is one run — so marks are opened and closed around runs rather than
+        // around each node, which would emit `<em>a</em><em><a>b</a></em>`.
+        // Block nodes carry no marks, so this is a no-op for them.
+        var active: [Mark] = []
+        func closeDown(to keep: Int) {
+            while active.count > keep { out += markClose(active.removeLast(), config) }
         }
+        func same(_ a: Mark, _ b: Mark) -> Bool { a.type === b.type && a.attrs == b.attrs }
+        func carries(_ node: Node, _ mark: Mark) -> Bool {
+            node.marks.contains { same($0, mark) }
+        }
+        // Where a mark's unbroken run starting at `from` ends.
+        func runEnd(_ mark: Mark, from: Int) -> Int {
+            var j = from
+            while j < fragment.childCount, carries(fragment.child(j), mark) { j += 1 }
+            return j
+        }
+        for i in 0..<fragment.childCount {
+            let node = fragment.child(i)
+            // A mark covering more of what follows is written outside one
+            // covering less, so a bold across a link and the text after it wraps
+            // both instead of being opened twice.
+            let own = node.marks.enumerated()
+                .sorted { left, right in
+                    let a = runEnd(left.element, from: i), b = runEnd(right.element, from: i)
+                    return a == b ? left.offset < right.offset : a > b
+                }
+                .map(\.element)
+            // A node that can't carry a mark shouldn't close it either: `code`
+            // excludes every other mark, but `<strong>a<code>b</code>c</strong>`
+            // is exactly what should be written.
+            func canCarry(_ mark: Mark) -> Bool {
+                !node.isText || mark.addToSet(node.marks).contains { $0.type === mark.type }
+            }
+            var wanted: [Mark] = []
+            for mark in active where own.contains(where: { same($0, mark) }) || !canCarry(mark) {
+                wanted.append(mark)
+            }
+            for mark in own where !wanted.contains(where: { same($0, mark) }) {
+                wanted.append(mark)
+            }
+            var shared = 0
+            while shared < active.count, shared < wanted.count,
+                  same(active[shared], wanted[shared]) { shared += 1 }
+            closeDown(to: shared)
+            for mark in wanted[shared...] {
+                out += markOpen(mark, config)
+                active.append(mark)
+            }
+            out += serializeNode(node, config)
+        }
+        closeDown(to: 0)
         return out
     }
 
@@ -88,7 +137,9 @@ public enum HTMLSerializer {
 
     static func serializeNode(_ node: Node, _ config: HTMLConfig) -> String {
         if node.isText {
-            return applyMarks(escape(node.text ?? ""), node.marks, config)
+            // Marks are written by `serializeFragment`, which wraps them around
+            // whole runs; this is just the node's own text.
+            return escape(node.text ?? "")
         }
         switch node.type.name {
         case "heading":
@@ -161,39 +212,53 @@ public enum HTMLSerializer {
         }
     }
 
-    static func applyMarks(_ text: String, _ marks: [Mark], _ config: HTMLConfig) -> String {
-        var result = text
-        for mark in marks.reversed() {
-            if mark.type.name == "link" {
-                let href = mark.attrs["href"]?.stringValue ?? ""
-                var attributes = " href=\"\(escapeAttribute(href))\""
-                if let title = mark.attrs["title"]?.stringValue {
-                    attributes += " title=\"\(escapeAttribute(title))\""
-                }
-                result = "<a\(attributes)>\(result)</a>"
-            } else if mark.type.name == "highlight" {
-                // The colour is a named style the theme resolves ("yellow"), not
-                // necessarily a CSS colour — `data-color` is what round-trips it.
-                // A style is emitted alongside only when the name happens to be
-                // real CSS, so a highlight survives pasting into another app
-                // without this ever writing a bogus declaration.
-                var attributes = ""
-                if let color = mark.attrs["color"]?.stringValue {
-                    attributes = " data-color=\"\(escapeAttribute(color))\""
-                    if let css = sanitizeCSSColor(color) {
-                        attributes += " style=\"background-color:\(escapeAttribute(css))\""
-                    }
-                }
-                result = "<mark\(attributes)>\(result)</mark>"
-            } else if mark.type.name == "textColor", let c = mark.attrs["color"]?.stringValue {
-                result = "<span style=\"color:\(escapeAttribute(c))\">\(result)</span>"
-            } else if mark.type.name == "backgroundColor", let c = mark.attrs["color"]?.stringValue {
-                result = "<span style=\"background-color:\(escapeAttribute(c))\">\(result)</span>"
-            } else if let tag = config.markTags[mark.type.name] {
-                result = "<\(tag)>\(result)</\(tag)>"
+    /// The opening tag for a mark. Split from the closing half so a mark can
+    /// wrap a run of several nodes rather than each node separately.
+    static func markOpen(_ mark: Mark, _ config: HTMLConfig) -> String {
+        switch mark.type.name {
+        case "link":
+            let href = mark.attrs["href"]?.stringValue ?? ""
+            var attributes = " href=\"\(escapeAttribute(href))\""
+            if let title = mark.attrs["title"]?.stringValue {
+                attributes += " title=\"\(escapeAttribute(title))\""
             }
+            return "<a\(attributes)>"
+        case "highlight":
+            // The colour is a named style the theme resolves ("yellow"), not
+            // necessarily a CSS colour — `data-color` is what round-trips it.
+            // A style is emitted alongside only when the name happens to be
+            // real CSS, so a highlight survives pasting into another app
+            // without this ever writing a bogus declaration.
+            var attributes = ""
+            if let color = mark.attrs["color"]?.stringValue {
+                attributes = " data-color=\"\(escapeAttribute(color))\""
+                if let css = sanitizeCSSColor(color) {
+                    attributes += " style=\"background-color:\(escapeAttribute(css))\""
+                }
+            }
+            return "<mark\(attributes)>"
+        case "textColor":
+            guard let c = mark.attrs["color"]?.stringValue else { return "" }
+            return "<span style=\"color:\(escapeAttribute(c))\">"
+        case "backgroundColor":
+            guard let c = mark.attrs["color"]?.stringValue else { return "" }
+            return "<span style=\"background-color:\(escapeAttribute(c))\">"
+        default:
+            guard let tag = config.markTags[mark.type.name] else { return "" }
+            return "<\(tag)>"
         }
-        return result
+    }
+
+    static func markClose(_ mark: Mark, _ config: HTMLConfig) -> String {
+        switch mark.type.name {
+        case "link": return "</a>"
+        case "highlight": return "</mark>"
+        case "textColor", "backgroundColor":
+            return mark.attrs["color"]?.stringValue == nil ? "" : "</span>"
+        default:
+            guard let tag = config.markTags[mark.type.name] else { return "" }
+            return "</\(tag)>"
+        }
     }
 
     static func escape(_ s: String) -> String {
@@ -682,7 +747,15 @@ public enum HTMLParser {
         // `<span style=color><strong>a</span>b</strong>`) can't pop — and corrupt
         // — a mark they didn't open. The active mark set is the open scopes' marks.
         var openMarks: [(tag: String, marks: [Mark])] = []
-        func currentMarks() -> [Mark] { openMarks.flatMap { $0.marks } }
+        // Built with `addToSet` rather than concatenated, so a mark the schema
+        // says can't sit alongside another is dropped instead of producing a set
+        // the document model rejects — `<strong><code>x</code></strong>` is
+        // ordinary markup, and `code` excludes everything else.
+        func currentMarks() -> [Mark] {
+            openMarks.flatMap(\.marks).reduce(into: [Mark]()) { set, mark in
+                set = mark.addToSet(set)
+            }
+        }
         var i = 0
         while i < tokens.count {
             switch tokens[i] {
