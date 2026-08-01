@@ -1180,9 +1180,11 @@ public enum MarkdownParser {
                     continue
                 }
             }
-            // Image by reference: ![alt][label], ![alt][] or ![alt]
+            // Image by reference: ![alt][label], ![alt][] or ![alt]. The inline
+            // form takes precedence, and it is checked for below, so this only
+            // runs when the brackets aren't followed by a destination.
             if c == "!" && i + 1 < chars.count && chars[i + 1] == "[",
-               parseLinkLike(chars, i + 1) == nil,
+               !definitions.isEmpty, parseLinkLike(chars, i + 1) == nil,
                let (alt, definition, next) = parseReference(chars, i + 1, definitions) {
                 flush()
                 var attrs: Attrs = ["src": .null, "alt": .string(unescapeInline(alt))]
@@ -1320,12 +1322,23 @@ public enum MarkdownParser {
             return nil
         }
         let pairs = processEmphasis(&delimiters, positions)
+        // How many pairs of each kind cover each piece. Counting over the pairs'
+        // ranges once beats asking, for every piece, which pairs enclose it —
+        // and the two marks are built once rather than per piece.
+        var strongDepth = [Int](repeating: 0, count: pieces.count)
+        var emphasisDepth = [Int](repeating: 0, count: pieces.count)
+        for pair in pairs {
+            let range = (positions[pair.open] + 1)..<positions[pair.close]
+            for index in range {
+                if pair.strong { strongDepth[index] += 1 } else { emphasisDepth[index] += 1 }
+            }
+        }
+        let boldMark = mark("bold"), italicMark = mark("italic")
         var result: [Node] = []
         for (index, piece) in pieces.enumerated() {
             var marks: [Mark] = []
-            for pair in pairs where positions[pair.open] < index && index < positions[pair.close] {
-                for m in mark(pair.strong ? "bold" : "italic") { marks = m.addToSet(marks) }
-            }
+            if strongDepth[index] > 0 { for m in boldMark { marks = m.addToSet(marks) } }
+            if emphasisDepth[index] > 0 { for m in italicMark { marks = m.addToSet(marks) } }
             switch piece {
             case let .node(node):
                 result.append(marks.isEmpty ? node : node.mark(marks.reduce(node.marks) { $1.addToSet($0) }))
