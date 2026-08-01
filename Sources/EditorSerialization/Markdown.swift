@@ -661,15 +661,31 @@ public enum MarkdownParser {
                         quote.append(l)
                         let inner = l.trimmingCharacters(in: .whitespaces)
                         // Indented content inside the quote is code, which
-                        // leaves no paragraph for a later line to continue.
-                        inParagraph = !inner.isEmpty && indentWidth(l) < 4 && !startsBlock(inner)
+                        // leaves no paragraph for a later line to continue. A
+                        // nested quote may leave one open inside itself, and
+                        // only its own parse knows — so let the line through and
+                        // let the recursion decide.
+                        inParagraph = !inner.isEmpty && indentWidth(l) < 4
+                            && (inner.hasPrefix(">") || !startsBlock(inner))
                         i += 1
                         continue
                     }
                     // Lazy continuation: a line without the marker continues a
                     // paragraph inside the quote, but can't start a block there
                     // — "> foo\n- bar" is a quote followed by a list.
-                    if inParagraph, !t.isEmpty, indentWidth(lines[i]) >= 4 || !startsBlock(t) {
+                    // A run of "=" only ever underlines a heading, and it can't
+                    // do that across the quote's edge — so it continues the
+                    // paragraph as text. A run of "-" is also a thematic break,
+                    // which does end the quote.
+                    let underlineOnly = setextUnderline(t) == 1
+                    if inParagraph, !t.isEmpty,
+                       indentWidth(lines[i]) >= 4 || underlineOnly || !startsBlock(t) {
+                        // Escaped, because a lazy line only ever continues a
+                        // paragraph — the quote's own parse would otherwise read
+                        // the run as underlining a heading.
+                        if underlineOnly {
+                            quote.append("\\" + t); i += 1; continue
+                        }
                         // Keep the indentation: it is what stops the line from
                         // starting a block when the quote's contents are parsed.
                         quote.append(lines[i])
@@ -806,8 +822,12 @@ public enum MarkdownParser {
         var level = 0
         for c in line { if c == "#" { level += 1 } else { break } }
         let afterRun = line.count > level ? Array(line)[level] : nil
-        guard level >= 1, level <= 6, afterRun == " " || afterRun == "\t" else { return nil }
-        var text = String(line.dropFirst(level + 1)).trimmingCharacters(in: .whitespaces)
+        // A hash run alone is an empty heading; otherwise a space has to follow
+        // it, or "#foo" would be one.
+        guard level >= 1, level <= 6,
+              afterRun == nil || afterRun == " " || afterRun == "\t" else { return nil }
+        var text = String(line.dropFirst(min(level + 1, line.count)))
+            .trimmingCharacters(in: .whitespaces)
         // An optional closing run of "#" is decoration, not content — but only
         // when it's a run on its own, so "# foo #bar" keeps its hash.
         if text.hasSuffix("#") {
@@ -929,8 +949,12 @@ public enum MarkdownParser {
             // "Foo\n[bar]: /baz" is a paragraph that happens to contain
             // brackets, and reading it as a definition would make the line
             // disappear from the document.
-            let startsABlock = remaining.isEmpty
-                || remaining[remaining.count - 1].trimmingCharacters(in: .whitespaces).isEmpty
+            // A definition can't interrupt a paragraph, but it may follow any
+            // other block — a heading, say — so what matters is whether the
+            // line before it was paragraph text rather than whether it was
+            // blank.
+            let previous = remaining.last?.trimmingCharacters(in: .whitespaces) ?? ""
+            let startsABlock = previous.isEmpty || startsBlock(previous)
             // The label itself may run across lines, so join until it closes.
             let labelExtra = (indentWidth(line) < 4 && startsABlock)
                 ? labelLines(lines, from: i) : nil
@@ -1030,6 +1054,11 @@ public enum MarkdownParser {
         var titleNewlines = 0
         var j = i + 1
         while j < chars.count, chars[j] != closing {
+            // A backslash escapes what follows, so an escaped quote doesn't
+            // close the title.
+            if chars[j] == "\\", j + 1 < chars.count {
+                title.append(chars[j]); title.append(chars[j + 1]); j += 2; continue
+            }
             // A blank line ends the title, which means there wasn't one.
             if chars[j] == "\n" {
                 if j + 1 < chars.count, chars[j + 1] == "\n" { return withoutTitle }
@@ -1139,8 +1168,11 @@ public enum MarkdownParser {
     static func listMarker(_ line: String, ordered: Bool) -> (content: String, width: Int)? {
         let markerLength: Int
         if ordered {
+            // More than nine digits isn't a list marker — "1234567890. x" is a
+            // paragraph that happens to begin with a number.
             let digits = line.prefix(while: { $0.isNumber }).count
-            guard digits > 0, line.dropFirst(digits).first == "." else { return nil }
+            let after = line.dropFirst(digits)
+            guard digits > 0, digits <= 9, after.first == "." else { return nil }
             markerLength = digits + 1
         } else {
             guard let first = line.first, first == "-" || first == "*" || first == "+" else { return nil }
@@ -1154,10 +1186,12 @@ public enum MarkdownParser {
     }
 
     private static func bulletMatch(_ line: String) -> String? {
-        // A tab after the marker separates it from the content, as a space does.
+        // A tab after the marker separates it from the content, as a space does,
+        // and a marker alone on its line is an empty item.
         for marker in ["-", "*", "+"] where line.hasPrefix(marker) {
             let rest = line.dropFirst()
-            guard let next = rest.first, next == " " || next == "\t" else { continue }
+            guard let next = rest.first else { return "" }
+            guard next == " " || next == "\t" else { continue }
             return expandLeadingTabs(String(rest.dropFirst()))
         }
         return nil
@@ -1166,9 +1200,9 @@ public enum MarkdownParser {
     private static func orderedMatch(_ line: String) -> Int? {
         var digits = ""
         for c in line { if c.isNumber { digits.append(c) } else { break } }
-        guard !digits.isEmpty else { return nil }
+        guard !digits.isEmpty, digits.count <= 9 else { return nil }
         let rest = line.dropFirst(digits.count)
-        guard rest.hasPrefix(". ") || rest.hasPrefix(".\t") else { return nil }
+        guard rest == "." || rest.hasPrefix(". ") || rest.hasPrefix(".\t") else { return nil }
         return Int(digits)
     }
 
@@ -1180,7 +1214,12 @@ public enum MarkdownParser {
         var items: [[String]] = []
         var indents: [Int] = []
         var i = start
-        func isItem(_ t: String) -> Bool { ordered ? orderedMatch(t) != nil : bulletMatch(t) != nil }
+        func isItem(_ t: String) -> Bool {
+            // "* * *" is a thematic break, which wins over the list marker it
+            // starts with — the same precedence the top-level scan applies.
+            guard !isThematicBreak(t) else { return false }
+            return ordered ? orderedMatch(t) != nil : bulletMatch(t) != nil
+        }
         func continues(_ line: String) -> Bool {
             guard let indent = indents.last,
                   !line.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
@@ -1212,7 +1251,7 @@ public enum MarkdownParser {
                 i += 1
                 continue
             }
-            if let marker = listMarker(t, ordered: ordered) {
+            if !isThematicBreak(t), let marker = listMarker(t, ordered: ordered) {
                 items.append([marker.content])
                 // The content column is where the text after the marker starts,
                 // so an item that is itself indented carries that indent.
@@ -1305,6 +1344,18 @@ public enum MarkdownParser {
 
     // Inline parser: handles **bold**, *italic*/_italic_, `code`, ~~strike~~,
     // ==highlight==, [text](url), ![alt](src), and [[wiki|link]].
+    /// A link's label is inline content — emphasis, code and images inside it are
+    /// markup, not literal text — so it's parsed like any other run and the link
+    /// mark laid over what comes back. Falls back to plain text if the label
+    /// parses to nothing.
+    private static func linkContent(_ label: String, _ link: Mark?, _ schema: Schema,
+                                    _ definitions: [String: LinkDefinition]) -> [Node] {
+        let inner = parseInline(label, schema, definitions)
+        guard !inner.isEmpty else { return [] }
+        guard let link else { return inner }
+        return inner.map { $0.mark(link.addToSet($0.marks)) }
+    }
+
     static func parseInline(_ text: String, _ schema: Schema,
                             _ definitions: [String: LinkDefinition] = [:]) -> [Node] {
         // Everything except emphasis is resolved as the text is scanned. Runs of
@@ -1438,14 +1489,15 @@ public enum MarkdownParser {
                     // Markdown reaches the editor from the same untrusted places
                     // HTML does, so `[x](javascript:…)` gets the same treatment:
                     // the link is dropped, the text kept.
-                    let text = unescapeInline(label)
+                    var linkMark: Mark?
                     if let href = sanitizeURL(url, for: .link) {
                         var attrs: Attrs = ["href": .string(href)]
                         if let title { attrs["title"] = .string(title) }
-                        appendNode(schema.text(text, mark("link", attrs)))
-                    } else if !text.isEmpty {
-                        appendNode(schema.text(text))
+                        linkMark = mark("link", attrs).first
                     }
+                    // A destination we won't follow drops the link and keeps the
+                    // label, which is still markup.
+                    for node in linkContent(label, linkMark, schema, definitions) { appendNode(node) }
                     i = next; continue
                 }
             }
@@ -1453,14 +1505,13 @@ public enum MarkdownParser {
             // after the inline form, which takes precedence.
             if c == UInt8(ascii: "["), let (label, definition, next) = parseReference(chars, i, definitions) {
                 flush()
-                let linkText = unescapeInline(label)
+                var linkMark: Mark?
                 if let href = sanitizeURL(definition.destination, for: .link) {
                     var attrs: Attrs = ["href": .string(href)]
                     if let title = definition.title { attrs["title"] = .string(title) }
-                    appendNode(schema.text(linkText, mark("link", attrs)))
-                } else if !linkText.isEmpty {
-                    appendNode(schema.text(linkText))
+                    linkMark = mark("link", attrs).first
                 }
+                for node in linkContent(label, linkMark, schema, definitions) { appendNode(node) }
                 i = next; continue
             }
             // Emphasis: a run of "*" or "_" is set aside for pairing later. A
@@ -1615,9 +1666,12 @@ public enum MarkdownParser {
     private static func parseLinkLike(_ bytes: [UInt8], _ start: Int)
         -> (text: String, url: String, title: String?, next: Int)? {
         guard bytes[start] == UInt8(ascii: "[") else { return nil }
-        guard let closeBracket = findUnescaped(bytes, start + 1, UInt8(ascii: "]")) else { return nil }
+        guard let closeBracket = matchingBracket(bytes, start + 1) else { return nil }
         guard closeBracket + 1 < bytes.count,
               bytes[closeBracket + 1] == UInt8(ascii: "(") else { return nil }
+        // An image's label may hold a link; a link's may not.
+        if start == 0 || bytes[start - 1] != UInt8(ascii: "!"),
+           labelHoldsALink(slice(bytes, (start + 1)..<closeBracket)) { return nil }
         guard let closeParen = findLinkClose(bytes, closeBracket + 2) else { return nil }
         let label = slice(bytes, (start + 1)..<closeBracket)
         let inside = slice(bytes, (closeBracket + 2)..<closeParen)
@@ -1918,6 +1972,43 @@ public enum MarkdownParser {
     /// skip `\*`, or emphasis ends at an asterisk the author escaped precisely
     /// so that it would be text. (`findSeq` needs no equivalent: an escaped
     /// delimiter can't form a run of two.)
+    /// The `]` closing the label that opens at `start`, counting nested pairs so
+    /// that `[link [foo [bar]]]` closes at the last bracket rather than the
+    /// first — and so an image inside a link, `[![alt](img)](url)`, holds
+    /// together.
+    private static func matchingBracket(_ bytes: [UInt8], _ start: Int) -> Int? {
+        var depth = 1
+        var i = start
+        while i < bytes.count {
+            if bytes[i] == UInt8(ascii: "\\") { i += 2; continue }
+            if bytes[i] == UInt8(ascii: "[") { depth += 1 }
+            else if bytes[i] == UInt8(ascii: "]") {
+                depth -= 1
+                if depth == 0 { return i }
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    /// Whether a label already holds a link, which means it can't become one:
+    /// links don't nest, so in `[foo [bar](/uri)](/uri)` the inner link wins and
+    /// the outer brackets stay literal. An image may nest, so `!` disqualifies.
+    private static func labelHoldsALink(_ label: String) -> Bool {
+        let bytes = Array(label.utf8)
+        var i = 0
+        while i < bytes.count {
+            if bytes[i] == UInt8(ascii: "\\") { i += 2; continue }
+            if bytes[i] == UInt8(ascii: "["), i == 0 || bytes[i - 1] != UInt8(ascii: "!"),
+               let close = matchingBracket(bytes, i + 1), close + 1 < bytes.count,
+               bytes[close + 1] == UInt8(ascii: "(") || bytes[close + 1] == UInt8(ascii: "[") {
+                return true
+            }
+            i += 1
+        }
+        return false
+    }
+
     private static func findUnescaped(_ bytes: [UInt8], _ from: Int, _ byte: UInt8) -> Int? {
         var i = from
         while i < bytes.count {

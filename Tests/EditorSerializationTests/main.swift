@@ -2973,5 +2973,122 @@ registerProseTests()
 registerPMMarkdownTests()
 registerAppleNotesDocTests()
 
+// MARK: - CommonMark long tail, second batch
+
+test("Markdown: an ordered list keeps the number it starts at") {
+    let d = try MarkdownParser.parse("5. five\n6. six", schema: schema)
+    try expectEqual(d.child(0).attrs["order"]?.intValue, 5)
+    // The number survives a trip through HTML, which is how a paste carries it.
+    let html = HTMLSerializer.serialize(d)
+    try expect(html.contains("start=\"5\""), "no start attribute: \(html)")
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+    // A list starting at 1 needs no attribute.
+    try expect(!HTMLSerializer.serialize(try MarkdownParser.parse("1. one", schema: schema))
+        .contains("start="), "start written for a list beginning at 1")
+}
+
+test("Markdown: an ordered marker is at most nine digits") {
+    try expectEqual(try MarkdownParser.parse("123456789. ok", schema: schema).child(0).type.name,
+                    "orderedList")
+    // Ten digits is a paragraph that happens to begin with a number.
+    try expectEqual(try MarkdownParser.parse("1234567890. not ok", schema: schema),
+                    doc(p("1234567890. not ok")))
+}
+
+test("Markdown: a marker alone is an empty list item") {
+    try expectEqual(try MarkdownParser.parse("- foo\n-\n- bar", schema: schema),
+                    doc(node("bulletList", [:], [
+                        node("listItem", [:], [p("foo")]),
+                        node("listItem", [:], [node("paragraph", [:], [])]),
+                        node("listItem", [:], [p("bar")])])))
+    try expectEqual(try MarkdownParser.parse("1.\n2. two", schema: schema).child(0).childCount, 2)
+}
+
+test("Markdown: a paragraph inside a nested quote continues lazily") {
+    // The line belongs to the innermost paragraph, however deep it sits.
+    try expectEqual(try MarkdownParser.parse("> > > foo\nbar", schema: schema),
+                    doc(node("blockquote", [:], [node("blockquote", [:], [
+                        node("blockquote", [:], [p("foo bar")])])])))
+}
+
+test("Markdown: a run of = inside a quote is text, not an underline") {
+    // "===" only ever underlines a heading, and it can't do that across the
+    // quote's edge — so it continues the paragraph.
+    try expectEqual(try MarkdownParser.parse("> foo\nbar\n===", schema: schema),
+                    doc(node("blockquote", [:], [p("foo bar ===")])))
+    // "---" is also a thematic break, which does end the quote.
+    try expectEqual(try MarkdownParser.parse("> foo\n---", schema: schema),
+                    doc(node("blockquote", [:], [p("foo")]), node("horizontalRule", [:], [])))
+}
+
+test("Markdown: a definition may follow a block that isn't a paragraph") {
+    let d = try MarkdownParser.parse("# [Foo]\n[foo]: /url\n> bar", schema: schema)
+    try expectEqual(d.child(0).type.name, "heading")
+    try expectEqual(d.child(0).child(0).marks.first?.attrs["href"]?.stringValue, "/url")
+    try expectEqual(d.child(1).type.name, "blockquote")
+    // It still can't interrupt a paragraph.
+    try expectEqual(try MarkdownParser.parse("foo\n[bar]: /url", schema: schema),
+                    doc(p("foo [bar]: /url")))
+}
+
+test("Markdown: an ATX heading may be empty") {
+    try expectEqual(try MarkdownParser.parse("## \n#\n### ###", schema: schema),
+                    doc(node("heading", ["level": .int(2)], []),
+                        node("heading", ["level": .int(1)], []),
+                        node("heading", ["level": .int(3)], [])))
+    // A hash run is still not a heading past level six, or without the space.
+    try expectEqual(try MarkdownParser.parse("#######", schema: schema), doc(p("#######")))
+    try expectEqual(try MarkdownParser.parse("#foo", schema: schema), doc(p("#foo")))
+}
+
+test("Markdown: a backslash escapes the quote inside a definition's title") {
+    let d = try MarkdownParser.parse("[foo]: /url \"tit\\\"le\"\n\n[foo]", schema: schema)
+    try expectEqual(d.childCount, 1)
+    let link = d.child(0).child(0).marks.first
+    try expectEqual(link?.attrs["href"]?.stringValue, "/url")
+    try expectEqual(link?.attrs["title"]?.stringValue, "tit\"le")
+}
+
+test("Markdown: a thematic break beats the list marker it starts with") {
+    try expectEqual(try MarkdownParser.parse("* Foo\n* * *\n* Bar", schema: schema),
+                    doc(node("bulletList", [:], [node("listItem", [:], [p("Foo")])]),
+                        node("horizontalRule", [:], []),
+                        node("bulletList", [:], [node("listItem", [:], [p("Bar")])])))
+}
+
+test("Markdown: a link label's brackets nest") {
+    // The classic linked badge — an image inside a link — used to lose both.
+    let d = try MarkdownParser.parse("[![moon](moon.jpg)](/uri)", schema: schema)
+    let image = d.child(0).child(0)
+    try expectEqual(image.type.name, "image")
+    try expectEqual(image.attrs["src"]?.stringValue, "moon.jpg")
+    try expectEqual(image.marks.first?.attrs["href"]?.stringValue, "/uri")
+    // Brackets inside the label are part of it.
+    let nested = try MarkdownParser.parse("[link [foo [bar]]](/uri)", schema: schema)
+    try expectEqual(nested.child(0).child(0).text, "link [foo [bar]]")
+    try expectEqual(nested.child(0).child(0).marks.first?.attrs["href"]?.stringValue, "/uri")
+}
+
+test("Markdown: links don't nest, so the inner one wins") {
+    // A label already holding a link can't become one, leaving the outer
+    // brackets as text.
+    let d = try MarkdownParser.parse("[foo [bar](/uri)](/uri)", schema: schema)
+    let para = d.child(0)
+    try expectEqual(para.child(0).text, "[foo ")
+    try expectEqual(para.child(1).text, "bar")
+    try expectEqual(para.child(1).marks.first?.attrs["href"]?.stringValue, "/uri")
+    try expectEqual(para.child(2).text, "](/uri)")
+}
+
+test("Markdown round-trip: the second long-tail batch") {
+    for md in ["5. five\n6. six", "- foo\n-\n- bar", "> > > foo\nbar", "> foo\nbar\n===",
+               "# [Foo]\n\n[foo]: /url", "## \n#\n### ###", "[foo]: /url \"tit\\\"le\"\n\n[foo]",
+               "* Foo\n* * *\n* Bar", "[![moon](moon.jpg)](/uri)", "[foo [bar](/uri)](/uri)"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(try MarkdownParser.parse(d.toMarkdown(), schema: schema), d,
+                        "round-trip changed \(md.debugDescription); rewrote as:\n\(d.toMarkdown())")
+    }
+}
+
 registerBench()
 TestSuite.main("EditorSerializationTests", collector.all)
