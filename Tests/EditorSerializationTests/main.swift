@@ -2056,6 +2056,41 @@ test("Markdown round-trip: setext headings serialize as ATX") {
     }
 }
 
+test("Markdown measures a list item's content column from its marker") {
+    // "1.  x" puts content at column 4, not 3. Assuming one space left every
+    // continuation line a space too deep, which showed up as indented code
+    // inside an item gaining a stray leading space.
+    let d = try MarkdownParser.parse("1.  A paragraph\n\n        indented code", schema: schema)
+    let item = d.child(0).child(0)
+    try expectEqual(item.child(item.childCount - 1).type.name, "codeBlock")
+    try expectEqual(item.child(item.childCount - 1).textContent, "indented code")
+
+    // Same for a bullet with extra spaces: content column 4, so a continuation
+    // line indented four stays in the item.
+    let bullet = try MarkdownParser.parse("-   foo\n\n    bar", schema: schema)
+    try expectEqual(bullet.child(0).child(0).childCount, 2)
+    try expectEqual(bullet.child(0).child(0).textContent, "foobar")
+}
+
+test("Markdown: a marker followed by many spaces starts indented code") {
+    // Five or more spaces would make the content itself indented code, so the
+    // content column is one past the marker rather than where the text begins.
+    let d = try MarkdownParser.parse("-      foo", schema: schema)
+    let item = d.child(0).child(0)
+    // A `listItem` has to begin with a paragraph, so an item whose content is
+    // only code carries an empty one in front of it.
+    let last = item.child(item.childCount - 1)
+    try expectEqual(last.type.name, "codeBlock", "got: \(last.type.name)")
+    try expectEqual(last.textContent, " foo")
+}
+
+test("Markdown: an item's content column still includes its own indent") {
+    // Two spaces of indent plus "- " is column 4.
+    let d = try MarkdownParser.parse("  - foo\n\n    bar", schema: schema)
+    try expectEqual(d.child(0).child(0).childCount, 2)
+    try expectEqual(d.child(0).child(0).textContent, "foobar")
+}
+
 test("Markdown parses nested lists by indentation") {
     // An indented line that looks like a marker is the current item's content,
     // which is what makes it a nested list rather than a sibling.
