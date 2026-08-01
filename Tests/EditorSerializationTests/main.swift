@@ -3475,5 +3475,45 @@ test("Markdown round-trip: the list fixes") {
     }
 }
 
+// MARK: - HTML named character references
+
+
+test("HTML: entities outside the old hand-picked set decode") {
+    let cases = [("&Dcaron;", "Ď"), ("&HilbertSpace;", "ℋ"), ("&DifferentialD;", "ⅆ"),
+                 ("&ClockwiseContourIntegral;", "∲"), ("&angmsdaa;", "⦨"), ("&boxDL;", "╗")]
+    for (entity, character) in cases {
+        try expectEqual(try HTMLParser.parse("<p>\(entity)</p>", schema: schema).child(0).textContent,
+                        character, "for \(entity)")
+        // Markdown decodes references through the same table.
+        try expectEqual(try MarkdownParser.parse(entity, schema: schema).child(0).textContent,
+                        character, "for \(entity) in Markdown")
+    }
+}
+
+test("HTML: an entity standing for more than one scalar decodes whole") {
+    // 93 of them are, e.g. "not greater than or equal to" is U+2267 U+0338.
+    try expectEqual(try HTMLParser.parse("<p>&ngE;</p>", schema: schema).child(0).textContent,
+                    "\u{2267}\u{0338}")
+    try expectEqual(try HTMLParser.parse("<p>&bne;</p>", schema: schema).child(0).textContent,
+                    "=\u{20E5}")
+}
+
+test("HTML: something that isn't an entity is left alone") {
+    for text in ["&notanentity;", "&ThisIsNotDefined;", "&MadeUpEntity;", "a & b", "&;", "&#;"] {
+        try expectEqual(try HTMLParser.parse("<p>\(text)</p>", schema: schema).child(0).textContent,
+                        text, "changed: \(text)")
+    }
+    // A name is letters and digits, so the search stops at the first character
+    // that can't be part of one rather than running to the longest name.
+    try expectEqual(try HTMLParser.parse("<p>a &amp b; c</p>", schema: schema).child(0).textContent,
+                    "a &amp b; c")
+}
+
+test("HTML round-trip: a document full of entities") {
+    let d = try HTMLParser.parse("<p>&Dcaron; &ngE; &amp; &notanentity; &copy;</p>", schema: schema)
+    try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema), d)
+    try expectEqual(try MarkdownParser.parse(d.toMarkdown(), schema: schema), d)
+}
+
 registerBench()
 TestSuite.main("EditorSerializationTests", collector.all)
