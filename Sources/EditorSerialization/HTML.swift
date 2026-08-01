@@ -146,7 +146,14 @@ public enum HTMLSerializer {
             let level = node.attrs["level"]?.intValue ?? 1
             return "<h\(level)\(idAttr(node, config))>\(serializeFragment(node.content, config))</h\(level)>"
         case "codeBlock":
-            return "<pre\(idAttr(node, config))><code>\(escape(node.textContent))</code></pre>"
+            // The convention every highlighter reads, and what CommonMark's own
+            // output uses for a fence's info string.
+            var codeAttrs = ""
+            if let language = node.attrs["language"]?.stringValue, !language.isEmpty {
+                codeAttrs = " class=\"language-\(escapeAttribute(language))\""
+            }
+            return "<pre\(idAttr(node, config))><code\(codeAttrs)>"
+                + "\(escape(node.textContent))</code></pre>"
         case "horizontalRule":
             return "<hr>"
         case "hardBreak":
@@ -441,6 +448,23 @@ public enum HTMLParser {
         case "codeBlock":
             let text = innerText(tokens, start + 1, end)
             let content = text.isEmpty ? Fragment.empty : Fragment.from([schema.text(text)])
+            // `<pre><code class="language-x">` is where the language lives; the
+            // class sits on the inner <code>, so look there too.
+            var language: String?
+            for j in (start + 1)..<max(start + 1, min(end, start + 3)) {
+                if case let .open(tag, innerAttrs, _) = tokens[j], tag == "code",
+                   let classes = innerAttrs["class"] {
+                    language = classes.split(separator: " ")
+                        .first { $0.hasPrefix("language-") }
+                        .map { String($0.dropFirst("language-".count)) }
+                }
+            }
+            if let language, !language.isEmpty,
+               schema.nodes["codeBlock"]?.spec.attrs["language"] != nil {
+                var a: Attrs = ["language": .string(language)]
+                a.merge(idAttrs(attrs, "codeBlock", schema, config)) { _, new in new }
+                return (one(try? schema.node("codeBlock", a, content: content)), end + 1)
+            }
             return (one(try? schema.node("codeBlock", idAttrs(attrs, "codeBlock", schema, config), content: content)), end + 1)
         case "paragraph":
             let inline = parseInline(Array(tokens[(start + 1)..<end]), schema, config)

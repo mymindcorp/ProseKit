@@ -18,7 +18,9 @@ let schema: Schema = {
         ("paragraph", NodeSpec(content: "inline*", group: "block")),
         ("blockquote", NodeSpec(content: "block+", group: "block", defining: true)),
         ("heading", NodeSpec(content: "inline*", group: "block", attrs: ["level": AttributeSpec(default: .int(1))], defining: true)),
-        ("codeBlock", NodeSpec(content: "text*", marks: "", group: "block", code: true, defining: true)),
+        ("codeBlock", NodeSpec(content: "text*", marks: "", group: "block",
+                               attrs: ["language": AttributeSpec(default: .null)],
+                               code: true, defining: true)),
         ("horizontalRule", NodeSpec(group: "block")),
         ("text", NodeSpec(group: "inline")),
         ("hardBreak", NodeSpec(group: "inline", inline: true)),
@@ -1665,6 +1667,56 @@ test("Markdown parses thematic breaks in every spelling") {
     // Two isn't enough, and a mixed run isn't a break.
     try expectEqual(try MarkdownParser.parse("--", schema: schema).child(0).type.name, "paragraph")
     try expectEqual(try MarkdownParser.parse("-*-", schema: schema).child(0).type.name, "paragraph")
+}
+
+test("Markdown: a closing fence must be at least as long as the opening one") {
+    // Which is how a block can contain a shorter run of its own character.
+    try expectEqual(try MarkdownParser.parse("````\naaa\n```\n``````", schema: schema),
+                    doc(node("codeBlock", [:], [t("aaa\n```")])))
+    try expectEqual(try MarkdownParser.parse("~~~~\naaa\n~~~\n~~~~", schema: schema),
+                    doc(node("codeBlock", [:], [t("aaa\n~~~")])))
+}
+
+test("Markdown: a closing fence carries nothing but its own character") {
+    // "```ruby" opens a block; it can't also close one.
+    let d = try MarkdownParser.parse("```\naaa\n```ruby\nbbb\n```", schema: schema)
+    try expectEqual(d.childCount, 1)
+    try expectEqual(d.child(0).textContent, "aaa\n```ruby\nbbb")
+}
+
+test("Markdown: an unclosed fence runs to the end") {
+    try expectEqual(try MarkdownParser.parse("```\naaa\nbbb", schema: schema),
+                    doc(node("codeBlock", [:], [t("aaa\nbbb")])))
+}
+
+test("Markdown: an indented fence takes that indentation off its content") {
+    // Up to three columns opens a fence; the content keeps whatever it has
+    // beyond the fence's own indentation.
+    try expectEqual(try MarkdownParser.parse("  ```\n  aaa\n    bbb\n  ```", schema: schema),
+                    doc(node("codeBlock", [:], [t("aaa\n  bbb")])))
+}
+
+test("Markdown round-trip: a fence's info string names the language") {
+    let d = try MarkdownParser.parse("```swift\nlet x = 1\n```", schema: schema)
+    try expectEqual(d.child(0).attrs["language"], .string("swift"))
+    try expectEqual(MarkdownSerializer.serialize(d), "```swift\nlet x = 1\n```")
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+    // Only the first word is the language, and references in it are resolved.
+    try expectEqual(try MarkdownParser.parse("``` swift extra\nx\n```", schema: schema)
+                        .child(0).attrs["language"], .string("swift"))
+    try expectEqual(try MarkdownParser.parse("``` f&ouml;&ouml;\nx\n```", schema: schema)
+                        .child(0).attrs["language"], .string("föö"))
+}
+
+test("HTML round-trip: a code block's language") {
+    let d = try MarkdownParser.parse("```swift\nlet x = 1\n```", schema: schema)
+    let html = HTMLSerializer.serialize(d)
+    try expect(html.contains("<code class=\"language-swift\">"), "got: \(html)")
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+    // A block with no language doesn't grow an empty class.
+    let plain = try MarkdownParser.parse("```\nx\n```", schema: schema)
+    try expect(!HTMLSerializer.serialize(plain).contains("class="),
+               "got: \(HTMLSerializer.serialize(plain))")
 }
 
 test("Markdown parses a ~~~ fence, including one holding backticks") {
