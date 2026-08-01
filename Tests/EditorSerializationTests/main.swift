@@ -3202,5 +3202,109 @@ test("Markdown round-trip: the third long-tail batch") {
     }
 }
 
+// MARK: - Inline HTML in Markdown, and a fourth long-tail batch
+
+test("Markdown: <br> is a hard break") {
+    let d = try MarkdownParser.parse("a <br> b", schema: schema)
+    try expectEqual(d.child(0).child(1).type.name, "hardBreak")
+    try expectEqual(try MarkdownParser.parse("a <br/> b", schema: schema), d)
+}
+
+test("Markdown: <img> becomes an image") {
+    let d = try MarkdownParser.parse("a <img src=\"x.png\" alt=\"c\" title=\"t\"> b", schema: schema)
+    let img = d.child(0).child(1)
+    try expectEqual(img.type.name, "image")
+    try expectEqual(img.attrs["src"]?.stringValue, "x.png")
+    try expectEqual(img.attrs["alt"]?.stringValue, "c")
+    try expectEqual(img.attrs["title"]?.stringValue, "t")
+}
+
+test("Markdown: inline formatting tags become marks") {
+    let cases: [(String, String)] = [
+        ("<b>x</b>", "bold"), ("<strong>x</strong>", "bold"),
+        ("<i>x</i>", "italic"), ("<em>x</em>", "italic"),
+        ("<del>x</del>", "strike"), ("<s>x</s>", "strike"),
+        ("<u>x</u>", "underline"), ("<ins>x</ins>", "underline"),
+        ("<mark>x</mark>", "highlight"), ("<code>x</code>", "code"),
+        ("<sub>x</sub>", "subscript"), ("<sup>x</sup>", "superscript"),
+    ]
+    for (md, markName) in cases {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expect(d.child(0).child(0).marks.contains { $0.type.name == markName },
+                   "\(md) did not produce a \(markName) mark")
+    }
+    // Tag names are matched case-insensitively, and markdown inside still parses.
+    let mixed = try MarkdownParser.parse("<B>*x*</B>", schema: schema)
+    try expectEqual(Set(mixed.child(0).child(0).marks.map { $0.type.name }), ["bold", "italic"])
+}
+
+test("Markdown: <a> becomes a link, and a bad scheme does not") {
+    let d = try MarkdownParser.parse("<a href=\"/u\" title=\"t\">x</a>", schema: schema)
+    let link = d.child(0).child(0).marks.first { $0.type.name == "link" }
+    try expectEqual(link?.attrs["href"]?.stringValue, "/u")
+    try expectEqual(link?.attrs["title"]?.stringValue, "t")
+    // Markdown arrives from the same untrusted places HTML does.
+    let bad = try MarkdownParser.parse("<a href=\"javascript:alert(1)\">x</a>", schema: schema)
+    try expect(!bad.child(0).textContent.isEmpty, "the text was lost")
+    try expect(bad.child(0).child(0).marks.isEmpty, "javascript: became a link")
+}
+
+test("Markdown: an unknown tag is kept as written") {
+    // Dropping it would delete the author's text — including all of
+    // `<javascript:alert(1)>`, which lands here once the sanitizer declines it.
+    for md in ["<span class=\"x\">t</span>", "<kbd>Ctrl</kbd>", "<javascript:alert(1)>",
+               "a <!-- c --> b", "a < b and c > d"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(d.child(0).textContent, md, "changed: \(md)")
+    }
+}
+
+test("Markdown: a paired inline tag stays on one line") {
+    // A tag spanning lines opens an HTML block, whose content isn't markdown,
+    // so it is left alone rather than read as an inline mark.
+    let d = try MarkdownParser.parse("<del>\nfoo\n</del>", schema: schema)
+    try expect(d.child(0).child(0).marks.isEmpty, "a block-level tag became a mark")
+}
+
+test("Markdown: an ordered list may use a closing paren") {
+    let d = try MarkdownParser.parse("1) one\n2) two", schema: schema)
+    try expectEqual(d.child(0).type.name, "orderedList")
+    try expectEqual(d.child(0).childCount, 2)
+    let start = try MarkdownParser.parse("10) foo", schema: schema)
+    try expectEqual(start.child(0).attrs["order"]?.intValue, 10)
+    // A digit run with no delimiter is still a paragraph.
+    try expectEqual(try MarkdownParser.parse("1 one", schema: schema), doc(p("1 one")))
+}
+
+test("Markdown: a definition label can't hold an unescaped bracket") {
+    try expectEqual(try MarkdownParser.parse("[foo][ref[]\n\n[ref[]: /uri", schema: schema),
+                    doc(p("[foo][ref[]"), p("[ref[]: /uri")))
+}
+
+test("Markdown: a trailing tab is not content") {
+    // It used to survive into the document and then couldn't be written back.
+    let d = try MarkdownParser.parse("Foo *bar*\t\n====", schema: schema)
+    try expectEqual(d.child(0).type.name, "heading")
+    try expectEqual(d.child(0).textContent, "Foo bar")
+    try expectEqual(try MarkdownParser.parse(d.toMarkdown(), schema: schema), d)
+}
+
+test("HTML: <ins> is underlined text") {
+    let editor = try HTMLParser.parse("<p><ins>x</ins></p>", schema: schema)
+    try expect(editor.child(0).child(0).marks.contains { $0.type.name == "underline" },
+               "<ins> did not become underline")
+}
+
+test("Markdown round-trip: the fourth long-tail batch") {
+    for md in ["a <br> b", "a <img src=\"x.png\" alt=\"c\"> b", "<b>x</b>", "<del>x</del>",
+               "<sub>2</sub>", "<a href=\"/u\">x</a>", "<span class=\"x\">t</span>",
+               "<kbd>Ctrl</kbd>", "a <!-- c --> b", "1) one\n2) two", "10) foo",
+               "[foo][ref[]\n\n[ref[]: /uri", "Foo *bar*\t\n===="] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(try MarkdownParser.parse(d.toMarkdown(), schema: schema), d,
+                        "round-trip changed \(md.debugDescription); rewrote as:\n\(d.toMarkdown())")
+    }
+}
+
 registerBench()
 TestSuite.main("EditorSerializationTests", collector.all)
