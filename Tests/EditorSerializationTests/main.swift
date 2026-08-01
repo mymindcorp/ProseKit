@@ -1909,6 +1909,43 @@ test("Markdown leaves an unmatched reference as text") {
     try expectNil(firstLink(d))
 }
 
+test("Markdown reads a definition spread across lines") {
+    // Label, destination and title may each sit on their own line, indented.
+    let d = try MarkdownParser.parse(
+        "   [foo]: \n      /url  \n           'the title'  \n\n[foo]", schema: schema)
+    try expectEqual(d.childCount, 1, "the definition left blocks behind")
+    let link = firstLink(d)
+    try expectEqual(link?.attrs["href"], .string("/url"))
+    try expectEqual(link?.attrs["title"], .string("the title"))
+}
+
+test("Markdown reads a definition's title across lines") {
+    let d = try MarkdownParser.parse("[foo]: /url 'title\nline1\nline2'\n\n[foo]", schema: schema)
+    try expectEqual(firstLink(d)?.attrs["title"], .string("title\nline1\nline2"))
+    try expectEqual(firstLink(d)?.attrs["href"], .string("/url"))
+}
+
+test("Markdown: a blank line inside a title means there is no title") {
+    // The destination still stands; what follows goes back to being text.
+    let d = try MarkdownParser.parse("[foo]: /url 'title\n\nwith blank line'\n\n[foo]",
+                                     schema: schema)
+    try expectEqual(firstLink(d)?.attrs["href"], .string("/url"))
+    try expectEqual(firstLink(d)?.attrs["title"], .null)
+    try expect(d.textContent.contains("with blank line'"), "lost the text: \(d.textContent)")
+}
+
+test("Markdown: an angle-bracketed destination on its own line") {
+    let d = try MarkdownParser.parse("[foo]:\n<my uri>\n\n[foo]", schema: schema)
+    try expectEqual(firstLink(d)?.attrs["href"], .string("my uri"))
+}
+
+test("Markdown: a title's closing quote must end its line") {
+    // Trailing text means it wasn't a title, so only the destination is taken.
+    let d = try MarkdownParser.parse("[foo]: /url \"title\" not a title\n\n[foo]", schema: schema)
+    try expectEqual(firstLink(d)?.attrs["href"], .string("/url"))
+    try expectEqual(firstLink(d)?.attrs["title"], .null)
+}
+
 test("Markdown reads a definition's title from the following line") {
     let d = try MarkdownParser.parse("[foo]: /url\n\"the title\"\n\nSee [foo].", schema: schema)
     try expectEqual(firstLink(d)?.attrs["title"], .string("the title"))
