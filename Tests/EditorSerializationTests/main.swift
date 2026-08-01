@@ -1658,6 +1658,80 @@ test("Markdown: an empty delimiter pair is text, not an empty mark") {
 
 // MARK: - CommonMark constructs
 
+// A batch of small corrections, each independent of the others.
+
+test("Markdown: an indented line continues a paragraph rather than interrupting it") {
+    // Four columns in would be code, and code can't interrupt a paragraph — so
+    // the indented line is a lazy continuation whatever it would otherwise be.
+    try expectEqual(try MarkdownParser.parse("Foo\n    ***", schema: schema), doc(p("Foo ***")))
+    try expectEqual(try MarkdownParser.parse("foo\n    # bar", schema: schema), doc(p("foo # bar")))
+    try expectEqual(try MarkdownParser.parse("Foo\n    ---", schema: schema), doc(p("Foo ---")))
+    // With a blank line between, it is a block of its own again.
+    try expectEqual(try MarkdownParser.parse("Foo\n\n    ***", schema: schema),
+                    doc(p("Foo"), node("codeBlock", [:], [t("***")])))
+}
+
+test("Markdown: indented content in a quote leaves no paragraph to continue") {
+    // "> foo" leaves one open, so the next line continues it...
+    try expectEqual(try MarkdownParser.parse("> foo\n    - bar", schema: schema),
+                    doc(node("blockquote", [:], [p("foo - bar")])))
+    // ...but ">     foo" is code inside the quote, so it doesn't.
+    let d = try MarkdownParser.parse(">     foo\n    bar", schema: schema)
+    try expectEqual(d.childCount, 2)
+    try expectEqual(d.child(0).type.name, "blockquote")
+    try expectEqual(d.child(1).type.name, "codeBlock")
+}
+
+test("Markdown: a definition has to begin a block") {
+    // Otherwise an ordinary paragraph containing brackets would vanish into one.
+    let d = try MarkdownParser.parse("Foo\n[bar]: /baz\n\n[bar]", schema: schema)
+    try expectNil(firstLink(d))
+    try expect(d.child(0).textContent.contains("[bar]: /baz"), "the line vanished")
+}
+
+test("Markdown: a definition's line must hold nothing else") {
+    for md in ["[foo]: /url \"title\" ok\n\n[foo]", "[foo]: /url junk here\n\n[foo]"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expect(firstLink(d) == nil, "parsed as a definition: \(md)")
+    }
+}
+
+test("Markdown resolves backslash escapes in destinations, titles and info strings") {
+    let d = try MarkdownParser.parse("[foo](/bar\\* \"ti\\*tle\")", schema: schema)
+    try expectEqual(firstLink(d)?.attrs["href"], .string("/bar*"))
+    try expectEqual(firstLink(d)?.attrs["title"], .string("ti*tle"))
+    let ref = try MarkdownParser.parse("[foo]\n\n[foo]: /bar\\* \"ti\\*tle\"", schema: schema)
+    try expectEqual(firstLink(ref)?.attrs["href"], .string("/bar*"))
+    try expectEqual(try MarkdownParser.parse("``` foo\\+bar\nx\n```", schema: schema)
+                        .child(0).attrs["language"], .string("foo+bar"))
+}
+
+test("Markdown round-trip: a destination or title containing a backslash") {
+    // The reader takes escapes off, so the writer has to put them on.
+    let d = doc(p(schema.text("x", [schema.mark("link", [
+        "href": .string("/a\\b"), "title": .string("t\\u")])])))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown: a whitespace-only line inside indented code keeps its content") {
+    let d = try MarkdownParser.parse("    chunk1\n      \n      chunk2", schema: schema)
+    try expectEqual(d.child(0).type.name, "codeBlock")
+    try expectEqual(d.child(0).textContent, "chunk1\n  \n  chunk2")
+}
+
+test("Markdown: a definition inside a quote belongs to the document") {
+    let d = try MarkdownParser.parse("[foo]\n\n> [foo]: /url", schema: schema)
+    try expectEqual(firstLink(d)?.attrs["href"], .string("/url"))
+}
+
+test("Markdown reads a definition whose label runs across lines") {
+    let d = try MarkdownParser.parse("[\nfoo\n]: /url\n\n[foo]", schema: schema)
+    try expectEqual(firstLink(d)?.attrs["href"], .string("/url"))
+    // An unclosed label isn't a definition at all.
+    let open = try MarkdownParser.parse("[foo\nbar\n\n[foo]", schema: schema)
+    try expectNil(firstLink(open))
+}
+
 test("Markdown parses thematic breaks in every spelling") {
     for md in ["---", "***", "___", "* * *", "- - -", "_____", " ***", "-----"] {
         let d = try MarkdownParser.parse(md, schema: schema)
@@ -1925,12 +1999,15 @@ test("Markdown reads a definition's title across lines") {
     try expectEqual(firstLink(d)?.attrs["href"], .string("/url"))
 }
 
-test("Markdown: a blank line inside a title means there is no title") {
-    // The destination still stands; what follows goes back to being text.
+test("Markdown: a blank line inside a title unmakes the definition") {
+    // Not a definition with the title dropped — not a definition at all, since
+    // the destination is followed on its line by something that isn't a title.
+    // (This corrected an assertion of mine from #47; the spec's own example
+    // keeps all three lines as paragraphs.)
     let d = try MarkdownParser.parse("[foo]: /url 'title\n\nwith blank line'\n\n[foo]",
                                      schema: schema)
-    try expectEqual(firstLink(d)?.attrs["href"], .string("/url"))
-    try expectEqual(firstLink(d)?.attrs["title"], .null)
+    try expectNil(firstLink(d))
+    try expect(d.textContent.contains("[foo]: /url 'title"), "lost the text: \(d.textContent)")
     try expect(d.textContent.contains("with blank line'"), "lost the text: \(d.textContent)")
 }
 
@@ -1939,11 +2016,13 @@ test("Markdown: an angle-bracketed destination on its own line") {
     try expectEqual(firstLink(d)?.attrs["href"], .string("my uri"))
 }
 
-test("Markdown: a title's closing quote must end its line") {
-    // Trailing text means it wasn't a title, so only the destination is taken.
+test("Markdown: text after the title unmakes the definition") {
+    // Everything after the destination has to be a title and nothing else, so
+    // this is an ordinary paragraph that happens to contain brackets.
     let d = try MarkdownParser.parse("[foo]: /url \"title\" not a title\n\n[foo]", schema: schema)
-    try expectEqual(firstLink(d)?.attrs["href"], .string("/url"))
-    try expectEqual(firstLink(d)?.attrs["title"], .null)
+    try expectNil(firstLink(d))
+    try expect(d.textContent.contains("[foo]: /url \"title\" not a title"),
+               "lost the text: \(d.textContent)")
 }
 
 test("Markdown reads a definition's title from the following line") {
