@@ -136,6 +136,31 @@ public enum HTMLSerializer {
         return " \(config.idHTMLAttr)=\"\(escapeAttribute(id))\""
     }
 
+    /// A list's items. In a tight list — one written with no blank lines
+    /// between its items — a paragraph inside an item is unwrapped, which is
+    /// how Markdown renders one and what a reader expects to see.
+    private static func listItems(_ list: Node, _ config: HTMLConfig) -> String {
+        guard list.attrs["tight"]?.boolValue == true else {
+            return serializeFragment(list.content, config)
+        }
+        var out = ""
+        for i in 0..<list.content.childCount {
+            let item = list.content.child(i)
+            guard item.type.name == "listItem" else {
+                out += serializeNode(item, config); continue
+            }
+            var inner = ""
+            for j in 0..<item.content.childCount {
+                let block = item.content.child(j)
+                inner += block.type.name == "paragraph"
+                    ? serializeFragment(block.content, config)
+                    : serializeNode(block, config)
+            }
+            out += "<li\(idAttr(item, config))>\(inner)</li>"
+        }
+        return out
+    }
+
     static func serializeNode(_ node: Node, _ config: HTMLConfig) -> String {
         if node.isText {
             // Marks are written by `serializeFragment`, which wraps them around
@@ -148,8 +173,9 @@ public enum HTMLSerializer {
             // lost the moment it leaves the editor.
             let start = node.attrs["order"]?.intValue ?? 1
             let startAttr = start == 1 ? "" : " start=\"\(start)\""
-            return "<ol\(startAttr)\(idAttr(node, config))>"
-                + "\(serializeFragment(node.content, config))</ol>"
+            return "<ol\(startAttr)\(idAttr(node, config))>\(listItems(node, config))</ol>"
+        case "bulletList":
+            return "<ul\(idAttr(node, config))>\(listItems(node, config))</ul>"
         case "heading":
             let level = node.attrs["level"]?.intValue ?? 1
             return "<h\(level)\(idAttr(node, config))>\(serializeFragment(node.content, config))</h\(level)>"
@@ -667,8 +693,40 @@ public enum HTMLParser {
         if name == "orderedList", let startAt = attrs["start"].flatMap({ Int($0) }) {
             a["order"] = .int(startAt)
         }
+        // No `<li>` wrapping its text in a paragraph means the list was written
+        // tight, which is how it should be written back out. Read off the
+        // tokens, because fitting the content to the schema puts a paragraph
+        // inside every item regardless.
+        if type.spec.attrs["tight"] != nil, !children.isEmpty,
+           !tokensHaveItemParagraph(tokens, start, end) {
+            a["tight"] = .bool(true)
+        }
         if let n = try? type.create(a, content: Fragment.from(children)) { return n }
         return type.createAndFill(a, content: Fragment.from(children))
+    }
+
+    /// Whether any `<li>` directly under this list wraps its content in a `<p>`.
+    private static func tokensHaveItemParagraph(_ tokens: [Token], _ start: Int, _ end: Int) -> Bool {
+        var i = start + 1
+        while i < end {
+            guard case let .open(tag, _, _) = tokens[i], tag == "li" else { i += 1; continue }
+            let liEnd = matchingClose(tokens, i, "li")
+            var j = i + 1
+            var depth = 0
+            while j < liEnd {
+                if case let .open(inner, _, selfClosing) = tokens[j] {
+                    // Only the item's own children count — a paragraph inside a
+                    // nested list belongs to that list, not this one.
+                    if depth == 0, inner == "p" { return true }
+                    if !selfClosing, inner == "ul" || inner == "ol" { depth += 1 }
+                } else if case let .close(inner) = tokens[j], inner == "ul" || inner == "ol" {
+                    depth -= 1
+                }
+                j += 1
+            }
+            i = liEnd + 1
+        }
+        return false
     }
 
     /// Parse a `<details>` into `details(detailsSummary, detailsContent)`. The

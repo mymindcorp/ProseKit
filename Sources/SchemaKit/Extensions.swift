@@ -235,7 +235,14 @@ public final class ListItemExtension: NodeExtension {
 public final class BulletListExtension: NodeExtension {
     public let name = "bulletList"
     public init() {}
-    public var nodeSpec: NodeSpec { NodeSpec(content: "listItem+", group: "block") }
+    /// `tight` records how the list was written: a tight list has no blank
+    /// lines between its items, and renders without a paragraph inside each
+    /// one. Markdown makes the distinction and HTML shows it, so the document
+    /// has to carry it or a round trip loses it.
+    public var nodeSpec: NodeSpec {
+        NodeSpec(content: "listItem+", group: "block",
+                 attrs: ["tight": AttributeSpec(default: .bool(false))])
+    }
     public var html: HTMLSpec { HTMLSpec(tag: "ul") }
     public func commands(_ ctx: ExtensionContext) -> [String: Command] {
         guard let type = ctx.nodeType, let item = ctx.schema.nodes["listItem"] else { return [:] }
@@ -254,7 +261,11 @@ public final class BulletListExtension: NodeExtension {
 public final class OrderedListExtension: NodeExtension {
     public let name = "orderedList"
     public init() {}
-    public var nodeSpec: NodeSpec { NodeSpec(content: "listItem+", group: "block", attrs: ["order": AttributeSpec(default: .int(1))]) }
+    public var nodeSpec: NodeSpec {
+        NodeSpec(content: "listItem+", group: "block",
+                 attrs: ["order": AttributeSpec(default: .int(1)),
+                         "tight": AttributeSpec(default: .bool(false))])
+    }
     public var html: HTMLSpec { HTMLSpec(tag: "ol") }
     public func commands(_ ctx: ExtensionContext) -> [String: Command] {
         guard let type = ctx.nodeType, let item = ctx.schema.nodes["listItem"] else { return [:] }

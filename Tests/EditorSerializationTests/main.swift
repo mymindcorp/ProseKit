@@ -12,6 +12,10 @@ let cellAttrs: [String: AttributeSpec] = [
     "colwidth": AttributeSpec(default: .null),
 ]
 
+/// The attributes of a list written tight — no blank lines between its items,
+/// which is how nearly every list in these tests is spelled.
+let tightList: Attrs = ["tight": .bool(true)]
+
 let schema: Schema = {
     let nodes: [(String, NodeSpec)] = [
         ("doc", NodeSpec(content: "block+")),
@@ -27,8 +31,8 @@ let schema: Schema = {
         ("image", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["src": AttributeSpec(), "alt": AttributeSpec(default: .null), "title": AttributeSpec(default: .null), "width": AttributeSpec(default: .null), "height": AttributeSpec(default: .null), "model": AttributeSpec(default: .null)])),
         ("wikiLink", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["target": AttributeSpec(), "label": AttributeSpec(default: .null)], leafText: { $0.attrs["label"]?.stringValue ?? $0.attrs["target"]?.stringValue ?? "" })),
         ("mention", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["id": AttributeSpec(), "label": AttributeSpec(default: .null)], leafText: { "@" + ($0.attrs["label"]?.stringValue ?? $0.attrs["id"]?.stringValue ?? "") })),
-        ("bulletList", NodeSpec(content: "listItem+", group: "block")),
-        ("orderedList", NodeSpec(content: "listItem+", group: "block", attrs: ["order": AttributeSpec(default: .int(1))])),
+        ("bulletList", NodeSpec(content: "listItem+", group: "block", attrs: ["tight": AttributeSpec(default: .bool(false))])),
+        ("orderedList", NodeSpec(content: "listItem+", group: "block", attrs: ["order": AttributeSpec(default: .int(1)), "tight": AttributeSpec(default: .bool(false))])),
         ("listItem", NodeSpec(content: "paragraph block*", defining: true)),
         ("taskList", NodeSpec(content: "taskItem+", group: "block")),
         ("taskItem", NodeSpec(content: "paragraph block*", attrs: ["checked": AttributeSpec(default: .bool(false))], defining: true)),
@@ -72,7 +76,7 @@ func em(_ s: String) -> Node { schema.text(s, [schema.mark("italic")]) }
 // MARK: - JSON
 
 test("JSON round-trip") {
-    let d = doc(h(2, "Title"), p(t("Hello "), strong("world")), node("bulletList", [:], [node("listItem", [:], [p("item")])]))
+    let d = doc(h(2, "Title"), p(t("Hello "), strong("world")), node("bulletList", tightList, [node("listItem", [:], [p("item")])]))
     let json = try DocumentJSON.string(d)
     let back = try DocumentJSON.decode(schema, json)
     try expectEqual(d, back)
@@ -180,7 +184,7 @@ test("JSON encodes documents identically to JSONEncoder") {
     let docs = [
         doc(p("hi")),
         doc(h(2, "Title"), p(t("Hello "), strong("world")), node("horizontalRule", [:], [])),
-        doc(node("bulletList", [:], [node("listItem", [:], [p("item")])])),
+        doc(node("bulletList", tightList, [node("listItem", [:], [p("item")])])),
         doc(p(node("image", ["src": .string("a.png"), "alt": .null, "width": .int(3)]))),
         doc(p(t("marks \" and \n newlines"))),
     ]
@@ -215,7 +219,7 @@ test("HTML round-trip (headings, marks, lists)") {
     let d = doc(
         h(2, "Title"),
         p(t("plain "), strong("bold"), t(" "), em("italic")),
-        node("bulletList", [:], [
+        node("bulletList", tightList, [
             node("listItem", [:], [p("one")]),
             node("listItem", [:], [p("two")]),
         ]))
@@ -977,7 +981,7 @@ test("HTML: inline markup inside a list item keeps its marks") {
     // bold, link and italic in it.
     let d = try HTMLParser.parse("<ul><li>a <strong>bold</strong> c</li></ul>", schema: schema)
     try d.check()
-    try expectEqual(d, doc(node("bulletList", [:], [
+    try expectEqual(d, doc(node("bulletList", tightList, [
         node("listItem", [:], [p(t("a "), strong("bold"), t(" c"))]),
     ])))
 }
@@ -1388,7 +1392,7 @@ test("Apple Notes proto: hostile varint lengths return nil, never trap") {
 // MARK: - Markdown
 
 test("Markdown serialize") {
-    let d = doc(h(2, "Title"), p(t("a "), strong("b")), node("bulletList", [:], [node("listItem", [:], [p("x")]), node("listItem", [:], [p("y")])]))
+    let d = doc(h(2, "Title"), p(t("a "), strong("b")), node("bulletList", tightList, [node("listItem", [:], [p("x")]), node("listItem", [:], [p("y")])]))
     let md = MarkdownSerializer.serialize(d)
     try expectEqual(md, "## Title\n\na **b**\n\n- x\n- y")
 }
@@ -1426,7 +1430,7 @@ test("Markdown highlight round-trip (==text==)") {
 test("Markdown round-trip (blockquote, list, hr)") {
     let d = doc(
         node("blockquote", [:], [p("quote")]),
-        node("bulletList", [:], [node("listItem", [:], [p("a")]), node("listItem", [:], [p("b")])]),
+        node("bulletList", tightList, [node("listItem", [:], [p("a")]), node("listItem", [:], [p("b")])]),
         node("horizontalRule"))
     let md = MarkdownSerializer.serialize(d)
     let back = try MarkdownParser.parse(md, schema: schema)
@@ -1507,7 +1511,7 @@ test("Markdown details round-trip") {
 }
 
 test("Markdown details round-trip (closed, nested list)") {
-    let d = doc(details("Items", [node("bulletList", [:], [
+    let d = doc(details("Items", [node("bulletList", tightList, [
         node("listItem", [:], [p("a")]),
         node("listItem", [:], [p("b")]),
     ])]))
@@ -2104,7 +2108,7 @@ test("Markdown: a lazy line can't start a block inside a quote") {
     // quote instead.
     try expectEqual(try MarkdownParser.parse("> bar\n- baz", schema: schema),
                     doc(node("blockquote", [:], [p("bar")]),
-                        node("bulletList", [:], [node("listItem", [:], [p("baz")])])))
+                        node("bulletList", tightList, [node("listItem", [:], [p("baz")])])))
     try expectEqual(try MarkdownParser.parse("> foo\n---", schema: schema),
                     doc(node("blockquote", [:], [p("foo")]),
                         node("horizontalRule", [:], [])))
@@ -2116,8 +2120,8 @@ test("Markdown: a lazy line can't start a block inside a quote") {
     // A list inside the quote isn't continued by an unprefixed marker either.
     try expectEqual(try MarkdownParser.parse("> - foo\n- bar", schema: schema),
                     doc(node("blockquote", [:], [
-                            node("bulletList", [:], [node("listItem", [:], [p("foo")])])]),
-                        node("bulletList", [:], [node("listItem", [:], [p("bar")])])))
+                            node("bulletList", tightList, [node("listItem", [:], [p("foo")])])]),
+                        node("bulletList", tightList, [node("listItem", [:], [p("bar")])])))
 }
 
 test("Markdown round-trip: a quote written with lazy continuation") {
@@ -2231,19 +2235,19 @@ test("Markdown parses nested lists by indentation") {
 }
 
 test("Markdown round-trip: nested lists") {
-    let d = doc(node("bulletList", [:], [
+    let d = doc(node("bulletList", tightList, [
         node("listItem", [:], [
             p("a"),
-            node("bulletList", [:], [node("listItem", [:], [p("b")])]),
+            node("bulletList", tightList, [node("listItem", [:], [p("b")])]),
         ]),
         node("listItem", [:], [p("c")]),
     ]))
     try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
 
-    let ordered = doc(node("orderedList", ["order": .int(1)], [
+    let ordered = doc(node("orderedList", ["order": .int(1), "tight": .bool(true)], [
         node("listItem", [:], [
             p("a"),
-            node("orderedList", ["order": .int(1)], [node("listItem", [:], [p("b")])]),
+            node("orderedList", ["order": .int(1), "tight": .bool(true)], [node("listItem", [:], [p("b")])]),
         ]),
     ]))
     try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(ordered), schema: schema),
@@ -2308,7 +2312,7 @@ test("Markdown round-trip: a list item whose content is a code block") {
     // The schema makes a `listItem` start with a paragraph, so such an item
     // carries an empty one. Writing it out would put a blank line after the
     // marker and read back as something else.
-    let d = doc(node("bulletList", [:], [
+    let d = doc(node("bulletList", tightList, [
         node("listItem", [:], [
             try schema.node("paragraph", [:]),
             node("codeBlock", [:], [t("x = 1")]),
@@ -2324,9 +2328,9 @@ test("Markdown treats a tab as block structure where a space would be") {
     // behave as if they were replaced by spaces with a tab stop of 4".
     try expectEqual(try MarkdownParser.parse("#\tFoo", schema: schema), doc(h(1, "Foo")))
     try expectEqual(try MarkdownParser.parse("-\tfoo", schema: schema),
-                    doc(node("bulletList", [:], [node("listItem", [:], [p("foo")])])))
+                    doc(node("bulletList", tightList, [node("listItem", [:], [p("foo")])])))
     try expectEqual(try MarkdownParser.parse("1.\tfoo", schema: schema),
-                    doc(node("orderedList", ["order": .int(1)], [
+                    doc(node("orderedList", ["order": .int(1), "tight": .bool(true)], [
                         node("listItem", [:], [p("foo")])])))
     try expectEqual(try MarkdownParser.parse(">\tfoo", schema: schema),
                     doc(node("blockquote", [:], [p("foo")])))
@@ -2553,14 +2557,14 @@ test("Markdown round-trip: empty formulas") {
 test("Markdown round-trip: math inside a list item") {
     // CommonMark keeps a block in the item only while every line is indented to
     // the content column, so the closing "$$" has to be indented too.
-    let bullet = doc(node("bulletList", [:], [
+    let bullet = doc(node("bulletList", tightList, [
         node("listItem", [:], [p("a"), blockMath("x^2")]),
     ]))
     let md = MarkdownSerializer.serialize(bullet)
     try expect(md.contains("\n  $$"), "closing fence not indented into the item: \(md)")
     try expectEqual(try MarkdownParser.parse(md, schema: schema), bullet)
 
-    let ordered = doc(node("orderedList", ["order": .int(1)], [
+    let ordered = doc(node("orderedList", ["order": .int(1), "tight": .bool(true)], [
         node("listItem", [:], [p("a"), blockMath("y")]),
     ]))
     try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(ordered), schema: schema),
@@ -2568,7 +2572,7 @@ test("Markdown round-trip: math inside a list item") {
 }
 
 test("Markdown round-trip: inline math in a list item") {
-    let d = doc(node("bulletList", [:], [
+    let d = doc(node("bulletList", tightList, [
         node("listItem", [:], [p(t("let "), inlineMath("x^2"))]),
     ]))
     try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
@@ -2608,7 +2612,7 @@ test("Markdown: surrounding whitespace in a display formula is trimmed") {
 
 test("Markdown round-trip: a fenced code block inside a list item") {
     // Same continuation-line machinery the formula case needs.
-    let d = doc(node("bulletList", [:], [
+    let d = doc(node("bulletList", tightList, [
         node("listItem", [:], [p("a"), node("codeBlock", [:], [t("x = 1")])]),
     ]))
     try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
@@ -2685,7 +2689,7 @@ test("Markdown task lists are inert in a schema without the nodes") {
 }
 
 test("Markdown round-trip: math in an ordered list that doesn't start at 1") {
-    let d = doc(node("orderedList", ["order": .int(7)], [
+    let d = doc(node("orderedList", ["order": .int(7), "tight": .bool(true)], [
         node("listItem", [:], [p("a"), blockMath("x^2")]),
         node("listItem", [:], [p(t("b "), inlineMath("y"))]),
     ]))
@@ -2761,7 +2765,7 @@ test("Markdown serializing math twice produces the same text") {
     let d = doc(h(2, "Formulas"),
                 p(t("inline "), inlineMath("x^2"), t(" and $5")),
                 blockMath("E = mc^2"),
-                node("bulletList", [:], [node("listItem", [:], [p("a"), blockMath("y")])]))
+                node("bulletList", tightList, [node("listItem", [:], [p("a"), blockMath("y")])]))
     let once = MarkdownSerializer.serialize(d)
     let twice = MarkdownSerializer.serialize(try MarkdownParser.parse(once, schema: schema))
     try expectEqual(twice, once)
@@ -2938,7 +2942,7 @@ test("property: random docs round-trip through HTML and JSON") {
         case 0: return node("heading", ["level": .int(1 + rnd(6))], [schema.text(rndText())])
         case 1: return node("codeBlock", [:], [schema.text(rndText())])
         case 2: return node("horizontalRule")
-        case 3: return node("bulletList", [:], (0...rnd(2)).map { _ in
+        case 3: return node("bulletList", tightList, (0...rnd(2)).map { _ in
             node("listItem", [:], [rndPara()])
         })
         case 4: return node("taskList", [:], (0...rnd(2)).map { _ in
@@ -2997,7 +3001,7 @@ test("Markdown: an ordered marker is at most nine digits") {
 
 test("Markdown: a marker alone is an empty list item") {
     try expectEqual(try MarkdownParser.parse("- foo\n-\n- bar", schema: schema),
-                    doc(node("bulletList", [:], [
+                    doc(node("bulletList", tightList, [
                         node("listItem", [:], [p("foo")]),
                         node("listItem", [:], [node("paragraph", [:], [])]),
                         node("listItem", [:], [p("bar")])])))
@@ -3051,9 +3055,9 @@ test("Markdown: a backslash escapes the quote inside a definition's title") {
 
 test("Markdown: a thematic break beats the list marker it starts with") {
     try expectEqual(try MarkdownParser.parse("* Foo\n* * *\n* Bar", schema: schema),
-                    doc(node("bulletList", [:], [node("listItem", [:], [p("Foo")])]),
+                    doc(node("bulletList", tightList, [node("listItem", [:], [p("Foo")])]),
                         node("horizontalRule", [:], []),
-                        node("bulletList", [:], [node("listItem", [:], [p("Bar")])])))
+                        node("bulletList", tightList, [node("listItem", [:], [p("Bar")])])))
 }
 
 test("Markdown: a link label's brackets nest") {
@@ -3304,6 +3308,78 @@ test("Markdown round-trip: the fourth long-tail batch") {
         try expectEqual(try MarkdownParser.parse(d.toMarkdown(), schema: schema), d,
                         "round-trip changed \(md.debugDescription); rewrote as:\n\(d.toMarkdown())")
     }
+}
+
+// MARK: - Tight and loose lists
+
+test("Markdown: a list with no blank lines between its items is tight") {
+    let tight = try MarkdownParser.parse("- a\n- b", schema: schema)
+    try expectEqual(tight.child(0).attrs["tight"]?.boolValue, true)
+    let loose = try MarkdownParser.parse("- a\n\n- b", schema: schema)
+    try expectEqual(loose.child(0).attrs["tight"]?.boolValue, false)
+    // A blank line inside one item makes the whole list loose too.
+    let inner = try MarkdownParser.parse("- a\n\n  b\n- c", schema: schema)
+    try expectEqual(inner.child(0).attrs["tight"]?.boolValue, false)
+}
+
+test("HTML: a tight list renders without a paragraph in each item") {
+    let tight = try MarkdownParser.parse("- a\n- b", schema: schema)
+    try expectEqual(HTMLSerializer.serialize(tight), "<ul><li>a</li><li>b</li></ul>")
+    let loose = try MarkdownParser.parse("- a\n\n- b", schema: schema)
+    try expectEqual(HTMLSerializer.serialize(loose),
+                    "<ul><li><p>a</p></li><li><p>b</p></li></ul>")
+    // A block that isn't a paragraph is still written whole.
+    let nested = try MarkdownParser.parse("- a\n  - b", schema: schema)
+    try expectEqual(HTMLSerializer.serialize(nested), "<ul><li>a<ul><li>b</li></ul></li></ul>")
+}
+
+test("HTML: tightness survives a round trip through HTML") {
+    for md in ["- a\n- b", "- a\n\n- b", "1. a\n2. b", "1. a\n\n2. b"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        let back = try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema)
+        try expectEqual(back.child(0).attrs["tight"], d.child(0).attrs["tight"],
+                        "tightness lost for \(md.debugDescription)")
+    }
+    // A paragraph inside a nested list doesn't make the outer list loose.
+    let outer = try HTMLParser.parse("<ul><li>a<ul><li><p>b</p></li></ul></li></ul>", schema: schema)
+    try expectEqual(outer.child(0).attrs["tight"]?.boolValue, true)
+}
+
+test("Markdown: a loose list keeps the blank line that made it loose") {
+    let loose = try MarkdownParser.parse("- a\n\n- b", schema: schema)
+    try expectEqual(loose.toMarkdown(), "- a\n\n- b")
+    let tight = try MarkdownParser.parse("- a\n- b", schema: schema)
+    try expectEqual(tight.toMarkdown(), "- a\n- b")
+}
+
+test("Markdown: a loose list of one item puts its blank line after the marker") {
+    // There is no gap between items to carry it, so the other spelling is used.
+    let d = try MarkdownParser.parse("-\n\n  foo", schema: schema)
+    try expectEqual(d.child(0).attrs["tight"]?.boolValue, false)
+    try expectEqual(d.toMarkdown(), "-\n\n  foo")
+    try expectEqual(try MarkdownParser.parse(d.toMarkdown(), schema: schema), d)
+}
+
+test("Markdown round-trip: tight and loose lists") {
+    for md in ["- a\n- b", "- a\n\n- b", "- a\n  - b\n- c", "1. a\n2. b", "1. a\n\n2. b",
+               "-\n\n  foo", "- a\n  > b\n  ```\n  c\n  ```\n- d", "* a\n  > b\n  >\n* c",
+               "- a\n\n  b\n- c", "10) foo\n    - bar"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(try MarkdownParser.parse(d.toMarkdown(), schema: schema), d,
+                        "round-trip changed \(md.debugDescription); rewrote as:\n\(d.toMarkdown())")
+    }
+}
+
+test("A list made by the editor is loose, as documents written before this were") {
+    // The attribute defaults to false so that a stored document, which has no
+    // `tight` recorded at all, renders exactly as it did before.
+    let list = try schema.node("bulletList", [:], content: Fragment.from([
+        try schema.node("listItem", [:], content: Fragment.from([
+            try schema.node("paragraph", [:], content: Fragment.from([schema.text("a")])),
+        ])),
+    ]))
+    try expectEqual(list.attrs["tight"]?.boolValue, false)
+    try expectEqual(HTMLSerializer.serialize(doc(list)), "<ul><li><p>a</p></li></ul>")
 }
 
 registerBench()
