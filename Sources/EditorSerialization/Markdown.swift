@@ -64,7 +64,7 @@ public enum MarkdownSerializer {
             let alt = node.attrs["alt"]?.stringValue ?? ""
             if let title = node.attrs["title"]?.stringValue, !title.isEmpty {
                 let q = title.contains("\"") ? "'" : "\""
-                return "![\(alt)](\(destination(src)) \(q)\(title)\(q))"
+                return "![\(alt)](\(destination(src)) \(q)\(titleText(title))\(q))"
             }
             return "![\(alt)](\(destination(src)))"
         case "blockMath":
@@ -179,7 +179,7 @@ public enum MarkdownSerializer {
             let href = mark.attrs["href"]?.stringValue ?? ""
             if let title = mark.attrs["title"]?.stringValue, !title.isEmpty {
                 let q = title.contains("\"") ? "'" : "\""
-                return "](\(destination(href)) \(q)\(title)\(q))"
+                return "](\(destination(href)) \(q)\(titleText(title))\(q))"
             }
             return "](\(destination(href)))"
         case "italic": return "*"
@@ -365,8 +365,16 @@ public enum MarkdownSerializer {
     /// A destination that contains a space, a parenthesis or a backslash can't
     /// be written bare — CommonMark's answer is to wrap it in angle brackets.
     static func destination(_ url: String) -> String {
-        url.contains(where: { $0 == " " || $0 == "(" || $0 == ")" || $0 == "\\" })
-            ? "<\(url)>" : url
+        // The reader takes backslash escapes off a destination, so a backslash
+        // that belongs to the URL has to be written as two.
+        let escaped = url.replacingOccurrences(of: "\\", with: "\\\\")
+        return escaped.contains(where: { $0 == " " || $0 == "(" || $0 == ")" })
+            ? "<\(escaped)>" : escaped
+    }
+
+    /// A title, with the escapes the reader will resolve written out.
+    static func titleText(_ title: String) -> String {
+        title.replacingOccurrences(of: "\\", with: "\\\\")
     }
 
     static func applyMarks(_ text: String, _ marks: [Mark]) -> String {
@@ -397,7 +405,7 @@ public enum MarkdownSerializer {
             let href = link.attrs["href"]?.stringValue ?? ""
             if let title = link.attrs["title"]?.stringValue, !title.isEmpty {
                 let q = title.contains("\"") ? "'" : "\""
-                result = "[\(result)](\(destination(href)) \(q)\(title)\(q))"
+                result = "[\(result)](\(destination(href)) \(q)\(titleText(title))\(q))"
             } else {
                 result = "[\(result)](\(destination(href)))"
             }
@@ -432,9 +440,39 @@ public enum MarkdownParser {
     public static func parse(_ markdown: String, schema: Schema) throws -> Node {
         // A reference can appear before the definition it uses, so definitions
         // are collected — and their lines removed — before anything is parsed.
-        let (lines, definitions) = collectDefinitions(
-            markdown.components(separatedBy: "\n").map(expandLeadingTabs))
-        return try parse(lines: lines, schema: schema, definitions: definitions)
+        let expanded = markdown.components(separatedBy: "\n").map(expandLeadingTabs)
+        let (lines, definitions) = collectDefinitions(expanded)
+        // A definition inside a quote still belongs to the document.
+        let all = definitions.merging(collectNestedDefinitions(expanded)) { outer, _ in outer }
+        return try parse(lines: lines, schema: schema, definitions: all)
+    }
+
+    /// Definitions found anywhere in a document, including inside quotes and
+    /// list items — a reference resolves against every definition in the
+    /// document, not only those at the top level.
+    static func collectNestedDefinitions(_ lines: [String]) -> [String: LinkDefinition] {
+        var found: [String: LinkDefinition] = [:]
+        var quoted: [String] = []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix(">") else {
+                if !quoted.isEmpty {
+                    for (key, value) in collectDefinitions(quoted).1 where found[key] == nil {
+                        found[key] = value
+                    }
+                    quoted = []
+                }
+                continue
+            }
+            var inner = trimmed
+            inner.removeFirst()
+            if inner.hasPrefix(" ") { inner.removeFirst() }
+            quoted.append(inner)
+        }
+        for (key, value) in collectDefinitions(quoted).1 where found[key] == nil {
+            found[key] = value
+        }
+        return found
     }
 
     /// Parse a nested run of lines — a quote's body, a list item's content —
@@ -470,8 +508,9 @@ public enum MarkdownParser {
                     let l = lines[i]
                     if l.trimmingCharacters(in: .whitespaces).isEmpty {
                         // A blank line belongs to the block only if indented
-                        // code follows it, so hold it until we know.
-                        blanks.append("")
+                        // code follows it, so hold it until we know. Its own
+                        // spaces past the fourth column are content.
+                        blanks.append(String(l.dropFirst(min(4, l.count))))
                         i += 1
                         continue
                     }
@@ -510,7 +549,7 @@ public enum MarkdownParser {
                    schema.nodes["codeBlock"]?.spec.attrs["language"] != nil {
                     let language = fence.info.split(whereSeparator: { $0.isWhitespace }).first
                     if let language {
-                        attrs["language"] = .string(HTMLParser.decodeEntities(String(language)))
+                        attrs["language"] = .string(resolveEscapes(String(language)))
                     }
                 }
                 if let cb = try? schema.node("codeBlock", attrs, content: content) { blocks.append(cb) }
@@ -621,15 +660,19 @@ public enum MarkdownParser {
                         else if l.hasPrefix("\t") { l = expandLeadingTabs(" " + l).dropFirst(2).description }
                         quote.append(l)
                         let inner = l.trimmingCharacters(in: .whitespaces)
-                        inParagraph = !inner.isEmpty && !startsBlock(inner)
+                        // Indented content inside the quote is code, which
+                        // leaves no paragraph for a later line to continue.
+                        inParagraph = !inner.isEmpty && indentWidth(l) < 4 && !startsBlock(inner)
                         i += 1
                         continue
                     }
                     // Lazy continuation: a line without the marker continues a
                     // paragraph inside the quote, but can't start a block there
                     // — "> foo\n- bar" is a quote followed by a list.
-                    if inParagraph, !t.isEmpty, !startsBlock(t) {
-                        quote.append(t)
+                    if inParagraph, !t.isEmpty, indentWidth(lines[i]) >= 4 || !startsBlock(t) {
+                        // Keep the indentation: it is what stops the line from
+                        // starting a block when the quote's contents are parsed.
+                        quote.append(lines[i])
                         i += 1
                         continue
                     }
@@ -661,7 +704,10 @@ public enum MarkdownParser {
             i += 1
             while i < lines.count {
                 let t = lines[i].trimmingCharacters(in: .whitespaces)
-                if t.isEmpty || startsBlock(t) { break }
+                // Four columns in would be code, and code can't interrupt a
+                // paragraph — so an indented line continues this one, whatever
+                // it would otherwise start.
+                if t.isEmpty || (indentWidth(lines[i]) < 4 && startsBlock(t)) { break }
                 // Only the leading whitespace is dropped: two or more spaces at
                 // the end of a line are a hard break, so they have to survive to
                 // the inline parser.
@@ -879,15 +925,29 @@ public enum MarkdownParser {
                 fence = trimmed.hasPrefix("```") ? "```" : "~~~"
                 remaining.append(line); i += 1; continue
             }
-            // Four columns in is code, not a definition.
-            guard indentWidth(line) < 4, let (label, rest) = parseDefinitionHead(line) else {
+            // Four columns in is code, and a definition has to begin a block —
+            // "Foo\n[bar]: /baz" is a paragraph that happens to contain
+            // brackets, and reading it as a definition would make the line
+            // disappear from the document.
+            let startsABlock = remaining.isEmpty
+                || remaining[remaining.count - 1].trimmingCharacters(in: .whitespaces).isEmpty
+            // The label itself may run across lines, so join until it closes.
+            let labelExtra = (indentWidth(line) < 4 && startsABlock)
+                ? labelLines(lines, from: i) : nil
+            let head = labelExtra.map { extra -> String in
+                guard extra > 0 else { return line }
+                return ([line] + lines[(i + 1)...(i + extra)]
+                    .map { $0.trimmingCharacters(in: .whitespaces) }).joined(separator: " ")
+            }
+            guard let head, let (label, rest) = parseDefinitionHead(head) else {
                 remaining.append(line); i += 1; continue
             }
+            let labelConsumed = labelExtra ?? 0
             // The destination may sit on the line below the label, and a title
             // below that, so the body is scanned across the following lines
             // rather than assumed to be on this one. A blank line ends it.
             var following: [String] = []
-            var j = i + 1
+            var j = i + 1 + labelConsumed
             while j < lines.count, !lines[j].trimmingCharacters(in: .whitespaces).isEmpty {
                 following.append(lines[j])
                 j += 1
@@ -901,10 +961,17 @@ public enum MarkdownParser {
                 definitions[key] = LinkDefinition(destination: body.destination, title: body.title)
             }
             // Whatever the definition didn't consume is content again.
-            let consumed = 1 + body.lines
+            let consumed = 1 + labelConsumed + body.lines
             i += consumed
         }
         return (remaining, definitions)
+    }
+
+    /// A destination, title or info string as written: character references
+    /// resolved, and backslash escapes taken off. Both are text there, not
+    /// markup, so `/bar\*` is a path containing an asterisk.
+    static func resolveEscapes(_ s: String) -> String {
+        unescapeInline(HTMLParser.decodeEntities(s))
     }
 
     /// A definition's destination and optional title, and how many *extra* lines
@@ -942,7 +1009,17 @@ public enum MarkdownParser {
             while i < chars.count, !chars[i].isWhitespace { destination.append(chars[i]); i += 1 }
         }
         guard !destination.isEmpty else { return nil }
-        let withoutTitle = (HTMLParser.decodeEntities(destination), String?.none, newlines)
+        // Nothing but space may follow the destination on its line, or this is
+        // an ordinary paragraph that happens to look like a definition.
+        var afterDestination = i
+        while afterDestination < chars.count,
+              chars[afterDestination] == " " || chars[afterDestination] == "\t" {
+            afterDestination += 1
+        }
+        let destinationEndsLine = afterDestination >= chars.count || chars[afterDestination] == "\n"
+        let withoutTitle = destinationEndsLine
+            ? (resolveEscapes(destination), String?.none, newlines)
+            : nil
 
         skipSpace()
         guard i < chars.count, chars[i] == "\"" || chars[i] == "'" || chars[i] == "(" else {
@@ -966,11 +1043,26 @@ public enum MarkdownParser {
         var k = j + 1
         while k < chars.count, chars[k] == " " || chars[k] == "\t" { k += 1 }
         guard k >= chars.count || chars[k] == "\n" else { return withoutTitle }
-        return (HTMLParser.decodeEntities(destination),
-                HTMLParser.decodeEntities(title), newlines + titleNewlines)
+        return (resolveEscapes(destination), resolveEscapes(title), newlines + titleNewlines)
     }
 
     /// `[label]:` at the head of a line, returning the label and what follows.
+    /// How many extra lines a definition's label needs, when it runs across
+    /// them: `[\nfoo\n]: /url` is a label of "foo". Nil when the label never
+    /// closes, which means this isn't a definition.
+    static func labelLines(_ lines: [String], from start: Int) -> Int? {
+        guard lines[start].trimmingCharacters(in: .whitespaces).hasPrefix("[") else { return nil }
+        var joined = lines[start]
+        var extra = 0
+        while parseDefinitionHead(joined) == nil, start + extra + 1 < lines.count, extra < 8 {
+            let next = lines[start + extra + 1]
+            if next.trimmingCharacters(in: .whitespaces).isEmpty { return nil }
+            joined += " " + next.trimmingCharacters(in: .whitespaces)
+            extra += 1
+        }
+        return parseDefinitionHead(joined) == nil ? nil : extra
+    }
+
     private static func parseDefinitionHead(_ line: String) -> (label: String, rest: String)? {
         let t = line.trimmingCharacters(in: .whitespaces)
         guard t.hasPrefix("[") else { return nil }
@@ -1689,8 +1781,8 @@ public enum MarkdownParser {
         if head.hasPrefix("<"), let close = head.firstIndex(of: ">") {
             let rest = String(head[head.index(after: close)...]).trimmingCharacters(in: .whitespaces)
             let destination = String(head[head.index(after: head.startIndex)..<close])
-            return (HTMLParser.decodeEntities(destination),
-                    rest.isEmpty ? nil : titleOnly(rest).map(HTMLParser.decodeEntities))
+            return (resolveEscapes(destination),
+                    rest.isEmpty ? nil : titleOnly(rest).map(resolveEscapes))
         }
         // The title is quoted with "", '' or (). Split on the whitespace before
         // the quote, so a destination that itself contains one isn't cut in half.
@@ -1712,8 +1804,8 @@ public enum MarkdownParser {
         // Character references are resolved here, after the destination and
         // title have been told apart — an entity is text, never a delimiter, so
         // `[a](url &quot;tit&quot;)` must not read as if it carried a title.
-        return (HTMLParser.decodeEntities(url.trimmingCharacters(in: .whitespaces)),
-                title.map(HTMLParser.decodeEntities))
+        return (resolveEscapes(url.trimmingCharacters(in: .whitespaces)),
+                title.map(resolveEscapes))
     }
 
     /// The closing `$` of inline math, following Pandoc's `tex_math_dollars`:
