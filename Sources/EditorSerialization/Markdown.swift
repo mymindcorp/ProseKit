@@ -866,12 +866,13 @@ public enum MarkdownParser {
     private static func parseDefinitionHead(_ line: String) -> (label: String, rest: String)? {
         let t = line.trimmingCharacters(in: .whitespaces)
         guard t.hasPrefix("[") else { return nil }
-        let chars = Array(t)
-        guard let close = findUnescaped(chars, 1, "]"), close > 1,
-              close + 1 < chars.count, chars[close + 1] == ":" else { return nil }
-        let label = String(chars[1..<close])
+        let bytes = Array(t.utf8)
+        guard let close = findUnescaped(bytes, 1, UInt8(ascii: "]")), close > 1,
+              close + 1 < bytes.count, bytes[close + 1] == UInt8(ascii: ":") else { return nil }
+        let label = slice(bytes, 1..<close)
         guard !label.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
-        return (label, String(chars[(close + 2)...]).trimmingCharacters(in: .whitespaces))
+        return (label, slice(bytes, (close + 2)..<bytes.count)
+            .trimmingCharacters(in: .whitespaces))
     }
 
     /// The contents of a line that is nothing but a quoted title.
@@ -1102,28 +1103,36 @@ public enum MarkdownParser {
         }
         var pieces: [Piece] = []
         var delimiters: [Delimiter] = []
-        let chars = Array(text)
+        // UTF-8 bytes, not characters: every delimiter this scanner branches on
+        // is ASCII, and no byte of a multi-byte character is ASCII, so the two
+        // agree on where everything starts and ends. Comparing bytes is an
+        // integer compare rather than a string compare, and pulling a range out
+        // is a copy rather than a per-character append.
+        let chars = Array(text.utf8)
         var i = 0
-        var buffer = ""
+        var buffer: [UInt8] = []
         func flush(_ marks: [Mark] = []) {
             // Character references are text, not markup: "&amp;" is an ampersand.
             // The HTML parser already knows every named, decimal and hex form, so
             // reuse it rather than growing a second table. Code spans flush their
             // own literal text and never come through here.
-            if !buffer.isEmpty { pieces.append(.node(schema.text(buffer, marks))); buffer = "" }
+            if !buffer.isEmpty {
+                pieces.append(.node(schema.text(String(decoding: buffer, as: UTF8.self), marks)))
+                buffer = []
+            }
         }
         func appendNode(_ node: Node) { pieces.append(.node(node)) }
         func mark(_ name: String, _ attrs: Attrs = [:]) -> [Mark] {
             schema.marks[name].map { [$0.create(attrs)] } ?? []
         }
-        let asciiPunct = Set("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
+        let asciiPunct = Set("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~".utf8)
         while i < chars.count {
             let c = chars[i]
             // Backslash: a hard break before a newline, otherwise an escape that
             // emits the next punctuation character literally.
-            if c == "\\", i + 1 < chars.count {
+            if c == UInt8(ascii: "\\"), i + 1 < chars.count {
                 let next = chars[i + 1]
-                if next == "\n" {
+                if next == UInt8(ascii: "\n") {
                     flush()
                     if let br = try? schema.nodes["hardBreak"]?.create() { appendNode(br) }
                     i += 2; continue
@@ -1133,45 +1142,44 @@ public enum MarkdownParser {
             // A line break: two or more spaces before it make it hard (the form
             // most editors emit), otherwise it is a soft wrap and reads as one
             // space. Either way the trailing spaces themselves are not content.
-            if c == "\n" {
+            if c == UInt8(ascii: "\n") {
                 var spaces = 0
-                while buffer.hasSuffix(" ") { buffer.removeLast(); spaces += 1 }
+                while buffer.last == UInt8(ascii: " ") { buffer.removeLast(); spaces += 1 }
                 if spaces >= 2 {
                     flush()
                     if let br = try? schema.nodes["hardBreak"]?.create() { appendNode(br) }
                 } else {
-                    buffer.append(" ")
+                    buffer.append(UInt8(ascii: " "))
                 }
                 i += 1; continue
             }
             // A character reference is text: "&amp;" is an ampersand. Decoded
             // here rather than over the finished buffer so that an escaped "\&"
             // — already resolved to a literal "&" — isn't decoded a second time.
-            if c == "&", let semi = findChar(chars, i + 1, ";"), semi - i <= 32 {
-                let reference = String(chars[i...semi])
+            if c == UInt8(ascii: "&"), let semi = findByte(chars, i + 1, UInt8(ascii: ";")), semi - i <= 32 {
+                let reference = slice(chars, i..<(semi + 1))
                 let decoded = HTMLParser.decodeEntities(reference)
                 // "&#10;" is a newline, which is block structure in this model,
                 // not text — decoding it would produce a document we can't write
                 // back. Leave those references as written.
                 if decoded != reference, !decoded.unicodeScalars.contains(where: { $0.value < 0x20 }) {
-                    buffer += decoded
+                    buffer += Array(decoded.utf8)
                     i = semi + 1; continue
                 }
             }
             // Autolink <scheme:...> — a bare URL in angle brackets.
-            if c == "<", let close = findChar(chars, i + 1, ">"),
-               isAutolink(String(chars[(i + 1)..<close])),
-               let href = sanitizeURL(String(chars[(i + 1)..<close]), for: .link) {
+            if c == UInt8(ascii: "<"), let close = findByte(chars, i + 1, UInt8(ascii: ">")),
+               case let url = slice(chars, (i + 1)..<close), isAutolink(url),
+               let href = sanitizeURL(url, for: .link) {
                 flush()
-                let text = String(chars[(i + 1)..<close])
-                appendNode(schema.text(text, mark("link", ["href": .string(href)])))
+                appendNode(schema.text(url, mark("link", ["href": .string(href)])))
                 i = close + 1; continue
             }
             // Wiki link [[...]]
-            if c == "[" && i + 1 < chars.count && chars[i + 1] == "[" {
-                if let close = findSeq(chars, i + 2, "]]") {
+            if c == UInt8(ascii: "[") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "[") {
+                if let close = findSeq(chars, i + 2, Array("]]".utf8)) {
                     flush()
-                    let inner = String(chars[(i + 2)..<close])
+                    let inner = slice(chars, (i + 2)..<close)
                     let parts = inner.split(separator: "|", maxSplits: 1).map(String.init)
                     var attrs: Attrs = ["target": .string(parts[0])]
                     if parts.count > 1 { attrs["label"] = .string(parts[1]) }
@@ -1183,7 +1191,7 @@ public enum MarkdownParser {
             // Image by reference: ![alt][label], ![alt][] or ![alt]. The inline
             // form takes precedence, and it is checked for below, so this only
             // runs when the brackets aren't followed by a destination.
-            if c == "!" && i + 1 < chars.count && chars[i + 1] == "[",
+            if c == UInt8(ascii: "!") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "["),
                !definitions.isEmpty, parseLinkLike(chars, i + 1) == nil,
                let (alt, definition, next) = parseReference(chars, i + 1, definitions) {
                 flush()
@@ -1197,7 +1205,7 @@ public enum MarkdownParser {
                 i = next; continue
             }
             // Image ![alt](src)
-            if c == "!" && i + 1 < chars.count && chars[i + 1] == "[" {
+            if c == UInt8(ascii: "!") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "[") {
                 if let (alt, url, title, next) = parseLinkLike(chars, i + 1) {
                     flush()
                     var attrs: Attrs = ["src": .null, "alt": .string(unescapeInline(alt))]
@@ -1210,7 +1218,7 @@ public enum MarkdownParser {
                 }
             }
             // Link [text](url)
-            if c == "[" {
+            if c == UInt8(ascii: "[") {
                 if let (label, url, title, next) = parseLinkLike(chars, i) {
                     flush()
                     // Markdown reaches the editor from the same untrusted places
@@ -1229,21 +1237,21 @@ public enum MarkdownParser {
             }
             // Link by reference: [text][label], [label][] or [label]. Tried
             // after the inline form, which takes precedence.
-            if c == "[", let (text, definition, next) = parseReference(chars, i, definitions) {
+            if c == UInt8(ascii: "["), let (label, definition, next) = parseReference(chars, i, definitions) {
                 flush()
-                let label = unescapeInline(text)
+                let linkText = unescapeInline(label)
                 if let href = sanitizeURL(definition.destination, for: .link) {
                     var attrs: Attrs = ["href": .string(href)]
                     if let title = definition.title { attrs["title"] = .string(title) }
-                    appendNode(schema.text(label, mark("link", attrs)))
-                } else if !label.isEmpty {
-                    appendNode(schema.text(label))
+                    appendNode(schema.text(linkText, mark("link", attrs)))
+                } else if !linkText.isEmpty {
+                    appendNode(schema.text(linkText))
                 }
                 i = next; continue
             }
             // Emphasis: a run of "*" or "_" is set aside for pairing later. A
             // run that can neither open nor close is just text.
-            if c == "*" || c == "_" {
+            if c == UInt8(ascii: "*") || c == UInt8(ascii: "_") {
                 let run = runLength(chars, i, c)
                 let sides = flanking(chars, i, i + run)
                 if sides.canOpen || sides.canClose {
@@ -1252,35 +1260,36 @@ public enum MarkdownParser {
                                                 canOpen: sides.canOpen, canClose: sides.canClose))
                     pieces.append(.delimiter(delimiters.count - 1))
                 } else {
-                    buffer += String(repeating: String(c), count: run)
+                    buffer += Array(repeating: c, count: run)
                 }
                 i += run
                 continue
             }
             // Strike ~~ ~~
-            if c == "~" && i + 1 < chars.count && chars[i + 1] == "~" {
-                if let close = findSeq(chars, i + 2, "~~"), close > i + 2 {
+            if c == UInt8(ascii: "~") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "~") {
+                if let close = findSeq(chars, i + 2, Array("~~".utf8)), close > i + 2 {
                     flush()
-                    appendNode(schema.text(unescapeInline(String(chars[(i + 2)..<close])), mark("strike")))
+                    appendNode(schema.text(unescapeInline(slice(chars, (i + 2)..<close)), mark("strike")))
                     i = close + 2; continue
                 }
             }
             // Highlight == ==
             // A run of "=" is a setext heading underline or a divider far more
             // often than it is an empty highlight, so require content.
-            if c == "=" && i + 1 < chars.count && chars[i + 1] == "=" {
-                if let close = findSeq(chars, i + 2, "=="), close > i + 2 {
+            if c == UInt8(ascii: "=") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "=") {
+                if let close = findSeq(chars, i + 2, Array("==".utf8)), close > i + 2 {
                     flush()
-                    appendNode(schema.text(unescapeInline(String(chars[(i + 2)..<close])), mark("highlight")))
+                    appendNode(schema.text(unescapeInline(slice(chars, (i + 2)..<close)), mark("highlight")))
                     i = close + 2; continue
                 }
             }
             // Inline math $ $ — only when the schema has the node, so a lone `$`
             // (or a price like "$5 and $6") stays literal text elsewhere.
-            if c == "$", let type = schema.nodes["inlineMath"],
-               i + 1 < chars.count, chars[i + 1] != "$", !chars[i + 1].isWhitespace,
+            if c == UInt8(ascii: "$"), let type = schema.nodes["inlineMath"],
+               i + 1 < chars.count, chars[i + 1] != UInt8(ascii: "$"),
+               !(scalarAt(i + 1, chars).map(isUnicodeWhitespace) ?? true),
                let close = findMathClose(chars, i + 1),
-               let math = try? type.create(["latex": .string(String(chars[(i + 1)..<close]))]) {
+               let math = try? type.create(["latex": .string(slice(chars, (i + 1)..<close))]) {
                 flush()
                 appendNode(math)
                 i = close + 1; continue
@@ -1290,10 +1299,10 @@ public enum MarkdownParser {
             // literal — no escapes — but line endings read as spaces, and one
             // space of padding at each end is dropped (it exists so a span can
             // start or end with a backtick).
-            if c == "`" {
-                let run = runLength(chars, i, "`")
+            if c == UInt8(ascii: "`") {
+                let run = runLength(chars, i, UInt8(ascii: "`"))
                 if let close = findBacktickRun(chars, i + run, run) {
-                    var content = String(chars[(i + run)..<close])
+                    var content = slice(chars, (i + run)..<close)
                         .replacingOccurrences(of: "\n", with: " ")
                     if content.count >= 2, content.hasPrefix(" "), content.hasSuffix(" "),
                        content.contains(where: { $0 != " " }) {
@@ -1311,7 +1320,7 @@ public enum MarkdownParser {
         }
         // Trailing spaces at the very end are not content (two before a newline
         // were already consumed as a hard break above).
-        while buffer.hasSuffix(" ") { buffer.removeLast() }
+        while buffer.last == UInt8(ascii: " ") { buffer.removeLast() }
         flush()
 
         // Pair the delimiters, then hand every piece the marks of the pairs that
@@ -1346,8 +1355,8 @@ public enum MarkdownParser {
                 // Whatever the pairing didn't use is literal text.
                 let leftover = delimiters[d].count
                 if leftover > 0 {
-                    result.append(schema.text(String(repeating: String(delimiters[d].char),
-                                                     count: leftover), marks))
+                    let character = Character(UnicodeScalar(delimiters[d].char))
+                    result.append(schema.text(String(repeating: character, count: leftover), marks))
                 }
             }
         }
@@ -1382,20 +1391,28 @@ public enum MarkdownParser {
         return !rest.isEmpty && !rest.contains(where: { $0 == " " || $0 == "<" || $0 == ">" || $0 == "\n" })
     }
 
-    private static func parseLinkLike(_ chars: [Character], _ start: Int)
+    /// A `String` from a range of the byte buffer. Ranges only ever start and end
+    /// on ASCII delimiters, so they never split a multi-byte character, and this
+    /// is a copy of the bytes rather than a per-character append.
+    private static func slice(_ bytes: [UInt8], _ range: Range<Int>) -> String {
+        String(decoding: bytes[range], as: UTF8.self)
+    }
+
+    private static func parseLinkLike(_ bytes: [UInt8], _ start: Int)
         -> (text: String, url: String, title: String?, next: Int)? {
-        guard chars[start] == "[" else { return nil }
-        guard let closeBracket = findUnescaped(chars, start + 1, "]") else { return nil }
-        guard closeBracket + 1 < chars.count, chars[closeBracket + 1] == "(" else { return nil }
-        guard let closeParen = findLinkClose(chars, closeBracket + 2) else { return nil }
-        let text = String(chars[(start + 1)..<closeBracket])
-        let (url, title) = splitDestinationAndTitle(String(chars[(closeBracket + 2)..<closeParen]))
-        return (text, url, title, closeParen + 1)
+        guard bytes[start] == UInt8(ascii: "[") else { return nil }
+        guard let closeBracket = findUnescaped(bytes, start + 1, UInt8(ascii: "]")) else { return nil }
+        guard closeBracket + 1 < bytes.count,
+              bytes[closeBracket + 1] == UInt8(ascii: "(") else { return nil }
+        guard let closeParen = findLinkClose(bytes, closeBracket + 2) else { return nil }
+        let label = slice(bytes, (start + 1)..<closeBracket)
+        let (url, title) = splitDestinationAndTitle(slice(bytes, (closeBracket + 2)..<closeParen))
+        return (label, url, title, closeParen + 1)
     }
 
     /// One run of `*` or `_`, as the emphasis algorithm sees it.
     struct Delimiter {
-        let char: Character
+        let char: UInt8
         /// How many characters of the run are still unused.
         var count: Int
         /// The run's full length, which the rule of three is stated in terms of.
@@ -1487,18 +1504,19 @@ public enum MarkdownParser {
     /// continue. Nil when the brackets don't name a definition, so unmatched
     /// brackets stay literal text — which is what keeps prose like "see [1]"
     /// intact.
-    private static func parseReference(_ chars: [Character], _ start: Int,
+    private static func parseReference(_ bytes: [UInt8], _ start: Int,
                                        _ definitions: [String: LinkDefinition])
         -> (text: String, definition: LinkDefinition, next: Int)? {
-        guard !definitions.isEmpty, chars[start] == "[" else { return nil }
-        guard let closeBracket = findUnescaped(chars, start + 1, "]") else { return nil }
-        let first = String(chars[(start + 1)..<closeBracket])
+        guard !definitions.isEmpty, bytes[start] == UInt8(ascii: "[") else { return nil }
+        guard let closeBracket = findUnescaped(bytes, start + 1, UInt8(ascii: "]")) else { return nil }
+        let first = slice(bytes, (start + 1)..<closeBracket)
         var label = first
         var next = closeBracket + 1
         // A second bracket pair makes it a full or collapsed reference.
-        if closeBracket + 1 < chars.count, chars[closeBracket + 1] == "[" {
-            guard let closeSecond = findUnescaped(chars, closeBracket + 2, "]") else { return nil }
-            let second = String(chars[(closeBracket + 2)..<closeSecond])
+        if closeBracket + 1 < bytes.count, bytes[closeBracket + 1] == UInt8(ascii: "[") {
+            guard let closeSecond = findUnescaped(bytes, closeBracket + 2,
+                                                  UInt8(ascii: "]")) else { return nil }
+            let second = slice(bytes, (closeBracket + 2)..<closeSecond)
             // `[text][]` is collapsed: the text is its own label.
             label = second.trimmingCharacters(in: .whitespaces).isEmpty ? first : second
             next = closeSecond + 1
@@ -1510,16 +1528,18 @@ public enum MarkdownParser {
     /// The `)` that closes a link, skipping the parts that may contain one:
     /// an angle-bracketed destination, a quoted title, and balanced parentheses
     /// (which is also the `(title)` spelling).
-    private static func findLinkClose(_ chars: [Character], _ from: Int) -> Int? {
+    private static func findLinkClose(_ bytes: [UInt8], _ from: Int) -> Int? {
         var i = from
         var depth = 0
-        while i < chars.count {
-            let c = chars[i]
-            if c == "\\" { i += 2; continue }
-            if c == "<", let close = findUnescaped(chars, i + 1, ">") { i = close + 1; continue }
-            if c == "\"" || c == "'", let close = findUnescaped(chars, i + 1, c) { i = close + 1; continue }
-            if c == "(" { depth += 1; i += 1; continue }
-            if c == ")" {
+        while i < bytes.count {
+            let b = bytes[i]
+            if b == UInt8(ascii: "\\") { i += 2; continue }
+            if b == UInt8(ascii: "<"),
+               let close = findUnescaped(bytes, i + 1, UInt8(ascii: ">")) { i = close + 1; continue }
+            if b == UInt8(ascii: "\"") || b == UInt8(ascii: "'"),
+               let close = findUnescaped(bytes, i + 1, b) { i = close + 1; continue }
+            if b == UInt8(ascii: "(") { depth += 1; i += 1; continue }
+            if b == UInt8(ascii: ")") {
                 if depth == 0 { return i }
                 depth -= 1
                 i += 1
@@ -1579,54 +1599,88 @@ public enum MarkdownParser {
     /// `_` additionally may not open or close inside a word, which is what keeps
     /// `snake_case_name` from turning into emphasis when it arrives in Markdown
     /// somebody else wrote.
-    private static func flanking(_ chars: [Character], _ start: Int, _ end: Int)
+    private static func flanking(_ bytes: [UInt8], _ start: Int, _ end: Int)
         -> (canOpen: Bool, canClose: Bool) {
-        func isPunct(_ c: Character) -> Bool {
-            c.isPunctuation || c.isSymbol || "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~".contains(c)
-        }
-        let before: Character? = start > 0 ? chars[start - 1] : nil
-        let after: Character? = end < chars.count ? chars[end] : nil
+        // The rules are stated over code points, so the characters either side of
+        // the run are decoded rather than read as bytes. Everything else in the
+        // scanner can stay bytes because it only ever branches on ASCII.
+        let before = scalarBefore(start, bytes)
+        let after = scalarAt(end, bytes)
         // Absent means "start/end of line", which counts as whitespace.
-        let spaceBefore = before.map(\.isWhitespace) ?? true
-        let spaceAfter = after.map(\.isWhitespace) ?? true
-        let punctBefore = before.map(isPunct) ?? false
-        let punctAfter = after.map(isPunct) ?? false
+        let spaceBefore = before.map(isUnicodeWhitespace) ?? true
+        let spaceAfter = after.map(isUnicodeWhitespace) ?? true
+        let punctBefore = before.map(isUnicodePunctuation) ?? false
+        let punctAfter = after.map(isUnicodePunctuation) ?? false
 
         let left = !spaceAfter && (!punctAfter || spaceBefore || punctBefore)
         let right = !spaceBefore && (!punctBefore || spaceAfter || punctAfter)
-        guard chars[start] == "_" else { return (left, right) }
+        guard bytes[start] == UInt8(ascii: "_") else { return (left, right) }
         return (left && (!right || punctBefore), right && (!left || punctAfter))
     }
 
-    /// The length of the run of `ch` starting at `from`.
-    private static func runLength(_ chars: [Character], _ from: Int, _ ch: Character) -> Int {
+    private static func isUnicodeWhitespace(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.value < 0x80 ? (scalar == " " || scalar == "\t" || scalar == "\n"
+                               || scalar == "\r" || scalar.value == 0x0B || scalar.value == 0x0C)
+            : scalar.properties.isWhitespace
+    }
+
+    private static func isUnicodePunctuation(_ scalar: Unicode.Scalar) -> Bool {
+        if scalar.value < 0x80 {
+            return "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~".unicodeScalars.contains(scalar)
+        }
+        let character = Character(scalar)
+        return character.isPunctuation || character.isSymbol
+    }
+
+    /// The scalar beginning at `index`, or nil at the end of the buffer.
+    private static func scalarAt(_ index: Int, _ bytes: [UInt8]) -> Unicode.Scalar? {
+        guard index < bytes.count else { return nil }
+        let lead = bytes[index]
+        if lead < 0x80 { return Unicode.Scalar(lead) }
+        let width = lead >= 0xF0 ? 4 : (lead >= 0xE0 ? 3 : 2)
+        let end = min(index + width, bytes.count)
+        return String(decoding: bytes[index..<end], as: UTF8.self).unicodeScalars.first
+    }
+
+    /// The scalar ending just before `index`, or nil at the start of the buffer.
+    private static func scalarBefore(_ index: Int, _ bytes: [UInt8]) -> Unicode.Scalar? {
+        guard index > 0 else { return nil }
+        var start = index - 1
+        // Step back over the continuation bytes of a multi-byte character.
+        while start > 0, bytes[start] & 0xC0 == 0x80 { start -= 1 }
+        return scalarAt(start, bytes)
+    }
+
+    /// The length of the run of `byte` starting at `from`.
+    private static func runLength(_ bytes: [UInt8], _ from: Int, _ byte: UInt8) -> Int {
         var n = 0
-        while from + n < chars.count, chars[from + n] == ch { n += 1 }
+        while from + n < bytes.count, bytes[from + n] == byte { n += 1 }
         return n
     }
 
     /// The start of the next run of exactly `length` backticks.
-    private static func findBacktickRun(_ chars: [Character], _ from: Int, _ length: Int) -> Int? {
+    private static func findBacktickRun(_ bytes: [UInt8], _ from: Int, _ length: Int) -> Int? {
+        let tick = UInt8(ascii: "`")
         var i = from
-        while i < chars.count {
-            guard chars[i] == "`" else { i += 1; continue }
-            let run = runLength(chars, i, "`")
+        while i < bytes.count {
+            guard bytes[i] == tick else { i += 1; continue }
+            let run = runLength(bytes, i, tick)
             if run == length { return i }
             i += run
         }
         return nil
     }
 
-    /// The start of the next run of `ch` at least `length` long that can close
+    /// The start of the next run of `byte` at least `length` long that can close
     /// emphasis, skipping escaped delimiters.
-    private static func findClosingRun(_ chars: [Character], _ from: Int,
-                                       _ ch: Character, _ length: Int) -> Int? {
+    private static func findClosingRun(_ bytes: [UInt8], _ from: Int,
+                                       _ byte: UInt8, _ length: Int) -> Int? {
         var i = from
-        while i < chars.count {
-            if chars[i] == "\\" { i += 2; continue }
-            if chars[i] == ch {
-                let run = runLength(chars, i, ch)
-                if run >= length, flanking(chars, i, i + run).canClose { return i }
+        while i < bytes.count {
+            if bytes[i] == UInt8(ascii: "\\") { i += 2; continue }
+            if bytes[i] == byte {
+                let run = runLength(bytes, i, byte)
+                if run >= length, flanking(bytes, i, i + run).canClose { return i }
                 i += run
                 continue
             }
@@ -1635,15 +1689,15 @@ public enum MarkdownParser {
         return nil
     }
 
-    /// The next `ch` that isn't backslash-escaped. A closing delimiter has to
+    /// The next `byte` that isn't backslash-escaped. A closing delimiter has to
     /// skip `\*`, or emphasis ends at an asterisk the author escaped precisely
     /// so that it would be text. (`findSeq` needs no equivalent: an escaped
     /// delimiter can't form a run of two.)
-    private static func findUnescaped(_ chars: [Character], _ from: Int, _ ch: Character) -> Int? {
+    private static func findUnescaped(_ bytes: [UInt8], _ from: Int, _ byte: UInt8) -> Int? {
         var i = from
-        while i < chars.count {
-            if chars[i] == "\\" { i += 2; continue }
-            if chars[i] == ch { return i }
+        while i < bytes.count {
+            if bytes[i] == UInt8(ascii: "\\") { i += 2; continue }
+            if bytes[i] == byte { return i }
             i += 1
         }
         return nil
@@ -1675,14 +1729,16 @@ public enum MarkdownParser {
         return out
     }
 
-    private static func findMathClose(_ chars: [Character], _ from: Int) -> Int? {
+    private static func findMathClose(_ bytes: [UInt8], _ from: Int) -> Int? {
         var i = from
-        while i < chars.count {
-            let c = chars[i]
-            if c == "\n" { return nil }
-            if c == "\\" { i += 2; continue }  // an escaped "$" doesn't close
-            if c == "$", !chars[i - 1].isWhitespace,
-               i + 1 >= chars.count || !(chars[i + 1].isASCII && chars[i + 1].isNumber) {
+        while i < bytes.count {
+            let b = bytes[i]
+            if b == UInt8(ascii: "\n") { return nil }
+            if b == UInt8(ascii: "\\") { i += 2; continue }  // an escaped "$" doesn't close
+            if b == UInt8(ascii: "$"),
+               !(scalarBefore(i, bytes).map(isUnicodeWhitespace) ?? true),
+               i + 1 >= bytes.count || !(bytes[i + 1] >= UInt8(ascii: "0")
+                                         && bytes[i + 1] <= UInt8(ascii: "9")) {
                 return i
             }
             i += 1
@@ -1690,17 +1746,17 @@ public enum MarkdownParser {
         return nil
     }
 
-    private static func findChar(_ chars: [Character], _ from: Int, _ ch: Character) -> Int? {
+    private static func findByte(_ bytes: [UInt8], _ from: Int, _ byte: UInt8) -> Int? {
         var i = from
-        while i < chars.count { if chars[i] == ch { return i }; i += 1 }
+        while i < bytes.count { if bytes[i] == byte { return i }; i += 1 }
         return nil
     }
 
-    private static func findSeq(_ chars: [Character], _ from: Int, _ seq: String) -> Int? {
-        let s = Array(seq)
+    private static func findSeq(_ bytes: [UInt8], _ from: Int, _ seq: [UInt8]) -> Int? {
+        guard !seq.isEmpty else { return nil }
         var i = from
-        while i + s.count <= chars.count {
-            if Array(chars[i..<(i + s.count)]) == s { return i }
+        while i + seq.count <= bytes.count {
+            if Array(bytes[i..<(i + seq.count)]) == seq { return i }
             i += 1
         }
         return nil
