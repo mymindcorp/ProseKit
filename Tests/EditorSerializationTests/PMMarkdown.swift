@@ -45,14 +45,11 @@ func registerPMMarkdownTests() {
     parses("a flat bullet list", "* foo\n* bar\n* baz", doc(ul(li(p("foo")), li(p("bar")), li(p("baz")))))
     parses("an ordered list", "1. Hello\n\n2. Goodbye",
            doc(ol(li(p("Hello")), li(p("Goodbye")))))
-    // KNOWN LIMITATIONS of the simplified (non-CommonMark) parser, documented not
-    // asserted: a nested bullet list ("* foo\n\n  * bar") parses flat, because an
-    // indented line that itself looks like a list item is read as the next item
-    // rather than as the current one's content; and a 4-space-indented code block
-    // parses as a paragraph (only fenced ``` code blocks are recognized). Both
-    // still round-trip self-consistently (covered below). Indented continuation
-    // lines that aren't list markers — a paragraph, a fenced code block, a $$
-    // formula — are kept inside their item.
+    // Nested lists and indented code blocks used to be listed here as known
+    // limitations; both are now parsed (see the dedicated tests in main.swift).
+    // What remains of the simplified parser's divergence is documented in
+    // docs/markdown-gaps.md — chiefly that a ProseMirror listItem always holds
+    // block content, so a tight list still serializes in the <li><p> form.
     parses("inline marks", "Hello. Some *em* text, some **strong** text, and some `code`",
            doc(p(t("Hello. Some "), em("em"), t(" text, some "), strong("strong"), t(" text, and some "), codeM("code"))))
     parses("links", "My [link](foo) goes to foo", doc(p(t("My "), a("link"), t(" goes to foo"))))
