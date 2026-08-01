@@ -39,8 +39,13 @@ public enum MarkdownSerializer {
         case "horizontalRule":
             return "---"
         case "bulletList":
-            return (0..<node.childCount).map { "- " + listItemText(node.child($0), continuation: "  ") }
-                .joined(separator: "\n")
+            let tight = node.attrs["tight"]?.boolValue ?? false
+            if needsGapAfterMarker(node) {
+                return "-\n\n  " + listItemText(node.child(0), continuation: "  ", tight: tight)
+            }
+            return (0..<node.childCount)
+                .map { "- " + listItemText(node.child($0), continuation: "  ", tight: tight) }
+                .joined(separator: itemSeparator(node))
         case "taskList":
             // GitHub's checkbox syntax. Without this the list fell to the default
             // branch and serialized to nothing at all, taking its contents with it.
@@ -51,11 +56,17 @@ public enum MarkdownSerializer {
             }.joined(separator: "\n")
         case "orderedList":
             let start = node.attrs["order"]?.intValue ?? 1
+            let tight = node.attrs["tight"]?.boolValue ?? false
+            if needsGapAfterMarker(node) {
+                let pad = String(repeating: " ", count: "\(start). ".count)
+                return "\(start).\n\n" + pad + listItemText(node.child(0), continuation: pad, tight: tight)
+            }
             return (0..<node.childCount).map { i in
                 let marker = "\(start + i). "
                 return marker + listItemText(node.child(i),
-                                             continuation: String(repeating: " ", count: marker.count))
-            }.joined(separator: "\n")
+                                             continuation: String(repeating: " ", count: marker.count),
+                                             tight: tight)
+            }.joined(separator: itemSeparator(node))
         case "image":
             // An image is block-level in the default schema, and without a case
             // here it fell through to serializing an atom's content — which is
@@ -136,7 +147,7 @@ public enum MarkdownSerializer {
     /// W + N spaces". Indenting just the first line of each child left the rest
     /// of a multi-line block (a `$$` formula, a fenced code block) sitting at
     /// column 0, where it reads as a sibling of the list rather than part of it.
-    static func listItemText(_ item: Node, continuation: String) -> String {
+    static func listItemText(_ item: Node, continuation: String, tight: Bool = false) -> String {
         // A `listItem` must begin with a paragraph, so an item whose real
         // content is a code block carries an empty one that `fitContent` added.
         // Writing it out would put a blank line after the marker, which reads
@@ -147,14 +158,33 @@ public enum MarkdownSerializer {
             children.removeFirst()
         }
         // Blocks are separated by a blank line here as everywhere else, or two
-        // paragraphs in one item would read back as a single paragraph.
+        // paragraphs in one item would read back as a single paragraph. Not in a
+        // tight item: a blank line between two blocks is exactly what would make
+        // the whole list loose again, and two paragraphs can't arise there for
+        // the same reason.
         let body = children
             .map { serializeBlock($0, indent: continuation) }
-            .joined(separator: "\n\n")
+            .joined(separator: tight ? "\n" : "\n\n")
         let lines = body.components(separatedBy: "\n")
         guard lines.count > 1 else { return body }
         return ([lines[0]] + lines.dropFirst().map { $0.isEmpty ? "" : continuation + $0 })
             .joined(separator: "\n")
+    }
+
+    /// A loose list normally shows it with a blank line between two items — but
+    /// a one-item list has no gap to put one in, and neither has an item holding
+    /// a single block. Its other spelling is a blank line after the marker,
+    /// which is how such a list is usually written in the first place.
+    private static func needsGapAfterMarker(_ list: Node) -> Bool {
+        list.attrs["tight"]?.boolValue == false && list.childCount == 1
+            && list.child(0).childCount == 1
+    }
+
+    /// What goes between two items. A loose list keeps the blank line that made
+    /// it loose, so reading the result back gives the same list — without this,
+    /// every list came back tight.
+    private static func itemSeparator(_ list: Node) -> String {
+        list.attrs["tight"]?.boolValue == false ? "\n\n" : "\n"
     }
 
     /// Marks that wrap a run of inline content, outermost first. A mark can
@@ -717,16 +747,21 @@ public enum MarkdownParser {
             }
             // Lists
             if let bullet = bulletMatch(trimmed) {
-                let (items, next) = collectList(lines, i, ordered: false)
+                let (items, next, tight) = collectList(lines, i, ordered: false)
                 if let list = makeTaskList(items, schema: schema)
-                    ?? makeList(items, ordered: false, schema: schema) { blocks.append(list) }
+                    ?? makeList(items, ordered: false, schema: schema, tight: tight) {
+                    blocks.append(list)
+                }
                 i = next
                 _ = bullet
                 continue
             }
             if let ordered = orderedMatch(trimmed) {
-                let (items, next) = collectList(lines, i, ordered: true)
-                if let list = makeList(items, ordered: true, schema: schema, start: ordered) { blocks.append(list) }
+                let (items, next, tight) = collectList(lines, i, ordered: true)
+                if let list = makeList(items, ordered: true, schema: schema,
+                                       start: ordered, tight: tight) {
+                    blocks.append(list)
+                }
                 i = next
                 continue
             }
@@ -1237,8 +1272,12 @@ public enum MarkdownParser {
     /// below it that are indented to its content column — CommonMark's "W + N"
     /// rule — so a formula or code fence written under a bullet stays part of
     /// that bullet instead of ending the list.
-    private static func collectList(_ lines: [String], _ start: Int, ordered: Bool) -> (items: [[String]], next: Int) {
+    private static func collectList(_ lines: [String], _ start: Int,
+                                    ordered: Bool) -> (items: [[String]], next: Int, tight: Bool) {
         var items: [[String]] = []
+        // A blank line anywhere inside the list makes it loose, whether it
+        // separates two items or two blocks within one.
+        var tight = true
         var indents: [Int] = []
         var i = start
         func isItem(_ t: String) -> Bool {
@@ -1264,10 +1303,15 @@ public enum MarkdownParser {
                 guard j < lines.count else { break }
                 if continues(lines[j]) {
                     items[items.count - 1].append("")
+                    tight = false
                     i = j
                     continue
                 }
-                if isItem(lines[j].trimmingCharacters(in: .whitespaces)) { i = j; continue }
+                if isItem(lines[j].trimmingCharacters(in: .whitespaces)) {
+                    tight = false
+                    i = j
+                    continue
+                }
                 break
             }
             // Checked before the marker test: a line indented to the current
@@ -1288,7 +1332,7 @@ public enum MarkdownParser {
             }
             break
         }
-        return (items, i)
+        return (items, i, tight)
     }
 
     /// Build a `figure` from a fence's body lines and caption. Returns nil if the
@@ -1353,7 +1397,8 @@ public enum MarkdownParser {
         }
     }
 
-    private static func makeList(_ items: [[String]], ordered: Bool, schema: Schema, start: Int = 1) -> Node? {
+    private static func makeList(_ items: [[String]], ordered: Bool, schema: Schema,
+                                 start: Int = 1, tight: Bool = false) -> Node? {
         guard let itemType = schema.nodes["listItem"] else { return nil }
         var itemNodes: [Node] = []
         for lines in items {
@@ -1365,41 +1410,13 @@ public enum MarkdownParser {
             itemNodes.append(item)
         }
         let listName = ordered ? "orderedList" : "bulletList"
-        let attrs: Attrs = ordered ? ["order": .int(start)] : [:]
+        var attrs: Attrs = ordered ? ["order": .int(start)] : [:]
+        if schema.nodes[listName]?.spec.attrs["tight"] != nil { attrs["tight"] = .bool(tight) }
         return try? schema.node(listName, attrs, content: Fragment.from(itemNodes))
     }
 
     // Inline parser: handles **bold**, *italic*/_italic_, `code`, ~~strike~~,
     // ==highlight==, [text](url), ![alt](src), and [[wiki|link]].
-    /// Percent-encode the characters that can't appear literally in a URL, so a
-    /// destination with a space or a quote in it survives as an attribute.
-    /// Existing `%XX` escapes are left alone rather than doubly encoded.
-    ///
-    /// Non-ASCII is deliberately left readable. CommonMark encodes it too, so
-    /// `/föö` becomes `/f%C3%B6%C3%B6` there — but a link a writer typed should
-    /// still look like the one they typed, and browsers handle it.
-    static func encodeDestination(_ url: String) -> String {
-        let unsafe = Set(" \"<>\\`{}|^[]".unicodeScalars.map { UInt8($0.value) })
-        let bytes = Array(url.utf8)
-        guard bytes.contains(where: { unsafe.contains($0) }) else { return url }
-        func isHex(_ i: Int) -> Bool {
-            guard i < bytes.count else { return false }
-            let b = bytes[i]
-            return (b >= 48 && b <= 57) || (b | 0x20) >= 97 && (b | 0x20) <= 102
-        }
-        var out = ""
-        let digits = Array("0123456789ABCDEF")
-        for (i, b) in bytes.enumerated() {
-            // A "%" already introducing an escape stays as it is.
-            if b == UInt8(ascii: "%"), isHex(i + 1), isHex(i + 2) { out.append("%"); continue }
-            if unsafe.contains(b) {
-                out.append("%"); out.append(digits[Int(b >> 4)]); out.append(digits[Int(b & 0xF)])
-            } else {
-                out.unicodeScalars.append(UnicodeScalar(b))
-            }
-        }
-        return out
-    }
 
     /// An HTML tag as the inline scanner sees it.
     private struct InlineTag {

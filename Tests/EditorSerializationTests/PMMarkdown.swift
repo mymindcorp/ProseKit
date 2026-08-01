@@ -12,8 +12,10 @@ import TestHarness
 
 // Block builders (no clash with the existing doc/p/t/strong/em/h in main.swift).
 // ul/ol/li are internal: main.swift's HTML paste tests share them.
-func ul(_ c: Node...) -> Node { node("bulletList", [:], c) }
-func ol(_ c: Node...) -> Node { node("orderedList", [:], c) }
+// Markdown lists in these tests are written tight; the HTML-paste tests in
+// main.swift that share these helpers pass `tight: false`.
+func ul(tight: Bool = true, _ c: Node...) -> Node { node("bulletList", ["tight": .bool(tight)], c) }
+func ol(tight: Bool = true, _ c: Node...) -> Node { node("orderedList", ["tight": .bool(tight)], c) }
 func li(_ c: Node...) -> Node { node("listItem", [:], c) }
 private func pre(_ s: String) -> Node { node("codeBlock", [:], s.isEmpty ? [] : [t(s)]) }
 private func bq(_ c: Node...) -> Node { node("blockquote", [:], c) }
@@ -43,8 +45,9 @@ func registerPMMarkdownTests() {
     parses("headings", "# one\n\n## two\n\nthree", doc(h(1, "one"), h(2, "two"), p("three")))
     parses("a blockquote", "> once\n\n> > twice", doc(bq(p("once")), bq(bq(p("twice")))))
     parses("a flat bullet list", "* foo\n* bar\n* baz", doc(ul(li(p("foo")), li(p("bar")), li(p("baz")))))
+    // The blank line between the items makes this list loose.
     parses("an ordered list", "1. Hello\n\n2. Goodbye",
-           doc(ol(li(p("Hello")), li(p("Goodbye")))))
+           doc(ol(tight: false, li(p("Hello")), li(p("Goodbye")))))
     // A code span inside emphasis ("**`code` is bold**") is left out of the
     // round-trip corpus: the schema's `code` mark excludes every other mark, so
     // the span can't carry the bold, and the document that results — a code span
