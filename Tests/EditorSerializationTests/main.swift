@@ -3090,5 +3090,117 @@ test("Markdown round-trip: the second long-tail batch") {
     }
 }
 
+// MARK: - CommonMark long tail, third batch (links, code spans, alt text)
+
+private func linkMark(_ d: Node, _ child: Int = 0) -> Mark? {
+    d.child(0).child(child).marks.first { $0.type.name == "link" }
+}
+
+test("Markdown: a reference label's brackets nest") {
+    let d = try MarkdownParser.parse("[link [foo [bar]]][ref]\n\n[ref]: /uri", schema: schema)
+    try expectEqual(d.child(0).child(0).text, "link [foo [bar]]")
+    try expectEqual(linkMark(d)?.attrs["href"]?.stringValue, "/uri")
+    // An image inside a reference link survives too.
+    let img = try MarkdownParser.parse("[![moon](moon.jpg)][ref]\n\n[ref]: /uri", schema: schema)
+    try expectEqual(img.child(0).child(0).type.name, "image")
+    try expectEqual(img.child(0).child(0).marks.first?.attrs["href"]?.stringValue, "/uri")
+}
+
+test("Markdown: a reference label already holding a link keeps its brackets") {
+    let d = try MarkdownParser.parse("[foo [bar](/uri)][ref]\n\n[ref]: /uri", schema: schema)
+    try expectEqual(d.child(0).child(0).text, "[foo ")
+    try expectEqual(d.child(0).child(1).text, "bar")
+}
+
+test("Markdown: a code span binds more tightly than a link") {
+    // The backtick run opens inside the label and closes past it, so the code
+    // span wins and the brackets stay text.
+    let d = try MarkdownParser.parse("[not a `link](/foo`)", schema: schema)
+    try expectEqual(d.child(0).child(0).text, "[not a ")
+    try expectEqual(d.child(0).child(1).text, "link](/foo")
+    try expect(d.child(0).child(1).marks.contains { $0.type.name == "code" }, "not a code span")
+    // The same for a reference link.
+    let r = try MarkdownParser.parse("[foo`][ref]`\n\n[ref]: /uri", schema: schema)
+    try expect(r.child(0).child(1).marks.contains { $0.type.name == "code" },
+               "reference form: not a code span")
+}
+
+test("Markdown: a backtick run is atomic") {
+    // Three ticks can't be closed by two, and the leftover ticks are text —
+    // they don't pair off among themselves.
+    try expectEqual(try MarkdownParser.parse("```foo``", schema: schema), doc(p("```foo``")))
+    try expectEqual(try MarkdownParser.parse("`foo", schema: schema), doc(p("`foo")))
+}
+
+test("Markdown: a link destination stays on one line") {
+    try expectEqual(try MarkdownParser.parse("[link](foo\nbar)", schema: schema),
+                    doc(p("[link](foo bar)")))
+    try expectEqual(try MarkdownParser.parse("[link](<foo\nbar>)", schema: schema),
+                    doc(p("[link](<foo bar>)")))
+}
+
+test("Markdown: a link's destination and title may sit on separate lines") {
+    let d = try MarkdownParser.parse("[link](   /uri\n  \"title\"  )", schema: schema)
+    try expectEqual(linkMark(d)?.attrs["href"]?.stringValue, "/uri")
+    try expectEqual(linkMark(d)?.attrs["title"]?.stringValue, "title")
+}
+
+test("Markdown: a backslash escapes the quote inside an inline link's title") {
+    let d = try MarkdownParser.parse("[link](/url \"ti\\\"tle\")", schema: schema)
+    try expectEqual(linkMark(d)?.attrs["href"]?.stringValue, "/url")
+    try expectEqual(linkMark(d)?.attrs["title"]?.stringValue, "ti\"tle")
+}
+
+test("Markdown: a title has to be separated from the destination") {
+    // Without the space this is neither a definition nor a link.
+    try expectEqual(try MarkdownParser.parse("[foo]: <bar>(baz)\n\n[foo]", schema: schema),
+                    doc(p("[foo]: <bar>(baz)"), p("[foo]")))
+}
+
+test("Markdown: text left over after the title unmakes the link") {
+    try expectEqual(try MarkdownParser.parse("[link](/url \"title\" extra)", schema: schema),
+                    doc(p("[link](/url \"title\" extra)")))
+}
+
+test("Markdown: an empty destination is still a link") {
+    for md in ["[link]()", "[link](<>)"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(d.child(0).child(0).text, "link", "for \(md)")
+        try expectEqual(linkMark(d)?.attrs["href"]?.stringValue, "", "for \(md)")
+    }
+}
+
+test("Markdown: an image's alt text is what its label renders to") {
+    // Markup inside the label counts as the words it produces, not its spelling.
+    let d = try MarkdownParser.parse("![foo *bar*](/url)", schema: schema)
+    try expectEqual(d.child(0).child(0).attrs["alt"]?.stringValue, "foo bar")
+    // A nested image gives its own alt text.
+    let nested = try MarkdownParser.parse("![foo ![bar](/url)](/url2)", schema: schema)
+    try expectEqual(nested.child(0).child(0).attrs["alt"]?.stringValue, "foo bar")
+    // The reference form agrees with the inline one.
+    let ref = try MarkdownParser.parse("![*foo* bar]\n\n[*foo* bar]: /url \"t\"", schema: schema)
+    try expectEqual(ref.child(0).child(0).attrs["alt"]?.stringValue, "foo bar")
+}
+
+test("Markdown: brackets in alt text are escaped when written") {
+    // Otherwise the label would close at the first one on the way back in.
+    let d = try MarkdownParser.parse("![a [b] c](/url)", schema: schema)
+    let md = d.toMarkdown()
+    try expect(md.contains("\\[b\\]"), "brackets not escaped: \(md)")
+    try expectEqual(try MarkdownParser.parse(md, schema: schema), d)
+}
+
+test("Markdown round-trip: the third long-tail batch") {
+    for md in ["[link [foo [bar]]][ref]\n\n[ref]: /uri", "[![moon](moon.jpg)][ref]\n\n[ref]: /uri",
+               "[not a `link](/foo`)", "```foo``", "[link](foo\nbar)",
+               "[link](   /uri\n  \"title\"  )", "[link](/url \"ti\\\"tle\")",
+               "[foo]: <bar>(baz)\n\n[foo]", "[link]()", "![foo *bar*](/url)",
+               "![foo ![bar](/url)](/url2)", "![a [b] c](/url)"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(try MarkdownParser.parse(d.toMarkdown(), schema: schema), d,
+                        "round-trip changed \(md.debugDescription); rewrote as:\n\(d.toMarkdown())")
+    }
+}
+
 registerBench()
 TestSuite.main("EditorSerializationTests", collector.all)
