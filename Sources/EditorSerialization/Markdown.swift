@@ -61,7 +61,7 @@ public enum MarkdownSerializer {
             // here it fell through to serializing an atom's content — which is
             // empty, so every image simply disappeared.
             let src = node.attrs["src"]?.stringValue ?? ""
-            let alt = node.attrs["alt"]?.stringValue ?? ""
+            let alt = altText(node.attrs["alt"]?.stringValue ?? "")
             if let title = node.attrs["title"]?.stringValue, !title.isEmpty {
                 let q = title.contains("\"") ? "'" : "\""
                 return "![\(alt)](\(destination(src)) \(q)\(titleText(title))\(q))"
@@ -291,7 +291,7 @@ public enum MarkdownSerializer {
             // An image can sit inline as well as in its own block, so the title
             // has to be written on both paths.
             let src = node.attrs["src"]?.stringValue ?? ""
-            let alt = node.attrs["alt"]?.stringValue ?? ""
+            let alt = altText(node.attrs["alt"]?.stringValue ?? "")
             if let title = node.attrs["title"]?.stringValue, !title.isEmpty {
                 let q = title.contains("\"") ? "'" : "\""
                 return "![\(alt)](\(destination(src)) \(q)\(title)\(q))"
@@ -373,6 +373,17 @@ public enum MarkdownSerializer {
     }
 
     /// A title, with the escapes the reader will resolve written out.
+    /// An image's alt text sits between brackets, so its own brackets are
+    /// escaped — otherwise the reader would close the label at the first one.
+    static func altText(_ alt: String) -> String {
+        var out = ""
+        for c in alt {
+            if c == "[" || c == "]" || c == "\\" { out.append("\\") }
+            out.append(c)
+        }
+        return out
+    }
+
     static func titleText(_ title: String) -> String {
         title.replacingOccurrences(of: "\\", with: "\\\\")
     }
@@ -1045,8 +1056,12 @@ public enum MarkdownParser {
             ? (resolveEscapes(destination), String?.none, newlines)
             : nil
 
+        let beforeGap = i
         skipSpace()
-        guard i < chars.count, chars[i] == "\"" || chars[i] == "'" || chars[i] == "(" else {
+        // Whitespace has to separate the destination from a title, or
+        // `[foo]: <bar>(baz)` would read as one.
+        guard i > beforeGap, i < chars.count,
+              chars[i] == "\"" || chars[i] == "'" || chars[i] == "(" else {
             return withoutTitle
         }
         let closing: Character = chars[i] == "(" ? ")" : chars[i]
@@ -1344,6 +1359,49 @@ public enum MarkdownParser {
 
     // Inline parser: handles **bold**, *italic*/_italic_, `code`, ~~strike~~,
     // ==highlight==, [text](url), ![alt](src), and [[wiki|link]].
+    /// Percent-encode the characters that can't appear literally in a URL, so a
+    /// destination with a space or a quote in it survives as an attribute.
+    /// Existing `%XX` escapes are left alone rather than doubly encoded.
+    ///
+    /// Non-ASCII is deliberately left readable. CommonMark encodes it too, so
+    /// `/föö` becomes `/f%C3%B6%C3%B6` there — but a link a writer typed should
+    /// still look like the one they typed, and browsers handle it.
+    static func encodeDestination(_ url: String) -> String {
+        let unsafe = Set(" \"<>\\`{}|^[]".unicodeScalars.map { UInt8($0.value) })
+        let bytes = Array(url.utf8)
+        guard bytes.contains(where: { unsafe.contains($0) }) else { return url }
+        func isHex(_ i: Int) -> Bool {
+            guard i < bytes.count else { return false }
+            let b = bytes[i]
+            return (b >= 48 && b <= 57) || (b | 0x20) >= 97 && (b | 0x20) <= 102
+        }
+        var out = ""
+        let digits = Array("0123456789ABCDEF")
+        for (i, b) in bytes.enumerated() {
+            // A "%" already introducing an escape stays as it is.
+            if b == UInt8(ascii: "%"), isHex(i + 1), isHex(i + 2) { out.append("%"); continue }
+            if unsafe.contains(b) {
+                out.append("%"); out.append(digits[Int(b >> 4)]); out.append(digits[Int(b & 0xF)])
+            } else {
+                out.unicodeScalars.append(UnicodeScalar(b))
+            }
+        }
+        return out
+    }
+
+    /// The words a label renders to, which is what an image's alt text is: the
+    /// markup inside it counts as what it produces, not as how it's spelled.
+    private static func renderedText(_ label: String, _ schema: Schema,
+                                     _ definitions: [String: LinkDefinition]) -> String {
+        parseInline(label, schema, definitions).map { node in
+            if node.isText { return node.text ?? "" }
+            // An image inside the label contributes the words of its own alt
+            // text, which is all a nested image has to give.
+            if node.type.name == "image" { return node.attrs["alt"]?.stringValue ?? "" }
+            return node.textContent
+        }.joined()
+    }
+
     /// A link's label is inline content — emphasis, code and images inside it are
     /// markup, not literal text — so it's parsed like any other run and the link
     /// mark laid over what comes back. Falls back to plain text if the label
@@ -1460,7 +1518,8 @@ public enum MarkdownParser {
                !definitions.isEmpty, parseLinkLike(chars, i + 1) == nil,
                let (alt, definition, next) = parseReference(chars, i + 1, definitions) {
                 flush()
-                var attrs: Attrs = ["src": .null, "alt": .string(unescapeInline(alt))]
+                var attrs: Attrs = ["src": .null,
+                                    "alt": .string(renderedText(alt, schema, definitions))]
                 if let title = definition.title { attrs["title"] = .string(title) }
                 if let src = sanitizeURL(definition.destination, for: .image),
                    let type = schema.nodes["image"] {
@@ -1473,7 +1532,8 @@ public enum MarkdownParser {
             if c == UInt8(ascii: "!") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "[") {
                 if let (alt, url, title, next) = parseLinkLike(chars, i + 1) {
                     flush()
-                    var attrs: Attrs = ["src": .null, "alt": .string(unescapeInline(alt))]
+                    var attrs: Attrs = ["src": .null,
+                                        "alt": .string(renderedText(alt, schema, definitions))]
                     if let title { attrs["title"] = .string(title) }
                     if let src = sanitizeURL(url, for: .image), let type = schema.nodes["image"] {
                         attrs["src"] = .string(src)
@@ -1490,7 +1550,8 @@ public enum MarkdownParser {
                     // HTML does, so `[x](javascript:…)` gets the same treatment:
                     // the link is dropped, the text kept.
                     var linkMark: Mark?
-                    if let href = sanitizeURL(url, for: .link) {
+                    // An empty destination is a link to here, not a missing one.
+                    if let href = url.isEmpty ? "" : sanitizeURL(url, for: .link) {
                         var attrs: Attrs = ["href": .string(href)]
                         if let title { attrs["title"] = .string(title) }
                         linkMark = mark("link", attrs).first
@@ -1506,7 +1567,8 @@ public enum MarkdownParser {
             if c == UInt8(ascii: "["), let (label, definition, next) = parseReference(chars, i, definitions) {
                 flush()
                 var linkMark: Mark?
-                if let href = sanitizeURL(definition.destination, for: .link) {
+                if let href = definition.destination.isEmpty
+                    ? "" : sanitizeURL(definition.destination, for: .link) {
                     var attrs: Attrs = ["href": .string(href)]
                     if let title = definition.title { attrs["title"] = .string(title) }
                     linkMark = mark("link", attrs).first
@@ -1579,6 +1641,10 @@ public enum MarkdownParser {
                         i = close + run; continue
                     }
                 }
+                // The whole run is text, not just its first tick: a backtick
+                // string is atomic, so "```foo``" has no code span in it.
+                buffer += Array(repeating: c, count: run)
+                i += run; continue
             }
             buffer.append(c)
             i += 1
@@ -1675,12 +1741,15 @@ public enum MarkdownParser {
         guard let closeParen = findLinkClose(bytes, closeBracket + 2) else { return nil }
         let label = slice(bytes, (start + 1)..<closeBracket)
         let inside = slice(bytes, (closeBracket + 2)..<closeParen)
-        let (url, title) = splitDestinationAndTitle(inside)
+        guard let (url, title) = splitDestinationAndTitle(inside) else { return nil }
         // A destination that isn't in angle brackets may not contain spaces.
         // Without this, `[a](url &quot;tit&quot;)` — whose "title" is spelled
         // with entities, so isn't one — would still parse as a link.
         if title == nil, url.contains(" "),
            !inside.trimmingCharacters(in: .whitespaces).hasPrefix("<") { return nil }
+        // A code span binds more tightly than a link, so one that opens inside
+        // the label and closes past it takes the brackets with it.
+        if codeSpanEscapes(bytes, (start + 1)..<closeBracket) { return nil }
         return (label, url, title, closeParen + 1)
     }
 
@@ -1782,14 +1851,17 @@ public enum MarkdownParser {
                                        _ definitions: [String: LinkDefinition])
         -> (text: String, definition: LinkDefinition, next: Int)? {
         guard !definitions.isEmpty, bytes[start] == UInt8(ascii: "[") else { return nil }
-        guard let closeBracket = findUnescaped(bytes, start + 1, UInt8(ascii: "]")) else { return nil }
+        guard let closeBracket = matchingBracket(bytes, start + 1) else { return nil }
         let first = slice(bytes, (start + 1)..<closeBracket)
+        // As with an inline link: a label already holding a link keeps its
+        // brackets, and a code span reaching past the label wins.
+        if start == 0 || bytes[start - 1] != UInt8(ascii: "!"), labelHoldsALink(first) { return nil }
+        if codeSpanEscapes(bytes, (start + 1)..<closeBracket) { return nil }
         var label = first
         var next = closeBracket + 1
         // A second bracket pair makes it a full or collapsed reference.
         if closeBracket + 1 < bytes.count, bytes[closeBracket + 1] == UInt8(ascii: "[") {
-            guard let closeSecond = findUnescaped(bytes, closeBracket + 2,
-                                                  UInt8(ascii: "]")) else { return nil }
+            guard let closeSecond = matchingBracket(bytes, closeBracket + 2) else { return nil }
             let second = slice(bytes, (closeBracket + 2)..<closeSecond)
             // `[text][]` is collapsed: the text is its own label.
             label = second.trimmingCharacters(in: .whitespaces).isEmpty ? first : second
@@ -1797,6 +1869,23 @@ public enum MarkdownParser {
         }
         guard let definition = definitions[normalizeLabel(label)] else { return nil }
         return (first, definition, next)
+    }
+
+    /// Whether a backtick run inside `label` closes only after it — a code span
+    /// binds more tightly than a link, so `[not a `link](/foo`)` is a code span
+    /// inside literal brackets rather than a link.
+    private static func codeSpanEscapes(_ bytes: [UInt8], _ label: Range<Int>) -> Bool {
+        var i = label.lowerBound
+        while i < label.upperBound {
+            if bytes[i] == UInt8(ascii: "\\") { i += 2; continue }
+            guard bytes[i] == UInt8(ascii: "`") else { i += 1; continue }
+            let run = runLength(bytes, i, UInt8(ascii: "`"))
+            if let close = findBacktickRun(bytes, i + run, run), close >= label.upperBound {
+                return true
+            }
+            i += run
+        }
+        return false
     }
 
     /// The `)` that closes a link, skipping the parts that may contain one:
@@ -1826,40 +1915,55 @@ public enum MarkdownParser {
 
     /// Split a destination from an optional title. Shared by inline links and by
     /// reference definitions, which spell this part the same way.
-    static func splitDestinationAndTitle(_ s: String) -> (String, String?) {
-        var url = s
-        var title: String?
-        // An angle-bracketed destination ends at its ">", so anything after it
-        // is the title with no whitespace required between them.
-        let head = s.trimmingCharacters(in: .whitespaces)
-        if head.hasPrefix("<"), let close = head.firstIndex(of: ">") {
-            let rest = String(head[head.index(after: close)...]).trimmingCharacters(in: .whitespaces)
-            let destination = String(head[head.index(after: head.startIndex)..<close])
-            return (resolveEscapes(destination),
-                    rest.isEmpty ? nil : titleOnly(rest).map(resolveEscapes))
+    /// Split the inside of a link's parentheses into destination and title.
+    /// Nil when it isn't a well-formed pair — an unclosed angle bracket, a
+    /// destination broken across lines, or anything left over after the title —
+    /// in which case the brackets stay literal text.
+    static func splitDestinationAndTitle(_ s: String) -> (String, String?)? {
+        let bytes = Array(s.utf8)
+        var i = 0
+        func isSpace(_ b: UInt8) -> Bool {
+            b == UInt8(ascii: " ") || b == UInt8(ascii: "\t") || b == UInt8(ascii: "\n")
+                || b == UInt8(ascii: "\r")
         }
-        // The title is quoted with "", '' or (). Split on the whitespace before
-        // the quote, so a destination that itself contains one isn't cut in half.
-        let trimmed = url.trimmingCharacters(in: .whitespaces)
-        for (open, close) in [("\"", "\""), ("'", "'"), ("(", ")")] where trimmed.hasSuffix(close) {
-            if let openIndex = trimmed.dropLast().lastIndex(of: Character(open)),
-               openIndex > trimmed.startIndex,
-               trimmed[trimmed.index(before: openIndex)] == " " {
-                title = String(trimmed[trimmed.index(after: openIndex)..<trimmed.index(before: trimmed.endIndex)])
-                url = String(trimmed[trimmed.startIndex..<openIndex]).trimmingCharacters(in: .whitespaces)
-                break
+        func skipSpace() { while i < bytes.count, isSpace(bytes[i]) { i += 1 } }
+
+        skipSpace()
+        var destination = ""
+        if i < bytes.count, bytes[i] == UInt8(ascii: "<") {
+            guard let close = findUnescaped(bytes, i + 1, UInt8(ascii: ">")) else { return nil }
+            destination = slice(bytes, (i + 1)..<close)
+            // An angle-bracketed destination is still one line.
+            if destination.contains("\n") { return nil }
+            i = close + 1
+        } else {
+            let from = i
+            while i < bytes.count, !isSpace(bytes[i]) {
+                if bytes[i] == UInt8(ascii: "\\") { i += 2; continue }
+                i += 1
             }
+            destination = slice(bytes, from..<min(i, bytes.count))
         }
-        // A destination may be wrapped in angle brackets to allow spaces.
-        let bare = url.trimmingCharacters(in: .whitespaces)
-        if bare.hasPrefix("<"), bare.hasSuffix(">"), !bare.dropFirst().dropLast().contains("\n") {
-            url = String(bare.dropFirst().dropLast())
-        }
-        // Character references are resolved here, after the destination and
-        // title have been told apart — an entity is text, never a delimiter, so
-        // `[a](url &quot;tit&quot;)` must not read as if it carried a title.
-        return (resolveEscapes(url.trimmingCharacters(in: .whitespaces)),
-                title.map(resolveEscapes))
+
+        // Whitespace has to separate the destination from a title — without it,
+        // `[foo]: <bar>(baz)` would read as one.
+        let afterDestination = i
+        skipSpace()
+        let hadSpace = i > afterDestination
+        guard i < bytes.count else { return (resolveEscapes(destination), nil) }
+        let opener = bytes[i]
+        guard hadSpace || opener == UInt8(ascii: "<"),
+              opener == UInt8(ascii: "\"") || opener == UInt8(ascii: "'")
+                || opener == UInt8(ascii: "(") else { return nil }
+        let closer = opener == UInt8(ascii: "(") ? UInt8(ascii: ")") : opener
+        // Escape-aware, so a backslashed quote doesn't end the title early.
+        guard let close = findUnescaped(bytes, i + 1, closer) else { return nil }
+        let title = slice(bytes, (i + 1)..<close)
+        i = close + 1
+        skipSpace()
+        // Anything left over means this wasn't a destination and title at all.
+        guard i >= bytes.count else { return nil }
+        return (resolveEscapes(destination), resolveEscapes(title))
     }
 
     /// The closing `$` of inline math, following Pandoc's `tex_math_dollars`:
