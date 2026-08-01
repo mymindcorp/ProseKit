@@ -883,29 +883,91 @@ public enum MarkdownParser {
             guard indentWidth(line) < 4, let (label, rest) = parseDefinitionHead(line) else {
                 remaining.append(line); i += 1; continue
             }
-            var body = rest
-            var consumed = 1
-            // A title may sit on the line below the destination.
-            if body.isEmpty {
+            // The destination may sit on the line below the label, and a title
+            // below that, so the body is scanned across the following lines
+            // rather than assumed to be on this one. A blank line ends it.
+            var following: [String] = []
+            var j = i + 1
+            while j < lines.count, !lines[j].trimmingCharacters(in: .whitespaces).isEmpty {
+                following.append(lines[j])
+                j += 1
+            }
+            guard let body = parseDefinitionBody(([rest] + following).joined(separator: "\n")) else {
                 remaining.append(line); i += 1; continue
             }
-            if titleOnly(body) == nil, i + 1 < lines.count {
-                let next = lines[i + 1].trimmingCharacters(in: .whitespaces)
-                if splitDestinationAndTitle(body).1 == nil, titleOnly(next) != nil {
-                    body += " " + next
-                    consumed = 2
-                }
-            }
-            let (destination, title) = splitDestinationAndTitle(body)
-            guard !destination.isEmpty else { remaining.append(line); i += 1; continue }
             let key = normalizeLabel(label)
             // The first definition of a label wins, as in CommonMark.
             if definitions[key] == nil {
-                definitions[key] = LinkDefinition(destination: destination, title: title)
+                definitions[key] = LinkDefinition(destination: body.destination, title: body.title)
             }
+            // Whatever the definition didn't consume is content again.
+            let consumed = 1 + body.lines
             i += consumed
         }
         return (remaining, definitions)
+    }
+
+    /// A definition's destination and optional title, and how many *extra* lines
+    /// they took beyond the one carrying the label.
+    ///
+    /// Both may sit on lines of their own, and a title may run across lines —
+    /// but not across a blank one. A title that doesn't parse doesn't spoil the
+    /// definition: the destination stands and the rest goes back to being text,
+    /// which is why the two are reported separately.
+    static func parseDefinitionBody(_ text: String)
+        -> (destination: String, title: String?, lines: Int)? {
+        let chars = Array(text)
+        var i = 0
+        var newlines = 0
+        // Whitespace between the parts may include a single line ending.
+        func skipSpace() {
+            var seenNewline = false
+            while i < chars.count {
+                if chars[i] == " " || chars[i] == "\t" { i += 1 }
+                else if chars[i] == "\n", !seenNewline { seenNewline = true; newlines += 1; i += 1 }
+                else { break }
+            }
+        }
+        skipSpace()
+        guard i < chars.count else { return nil }
+
+        var destination = ""
+        if chars[i] == "<" {
+            var j = i + 1
+            while j < chars.count, chars[j] != ">", chars[j] != "\n" { j += 1 }
+            guard j < chars.count, chars[j] == ">" else { return nil }
+            destination = String(chars[(i + 1)..<j])
+            i = j + 1
+        } else {
+            while i < chars.count, !chars[i].isWhitespace { destination.append(chars[i]); i += 1 }
+        }
+        guard !destination.isEmpty else { return nil }
+        let withoutTitle = (HTMLParser.decodeEntities(destination), String?.none, newlines)
+
+        skipSpace()
+        guard i < chars.count, chars[i] == "\"" || chars[i] == "'" || chars[i] == "(" else {
+            return withoutTitle
+        }
+        let closing: Character = chars[i] == "(" ? ")" : chars[i]
+        var title = ""
+        var titleNewlines = 0
+        var j = i + 1
+        while j < chars.count, chars[j] != closing {
+            // A blank line ends the title, which means there wasn't one.
+            if chars[j] == "\n" {
+                if j + 1 < chars.count, chars[j + 1] == "\n" { return withoutTitle }
+                titleNewlines += 1
+            }
+            title.append(chars[j])
+            j += 1
+        }
+        guard j < chars.count else { return withoutTitle }
+        // Nothing but space may follow the closing quote on its line.
+        var k = j + 1
+        while k < chars.count, chars[k] == " " || chars[k] == "\t" { k += 1 }
+        guard k >= chars.count || chars[k] == "\n" else { return withoutTitle }
+        return (HTMLParser.decodeEntities(destination),
+                HTMLParser.decodeEntities(title), newlines + titleNewlines)
     }
 
     /// `[label]:` at the head of a line, returning the label and what follows.
