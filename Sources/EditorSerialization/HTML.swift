@@ -142,6 +142,13 @@ public enum HTMLSerializer {
             return escape(node.text ?? "")
         }
         switch node.type.name {
+        case "orderedList":
+            // A list that doesn't start at 1 has to say so, or the numbering is
+            // lost the moment it leaves the editor.
+            let start = node.attrs["order"]?.intValue ?? 1
+            let startAttr = start == 1 ? "" : " start=\"\(start)\""
+            return "<ol\(startAttr)\(idAttr(node, config))>"
+                + "\(serializeFragment(node.content, config))</ol>"
         case "heading":
             let level = node.attrs["level"]?.intValue ?? 1
             return "<h\(level)\(idAttr(node, config))>\(serializeFragment(node.content, config))</h\(level)>"
@@ -654,7 +661,11 @@ public enum HTMLParser {
         // A `<ul>` can contain things that aren't list items — real pages put
         // stray paragraphs and nested markup in there.
         let children = fitContent(parsed, into: type, schema: schema)
-        let a = idAttrs(attrs, name, schema, config)
+        var a = idAttrs(attrs, name, schema, config)
+        // `<ol start="…">` carries the first number.
+        if name == "orderedList", let startAt = attrs["start"].flatMap({ Int($0) }) {
+            a["order"] = .int(startAt)
+        }
         if let n = try? type.create(a, content: Fragment.from(children)) { return n }
         return type.createAndFill(a, content: Fragment.from(children))
     }
@@ -1245,6 +1256,9 @@ public enum HTMLParser {
             if let c = namedEntities[String(name)] {
                 decoded = c
             } else if name.hasPrefix("#x") || name.hasPrefix("#X") {
+                // CommonMark caps a reference at six hex digits, but this decoder
+                // also serves the HTML parser, where leading zeros are legal —
+                // so the value decides, not the digit count.
                 decoded = UInt32(name.dropFirst(2), radix: 16).map(scalarForReference)
             } else if name.hasPrefix("#") {
                 decoded = UInt32(name.dropFirst()).map(scalarForReference)
