@@ -5,14 +5,29 @@ import DocumentModel
 
 public enum MarkdownSerializer {
     public static func serialize(_ doc: Node) -> String {
-        var blocks: [String] = []
-        for i in 0..<doc.childCount {
-            blocks.append(serializeBlock(doc.child(i), indent: ""))
-        }
-        return blocks.joined(separator: "\n\n")
+        serializeBlocks((0..<doc.childCount).map { doc.child($0) }, indent: "")
     }
 
-    static func serializeBlock(_ node: Node, indent: String) -> String {
+    /// Write a run of sibling blocks. Two lists of the same kind in a row have
+    /// to use different markers — "- a" then "+ b", or "1. a" then "2) b" —
+    /// because a reader joins two lists that look alike into one, which is
+    /// exactly what told them apart in the source.
+    static func serializeBlocks(_ nodes: [Node], indent: String,
+                                separator: String = "\n\n") -> String {
+        var out: [String] = []
+        var alternate = false
+        var previous: String?
+        for node in nodes {
+            let name = node.type.name
+            let isList = name == "bulletList" || name == "orderedList"
+            if isList, name == previous { alternate.toggle() } else if isList { alternate = false }
+            out.append(serializeBlock(node, indent: indent, alternate: isList && alternate))
+            previous = name
+        }
+        return out.joined(separator: separator)
+    }
+
+    static func serializeBlock(_ node: Node, indent: String, alternate: Bool = false) -> String {
         switch node.type.name {
         case "paragraph":
             return escapeLeadingBlockMarker(serializeInline(node.content))
@@ -29,7 +44,7 @@ public enum MarkdownSerializer {
             }
             return String(repeating: "#", count: level) + " " + text
         case "blockquote":
-            let inner = (0..<node.childCount).map { serializeBlock(node.child($0), indent: indent) }.joined(separator: "\n\n")
+            let inner = serializeBlocks((0..<node.childCount).map { node.child($0) }, indent: indent)
             return inner.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
         case "codeBlock":
             // Fence with the delimiter the code itself doesn't use.
@@ -40,11 +55,12 @@ public enum MarkdownSerializer {
             return "---"
         case "bulletList":
             let tight = node.attrs["tight"]?.boolValue ?? false
+            let bullet = alternate ? "+" : "-"
             if needsGapAfterMarker(node) {
-                return "-\n\n  " + listItemText(node.child(0), continuation: "  ", tight: tight)
+                return "\(bullet)\n\n  " + listItemText(node.child(0), continuation: "  ", tight: tight)
             }
             return (0..<node.childCount)
-                .map { "- " + listItemText(node.child($0), continuation: "  ", tight: tight) }
+                .map { "\(bullet) " + listItemText(node.child($0), continuation: "  ", tight: tight) }
                 .joined(separator: itemSeparator(node))
         case "taskList":
             // GitHub's checkbox syntax. Without this the list fell to the default
@@ -57,12 +73,14 @@ public enum MarkdownSerializer {
         case "orderedList":
             let start = node.attrs["order"]?.intValue ?? 1
             let tight = node.attrs["tight"]?.boolValue ?? false
+            let delimiter = alternate ? ")" : "."
             if needsGapAfterMarker(node) {
-                let pad = String(repeating: " ", count: "\(start). ".count)
-                return "\(start).\n\n" + pad + listItemText(node.child(0), continuation: pad, tight: tight)
+                let pad = String(repeating: " ", count: "\(start)\(delimiter) ".count)
+                return "\(start)\(delimiter)\n\n" + pad
+                    + listItemText(node.child(0), continuation: pad, tight: tight)
             }
             return (0..<node.childCount).map { i in
-                let marker = "\(start + i). "
+                let marker = "\(start + i)\(delimiter) "
                 return marker + listItemText(node.child(i),
                                              continuation: String(repeating: " ", count: marker.count),
                                              tight: tight)
@@ -110,7 +128,7 @@ public enum MarkdownSerializer {
             let summary = node.childCount > 0 ? serializeInline(node.child(0).content) : ""
             let content = node.childCount > 1 ? node.child(1) : nil
             let body = content.map { c in
-                (0..<c.childCount).map { serializeBlock(c.child($0), indent: indent) }.joined(separator: "\n\n")
+                serializeBlocks((0..<c.childCount).map { c.child($0) }, indent: indent)
             } ?? ""
             return "<details\(open ? " open" : "")>\n<summary>\(summary)</summary>\n\n\(body)\n\n</details>"
         default:
@@ -163,7 +181,8 @@ public enum MarkdownSerializer {
         // the whole list loose again, and two paragraphs can't arise there for
         // the same reason.
         let body = children
-            .map { serializeBlock($0, indent: continuation) }
+            .map { $0.type.name == "horizontalRule"
+                ? "***" : serializeBlock($0, indent: continuation) }
             .joined(separator: tight ? "\n" : "\n\n")
         let lines = body.components(separatedBy: "\n")
         guard lines.count > 1 else { return body }
@@ -1176,12 +1195,38 @@ public enum MarkdownParser {
     /// paragraph above it. Shared by the paragraph gather and by a blockquote's
     /// lazy continuation, so the two always agree on where a paragraph ends.
     private static func startsBlock(_ trimmed: String) -> Bool {
-        trimmed.hasPrefix("#") || trimmed.hasPrefix(">") || isOpeningFence(trimmed)
+        startsAnyBlock(trimmed, listsMayInterrupt: false)
+    }
+
+    /// Whether a line begins a block, asked without a paragraph above it to
+    /// protect — which is the question an item's own content asks. "2. foo" is
+    /// a list here even though it couldn't have interrupted a paragraph.
+    private static func startsAnyBlock(_ trimmed: String) -> Bool {
+        startsAnyBlock(trimmed, listsMayInterrupt: true)
+    }
+
+    private static func startsAnyBlock(_ trimmed: String, listsMayInterrupt: Bool) -> Bool {
+        let list = listsMayInterrupt
+            ? (bulletMatch(trimmed) != nil || orderedMatch(trimmed) != nil)
+            : interruptingList(trimmed)
+        return trimmed.hasPrefix("#") || trimmed.hasPrefix(">") || isOpeningFence(trimmed)
             || trimmed.hasPrefix("$$") || isThematicBreak(trimmed)
             || setextUnderline(trimmed) != nil
-            || bulletMatch(trimmed) != nil || orderedMatch(trimmed) != nil
+            || list
             || trimmed.lowercased().hasPrefix("<details")
             || trimmed.lowercased().hasPrefix("</details>")
+    }
+
+    /// Whether a list marker here would end the paragraph above it. Two markers
+    /// that start a list at the top of a document can't interrupt one: an
+    /// ordered list has to be numbered 1, so a sentence ending "…is\n14. The
+    /// number…" stays one paragraph, and an empty item never interrupts, so a
+    /// lone "*" under a line of prose is part of it.
+    private static func interruptingList(_ trimmed: String) -> Bool {
+        if let content = bulletMatch(trimmed) { return !content.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard let number = orderedMatch(trimmed) else { return false }
+        let content = listMarker(trimmed, ordered: true)?.content ?? ""
+        return number == 1 && !content.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     /// A setext heading's underline: a run of `=` (level 1) or `-` (level 2),
@@ -1278,13 +1323,23 @@ public enum MarkdownParser {
         // A blank line anywhere inside the list makes it loose, whether it
         // separates two items or two blocks within one.
         var tight = true
+        // The marker the list opened with. Changing it — "-" to "+", or "1." to
+        // "1)" — starts a separate list rather than adding to this one.
+        var delimiter: Character?
+        func markerDelimiter(_ t: String) -> Character? {
+            if ordered { return t.drop(while: { $0.isNumber }).first }
+            return t.first
+        }
         var indents: [Int] = []
         var i = start
         func isItem(_ t: String) -> Bool {
             // "* * *" is a thematic break, which wins over the list marker it
             // starts with — the same precedence the top-level scan applies.
             guard !isThematicBreak(t) else { return false }
-            return ordered ? orderedMatch(t) != nil : bulletMatch(t) != nil
+            guard ordered ? orderedMatch(t) != nil : bulletMatch(t) != nil else { return false }
+            // A different marker belongs to the next list, so the blank line
+            // before it ends this one rather than making it loose.
+            return delimiter == nil || markerDelimiter(t) == delimiter
         }
         func continues(_ line: String) -> Bool {
             guard let indent = indents.last,
@@ -1323,6 +1378,9 @@ public enum MarkdownParser {
                 continue
             }
             if !isThematicBreak(t), let marker = listMarker(t, ordered: ordered) {
+                let here = markerDelimiter(t)
+                if let delimiter, here != delimiter { break }
+                delimiter = here
                 items.append([marker.content])
                 // The content column is where the text after the marker starts,
                 // so an item that is itself indented carries that indent.
@@ -1384,7 +1442,8 @@ public enum MarkdownParser {
     private static func itemBlocks(_ lines: [String], schema: Schema) -> [Node] {
         // Indented content is a block even on its own line: a marker followed by
         // five or more spaces leaves the content four columns in, which is code.
-        if lines.count > 1 || indentWidth(lines[0]) >= 4 {
+        if lines.count > 1 || indentWidth(lines[0]) >= 4
+            || startsAnyBlock(lines[0].trimmingCharacters(in: .whitespaces)) {
             let inner = (try? parse(lines.joined(separator: "\n"), schema: schema))?.content
             return inner.map { frag in (0..<frag.childCount).map { frag.child($0) } } ?? []
         }
