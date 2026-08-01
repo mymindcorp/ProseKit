@@ -45,6 +45,13 @@ func registerPMMarkdownTests() {
     parses("a flat bullet list", "* foo\n* bar\n* baz", doc(ul(li(p("foo")), li(p("bar")), li(p("baz")))))
     parses("an ordered list", "1. Hello\n\n2. Goodbye",
            doc(ol(li(p("Hello")), li(p("Goodbye")))))
+    // A code span inside emphasis ("**`code` is bold**") is left out of the
+    // round-trip corpus: the schema's `code` mark excludes every other mark, so
+    // the span can't carry the bold, and the document that results — a code span
+    // followed by bold text — has no Markdown spelling, because "**" directly
+    // after a backtick can't open emphasis. The parse itself is right; see the
+    // dedicated test in main.swift.
+    //
     // Nested lists and indented code blocks used to be listed here as known
     // limitations; both are now parsed (see the dedicated tests in main.swift).
     // What remains of the simplified parser's divergence is documented in
@@ -73,7 +80,6 @@ func registerPMMarkdownTests() {
         ("overlapping inline marks", "This is **strong *emphasized text with `code` in* it**"),
         ("links inside strong", "**[link](foo) is bold**"),
         ("emphasis inside links", "[link *foo **bar** `#`*](foo)"),
-        ("code inside strong", "**`code` is bold**"),
         ("hard break", "foo\\\nbar"),
         ("hard break in emphasis", "*foo\\\nbar*"),
         ("a link", "My [link](foo) goes to foo"),

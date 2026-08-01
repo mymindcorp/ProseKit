@@ -2065,6 +2065,80 @@ test("Markdown leaves a tab inside the text alone") {
     try expectEqual(code.child(0).textContent, "a\tb")
 }
 
+func marksOf(_ d: Node) -> [[String]] {
+    var out: [[String]] = []
+    d.descendants { node, _, _, _ in
+        if node.isText { out.append(node.marks.map(\.type.name).sorted()) }
+        return true
+    }
+    return out
+}
+
+test("Markdown nests emphasis inside strong") {
+    // A run of three supplies both pairs; marks nest by set membership here
+    // rather than by wrapping, so one text node carries both.
+    try expectEqual(marksOf(try MarkdownParser.parse("***both***", schema: schema)),
+                    [["bold", "italic"]])
+    try expectEqual(try MarkdownParser.parse("***both***", schema: schema).child(0).textContent,
+                    "both")
+    // Inside a word too — the case that used not to round-trip.
+    let d = try MarkdownParser.parse("foo***bar***baz", schema: schema)
+    try expectEqual(d.child(0).textContent, "foobarbaz")
+    try expectEqual(marksOf(d), [[], ["bold", "italic"], []])
+}
+
+test("Markdown matches nested emphasis pairs innermost first") {
+    // Pair matching alone closed the outer run at the inner delimiter.
+    try expectEqual(marksOf(try MarkdownParser.parse("*foo **bar** baz*", schema: schema)),
+                    [["italic"], ["bold", "italic"], ["italic"]])
+    try expectEqual(marksOf(try MarkdownParser.parse("**foo *bar* baz**", schema: schema)),
+                    [["bold"], ["bold", "italic"], ["bold"]])
+    try expectEqual(try MarkdownParser.parse("*foo **bar** baz*", schema: schema)
+                        .child(0).textContent, "foo bar baz")
+}
+
+test("Markdown applies the rule of three") {
+    // A run that can both open and close may not pair when the lengths sum to a
+    // multiple of three, which keeps this from pairing across the middle.
+    let d = try MarkdownParser.parse("*foo**bar**baz*", schema: schema)
+    try expectEqual(d.child(0).textContent, "foobarbaz")
+    try expect(marksOf(d).contains(["italic"]), "outer emphasis lost: \(marksOf(d))")
+}
+
+test("Markdown leaves unmatched delimiters as text") {
+    for md in ["*foo", "foo*", "**foo", "a * b"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(d.child(0).textContent, md, "input: \(md)")
+        try expect(marksOf(d).allSatisfy(\.isEmpty), "input \(md) grew a mark")
+    }
+}
+
+test("Markdown round-trip: nested and spanning emphasis") {
+    for md in ["***both***", "*foo **bar** baz*", "**foo *bar* baz**",
+               "foo***bar***baz", "*foo**bar**baz*", "**[link](/x) is bold**"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d,
+                        "input: \(md)")
+    }
+}
+
+test("Markdown: a mark spanning a link is written around the whole run") {
+    // The bold covers the link and the text after it, so it wraps both rather
+    // than being emitted twice with the link between.
+    let d = try MarkdownParser.parse("**[link](/x) is bold**", schema: schema)
+    try expectEqual(MarkdownSerializer.serialize(d), "**[link](/x) is bold**")
+}
+
+test("Markdown: emphasis spanning a code span stays open across it") {
+    // `code` excludes every other mark, so the span itself can't be bold — but
+    // closing and reopening the emphasis around it would emit delimiter runs
+    // that don't parse back.
+    let md = "This is **strong *emphasized text with `code` in* it**"
+    let d = try MarkdownParser.parse(md, schema: schema)
+    try expectEqual(MarkdownSerializer.serialize(d), md)
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
 test("Markdown emphasis follows the flanking rules") {
     // A delimiter only opens when it isn't followed by whitespace, and only
     // closes when it isn't preceded by whitespace.

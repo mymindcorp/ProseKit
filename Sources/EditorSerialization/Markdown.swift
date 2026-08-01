@@ -156,51 +156,159 @@ public enum MarkdownSerializer {
             .joined(separator: "\n")
     }
 
+    /// Marks that wrap a run of inline content, outermost first. A mark can
+    /// cover several nodes — `**[a](x) b**` is one bold run across a link and
+    /// some text — so they are opened and closed around runs, not per node.
+    private static let spanningMarks = ["link", "italic", "bold", "strike", "highlight"]
+
+    private static func markOpen(_ mark: Mark) -> String {
+        switch mark.type.name {
+        case "link": return "["
+        case "italic": return "*"
+        case "bold": return "**"
+        case "strike": return "~~"
+        case "highlight": return "=="
+        default: return ""
+        }
+    }
+
+    private static func markClose(_ mark: Mark) -> String {
+        switch mark.type.name {
+        case "link":
+            let href = mark.attrs["href"]?.stringValue ?? ""
+            if let title = mark.attrs["title"]?.stringValue, !title.isEmpty {
+                let q = title.contains("\"") ? "'" : "\""
+                return "](\(destination(href)) \(q)\(title)\(q))"
+            }
+            return "](\(destination(href)))"
+        case "italic": return "*"
+        case "bold": return "**"
+        case "strike": return "~~"
+        case "highlight": return "=="
+        default: return ""
+        }
+    }
+
     static func serializeInline(_ fragment: Fragment) -> String {
         var out = ""
+        // Marks currently open, outermost first.
+        var active: [Mark] = []
+        func closeDown(to keep: Int) {
+            while active.count > keep { out += markClose(active.removeLast()) }
+        }
+        func carries(_ node: Node, _ mark: Mark) -> Bool {
+            node.marks.contains { $0.type === mark.type && $0.attrs == mark.attrs }
+        }
+        // Where a mark's unbroken run starting at `from` ends.
+        func runEnd(_ mark: Mark, from: Int) -> Int {
+            var j = from
+            while j < fragment.childCount, carries(fragment.child(j), mark) { j += 1 }
+            return j
+        }
         for i in 0..<fragment.childCount {
             let node = fragment.child(i)
-            if node.isText {
-                // A code span is literal, so an escape inside one would be read
-                // back as a backslash; everywhere else a delimiter character has
-                // to be escaped or it pairs with a later one and becomes markup.
-                let isCode = node.marks.contains { $0.type.name == "code" }
-                let text = node.text ?? ""
-                let piece = applyMarks(isCode ? text : escapeInline(text), node.marks)
+            // The spanning marks this node carries. A mark covering more of what
+            // follows is written outside one covering less, so a bold run across
+            // a link and the text after it comes out as `**[a](x) b**` rather
+            // than as two bold runs with the link between them.
+            let own = spanningMarks
+                .compactMap { name in node.marks.first { $0.type.name == name } }
+                .enumerated()
+                .sorted { left, right in
+                    let a = runEnd(left.element, from: i), b = runEnd(right.element, from: i)
+                    return a == b ? left.offset < right.offset : a > b
+                }
+                .map(\.element)
+            // A node that can't carry a mark shouldn't close it either. A code
+            // span excludes every other mark, so closing and reopening emphasis
+            // around one would emit delimiter runs that don't parse — and the
+            // reader drops the excluded mark from the code span regardless.
+            func canCarry(_ mark: Mark) -> Bool {
+                !node.isText || mark.addToSet(node.marks).contains { $0.type === mark.type }
+            }
+            var wanted: [Mark] = []
+            for mark in active
+            where own.contains(where: { $0.type === mark.type && $0.attrs == mark.attrs })
+                || !canCarry(mark) {
+                wanted.append(mark)
+            }
+            for mark in own
+            where !wanted.contains(where: { $0.type === mark.type && $0.attrs == mark.attrs }) {
+                wanted.append(mark)
+            }
+            // Keep whatever the previous node already opened, in the same order.
+            var shared = 0
+            while shared < active.count, shared < wanted.count,
+                  active[shared].type === wanted[shared].type,
+                  active[shared].attrs == wanted[shared].attrs { shared += 1 }
+            closeDown(to: shared)
+            for mark in wanted[shared...] {
                 // A "!" directly before a link's bracket would read back as an
                 // image, so escape it. Only there — escaping every exclamation
                 // mark in prose would be noise.
-                if piece.hasPrefix("["), out.hasSuffix("!") {
+                if mark.type.name == "link", out.hasSuffix("!") {
                     out.removeLast()
                     out += "\\!"
                 }
-                out += piece
-            } else if node.type.name == "hardBreak" {
-                out += "\\\n"
-            } else if node.type.name == "image" {
-                // An image can sit inline as well as in its own block, so the
-                // title has to be written on both paths.
-                let src = node.attrs["src"]?.stringValue ?? ""
-                let alt = node.attrs["alt"]?.stringValue ?? ""
-                if let title = node.attrs["title"]?.stringValue, !title.isEmpty {
-                    let q = title.contains("\"") ? "'" : "\""
-                    out += "![\(alt)](\(destination(src)) \(q)\(title)\(q))"
-                } else {
-                    out += "![\(alt)](\(destination(src)))"
-                }
-            } else if node.type.name == "wikiLink" {
-                let target = node.attrs["target"]?.stringValue ?? ""
-                if let label = node.attrs["label"]?.stringValue { out += "[[\(target)|\(label)]]" }
-                else { out += "[[\(target)]]" }
-            } else if node.type.name == "inlineMath" {
-                // An empty formula has no spelling: "$$" opens display math, and
-                // no dialect accepts "$$" as empty inline math. Emitting nothing
-                // beats emitting a stray delimiter that swallows what follows.
-                let latex = inlineMathSource(node.attrs["latex"]?.stringValue ?? "")
-                if !latex.isEmpty { out += "$\(latex)$" }
+                out += markOpen(mark)
+                active.append(mark)
             }
+            out += inlineBody(node)
         }
+        closeDown(to: 0)
         return out
+    }
+
+    /// A node's own text, with the marks that don't wrap a run — currently only
+    /// `code`, whose fence length depends on the content it holds.
+    private static func inlineBody(_ node: Node) -> String {
+        if node.isText {
+            let text = node.text ?? ""
+            guard node.marks.contains(where: { $0.type.name == "code" }) else {
+                // A delimiter character has to be escaped or it pairs with a
+                // later one and becomes markup.
+                return escapeInline(text)
+            }
+            // A code span is literal, so escapes inside one would read back as
+            // backslashes; it is fenced by a run longer than any it contains.
+            var longest = 0, current = 0
+            for ch in text {
+                current = ch == "`" ? current + 1 : 0
+                longest = max(longest, current)
+            }
+            let fence = String(repeating: "`", count: longest + 1)
+            let allSpaces = !text.isEmpty && text.allSatisfy { $0 == " " }
+            let edgy = text.hasPrefix("`") || text.hasSuffix("`")
+                || text.hasPrefix(" ") || text.hasSuffix(" ")
+            let pad = (!allSpaces && edgy) ? " " : ""
+            return "\(fence)\(pad)\(text)\(pad)\(fence)"
+        }
+        switch node.type.name {
+        case "hardBreak":
+            return "\\\n"
+        case "image":
+            // An image can sit inline as well as in its own block, so the title
+            // has to be written on both paths.
+            let src = node.attrs["src"]?.stringValue ?? ""
+            let alt = node.attrs["alt"]?.stringValue ?? ""
+            if let title = node.attrs["title"]?.stringValue, !title.isEmpty {
+                let q = title.contains("\"") ? "'" : "\""
+                return "![\(alt)](\(destination(src)) \(q)\(title)\(q))"
+            }
+            return "![\(alt)](\(destination(src)))"
+        case "wikiLink":
+            let target = node.attrs["target"]?.stringValue ?? ""
+            if let label = node.attrs["label"]?.stringValue { return "[[\(target)|\(label)]]" }
+            return "[[\(target)]]"
+        case "inlineMath":
+            // An empty formula has no spelling: "$$" opens display math, and no
+            // dialect accepts "$$" as empty inline math. Emitting nothing beats
+            // emitting a stray delimiter that swallows what follows.
+            let latex = inlineMathSource(node.attrs["latex"]?.stringValue ?? "")
+            return latex.isEmpty ? "" : "$\(latex)$"
+        default:
+            return ""
+        }
     }
 
     /// Backslash-escape the characters this parser treats as inline markup, so
@@ -984,7 +1092,16 @@ public enum MarkdownParser {
     // ==highlight==, [text](url), ![alt](src), and [[wiki|link]].
     static func parseInline(_ text: String, _ schema: Schema,
                             _ definitions: [String: LinkDefinition] = [:]) -> [Node] {
-        var nodes: [Node] = []
+        // Everything except emphasis is resolved as the text is scanned. Runs of
+        // "*" and "_" are set aside as delimiters and paired afterwards, because
+        // which of them open and which close can't be known until the whole line
+        // has been seen.
+        enum Piece {
+            case node(Node)
+            case delimiter(Int)  // index into `delimiters`
+        }
+        var pieces: [Piece] = []
+        var delimiters: [Delimiter] = []
         let chars = Array(text)
         var i = 0
         var buffer = ""
@@ -993,8 +1110,9 @@ public enum MarkdownParser {
             // The HTML parser already knows every named, decimal and hex form, so
             // reuse it rather than growing a second table. Code spans flush their
             // own literal text and never come through here.
-            if !buffer.isEmpty { nodes.append(schema.text(buffer, marks)); buffer = "" }
+            if !buffer.isEmpty { pieces.append(.node(schema.text(buffer, marks))); buffer = "" }
         }
+        func appendNode(_ node: Node) { pieces.append(.node(node)) }
         func mark(_ name: String, _ attrs: Attrs = [:]) -> [Mark] {
             schema.marks[name].map { [$0.create(attrs)] } ?? []
         }
@@ -1007,7 +1125,7 @@ public enum MarkdownParser {
                 let next = chars[i + 1]
                 if next == "\n" {
                     flush()
-                    if let br = try? schema.nodes["hardBreak"]?.create() { nodes.append(br) }
+                    if let br = try? schema.nodes["hardBreak"]?.create() { appendNode(br) }
                     i += 2; continue
                 }
                 if asciiPunct.contains(next) { buffer.append(next); i += 2; continue }
@@ -1020,7 +1138,7 @@ public enum MarkdownParser {
                 while buffer.hasSuffix(" ") { buffer.removeLast(); spaces += 1 }
                 if spaces >= 2 {
                     flush()
-                    if let br = try? schema.nodes["hardBreak"]?.create() { nodes.append(br) }
+                    if let br = try? schema.nodes["hardBreak"]?.create() { appendNode(br) }
                 } else {
                     buffer.append(" ")
                 }
@@ -1046,7 +1164,7 @@ public enum MarkdownParser {
                let href = sanitizeURL(String(chars[(i + 1)..<close]), for: .link) {
                 flush()
                 let text = String(chars[(i + 1)..<close])
-                nodes.append(schema.text(text, mark("link", ["href": .string(href)])))
+                appendNode(schema.text(text, mark("link", ["href": .string(href)])))
                 i = close + 1; continue
             }
             // Wiki link [[...]]
@@ -1057,7 +1175,7 @@ public enum MarkdownParser {
                     let parts = inner.split(separator: "|", maxSplits: 1).map(String.init)
                     var attrs: Attrs = ["target": .string(parts[0])]
                     if parts.count > 1 { attrs["label"] = .string(parts[1]) }
-                    if let wl = try? schema.nodes["wikiLink"]?.create(attrs) { nodes.append(wl) }
+                    if let wl = try? schema.nodes["wikiLink"]?.create(attrs) { appendNode(wl) }
                     i = close + 2
                     continue
                 }
@@ -1072,7 +1190,7 @@ public enum MarkdownParser {
                 if let src = sanitizeURL(definition.destination, for: .image),
                    let type = schema.nodes["image"] {
                     attrs["src"] = .string(src)
-                    if let img = try? type.create(attrs) { nodes.append(img) }
+                    if let img = try? type.create(attrs) { appendNode(img) }
                 }
                 i = next; continue
             }
@@ -1084,7 +1202,7 @@ public enum MarkdownParser {
                     if let title { attrs["title"] = .string(title) }
                     if let src = sanitizeURL(url, for: .image), let type = schema.nodes["image"] {
                         attrs["src"] = .string(src)
-                        if let img = try? type.create(attrs) { nodes.append(img) }
+                        if let img = try? type.create(attrs) { appendNode(img) }
                     }
                     i = next; continue
                 }
@@ -1100,9 +1218,9 @@ public enum MarkdownParser {
                     if let href = sanitizeURL(url, for: .link) {
                         var attrs: Attrs = ["href": .string(href)]
                         if let title { attrs["title"] = .string(title) }
-                        nodes.append(schema.text(text, mark("link", attrs)))
+                        appendNode(schema.text(text, mark("link", attrs)))
                     } else if !text.isEmpty {
-                        nodes.append(schema.text(text))
+                        appendNode(schema.text(text))
                     }
                     i = next; continue
                 }
@@ -1115,32 +1233,33 @@ public enum MarkdownParser {
                 if let href = sanitizeURL(definition.destination, for: .link) {
                     var attrs: Attrs = ["href": .string(href)]
                     if let title = definition.title { attrs["title"] = .string(title) }
-                    nodes.append(schema.text(label, mark("link", attrs)))
+                    appendNode(schema.text(label, mark("link", attrs)))
                 } else if !label.isEmpty {
-                    nodes.append(schema.text(label))
+                    appendNode(schema.text(label))
                 }
                 i = next; continue
             }
-            // Emphasis: ** ** for strong, * * or _ _ for italic. A run only
-            // opens when it's left-flanking and only closes when it's
-            // right-flanking, so "a * foo bar*" and "snake_case_name" stay text.
+            // Emphasis: a run of "*" or "_" is set aside for pairing later. A
+            // run that can neither open nor close is just text.
             if c == "*" || c == "_" {
                 let run = runLength(chars, i, c)
-                let opens = flanking(chars, i, i + run).canOpen
-                let width = run >= 2 ? 2 : 1
-                // `close > i + width`: an empty pair is text, not an empty mark.
-                if opens, let close = findClosingRun(chars, i + width, c, width), close > i + width {
-                    let inner = unescapeInline(String(chars[(i + width)..<close]))
+                let sides = flanking(chars, i, i + run)
+                if sides.canOpen || sides.canClose {
                     flush()
-                    nodes.append(schema.text(inner, mark(width == 2 ? "bold" : "italic")))
-                    i = close + width; continue
+                    delimiters.append(Delimiter(char: c, count: run, original: run,
+                                                canOpen: sides.canOpen, canClose: sides.canClose))
+                    pieces.append(.delimiter(delimiters.count - 1))
+                } else {
+                    buffer += String(repeating: String(c), count: run)
                 }
+                i += run
+                continue
             }
             // Strike ~~ ~~
             if c == "~" && i + 1 < chars.count && chars[i + 1] == "~" {
                 if let close = findSeq(chars, i + 2, "~~"), close > i + 2 {
                     flush()
-                    nodes.append(schema.text(unescapeInline(String(chars[(i + 2)..<close])), mark("strike")))
+                    appendNode(schema.text(unescapeInline(String(chars[(i + 2)..<close])), mark("strike")))
                     i = close + 2; continue
                 }
             }
@@ -1150,7 +1269,7 @@ public enum MarkdownParser {
             if c == "=" && i + 1 < chars.count && chars[i + 1] == "=" {
                 if let close = findSeq(chars, i + 2, "=="), close > i + 2 {
                     flush()
-                    nodes.append(schema.text(unescapeInline(String(chars[(i + 2)..<close])), mark("highlight")))
+                    appendNode(schema.text(unescapeInline(String(chars[(i + 2)..<close])), mark("highlight")))
                     i = close + 2; continue
                 }
             }
@@ -1161,7 +1280,7 @@ public enum MarkdownParser {
                let close = findMathClose(chars, i + 1),
                let math = try? type.create(["latex": .string(String(chars[(i + 1)..<close]))]) {
                 flush()
-                nodes.append(math)
+                appendNode(math)
                 i = close + 1; continue
             }
             // Code span: a run of N backticks closes on the next run of exactly
@@ -1180,7 +1299,7 @@ public enum MarkdownParser {
                     }
                     if !content.isEmpty {
                         flush()
-                        nodes.append(schema.text(content, mark("code")))
+                        appendNode(schema.text(content, mark("code")))
                         i = close + run; continue
                     }
                 }
@@ -1192,7 +1311,50 @@ public enum MarkdownParser {
         // were already consumed as a hard break above).
         while buffer.hasSuffix(" ") { buffer.removeLast() }
         flush()
-        return nodes
+
+        // Pair the delimiters, then hand every piece the marks of the pairs that
+        // enclose it. Marks nest by set membership here rather than by wrapping,
+        // so `***foo***` is one text node carrying both.
+        let positions = pieces.indices.compactMap { index -> Int? in
+            if case .delimiter = pieces[index] { return index }
+            return nil
+        }
+        let pairs = processEmphasis(&delimiters, positions)
+        var result: [Node] = []
+        for (index, piece) in pieces.enumerated() {
+            var marks: [Mark] = []
+            for pair in pairs where positions[pair.open] < index && index < positions[pair.close] {
+                for m in mark(pair.strong ? "bold" : "italic") { marks = m.addToSet(marks) }
+            }
+            switch piece {
+            case let .node(node):
+                result.append(marks.isEmpty ? node : node.mark(marks.reduce(node.marks) { $1.addToSet($0) }))
+            case let .delimiter(d):
+                // Whatever the pairing didn't use is literal text.
+                let leftover = delimiters[d].count
+                if leftover > 0 {
+                    result.append(schema.text(String(repeating: String(delimiters[d].char),
+                                                     count: leftover), marks))
+                }
+            }
+        }
+        return mergeAdjacentText(result, schema)
+    }
+
+    /// Emphasis leaves runs of text that carry the same marks side by side —
+    /// `Fragment.from` merges those, but the callers that build textblocks want
+    /// them merged before schema fitting sees them.
+    private static func mergeAdjacentText(_ nodes: [Node], _ schema: Schema) -> [Node] {
+        var merged: [Node] = []
+        for node in nodes {
+            if let last = merged.last, last.isText, node.isText,
+               Mark.sameSet(last.marks, node.marks) {
+                merged[merged.count - 1] = schema.text((last.text ?? "") + (node.text ?? ""), last.marks)
+            } else {
+                merged.append(node)
+            }
+        }
+        return merged
     }
 
     /// An autolink's contents: a scheme, then anything but spaces or angles.
@@ -1216,6 +1378,94 @@ public enum MarkdownParser {
         let text = String(chars[(start + 1)..<closeBracket])
         let (url, title) = splitDestinationAndTitle(String(chars[(closeBracket + 2)..<closeParen]))
         return (text, url, title, closeParen + 1)
+    }
+
+    /// One run of `*` or `_`, as the emphasis algorithm sees it.
+    struct Delimiter {
+        let char: Character
+        /// How many characters of the run are still unused.
+        var count: Int
+        /// The run's full length, which the rule of three is stated in terms of.
+        let original: Int
+        let canOpen: Bool
+        let canClose: Bool
+    }
+
+    /// A resolved pair of delimiters and what it wraps, as indices into the
+    /// piece list.
+    struct EmphasisPair {
+        let open: Int
+        let close: Int
+        let strong: Bool
+    }
+
+    /// CommonMark's "process emphasis": walk the delimiter runs left to right and
+    /// match each closer with the nearest opener that can pair with it.
+    ///
+    /// Pair matching alone can't express `***foo***` or `*foo **bar** baz*` —
+    /// the first needs one run to supply two different pairs, and the second
+    /// needs an inner pair to be matched before the outer one can close past it.
+    /// Working from the closers, and dropping any delimiters left stranded
+    /// between a matched pair, is what gets both right.
+    static func processEmphasis(_ delimiters: inout [Delimiter],
+                                _ positions: [Int]) -> [EmphasisPair] {
+        var pairs: [EmphasisPair] = []
+        // Delimiters still available to match, as indices into `delimiters`.
+        var stack = Array(positions.indices)
+        var closerAt = 0
+        while closerAt < stack.count {
+            let closer = stack[closerAt]
+            guard delimiters[closer].canClose, delimiters[closer].count > 0 else {
+                closerAt += 1
+                continue
+            }
+            // The nearest opener of the same character that may pair with it.
+            var openerAt: Int?
+            var scan = closerAt - 1
+            while scan >= 0 {
+                let opener = stack[scan]
+                if delimiters[opener].char == delimiters[closer].char,
+                   delimiters[opener].canOpen, delimiters[opener].count > 0,
+                   canPair(delimiters[opener], delimiters[closer]) {
+                    openerAt = scan
+                    break
+                }
+                scan -= 1
+            }
+            guard let openerAt else {
+                // A closer that can't also open is spent; anything else may
+                // still serve as an opener for a later closer.
+                if !delimiters[closer].canOpen { stack.remove(at: closerAt) } else { closerAt += 1 }
+                continue
+            }
+            let opener = stack[openerAt]
+            // Two characters make it strong when both runs can spare them.
+            let strong = delimiters[opener].count >= 2 && delimiters[closer].count >= 2
+            let used = strong ? 2 : 1
+            pairs.append(EmphasisPair(open: opener, close: closer, strong: strong))
+            delimiters[opener].count -= used
+            delimiters[closer].count -= used
+            // Delimiters caught between the pair can never match anything now.
+            if closerAt > openerAt + 1 {
+                stack.removeSubrange((openerAt + 1)..<closerAt)
+                closerAt = openerAt + 1
+            }
+            if delimiters[closer].count == 0 { stack.remove(at: closerAt) }
+            if delimiters[opener].count == 0 {
+                stack.remove(at: openerAt)
+                closerAt -= 1
+            }
+        }
+        return pairs
+    }
+
+    /// The "rule of three": when either run can both open and close, their
+    /// lengths may not sum to a multiple of three unless both are multiples of
+    /// three. It exists to keep `*foo**bar**baz*` from pairing across the middle.
+    private static func canPair(_ opener: Delimiter, _ closer: Delimiter) -> Bool {
+        let eitherIsBoth = (opener.canOpen && opener.canClose) || (closer.canOpen && closer.canClose)
+        guard eitherIsBoth, (opener.original + closer.original) % 3 == 0 else { return true }
+        return opener.original % 3 == 0 && closer.original % 3 == 0
     }
 
     /// A reference link or image: `[text][label]`, `[label][]` or `[label]`.
