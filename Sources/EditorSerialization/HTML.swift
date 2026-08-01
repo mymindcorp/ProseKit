@@ -50,7 +50,8 @@ public struct HTMLConfig: Sendable {
         tagToNode["pre"] = "codeBlock"
         let tagToMark: [String: String] = [
             "strong": "bold", "b": "bold", "em": "italic", "i": "italic",
-            "s": "strike", "del": "strike", "strike": "strike", "u": "underline",
+            "s": "strike", "del": "strike", "strike": "strike",
+            "u": "underline", "ins": "underline",
             "mark": "highlight", "code": "code", "a": "link",
             "sub": "subscript", "sup": "superscript",
         ]
@@ -532,7 +533,7 @@ public enum HTMLParser {
     /// unknown container whose children are parsed as blocks — so an unfamiliar
     /// wrapper can't be mistaken for a run of text.
     private static let inlineTags: Set<String> = [
-        "strong", "b", "em", "i", "s", "del", "strike", "u", "mark", "code", "a",
+        "strong", "b", "em", "i", "s", "del", "strike", "u", "ins", "mark", "code", "a",
         "sub", "sup", "span", "br", "img", "math", "small", "abbr", "cite", "q",
         "time", "kbd", "samp", "var", "big", "font", "wbr", "bdi", "bdo", "ruby",
     ]

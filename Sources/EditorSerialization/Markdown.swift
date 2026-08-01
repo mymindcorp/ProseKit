@@ -160,7 +160,13 @@ public enum MarkdownSerializer {
     /// Marks that wrap a run of inline content, outermost first. A mark can
     /// cover several nodes — `**[a](x) b**` is one bold run across a link and
     /// some text — so they are opened and closed around runs, not per node.
-    private static let spanningMarks = ["link", "italic", "bold", "strike", "highlight"]
+    private static let spanningMarks = ["link", "italic", "bold", "strike", "highlight",
+                                        "underline", "subscript", "superscript"]
+
+    /// Marks Markdown has no spelling for, written as the HTML tags they came
+    /// from — which the parser now reads back. They used to be dropped, so
+    /// exporting to Markdown quietly lost them.
+    private static let markTags = ["underline": "u", "subscript": "sub", "superscript": "sup"]
 
     private static func markOpen(_ mark: Mark) -> String {
         switch mark.type.name {
@@ -169,7 +175,7 @@ public enum MarkdownSerializer {
         case "bold": return "**"
         case "strike": return "~~"
         case "highlight": return "=="
-        default: return ""
+        default: return markTags[mark.type.name].map { "<\($0)>" } ?? ""
         }
     }
 
@@ -186,7 +192,7 @@ public enum MarkdownSerializer {
         case "bold": return "**"
         case "strike": return "~~"
         case "highlight": return "=="
-        default: return ""
+        default: return markTags[mark.type.name].map { "</\($0)>" } ?? ""
         }
     }
 
@@ -1115,6 +1121,8 @@ public enum MarkdownParser {
               close + 1 < bytes.count, bytes[close + 1] == UInt8(ascii: ":") else { return nil }
         let label = slice(bytes, 1..<close)
         guard !label.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        // An unescaped bracket can't appear in a label, so this isn't one.
+        guard findUnescaped(Array(label.utf8), 0, UInt8(ascii: "[")) == nil else { return nil }
         return (label, slice(bytes, (close + 2)..<bytes.count)
             .trimmingCharacters(in: .whitespaces))
     }
@@ -1187,7 +1195,8 @@ public enum MarkdownParser {
             // paragraph that happens to begin with a number.
             let digits = line.prefix(while: { $0.isNumber }).count
             let after = line.dropFirst(digits)
-            guard digits > 0, digits <= 9, after.first == "." else { return nil }
+            guard digits > 0, digits <= 9,
+                  after.first == "." || after.first == ")" else { return nil }
             markerLength = digits + 1
         } else {
             guard let first = line.first, first == "-" || first == "*" || first == "+" else { return nil }
@@ -1217,7 +1226,10 @@ public enum MarkdownParser {
         for c in line { if c.isNumber { digits.append(c) } else { break } }
         guard !digits.isEmpty, digits.count <= 9 else { return nil }
         let rest = line.dropFirst(digits.count)
-        guard rest == "." || rest.hasPrefix(". ") || rest.hasPrefix(".\t") else { return nil }
+        // Either delimiter starts a list: "1." and "1)" are both markers.
+        guard let delimiter = rest.first, delimiter == "." || delimiter == ")" else { return nil }
+        let after = rest.dropFirst()
+        guard after.isEmpty || after.hasPrefix(" ") || after.hasPrefix("\t") else { return nil }
         return Int(digits)
     }
 
@@ -1389,6 +1401,108 @@ public enum MarkdownParser {
         return out
     }
 
+    /// An HTML tag as the inline scanner sees it.
+    private struct InlineTag {
+        let name: String
+        let attrs: [String: String]
+        let isClosing: Bool
+        let selfClosing: Bool
+        /// One past the tag's ">".
+        let end: Int
+    }
+
+    /// Recognize an HTML tag, comment or declaration at `start`. Returns nil for
+    /// anything that isn't one, so "a < b" stays text.
+    private static func inlineTag(_ bytes: [UInt8], _ start: Int) -> InlineTag? {
+        guard start < bytes.count, bytes[start] == UInt8(ascii: "<") else { return nil }
+        var i = start + 1
+        // Comments, declarations, processing instructions and CDATA carry no
+        // content we can keep, so they're reported as a nameless tag to skip.
+        func skipped(_ terminator: [UInt8]) -> InlineTag? {
+            guard let close = findSeq(bytes, i, terminator) else { return nil }
+            return InlineTag(name: "", attrs: [:], isClosing: false, selfClosing: true,
+                             end: close + terminator.count)
+        }
+        if matches(bytes, i, "!--") { i += 3; return skipped(Array("-->".utf8)) }
+        if matches(bytes, i, "![CDATA[") { i += 8; return skipped(Array("]]>".utf8)) }
+        if i < bytes.count, bytes[i] == UInt8(ascii: "!") || bytes[i] == UInt8(ascii: "?") {
+            i += 1; return skipped(Array(">".utf8))
+        }
+        var isClosing = false
+        if i < bytes.count, bytes[i] == UInt8(ascii: "/") { isClosing = true; i += 1 }
+        // A tag name is a letter followed by letters, digits or hyphens.
+        let nameStart = i
+        guard i < bytes.count, isASCIILetter(bytes[i]) else { return nil }
+        while i < bytes.count, isASCIILetter(bytes[i]) || isASCIIDigit(bytes[i])
+            || bytes[i] == UInt8(ascii: "-") { i += 1 }
+        let name = slice(bytes, nameStart..<i).lowercased()
+
+        var attrs: [String: String] = [:]
+        while i < bytes.count {
+            while i < bytes.count, isHTMLSpace(bytes[i]) { i += 1 }
+            guard i < bytes.count else { return nil }
+            if bytes[i] == UInt8(ascii: ">") { return InlineTag(name: name, attrs: attrs,
+                                                               isClosing: isClosing,
+                                                               selfClosing: false, end: i + 1) }
+            if bytes[i] == UInt8(ascii: "/"), i + 1 < bytes.count,
+               bytes[i + 1] == UInt8(ascii: ">") {
+                return InlineTag(name: name, attrs: attrs, isClosing: isClosing,
+                                 selfClosing: true, end: i + 2)
+            }
+            // An attribute name, optionally followed by a value.
+            let attrStart = i
+            guard isASCIILetter(bytes[i]) || bytes[i] == UInt8(ascii: "_")
+                || bytes[i] == UInt8(ascii: ":") else { return nil }
+            while i < bytes.count, !isHTMLSpace(bytes[i]), bytes[i] != UInt8(ascii: "="),
+                  bytes[i] != UInt8(ascii: ">"), bytes[i] != UInt8(ascii: "/") { i += 1 }
+            let attrName = slice(bytes, attrStart..<i).lowercased()
+            while i < bytes.count, isHTMLSpace(bytes[i]) { i += 1 }
+            guard i < bytes.count, bytes[i] == UInt8(ascii: "=") else { attrs[attrName] = ""; continue }
+            i += 1
+            while i < bytes.count, isHTMLSpace(bytes[i]) { i += 1 }
+            guard i < bytes.count else { return nil }
+            if bytes[i] == UInt8(ascii: "\"") || bytes[i] == UInt8(ascii: "'") {
+                let quote = bytes[i]
+                guard let close = findByte(bytes, i + 1, quote) else { return nil }
+                attrs[attrName] = HTMLParser.decodeEntities(slice(bytes, (i + 1)..<close))
+                i = close + 1
+            } else {
+                let from = i
+                while i < bytes.count, !isHTMLSpace(bytes[i]), bytes[i] != UInt8(ascii: ">") { i += 1 }
+                attrs[attrName] = HTMLParser.decodeEntities(slice(bytes, from..<i))
+            }
+        }
+        return nil
+    }
+
+    private static func isASCIILetter(_ b: UInt8) -> Bool { (b | 0x20) >= 97 && (b | 0x20) <= 122 }
+    private static func isASCIIDigit(_ b: UInt8) -> Bool { b >= 48 && b <= 57 }
+    private static func isHTMLSpace(_ b: UInt8) -> Bool {
+        b == UInt8(ascii: " ") || b == UInt8(ascii: "\t") || b == UInt8(ascii: "\n")
+            || b == UInt8(ascii: "\r")
+    }
+    private static func matches(_ bytes: [UInt8], _ at: Int, _ text: String) -> Bool {
+        let want = Array(text.utf8)
+        guard at + want.count <= bytes.count else { return false }
+        return Array(bytes[at..<(at + want.count)]) == want
+    }
+
+    /// The index of the `</name>` closing `openAt`, counting nested opens of the
+    /// same name so `<b>a<b>c</b>d</b>` closes at the outer one.
+    private static func closingTag(_ bytes: [UInt8], _ from: Int, _ name: String) -> InlineTag? {
+        var depth = 1
+        var i = from
+        while i < bytes.count {
+            guard bytes[i] == UInt8(ascii: "<"), let tag = inlineTag(bytes, i) else { i += 1; continue }
+            if tag.name == name, !tag.selfClosing {
+                depth += tag.isClosing ? -1 : 1
+                if depth == 0 { return tag }
+            }
+            i = tag.end
+        }
+        return nil
+    }
+
     /// The words a label renders to, which is what an image's alt text is: the
     /// markup inside it counts as what it produces, not as how it's spelled.
     private static func renderedText(_ label: String, _ schema: Schema,
@@ -1497,6 +1611,66 @@ public enum MarkdownParser {
                 flush()
                 appendNode(schema.text(url, mark("link", ["href": .string(href)])))
                 i = close + 1; continue
+            }
+            // Inline HTML. Markdown written for the web is full of it — a
+            // `<br>` in a table cell, `<sub>` in a formula, `<kbd>` in a
+            // keyboard shortcut — and it used to arrive as escaped text. Tags
+            // that map onto the schema become marks and nodes.
+            //
+            // Anything else is left exactly as written rather than dropped:
+            // an unknown tag is still the author's text, and deleting it would
+            // lose content — including, before this was tightened, the whole of
+            // `<javascript:alert(1)>`, which reaches here once the sanitizer has
+            // refused to make it a link.
+            if c == UInt8(ascii: "<"), let tag = inlineTag(chars, i) {
+                // A comment, declaration or CDATA section is left as written:
+                // dropping one changes the spacing around it, and `<!-- -->` is
+                // a real idiom for splitting two lists apart.
+                if tag.name == "br", !tag.isClosing {
+                    flush()
+                    if let br = try? schema.nodes["hardBreak"]?.create() { appendNode(br) }
+                    i = tag.end
+                    // A break swallows the whitespace after it, as the two-space
+                    // spelling does — otherwise the space couldn't be written
+                    // back, since a line's leading whitespace is stripped.
+                    while i < chars.count, chars[i] == UInt8(ascii: " ")
+                        || chars[i] == UInt8(ascii: "\t") { i += 1 }
+                    continue
+                }
+                if tag.name == "img", !tag.isClosing,
+                   let source = tag.attrs["src"], let src = sanitizeURL(source, for: .image),
+                   let type = schema.nodes["image"] {
+                    var attrs: Attrs = ["src": .string(src), "alt": .string(tag.attrs["alt"] ?? "")]
+                    if let title = tag.attrs["title"] { attrs["title"] = .string(title) }
+                    if let img = try? type.create(attrs) {
+                        flush(); appendNode(img); i = tag.end; continue
+                    }
+                }
+                if !tag.isClosing, !tag.selfClosing,
+                   let markName = HTMLConfig.default.tagToMark[tag.name],
+                   schema.marks[markName] != nil,
+                   let close = closingTag(chars, tag.end, tag.name),
+                   !slice(chars, tag.end..<(close.end - tag.name.count - 3)).contains("\n") {
+                    var applied: Mark?
+                    if markName == "link" {
+                        if let target = tag.attrs["href"], let href = sanitizeURL(target, for: .link) {
+                            var attrs: Attrs = ["href": .string(href)]
+                            if let title = tag.attrs["title"] { attrs["title"] = .string(title) }
+                            applied = mark("link", attrs).first
+                        }
+                    } else {
+                        applied = mark(markName).first
+                    }
+                    let inner = slice(chars, tag.end..<(close.end - tag.name.count - 3))
+                    let content = parseInline(inner, schema, definitions)
+                    if !content.isEmpty {
+                        flush()
+                        for node in content {
+                            appendNode(applied.map { m in node.mark(m.addToSet(node.marks)) } ?? node)
+                        }
+                        i = close.end; continue
+                    }
+                }
             }
             // Wiki link [[...]]
             if c == UInt8(ascii: "[") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "[") {
@@ -1649,9 +1823,13 @@ public enum MarkdownParser {
             buffer.append(c)
             i += 1
         }
-        // Trailing spaces at the very end are not content (two before a newline
-        // were already consumed as a hard break above).
-        while buffer.last == UInt8(ascii: " ") { buffer.removeLast() }
+        // Trailing whitespace at the very end is not content (two spaces before
+        // a newline were already consumed as a hard break above). Tabs count:
+        // one left on the end of a heading survived into the document and then
+        // couldn't be written back, which was the last round-trip failure.
+        while buffer.last == UInt8(ascii: " ") || buffer.last == UInt8(ascii: "\t") {
+            buffer.removeLast()
+        }
         flush()
 
         // Pair the delimiters, then hand every piece the marks of the pairs that
