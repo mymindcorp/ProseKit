@@ -538,10 +538,19 @@ test("HTML entities: &nbsp; and numeric references decode") {
     try expectEqual(back, doc(p("a\u{00A0}b AB &lt;")))
 }
 
-test("HTML entities: invalid references stay literal") {
-    // Out-of-range, surrogate, unknown-name, and empty refs must pass through.
-    let back = try HTMLParser.parse("<p>&#x110000; &#xD800; &bogus; &; & end&</p>", schema: schema)
-    try expectEqual(back, doc(p("&#x110000; &#xD800; &bogus; &; & end&")))
+test("HTML entities: a reference to no character becomes the replacement one") {
+    // A numeric reference that names zero, a surrogate, or a code point past the
+    // last one is an error that both HTML and CommonMark resolve to U+FFFD.
+    // (This used to pass them through unchanged, which matched neither.)
+    let back = try HTMLParser.parse("<p>&#x110000; &#xD800; &#0;</p>", schema: schema)
+    try expectEqual(back, doc(p("\u{FFFD} \u{FFFD} \u{FFFD}")))
+}
+
+test("HTML entities: text that isn't a reference stays literal") {
+    // An unknown name, an empty reference, and a bare ampersand are not errors
+    // to recover from — they are simply text.
+    let back = try HTMLParser.parse("<p>&bogus; &; & end&</p>", schema: schema)
+    try expectEqual(back, doc(p("&bogus; &; & end&")))
 }
 
 test("HTML tokenizer: malformed fragments never crash") {
@@ -1683,6 +1692,44 @@ test("Markdown parses an angle-bracketed link destination") {
     // CommonMark percent-encodes the space; we keep destinations as written,
     // as the HTML parser does, so the space survives instead.
     try expectEqual(d.child(0).child(0).marks.first?.attrs["href"], .string("/my uri"))
+}
+
+test("Markdown decodes a long numeric reference") {
+    // The search for the ";" is bounded so that '&'-dense text doesn't go
+    // quadratic; a zero-padded reference is longer than a name and used to fall
+    // outside that bound.
+    try expectEqual(try MarkdownParser.parse("&#x0001F600;", schema: schema).child(0).textContent,
+                    "\u{1F600}")
+    try expectEqual(try MarkdownParser.parse("&#000035;", schema: schema).child(0).textContent, "#")
+}
+
+test("Markdown: a reference to no character becomes the replacement one") {
+    for md in ["&#0;", "&#x110000;", "&#xD800;"] {
+        try expectEqual(try MarkdownParser.parse(md, schema: schema).child(0).textContent,
+                        "\u{FFFD}", "input: \(md)")
+    }
+}
+
+test("Markdown decodes references in a link's destination and title") {
+    let d = try MarkdownParser.parse("[foo](/f&ouml;&ouml; \"t&ouml;\")", schema: schema)
+    let link = d.child(0).child(0).marks.first
+    try expectEqual(link?.attrs["href"], .string("/föö"))
+    try expectEqual(link?.attrs["title"], .string("tö"))
+    // And in a definition, which shares the same splitting.
+    let ref = try MarkdownParser.parse("[foo]\n\n[foo]: /b&auml;r \"t&auml;\"", schema: schema)
+    try expectEqual(ref.child(0).child(0).marks.first?.attrs["href"], .string("/bär"))
+    try expectEqual(ref.child(0).child(0).marks.first?.attrs["title"], .string("tä"))
+}
+
+test("Markdown: an entity can't stand in for a title's quotes") {
+    // The reference is text, so this has no title — which leaves a destination
+    // containing spaces, and that isn't a link at all.
+    let d = try MarkdownParser.parse("[a](url &quot;tit&quot;)", schema: schema)
+    try expectEqual(d.child(0).textContent, "[a](url \"tit\")")
+    try expect(d.child(0).child(0).marks.isEmpty, "parsed as a link")
+    // A destination with spaces needs angle brackets, which still work.
+    try expectEqual(try MarkdownParser.parse("[a](<url with spaces>)", schema: schema)
+                        .child(0).child(0).marks.first?.attrs["href"], .string("url with spaces"))
 }
 
 test("Markdown decodes character references") {
