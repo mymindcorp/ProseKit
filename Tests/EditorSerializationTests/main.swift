@@ -1711,6 +1711,123 @@ test("Markdown round-trip: text that looks like an autolink") {
     }
 }
 
+// Link reference definitions: a destination defined once and referred to by
+// label. The definition itself is metadata and must not appear in the document.
+
+func firstLink(_ d: Node) -> Mark? {
+    var found: Mark?
+    d.descendants { node, _, _, _ in
+        if found == nil { found = node.marks.first { $0.type.name == "link" } }
+        return found == nil
+    }
+    return found
+}
+
+test("Markdown resolves the three reference forms") {
+    let definition = "\n\n[foo]: /url \"the title\""
+    // Full, collapsed, and shortcut.
+    for md in ["[text][foo]", "[foo][]", "[foo]"] {
+        let d = try MarkdownParser.parse(md + definition, schema: schema)
+        try expectEqual(firstLink(d)?.attrs["href"], .string("/url"), "input: \(md)")
+        try expectEqual(firstLink(d)?.attrs["title"], .string("the title"), "input: \(md)")
+    }
+    // The displayed text is the first bracket's contents.
+    try expectEqual(try MarkdownParser.parse("[text][foo]" + definition, schema: schema)
+                        .child(0).textContent, "text")
+    try expectEqual(try MarkdownParser.parse("[foo]" + definition, schema: schema)
+                        .child(0).textContent, "foo")
+}
+
+test("Markdown removes a definition from the document") {
+    let d = try MarkdownParser.parse("[foo]: /url\n\nSee [foo].", schema: schema)
+    try expectEqual(d.childCount, 1, "the definition left a block behind")
+    try expectEqual(d.child(0).textContent, "See foo.")
+    try expect(!d.textContent.contains("/url"), "definition leaked: \(d.textContent)")
+}
+
+test("Markdown resolves a reference that appears before its definition") {
+    // The reason definitions are collected in a pass of their own.
+    let d = try MarkdownParser.parse("See [foo].\n\n[foo]: /url", schema: schema)
+    try expectEqual(firstLink(d)?.attrs["href"], .string("/url"))
+}
+
+test("Markdown matches labels case-insensitively and ignoring whitespace") {
+    for reference in ["[FOO]", "[Foo]", "[foo  bar]"] {
+        let d = try MarkdownParser.parse(reference + "\n\n[Foo Bar]: /url\n[foo]: /url",
+                                         schema: schema)
+        try expect(firstLink(d) != nil, "no link for \(reference)")
+    }
+}
+
+test("Markdown leaves an unmatched reference as text") {
+    // Nothing defines [bar], so the brackets are ordinary characters.
+    let d = try MarkdownParser.parse("see [bar] here", schema: schema)
+    try expectEqual(d.child(0).textContent, "see [bar] here")
+    try expectNil(firstLink(d))
+}
+
+test("Markdown reads a definition's title from the following line") {
+    let d = try MarkdownParser.parse("[foo]: /url\n\"the title\"\n\nSee [foo].", schema: schema)
+    try expectEqual(firstLink(d)?.attrs["title"], .string("the title"))
+}
+
+test("Markdown takes the first definition of a label") {
+    let d = try MarkdownParser.parse("[foo]: /first\n[foo]: /second\n\n[foo]", schema: schema)
+    try expectEqual(firstLink(d)?.attrs["href"], .string("/first"))
+}
+
+test("Markdown: a definition inside code is content, not a definition") {
+    // Both fenced and indented — the reference then has nothing to resolve to.
+    for md in ["```\n[foo]: /url\n```\n\n[foo]", "    [foo]: /url\n\n[foo]"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expect(firstLink(d) == nil, "resolved a link it shouldn't have: \(md)")
+        try expect(d.textContent.contains("[foo]: /url"), "definition vanished: \(md)")
+    }
+}
+
+test("Markdown resolves an image by reference") {
+    let d = try MarkdownParser.parse("![alt][foo]\n\n[foo]: /img.png \"t\"", schema: schema)
+    var image: Node?
+    d.descendants { node, _, _, _ in
+        if node.type.name == "image" { image = node }
+        return image == nil
+    }
+    try expect(image != nil, "no image")
+    try expectEqual(image?.attrs["src"], .string("/img.png"))
+    try expectEqual(image?.attrs["alt"], .string("alt"))
+    try expectEqual(image?.attrs["title"], .string("t"))
+}
+
+test("Markdown resolves a reference inside a blockquote") {
+    // A nested parse inherits the definitions collected outside it.
+    let d = try MarkdownParser.parse("> See [foo].\n\n[foo]: /url", schema: schema)
+    try expectEqual(d.child(0).type.name, "blockquote")
+    try expectEqual(firstLink(d)?.attrs["href"], .string("/url"))
+}
+
+test("Markdown round-trip: references are written as inline links") {
+    // We have no reason to emit definitions, so both spellings converge.
+    let d = try MarkdownParser.parse("[text][foo]\n\n[foo]: /url \"t\"", schema: schema)
+    try expectEqual(MarkdownSerializer.serialize(d), "[text](/url \"t\")")
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: a bang directly before a link") {
+    // "!" then a link reads back as an image unless the bang is escaped.
+    let d = doc(p(t("wow!"), schema.text("x", [schema.mark("link", ["href": .string("/u")])])))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: parentheses in a destination and title") {
+    // The link's closing ")" is found past an angle destination and a quoted
+    // title, both of which may contain one.
+    let d = doc(p(schema.text("x", [schema.mark("link", [
+        "href": .string("my_(url)"), "title": .string("title (with parens)")])])))
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+    try expectEqual(try MarkdownParser.parse("[x](/uri (title))", schema: schema)
+                        .child(0).child(0).marks.first?.attrs["title"], .string("title"))
+}
+
 test("Markdown continues a blockquote's paragraph without the marker") {
     // CommonMark's lazy continuation: the second line has no ">" but continues
     // the paragraph inside the quote.

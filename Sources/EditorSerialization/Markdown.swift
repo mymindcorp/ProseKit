@@ -166,7 +166,15 @@ public enum MarkdownSerializer {
                 // to be escaped or it pairs with a later one and becomes markup.
                 let isCode = node.marks.contains { $0.type.name == "code" }
                 let text = node.text ?? ""
-                out += applyMarks(isCode ? text : escapeInline(text), node.marks)
+                let piece = applyMarks(isCode ? text : escapeInline(text), node.marks)
+                // A "!" directly before a link's bracket would read back as an
+                // image, so escape it. Only there — escaping every exclamation
+                // mark in prose would be noise.
+                if piece.hasPrefix("["), out.hasSuffix("!") {
+                    out.removeLast()
+                    out += "\\!"
+                }
+                out += piece
             } else if node.type.name == "hardBreak" {
                 out += "\\\n"
             } else if node.type.name == "image" {
@@ -313,7 +321,26 @@ public enum MarkdownParseError: Error, CustomStringConvertible, Equatable {
 
 public enum MarkdownParser {
     public static func parse(_ markdown: String, schema: Schema) throws -> Node {
-        let lines = markdown.components(separatedBy: "\n").map(expandLeadingTabs)
+        // A reference can appear before the definition it uses, so definitions
+        // are collected — and their lines removed — before anything is parsed.
+        let (lines, definitions) = collectDefinitions(
+            markdown.components(separatedBy: "\n").map(expandLeadingTabs))
+        return try parse(lines: lines, schema: schema, definitions: definitions)
+    }
+
+    /// Parse a nested run of lines — a quote's body, a list item's content —
+    /// with the definitions collected so far still in scope.
+    static func parseNested(_ text: String, schema: Schema,
+                            definitions: [String: LinkDefinition]) throws -> Node {
+        let (lines, local) = collectDefinitions(
+            text.components(separatedBy: "\n").map(expandLeadingTabs))
+        // An outer definition wins, matching the first-one-wins rule.
+        return try parse(lines: lines, schema: schema,
+                         definitions: definitions.merging(local) { outer, _ in outer })
+    }
+
+    static func parse(lines: [String], schema: Schema,
+                      definitions: [String: LinkDefinition]) throws -> Node {
         var blocks: [Node] = []
         var i = 0
         while i < lines.count {
@@ -447,7 +474,7 @@ public enum MarkdownParser {
             }
             // Heading
             if let m = headingMatch(trimmed) {
-                let inline = parseInline(m.text, schema)
+                let inline = parseInline(m.text, schema, definitions)
                 blocks.append(contentsOf: textblockSplittingBlocks(inline) {
                     try? schema.node("heading", ["level": .int(m.level)], content: Fragment.from($0))
                 })
@@ -486,7 +513,7 @@ public enum MarkdownParser {
                     }
                     break
                 }
-                let inner = try parse(quote.joined(separator: "\n"), schema: schema)
+                let inner = try parseNested(quote.joined(separator: "\n"), schema: schema, definitions: definitions)
                 if let bq = try? schema.node("blockquote", [:], content: inner.content) { blocks.append(bq) }
                 continue
             }
@@ -521,7 +548,7 @@ public enum MarkdownParser {
             }
             // Keep line breaks so the inline parser can turn a trailing `\` into a
             // hard break and collapse other soft wraps into spaces.
-            let inline = parseInline(para.joined(separator: "\n"), schema)
+            let inline = parseInline(para.joined(separator: "\n"), schema, definitions)
             // A setext underline turns the paragraph just gathered into a
             // heading. This is why "---" under a paragraph is a heading and a
             // thematic break anywhere else: the paragraph branch gets there
@@ -659,6 +686,94 @@ public enum MarkdownParser {
         if line.hasPrefix("~~~") { return true }
         guard line.hasPrefix("```") else { return false }
         return !line.drop(while: { $0 == "`" }).contains("`")
+    }
+
+    /// A link's destination and title, defined once and referred to by label.
+    struct LinkDefinition {
+        let destination: String
+        let title: String?
+    }
+
+    /// Definitions are matched by label case-insensitively, with surrounding and
+    /// internal whitespace normalized, so `[Foo  bar]` and `[foo bar]` are one.
+    static func normalizeLabel(_ label: String) -> String {
+        label.split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+            .lowercased()
+    }
+
+    /// Pull `[label]: destination "title"` lines out of the document, returning
+    /// the remaining lines and the definitions found.
+    ///
+    /// This has to happen before anything else is parsed, because a reference may
+    /// appear before the definition it uses. Definitions inside a fenced or
+    /// indented code block are content, not definitions, so those regions are
+    /// skipped.
+    static func collectDefinitions(_ lines: [String]) -> ([String], [String: LinkDefinition]) {
+        var remaining: [String] = []
+        var definitions: [String: LinkDefinition] = [:]
+        var fence: String?
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if let open = fence {
+                if trimmed.hasPrefix(open) { fence = nil }
+                remaining.append(line); i += 1; continue
+            }
+            if isOpeningFence(trimmed) {
+                fence = trimmed.hasPrefix("```") ? "```" : "~~~"
+                remaining.append(line); i += 1; continue
+            }
+            // Four columns in is code, not a definition.
+            guard indentWidth(line) < 4, let (label, rest) = parseDefinitionHead(line) else {
+                remaining.append(line); i += 1; continue
+            }
+            var body = rest
+            var consumed = 1
+            // A title may sit on the line below the destination.
+            if body.isEmpty {
+                remaining.append(line); i += 1; continue
+            }
+            if titleOnly(body) == nil, i + 1 < lines.count {
+                let next = lines[i + 1].trimmingCharacters(in: .whitespaces)
+                if splitDestinationAndTitle(body).1 == nil, titleOnly(next) != nil {
+                    body += " " + next
+                    consumed = 2
+                }
+            }
+            let (destination, title) = splitDestinationAndTitle(body)
+            guard !destination.isEmpty else { remaining.append(line); i += 1; continue }
+            let key = normalizeLabel(label)
+            // The first definition of a label wins, as in CommonMark.
+            if definitions[key] == nil {
+                definitions[key] = LinkDefinition(destination: destination, title: title)
+            }
+            i += consumed
+        }
+        return (remaining, definitions)
+    }
+
+    /// `[label]:` at the head of a line, returning the label and what follows.
+    private static func parseDefinitionHead(_ line: String) -> (label: String, rest: String)? {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard t.hasPrefix("[") else { return nil }
+        let chars = Array(t)
+        guard let close = findUnescaped(chars, 1, "]"), close > 1,
+              close + 1 < chars.count, chars[close + 1] == ":" else { return nil }
+        let label = String(chars[1..<close])
+        guard !label.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        return (label, String(chars[(close + 2)...]).trimmingCharacters(in: .whitespaces))
+    }
+
+    /// The contents of a line that is nothing but a quoted title.
+    private static func titleOnly(_ s: String) -> String? {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        for (open, close) in [("\"", "\""), ("'", "'"), ("(", ")")]
+        where t.hasPrefix(open) && t.hasSuffix(close) && t.count >= 2 {
+            return String(t.dropFirst().dropLast())
+        }
+        return nil
     }
 
     /// Whether a line begins a block of its own, rather than continuing the
@@ -867,7 +982,8 @@ public enum MarkdownParser {
 
     // Inline parser: handles **bold**, *italic*/_italic_, `code`, ~~strike~~,
     // ==highlight==, [text](url), ![alt](src), and [[wiki|link]].
-    static func parseInline(_ text: String, _ schema: Schema) -> [Node] {
+    static func parseInline(_ text: String, _ schema: Schema,
+                            _ definitions: [String: LinkDefinition] = [:]) -> [Node] {
         var nodes: [Node] = []
         let chars = Array(text)
         var i = 0
@@ -946,6 +1062,20 @@ public enum MarkdownParser {
                     continue
                 }
             }
+            // Image by reference: ![alt][label], ![alt][] or ![alt]
+            if c == "!" && i + 1 < chars.count && chars[i + 1] == "[",
+               parseLinkLike(chars, i + 1) == nil,
+               let (alt, definition, next) = parseReference(chars, i + 1, definitions) {
+                flush()
+                var attrs: Attrs = ["src": .null, "alt": .string(unescapeInline(alt))]
+                if let title = definition.title { attrs["title"] = .string(title) }
+                if let src = sanitizeURL(definition.destination, for: .image),
+                   let type = schema.nodes["image"] {
+                    attrs["src"] = .string(src)
+                    if let img = try? type.create(attrs) { nodes.append(img) }
+                }
+                i = next; continue
+            }
             // Image ![alt](src)
             if c == "!" && i + 1 < chars.count && chars[i + 1] == "[" {
                 if let (alt, url, title, next) = parseLinkLike(chars, i + 1) {
@@ -976,6 +1106,20 @@ public enum MarkdownParser {
                     }
                     i = next; continue
                 }
+            }
+            // Link by reference: [text][label], [label][] or [label]. Tried
+            // after the inline form, which takes precedence.
+            if c == "[", let (text, definition, next) = parseReference(chars, i, definitions) {
+                flush()
+                let label = unescapeInline(text)
+                if let href = sanitizeURL(definition.destination, for: .link) {
+                    var attrs: Attrs = ["href": .string(href)]
+                    if let title = definition.title { attrs["title"] = .string(title) }
+                    nodes.append(schema.text(label, mark("link", attrs)))
+                } else if !label.isEmpty {
+                    nodes.append(schema.text(label))
+                }
+                i = next; continue
             }
             // Emphasis: ** ** for strong, * * or _ _ for italic. A run only
             // opens when it's left-flanking and only closes when it's
@@ -1068,14 +1212,76 @@ public enum MarkdownParser {
         guard chars[start] == "[" else { return nil }
         guard let closeBracket = findUnescaped(chars, start + 1, "]") else { return nil }
         guard closeBracket + 1 < chars.count, chars[closeBracket + 1] == "(" else { return nil }
-        guard let closeParen = findUnescaped(chars, closeBracket + 2, ")") else { return nil }
+        guard let closeParen = findLinkClose(chars, closeBracket + 2) else { return nil }
         let text = String(chars[(start + 1)..<closeBracket])
-        var url = String(chars[(closeBracket + 2)..<closeParen])
-        var title: String?
+        let (url, title) = splitDestinationAndTitle(String(chars[(closeBracket + 2)..<closeParen]))
+        return (text, url, title, closeParen + 1)
+    }
 
-        // An optional title follows the destination, quoted with "", '' or ().
-        // Split on the last run of whitespace before the quote so a destination
-        // containing quotes (rare, but legal) isn't cut in half.
+    /// A reference link or image: `[text][label]`, `[label][]` or `[label]`.
+    ///
+    /// Returns the text to display, the definition it resolves to, and where to
+    /// continue. Nil when the brackets don't name a definition, so unmatched
+    /// brackets stay literal text — which is what keeps prose like "see [1]"
+    /// intact.
+    private static func parseReference(_ chars: [Character], _ start: Int,
+                                       _ definitions: [String: LinkDefinition])
+        -> (text: String, definition: LinkDefinition, next: Int)? {
+        guard !definitions.isEmpty, chars[start] == "[" else { return nil }
+        guard let closeBracket = findUnescaped(chars, start + 1, "]") else { return nil }
+        let first = String(chars[(start + 1)..<closeBracket])
+        var label = first
+        var next = closeBracket + 1
+        // A second bracket pair makes it a full or collapsed reference.
+        if closeBracket + 1 < chars.count, chars[closeBracket + 1] == "[" {
+            guard let closeSecond = findUnescaped(chars, closeBracket + 2, "]") else { return nil }
+            let second = String(chars[(closeBracket + 2)..<closeSecond])
+            // `[text][]` is collapsed: the text is its own label.
+            label = second.trimmingCharacters(in: .whitespaces).isEmpty ? first : second
+            next = closeSecond + 1
+        }
+        guard let definition = definitions[normalizeLabel(label)] else { return nil }
+        return (first, definition, next)
+    }
+
+    /// The `)` that closes a link, skipping the parts that may contain one:
+    /// an angle-bracketed destination, a quoted title, and balanced parentheses
+    /// (which is also the `(title)` spelling).
+    private static func findLinkClose(_ chars: [Character], _ from: Int) -> Int? {
+        var i = from
+        var depth = 0
+        while i < chars.count {
+            let c = chars[i]
+            if c == "\\" { i += 2; continue }
+            if c == "<", let close = findUnescaped(chars, i + 1, ">") { i = close + 1; continue }
+            if c == "\"" || c == "'", let close = findUnescaped(chars, i + 1, c) { i = close + 1; continue }
+            if c == "(" { depth += 1; i += 1; continue }
+            if c == ")" {
+                if depth == 0 { return i }
+                depth -= 1
+                i += 1
+                continue
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    /// Split a destination from an optional title. Shared by inline links and by
+    /// reference definitions, which spell this part the same way.
+    static func splitDestinationAndTitle(_ s: String) -> (String, String?) {
+        var url = s
+        var title: String?
+        // An angle-bracketed destination ends at its ">", so anything after it
+        // is the title with no whitespace required between them.
+        let head = s.trimmingCharacters(in: .whitespaces)
+        if head.hasPrefix("<"), let close = head.firstIndex(of: ">") {
+            let rest = String(head[head.index(after: close)...]).trimmingCharacters(in: .whitespaces)
+            let destination = String(head[head.index(after: head.startIndex)..<close])
+            return (destination, rest.isEmpty ? nil : titleOnly(rest))
+        }
+        // The title is quoted with "", '' or (). Split on the whitespace before
+        // the quote, so a destination that itself contains one isn't cut in half.
         let trimmed = url.trimmingCharacters(in: .whitespaces)
         for (open, close) in [("\"", "\""), ("'", "'"), ("(", ")")] where trimmed.hasSuffix(close) {
             if let openIndex = trimmed.dropLast().lastIndex(of: Character(open)),
@@ -1091,7 +1297,7 @@ public enum MarkdownParser {
         if bare.hasPrefix("<"), bare.hasSuffix(">"), !bare.dropFirst().dropLast().contains("\n") {
             url = String(bare.dropFirst().dropLast())
         }
-        return (text, url, title, closeParen + 1)
+        return (url.trimmingCharacters(in: .whitespaces), title)
     }
 
     /// The closing `$` of inline math, following Pandoc's `tex_math_dollars`:
