@@ -971,6 +971,34 @@ public enum MarkdownParser {
         return count >= 3
     }
 
+    /// A list marker at the head of a line: the content that follows it, and how
+    /// many columns the marker and its spaces occupy.
+    ///
+    /// That width is the item's content column — where its continuation lines
+    /// have to be indented to — so it has to count the spaces actually written,
+    /// not assume one. `1.  foo` puts content at column 4, and treating it as 3
+    /// left every continuation line one space too deep, which turned indented
+    /// code inside the item into code with a stray leading space.
+    ///
+    /// Five or more spaces would make the content indented code, so in that case
+    /// the content column is one past the marker and the rest stays as content.
+    static func listMarker(_ line: String, ordered: Bool) -> (content: String, width: Int)? {
+        let markerLength: Int
+        if ordered {
+            let digits = line.prefix(while: { $0.isNumber }).count
+            guard digits > 0, line.dropFirst(digits).first == "." else { return nil }
+            markerLength = digits + 1
+        } else {
+            guard let first = line.first, first == "-" || first == "*" || first == "+" else { return nil }
+            markerLength = 1
+        }
+        let rest = expandLeadingTabs(String(line.dropFirst(markerLength)))
+        guard rest.isEmpty || rest.first == " " else { return nil }
+        let spaces = rest.prefix(while: { $0 == " " }).count
+        let padding = (spaces == 0 || spaces > 4) ? 1 : spaces
+        return (String(rest.dropFirst(min(padding, spaces))), markerLength + padding)
+    }
+
     private static func bulletMatch(_ line: String) -> String? {
         // A tab after the marker separates it from the content, as a space does.
         for marker in ["-", "*", "+"] where line.hasPrefix(marker) {
@@ -1030,19 +1058,11 @@ public enum MarkdownParser {
                 i += 1
                 continue
             }
-            if isItem(t) {
-                let markerWidth: Int
-                if ordered {
-                    let digits = t.prefix(while: { $0.isNumber }).count
-                    items.append([String(t.drop(while: { $0.isNumber }).dropFirst(2))])
-                    markerWidth = digits + 2
-                } else {
-                    items.append([bulletMatch(t) ?? ""])
-                    markerWidth = 2
-                }
+            if let marker = listMarker(t, ordered: ordered) {
+                items.append([marker.content])
                 // The content column is where the text after the marker starts,
                 // so an item that is itself indented carries that indent.
-                indents.append(indentWidth(raw) + markerWidth)
+                indents.append(indentWidth(raw) + marker.width)
                 i += 1
                 continue
             }
@@ -1098,10 +1118,15 @@ public enum MarkdownParser {
     /// The blocks of one list item. An item that carried continuation lines is
     /// parsed as a document, the way a blockquote's contents are.
     private static func itemBlocks(_ lines: [String], schema: Schema) -> [Node] {
-        if lines.count > 1 {
+        // Indented content is a block even on its own line: a marker followed by
+        // five or more spaces leaves the content four columns in, which is code.
+        if lines.count > 1 || indentWidth(lines[0]) >= 4 {
             let inner = (try? parse(lines.joined(separator: "\n"), schema: schema))?.content
             return inner.map { frag in (0..<frag.childCount).map { frag.child($0) } } ?? []
         }
+        // A list item holds blocks, so a block-level image in its text becomes a
+        // sibling block rather than an invalid child of the paragraph.
+        // `fitContent` then puts the item's content in order.
         let inline = parseInline(lines[0], schema)
         return textblockSplittingBlocks(inline) {
             try? schema.node("paragraph", [:], content: Fragment.from($0))
@@ -1112,21 +1137,10 @@ public enum MarkdownParser {
         guard let itemType = schema.nodes["listItem"] else { return nil }
         var itemNodes: [Node] = []
         for lines in items {
-            if lines.count > 1 {
-                let content = fitContent(itemBlocks(lines, schema: schema), into: itemType, schema: schema)
-                if let item = try? itemType.create([:], content: Fragment.from(content)) {
-                    itemNodes.append(item)
-                }
-                continue
-            }
-            let inline = parseInline(lines[0], schema)
-            // A list item holds blocks, so a block-level image in its text
-            // becomes a sibling block rather than an invalid child of the
-            // paragraph. `fitContent` then puts the item's content in order.
-            let blocks = textblockSplittingBlocks(inline) {
-                try? schema.node("paragraph", [:], content: Fragment.from($0))
-            }
-            let content = fitContent(blocks, into: itemType, schema: schema)
+            // `itemBlocks` decides whether the content is inline or its own
+            // blocks; this used to repeat that test and so never saw the
+            // indented single-line case.
+            let content = fitContent(itemBlocks(lines, schema: schema), into: itemType, schema: schema)
             guard let item = try? itemType.create([:], content: Fragment.from(content)) else { continue }
             itemNodes.append(item)
         }
