@@ -1711,6 +1711,51 @@ test("Markdown round-trip: text that looks like an autolink") {
     }
 }
 
+test("Markdown parses setext headings") {
+    try expectEqual(try MarkdownParser.parse("Foo\n===", schema: schema), doc(h(1, "Foo")))
+    try expectEqual(try MarkdownParser.parse("Foo\n---", schema: schema), doc(h(2, "Foo")))
+    // Any length of underline, and up to three columns of indentation.
+    try expectEqual(try MarkdownParser.parse("Foo\n=", schema: schema), doc(h(1, "Foo")))
+    try expectEqual(try MarkdownParser.parse("Foo\n--", schema: schema), doc(h(2, "Foo")))
+    try expectEqual(try MarkdownParser.parse("Foo\n   ---", schema: schema), doc(h(2, "Foo")))
+    // A multi-line paragraph becomes one heading.
+    try expectEqual(try MarkdownParser.parse("Foo\nbar\n===", schema: schema), doc(h(1, "Foo bar")))
+    // Inline markup in the heading survives.
+    try expectEqual(try MarkdownParser.parse("Foo *bar*\n===", schema: schema),
+                    doc(node("heading", ["level": .int(1)], [t("Foo "), em("bar")])))
+}
+
+test("Markdown: a dashed line is a heading under a paragraph and a break elsewhere") {
+    // The ambiguity CommonMark resolves in setext's favour.
+    try expectEqual(try MarkdownParser.parse("Foo\n---", schema: schema), doc(h(2, "Foo")))
+    // With a blank line it starts its own block, so it's a thematic break.
+    try expectEqual(try MarkdownParser.parse("Foo\n\n---", schema: schema),
+                    doc(p("Foo"), node("horizontalRule", [:], [])))
+    // And on its own it's still a break.
+    try expectEqual(try MarkdownParser.parse("---", schema: schema),
+                    doc(node("horizontalRule", [:], [])))
+    // An underline can't turn a list or a quote into a heading.
+    try expectEqual(try MarkdownParser.parse("- foo\n---", schema: schema).child(1).type.name,
+                    "horizontalRule")
+}
+
+test("Markdown: an underline only follows a paragraph") {
+    // Four columns of indentation is code, not an underline.
+    try expectEqual(try MarkdownParser.parse("Foo\n\n    ===", schema: schema),
+                    doc(p("Foo"), node("codeBlock", [:], [t("===")])))
+    // A run of mixed characters isn't an underline.
+    try expectEqual(try MarkdownParser.parse("Foo\n=-=", schema: schema), doc(p("Foo =-=")))
+}
+
+test("Markdown round-trip: setext headings serialize as ATX") {
+    // Both spellings mean the same node, and we write the ATX one.
+    for md in ["Foo\n===", "Foo\n---", "Foo *bar*\n==="] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d,
+                        "input: \(md)")
+    }
+}
+
 test("Markdown parses nested lists by indentation") {
     // An indented line that looks like a marker is the current item's content,
     // which is what makes it a nested list rather than a sibling.
@@ -1926,11 +1971,12 @@ test("Markdown: a backtick fence's info string may not contain a backtick") {
                     "codeBlock")
 }
 
-test("Markdown: a setext underline is no longer eaten by the highlight syntax") {
-    // Not parsed as a heading (we don't support setext), but the text survives
-    // instead of collapsing into empty <mark> elements.
+test("Markdown: a setext underline is not eaten by the highlight syntax") {
+    // The "==" highlight syntax used to consume the run into empty <mark>
+    // elements, losing the text; now the underline reads as a heading.
     let d = try MarkdownParser.parse("Foo\n=========", schema: schema)
-    try expect(d.child(0).textContent.contains("========="), "got: \(d.child(0).textContent)")
+    try expectEqual(d, doc(h(1, "Foo")))
+    try expect(d.child(0).child(0).marks.isEmpty, "highlight mark leaked in")
 }
 
 test("Markdown round-trip: prose containing dollar signs is not math") {

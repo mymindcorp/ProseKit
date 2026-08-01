@@ -18,7 +18,10 @@ public enum MarkdownSerializer {
             return escapeLeadingBlockMarker(serializeInline(node.content))
         case "heading":
             let level = node.attrs["level"]?.intValue ?? 1
+            // A heading is one line, so a line break inside its content — which
+            // a mark spanning a soft wrap can carry — reads as a space.
             var text = serializeInline(node.content)
+                .replacingOccurrences(of: "\n", with: " ")
             // A trailing run of "#" reads as a closing sequence, so escape it.
             if text.hasSuffix("#") {
                 let run = text.reversed().prefix(while: { $0 == "#" }).count
@@ -492,7 +495,7 @@ public enum MarkdownParser {
             while i < lines.count {
                 let t = lines[i].trimmingCharacters(in: .whitespaces)
                 if t.isEmpty || t.hasPrefix("#") || t.hasPrefix(">") || isOpeningFence(t)
-                    || t.hasPrefix("$$") || isThematicBreak(t)
+                    || t.hasPrefix("$$") || isThematicBreak(t) || setextUnderline(lines[i]) != nil
                     || t.lowercased().hasPrefix("<details") || t.lowercased().hasPrefix("</details>")
                     || bulletMatch(t) != nil || orderedMatch(t) != nil { break }
                 // Only the leading whitespace is dropped: two or more spaces at
@@ -504,6 +507,17 @@ public enum MarkdownParser {
             // Keep line breaks so the inline parser can turn a trailing `\` into a
             // hard break and collapse other soft wraps into spaces.
             let inline = parseInline(para.joined(separator: "\n"), schema)
+            // A setext underline turns the paragraph just gathered into a
+            // heading. This is why "---" under a paragraph is a heading and a
+            // thematic break anywhere else: the paragraph branch gets there
+            // first, and the block loop only sees a "---" that starts a block.
+            if i < lines.count, let level = setextUnderline(lines[i]) {
+                i += 1
+                blocks.append(contentsOf: textblockSplittingBlocks(inline) {
+                    try? schema.node("heading", ["level": .int(level)], content: Fragment.from($0))
+                })
+                continue
+            }
             // `![alt](src)` reads as inline content, but an image is block-level
             // in the default schema — so it becomes its own block rather than an
             // invalid child of the paragraph.
@@ -630,6 +644,19 @@ public enum MarkdownParser {
         if line.hasPrefix("~~~") { return true }
         guard line.hasPrefix("```") else { return false }
         return !line.drop(while: { $0 == "`" }).contains("`")
+    }
+
+    /// A setext heading's underline: a run of `=` (level 1) or `-` (level 2),
+    /// indented no more than three columns. Any length counts, so "Foo\n--" is
+    /// a heading. Only meaningful directly under a paragraph — the caller checks
+    /// that, which is also what makes "---" a heading there and a thematic break
+    /// anywhere else.
+    private static func setextUnderline(_ line: String) -> Int? {
+        guard indentWidth(line) <= 3 else { return nil }
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard let first = t.first, first == "=" || first == "-",
+              t.allSatisfy({ $0 == first }) else { return nil }
+        return first == "=" ? 1 : 2
     }
 
     /// A thematic break: three or more of `-`, `*` or `_`, optionally separated
