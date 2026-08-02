@@ -327,8 +327,8 @@ public final class Schema: @unchecked Sendable {
         self.topNodeType = top
         self.nodeSpecOrder = nodeOrder
         self.markSpecOrder = markOrder
-        for type in nodeTypes.values { type.schema = self }
-        for type in markTypes.values { type.schema = self }
+        for type in nodeTypes.values { unsafe type.schema = self }
+        for type in markTypes.values { unsafe type.schema = self }
 
         // Second pass: compile content expressions and mark sets.
         for (name, type) in nodeTypes {

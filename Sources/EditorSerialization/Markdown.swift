@@ -1,5 +1,5 @@
 import Foundation
-import DocumentModel
+public import DocumentModel
 
 // MARK: - Serialize
 
@@ -1599,11 +1599,23 @@ public enum MarkdownParser {
 
     /// A checkbox at the head of a list item, as GitHub writes them. Returns the
     /// checked state and the rest of the line.
+    ///
+    /// The box has to be followed by whitespace, or end the line. Without that
+    /// rule `- [x]foo` read as a checked item holding "foo" — and writing it
+    /// back put in a space the author never typed, so the text came out
+    /// different from how it went in. GitHub requires the whitespace and treats
+    /// anything else as an ordinary item whose text begins with a bracket.
+    ///
+    /// Ending the line is allowed because that is how an empty item is written,
+    /// which is what Markdig accepts. GitHub asks for whitespace there too, so
+    /// `- [x]` alone is a checkbox here and a literal bracket there.
     private static func taskMarker(_ line: String) -> (checked: Bool, rest: String)? {
-        let boxes: [(String, Bool)] = [("[ ] ", false), ("[x] ", true), ("[X] ", true),
-                                       ("[ ]", false), ("[x]", true), ("[X]", true)]
+        let boxes: [(String, Bool)] = [("[ ]", false), ("[x]", true), ("[X]", true)]
         for (box, checked) in boxes where line.hasPrefix(box) {
-            return (checked, String(line.dropFirst(box.count)))
+            let rest = line.dropFirst(box.count)
+            guard let next = rest.first else { return (checked, "") }
+            guard next == " " || next == "\t" else { return nil }
+            return (checked, String(rest.dropFirst()))
         }
         return nil
     }

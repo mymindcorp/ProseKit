@@ -1,7 +1,7 @@
 #if canImport(UIKit)
 import UIKit
 import CoreText
-import EditorUIKit
+public import EditorUIKit
 
 /// Build a math renderer for the EditorUIKit hook.
 ///

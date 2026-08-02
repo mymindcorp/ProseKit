@@ -43,7 +43,7 @@ final class TypingPerfTests: XCTestCase {
                                           blockCache: cache, previous: previous, realizeWindow: 0 ... 900)
                 times.append((CFAbsoluteTimeGetCurrent() - t) * 1000)
             }
-            print("LONGVIEW n=\(n) keystroke(min)=\(String(format: "%.2f", times.min()!))ms realizedBlocks=\(previous.blocks.count)")
+            print(unsafe "LONGVIEW n=\(n) keystroke(min)=\(String(format: "%.2f", times.min()!))ms realizedBlocks=\(previous.blocks.count)")
         }
     }
 
@@ -67,7 +67,7 @@ final class TypingPerfTests: XCTestCase {
                                       blockCache: cache, previous: previous)
             keystrokeMs.append((CFAbsoluteTimeGetCurrent() - t1) * 1000)
         }
-        print("TYPING-PERF full=\(String(format: "%.1f", fullMs))ms keystrokes=\(keystrokeMs.map { String(format: "%.2f", $0) }) cacheCount=\(cache.debugEntryCount)")
+        print(unsafe "TYPING-PERF full=\(String(format: "%.1f", fullMs))ms keystrokes=\(keystrokeMs.map { unsafe String(format: "%.2f", $0) }) cacheCount=\(cache.debugEntryCount)")
 
         // Geometry must match a from-scratch layout exactly.
         let reference = DocumentLayout(doc: current, width: 390, theme: theme)

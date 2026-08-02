@@ -1,9 +1,9 @@
 import Foundation
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
-import EditorStateKit
-import EditorCommands
-import EditorInputRules
+public import EditorStateKit
+public import EditorCommands
+public import EditorInputRules
 
 /// State exposed by the wiki-link suggestion plugin: the active `[[` query, if
 /// the cursor is currently typing one. The view reads this to show a popup.

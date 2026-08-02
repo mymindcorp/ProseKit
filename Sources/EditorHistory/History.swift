@@ -1,7 +1,7 @@
 import Foundation
 import DocumentModel
 import DocumentTransform
-import EditorStateKit
+public import EditorStateKit
 
 // A port of prosemirror-history. The history is not a stack of document
 // snapshots: each branch (undo and redo) is a list of Items that always hold a

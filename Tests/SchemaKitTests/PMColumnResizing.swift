@@ -3,6 +3,7 @@ import DocumentModel
 import EditorStateKit
 import SchemaKit
 import TestHarness
+import DocumentTransform
 
 // Ported from prosemirror-tables/test/column-resizing.test.ts (one upstream
 // case) plus headless coverage for the pieces upstream only exercises through

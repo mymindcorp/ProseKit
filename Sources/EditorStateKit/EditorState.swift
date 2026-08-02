@@ -1,4 +1,4 @@
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
 
 /// Configuration for creating an `EditorState`.

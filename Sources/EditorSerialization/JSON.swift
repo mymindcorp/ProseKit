@@ -1,5 +1,5 @@
-import Foundation
-import DocumentModel
+public import Foundation
+public import DocumentModel
 
 /// ProseMirror-shaped JSON serialization. This is the canonical persistence and
 /// collaboration format; `Node`/`Mark`/`Slice` already encode to the documented

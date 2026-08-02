@@ -1,8 +1,8 @@
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
-import EditorStateKit
-import EditorCommands
-import EditorInputRules
+public import EditorStateKit
+public import EditorCommands
+public import EditorInputRules
 
 // Task lists, matching Tiptap's TaskList / TaskItem (node names `taskList` and
 // `taskItem`, with a boolean `checked` attribute on each item).

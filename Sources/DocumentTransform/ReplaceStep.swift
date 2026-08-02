@@ -1,4 +1,4 @@
-import DocumentModel
+public import DocumentModel
 
 /// Replace a part of the document with a slice of new content.
 public struct ReplaceStep: Step {

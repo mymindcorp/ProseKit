@@ -3,6 +3,7 @@ import XCTest
 import DocumentModel
 import EditorStateKit
 import SchemaKit
+import DocumentTransform
 @testable import EditorUIKit
 
 @MainActor
@@ -93,13 +94,14 @@ final class CheckboxStyleTests: XCTestCase {
     private func strikethrough(_ view: EditorTextView, _ text: String) -> Bool {
         guard let block = view.ensureLayout().blocks.first(where: { $0.attributed.string == text }),
               block.attributed.length > 0 else { return false }
-        return block.attributed.attribute(.strikethroughStyle, at: 0, effectiveRange: nil) != nil
+        // `effectiveRange:` takes a pointer, hence `unsafe` (we pass nil).
+        return unsafe block.attributed.attribute(.strikethroughStyle, at: 0, effectiveRange: nil) != nil
     }
 
     private func textColor(_ view: EditorTextView, _ text: String) -> UIColor? {
         guard let block = view.ensureLayout().blocks.first(where: { $0.attributed.string == text }),
               block.attributed.length > 0 else { return nil }
-        return block.attributed.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? UIColor
+        return unsafe block.attributed.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? UIColor
     }
 
     func testCheckedItemsAreUnstyledByDefault() throws {

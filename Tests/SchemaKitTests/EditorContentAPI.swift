@@ -3,6 +3,7 @@ import DocumentModel
 import EditorStateKit
 import SchemaKit
 import TestHarness
+import DocumentTransform
 
 // The Editor content-IO conveniences (getHTML/getMarkdown/getText, setContent(html:))
 // and attributes(ofMark:).

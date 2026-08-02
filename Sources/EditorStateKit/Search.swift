@@ -1,5 +1,5 @@
 import Foundation
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
 
 // A port of prosemirror-search: SearchQuery (string/regexp matching with

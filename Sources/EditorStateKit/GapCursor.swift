@@ -1,5 +1,5 @@
-import DocumentModel
-import DocumentTransform
+public import DocumentModel
+public import DocumentTransform
 
 // A port of prosemirror-gapcursor: a cursor at positions that have no normal
 // selectable position nearby — between two tables, before a leading atom

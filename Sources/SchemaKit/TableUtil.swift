@@ -1,5 +1,5 @@
-import DocumentModel
-import EditorStateKit
+public import DocumentModel
+public import EditorStateKit
 
 // Helpers ported from prosemirror-tables' util.ts. ProseMirror identifies table
 // nodes via a `tableRole` node-spec field; our schema uses fixed type names, so
@@ -129,7 +129,7 @@ func addColSpan(_ attrs: Attrs, _ pos: Int, _ n: Int = 1) -> Attrs {
 }
 
 func columnIsHeader(_ map: TableMap, _ table: Node, _ col: Int) -> Bool {
-    let headerCell = tableNodeTypes(table.type.schema)["header_cell"]
+    let headerCell = unsafe tableNodeTypes(table.type.schema)["header_cell"]
     for row in 0..<map.height {
         if table.nodeAt(map.map[col + row * map.width])?.type !== headerCell { return false }
     }

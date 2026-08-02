@@ -1,6 +1,6 @@
 import DocumentModel
 import DocumentTransform
-import EditorStateKit
+public import EditorStateKit
 
 // Row/column move, ported from prosemirror-tables src/utils/{move-row,
 // move-column, selection-range, get-cells, query}.ts (official ProseMirror).

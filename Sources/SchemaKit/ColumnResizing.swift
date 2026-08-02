@@ -1,6 +1,6 @@
 import DocumentModel
 import DocumentTransform
-import EditorStateKit
+public import EditorStateKit
 
 // A port of prosemirror-tables' columnresizing plugin — the headless core:
 // ResizeState (active handle + dragging, driven by metas and remapped through

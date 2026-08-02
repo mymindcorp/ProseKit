@@ -1,7 +1,7 @@
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
-import EditorStateKit
-import EditorCommands
+public import EditorStateKit
+public import EditorCommands
 
 // Table support. The schema + structural commands match prosemirror-tables
 // (spanning-aware via TableMap/CellSelection — see TableMap.swift / TableUtil.swift

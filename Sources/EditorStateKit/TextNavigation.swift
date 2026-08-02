@@ -1,4 +1,4 @@
-import DocumentModel
+public import DocumentModel
 
 /// The direction of a cursor move or deletion.
 public enum TextDirection: Sendable {

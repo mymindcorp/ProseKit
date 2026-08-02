@@ -1,7 +1,7 @@
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
-import EditorStateKit
-import EditorCommands
+public import EditorStateKit
+public import EditorCommands
 
 // Collapsible sections, matching Tiptap's Details extension: a `details` node
 // holding exactly a `detailsSummary` (the always-visible title) and a

@@ -1,7 +1,7 @@
-import Foundation
+public import Foundation
 import DocumentModel
 import DocumentTransform
-import EditorStateKit
+public import EditorStateKit
 
 /// Assigns a stable, unique id attribute to every node of the configured types
 /// and keeps those ids unique as the document changes — a port of Tiptap's

@@ -1,6 +1,6 @@
-import DocumentModel
-import EditorStateKit
-import EditorCommands
+public import DocumentModel
+public import EditorStateKit
+public import EditorCommands
 
 /// Whether the selection sits inside a node of the given type (with matching
 /// attrs).

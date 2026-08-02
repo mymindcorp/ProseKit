@@ -1,6 +1,6 @@
 import DocumentModel
 import EditorStateKit
-import EditorInputRules
+public import EditorInputRules
 
 /// Smart typography: curly quotes, em-dashes, and ellipses, applied as input
 /// rules while typing (matching Tiptap's Typography extension).
