@@ -129,7 +129,7 @@ func addColSpan(_ attrs: Attrs, _ pos: Int, _ n: Int = 1) -> Attrs {
 }
 
 func columnIsHeader(_ map: TableMap, _ table: Node, _ col: Int) -> Bool {
-    let headerCell = unsafe tableNodeTypes(table.type.schema)["header_cell"]
+    let headerCell = tableNodeTypes(table.type.schema)["header_cell"]
     for row in 0..<map.height {
         if table.nodeAt(map.map[col + row * map.width])?.type !== headerCell { return false }
     }

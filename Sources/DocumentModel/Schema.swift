@@ -109,7 +109,15 @@ public final class NodeType: @unchecked Sendable {
     public let name: String
     /// Back-reference to the owning schema. Set during `Schema.init` right
     /// after the type is constructed; never `nil` once the schema exists.
-    public unowned(unsafe) var schema: Schema!
+    ///
+    /// Non-owning, because the schema owns its types and a strong reference
+    /// back would be a cycle that leaks every schema ever built. Checked
+    /// rather than `unowned(unsafe)`: a document can outlive the schema that
+    /// made it — several tests keep only the document — and reading an
+    /// unchecked reference to a freed schema is silent memory corruption. It
+    /// cost a segfault deep in the allocator to learn that, so this traps at
+    /// the read instead, naming the mistake where it happens.
+    public unowned var schema: Schema!
     public let spec: NodeSpec
     public let groups: [String]
     public let attrs: [String: AttributeSpec]
@@ -248,7 +256,9 @@ public final class NodeType: @unchecked Sendable {
 public final class MarkType: @unchecked Sendable {
     public let name: String
     public let rank: Int
-    public unowned(unsafe) var schema: Schema!
+    /// Non-owning for the same reason as `NodeType.schema`, and checked for
+    /// the same reason.
+    public unowned var schema: Schema!
     public let spec: MarkSpec
     public let attrs: [String: AttributeSpec]
 
@@ -327,8 +337,8 @@ public final class Schema: @unchecked Sendable {
         self.topNodeType = top
         self.nodeSpecOrder = nodeOrder
         self.markSpecOrder = markOrder
-        for type in nodeTypes.values { unsafe type.schema = self }
-        for type in markTypes.values { unsafe type.schema = self }
+        for type in nodeTypes.values { type.schema = self }
+        for type in markTypes.values { type.schema = self }
 
         // Second pass: compile content expressions and mark sets.
         for (name, type) in nodeTypes {

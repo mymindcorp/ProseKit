@@ -164,4 +164,42 @@ test("findWrapping: paragraph into blockquote") {
     try expectNotNil(wrapping)
 }
 
+test("schema: a document does not keep its schema alive") {
+    // The back-reference from a type to its schema is non-owning on purpose:
+    // the schema owns its types, so a strong reference back would be a cycle
+    // that leaks every schema ever built. This pins that — if the reference
+    // ever becomes strong, the schema below outlives the block and this fails.
+    weak var released: Schema?
+    do {
+        let schema = try Schema(nodes: [
+            ("doc", NodeSpec(content: "paragraph+")),
+            ("paragraph", NodeSpec(content: "text*")),
+            ("text", NodeSpec()),
+        ], marks: [], topNode: "doc")
+        released = schema
+        let doc = try schema.node("doc", [:], content: Fragment.from([
+            try schema.node("paragraph", [:], content: Fragment.from([schema.text("x")])),
+        ]))
+        try expectEqual(doc.childCount, 1)
+        try expect(released != nil, "the schema is alive while it is in scope")
+    }
+    try expect(released == nil, "a schema outlived its scope — the back-reference is a cycle")
+}
+
+test("schema: a type reaches its schema while it is alive") {
+    // The other half: non-owning doesn't mean absent. Every type the schema
+    // built points back at it, which is what the table and transform code
+    // reads to find sibling types.
+    let schema = try Schema(nodes: [
+        ("doc", NodeSpec(content: "paragraph+")),
+        ("paragraph", NodeSpec(content: "text*")),
+        ("text", NodeSpec()),
+    ], marks: [], topNode: "doc")
+    let doc = try schema.node("doc", [:], content: Fragment.from([
+        try schema.node("paragraph", [:], content: Fragment.empty),
+    ]))
+    try expect(doc.type.schema === schema, "a node's type should reach the schema that built it")
+    try expect(doc.child(0).type.schema === schema)
+}
+
 TestSuite.main("DocumentModelTests", collector.all)

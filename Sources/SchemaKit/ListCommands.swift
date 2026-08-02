@@ -19,7 +19,7 @@ public func toggleList(_ listType: NodeType, _ itemType: NodeType) -> Command {
         // first child — a heading, say, since the item's content requires a
         // leading paragraph. Convert the selected textblock(s) to paragraphs
         // first, then wrap, composing both into one undoable transaction.
-        guard let paragraph = unsafe listType.schema.nodes["paragraph"] else { return false }
+        guard let paragraph = listType.schema.nodes["paragraph"] else { return false }
         var convertTr: Transaction?
         guard setBlockType(paragraph)(state, { convertTr = $0 }, host), let convert = convertTr else { return false }
         let converted = state.apply(convert)
