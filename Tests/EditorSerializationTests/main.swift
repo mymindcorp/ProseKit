@@ -2880,6 +2880,35 @@ test("Markdown parses an upper-case [X] checkbox") {
     try expectEqual(d.child(0).child(0).attrs["checked"], .bool(true))
 }
 
+test("Markdown: a checkbox has to be followed by whitespace") {
+    // GitHub reads these as ordinary items whose text starts with a bracket.
+    // We used to take them as checkboxes and then write the item back with a
+    // space inserted, which changed the author's text.
+    for md in ["- [x]no space", "- [ ]no space", "- [X]no space"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(d.child(0).type.name, "bulletList", "input: \(md)")
+        try expectEqual(d.child(0).child(0).textContent, String(md.dropFirst(2)), "input: \(md)")
+        // And the text survives the round trip unchanged.
+        try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d,
+                        "input: \(md)")
+    }
+    // A tab counts as whitespace, as it does anywhere else a marker is followed
+    // by one.
+    let tabbed = try MarkdownParser.parse("- [x]\tdone", schema: schema)
+    try expectEqual(tabbed.child(0).type.name, "taskList")
+    try expectEqual(tabbed.child(0).child(0).attrs["checked"], .bool(true))
+    try expectEqual(tabbed.child(0).child(0).textContent, "done")
+}
+
+test("Markdown: a checkbox ending the line is an empty item") {
+    // Markdig's reading, and the form an empty item takes when written back.
+    // GitHub asks for whitespace even here, so this is a deliberate divergence.
+    let d = try MarkdownParser.parse("- [x]", schema: schema)
+    try expectEqual(d.child(0).type.name, "taskList")
+    try expectEqual(d.child(0).child(0).attrs["checked"], .bool(true))
+    try expectEqual(d.child(0).child(0).textContent, "")
+}
+
 test("Markdown keeps brackets literal when only some items are checkboxes") {
     // A half-checkbox list isn't a task list; the brackets stay text.
     let d = try MarkdownParser.parse("- [ ] a\n- b", schema: schema)
