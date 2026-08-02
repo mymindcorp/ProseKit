@@ -56,7 +56,7 @@ final class FootnoteRenderTests: XCTestCase {
         let attributed = block.attributed
         // The last character of the paragraph is the reference.
         let index = attributed.length - 1
-        let attrs = attributed.attributes(at: index, effectiveRange: nil)
+        let attrs = unsafe attributed.attributes(at: index, effectiveRange: nil)
         let offset = try XCTUnwrap(attrs[.baselineOffset] as? CGFloat)
         XCTAssertGreaterThan(offset, 0, "a footnote marker sits above the baseline")
         let font = try XCTUnwrap(attrs[.font] as? UIFont)
