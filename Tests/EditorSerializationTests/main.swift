@@ -626,6 +626,11 @@ test("HTML tokenizer: malformed fragments never crash") {
         "<p", "<", "<>", "</", "</p", "<p attr=\"unterminated>x", "x > y",
         "&", "&;", "&#;", "&#x;", "a & b", "<b>x", "<!", "<?", "<![CDATA[",
         "<!-- unterminated", "<i><b></i></b>", "<p =\"v\">x</p>", "<p/ >x",
+        // The tag scanner reads bytes and can be steered off the end by any of
+        // these: a lone "=", a key with nothing after it, a value that never
+        // opens or never closes, and whitespace where a name should be.
+        "<p =>x", "<p ==>x", "<p a=>x", "<p a= >x", "<p a>x", "<p a b c>x",
+        "<p a='>x", "<p a=\">x", "<p\n>x", "<p\t\ta=1\r\n>x", "</a foo>", "< p>x",
         String(repeating: "<div>", count: 200) + "x",
     ]
     for c in cases { _ = try? HTMLParser.parse(c, schema: schema) }
@@ -3596,6 +3601,63 @@ test("HTML round-trip: a document full of entities") {
     let d = try HTMLParser.parse("<p>&Dcaron; &ngE; &amp; &notanentity; &copy;</p>", schema: schema)
     try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema), d)
     try expectEqual(try MarkdownParser.parse(d.toMarkdown(), schema: schema), d)
+}
+
+
+test("HTML: a tag whose attributes are on their own lines") {
+    // Prettied-up markup — a CMS export, a saved page, most editors' output —
+    // puts a newline between an element's attributes. The scanner used to
+    // separate a tag's parts on U+0020 alone, so the name came out as the whole
+    // run "a\n    href=..." and the element was never recognized.
+    let doc = try HTMLParser.parse("<p>\n  <a\n    href=\"https://example.test/\"\n  >x</a>\n</p>", schema: schema)
+    let linked = (0..<doc.child(0).childCount).map { doc.child(0).child($0) }
+        .first { $0.marks.contains { $0.type.name == "link" } }
+    try expectEqual(linked?.text, "x", "the link was lost across the newline")
+    try expectEqual(linked?.marks.first?.attrs["href"], .string("https://example.test/"))
+    // The same for a tab, and for an element whose whole meaning is an attribute.
+    let img = try HTMLParser.parse("<p><img\n\tsrc=\"x.png\"\n\talt=\"c\"></p>", schema: schema)
+    let image = (0..<img.child(0).childCount).map { img.child(0).child($0) }
+        .first { $0.type.name == "image" }
+    try expectEqual(image?.attrs["src"], .string("x.png"), "the image was dropped with its src")
+    try expectEqual(image?.attrs["alt"], .string("c"))
+}
+
+test("HTML: an unquoted attribute value") {
+    // Legal HTML, and what hand-written markup mostly looks like. The scanner
+    // only ever read a quoted value, so this attribute was dropped and the next
+    // key was read out of the middle of it.
+    let doc = try HTMLParser.parse("<table><tr><td colspan=2 rowspan=3>a</td></tr></table>", schema: schema)
+    let cell = doc.child(0).child(0).child(0)
+    try expectEqual(cell.attrs["colspan"], .int(2))
+    try expectEqual(cell.attrs["rowspan"], .int(3))
+    let link = try HTMLParser.parse("<p><a href=/u>x</a></p>", schema: schema).child(0)
+    try expect(link.childCount > 0, "the paragraph came back empty")
+    try expectEqual(link.child(0).marks.first?.attrs["href"], .string("/u"))
+}
+
+test("HTML: an uppercase tag or attribute name") {
+    let doc = try HTMLParser.parse("<P><A HREF=\"/u\">x</A></P>", schema: schema)
+    try expectEqual(doc.child(0).type.name, "paragraph")
+    try expectEqual(doc.child(0).child(0).marks.first?.attrs["href"], .string("/u"))
+}
+
+test("HTML: numeric character references at their edges") {
+    func text(_ html: String) throws -> String {
+        let doc = try HTMLParser.parse("<p>\(html)</p>", schema: schema)
+        return doc.child(0).textContent
+    }
+    // Both spellings of hex, and leading zeros, which HTML allows.
+    try expectEqual(try text("&#x2019;&#X2019;&#8217;&#000000008217;"), "\u{2019}\u{2019}\u{2019}\u{2019}")
+    // Zero, a surrogate, and past the last code point are all errors that
+    // resolve to the replacement character rather than dropping the reference.
+    try expectEqual(try text("&#0;&#xD800;&#x110000;"), "\u{FFFD}\u{FFFD}\u{FFFD}")
+    // A reference too long to hold a value is left as it was written, as are
+    // the digitless and out-of-radix ones.
+    for source in ["&#99999999999999999999;", "&#x;", "&#;", "&#xg;", "&#a;", "&#-1;"] {
+        try expectEqual(try text(source), source, "changed: \(source)")
+    }
+    // A "&" that opens nothing stays put, including at the very end of a run.
+    try expectEqual(try text("a &amp;&amp; b &"), "a && b &")
 }
 
 registerBench()

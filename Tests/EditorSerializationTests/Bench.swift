@@ -74,5 +74,17 @@ func registerBench() {
             }
             time("Node.toJSON (to AttributeValue)") { _ = parsed.toJSON() }
         }
+
+        // Prose dense with character references — smart quotes, dashes, nbsp,
+        // the accented letters. Decoding them is a different path from the
+        // markup around them, and an article's worth of markup barely uses it.
+        var entities = ""
+        for i in 0..<2000 {
+            entities += "<p>It&rsquo;s a &ldquo;test&rdquo; &mdash; number \(i) &amp; more&nbsp;text "
+            entities += "with &eacute;, &copy;, &#8212; and &#x2019; in it.</p>"
+        }
+        print("\n  --- entity-dense prose, \(entities.count / 1024) KB of HTML ---"); fflush(stdout)
+        try time("HTMLParser.parse (total)") { _ = try HTMLParser.parse(entities, schema: schema) }
+        time("  of which: tokenize") { _ = HTMLParser.tokenCountForBenchmark(entities) }
     }
 }
