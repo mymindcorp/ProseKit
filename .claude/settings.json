@@ -12,5 +12,8 @@
       "Bash(DEVELOPER_DIR=* xcodebuild*)",
       "Bash(DEVELOPER_DIR=* xcrun*)"
     ]
+  },
+  "env": {
+    "PROSEKIT_STRICT": "1"
   }
 }
