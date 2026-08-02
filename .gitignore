@@ -1,4 +1,7 @@
 /.build
+# xcodebuild's SYMROOT for the ProseKit package targets when the example app is
+# built from the command line (the package's project dir is the repo root).
+/build
 /Examples/EditorDemo/build
 /Examples/EditorDemo/build-ios/Build
 /Examples/EditorDemo/build-ios
