@@ -1009,6 +1009,7 @@ open class EditorTextView: UIView, UIKeyInput {
         if let old = textInteraction { removeInteraction(old) }
         let interaction = UITextInteraction(for: isEditable ? .editable : .nonEditable)
         interaction.textInput = self
+        interaction.delegate = self
         addInteraction(interaction)
         textInteraction = interaction
     }
@@ -1249,7 +1250,11 @@ open class EditorTextView: UIView, UIKeyInput {
 
     private func toggleCheckbox(at pos: Int) {
         guard isEditable else { return }
-        if !isFirstResponder { becomeFirstResponder() }
+        // Deliberately no `becomeFirstResponder()`: ticking a task off is a
+        // one-shot action, not a request to edit, so it must not raise the
+        // keyboard on an unfocused editor (Notes/Reminders behave the same).
+        // `interactionShouldBegin` keeps the native text interaction from
+        // focusing us behind the checkbox's back.
         let checked = editor.doc.nodeAt(pos)?.attrs["checked"]?.boolValue ?? false
         if let tr = try? editor.state.tr.setNodeAttribute(pos, "checked", .bool(!checked)) {
             editor.dispatch(tr)
@@ -2743,6 +2748,18 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
     static func dataURLAttrs(for data: Data, typeIdentifier: String?) -> Attrs {
         let mime = typeIdentifier.flatMap { UTType($0)?.preferredMIMEType } ?? "image/png"
         return ["src": .string("data:\(mime);base64," + data.base64EncodedString())]
+    }
+}
+
+extension EditorTextView: UITextInteractionDelegate {
+    /// Keep the native text interaction out of the checkboxes. The checkbox
+    /// views sit on top of us, but UITextInteraction's recognizers are attached
+    /// to *this* view and still see touches that land in a subview — so without
+    /// this a tap on a checkbox would also place the caret and (when editable)
+    /// raise the keyboard, on top of toggling the item. Ticking a task off
+    /// shouldn't move the caret or focus the editor.
+    public func interactionShouldBegin(_ interaction: UITextInteraction, at point: CGPoint) -> Bool {
+        ensureLayout().checkbox(at: docPoint(point)) == nil
     }
 }
 
