@@ -202,4 +202,35 @@ test("schema: a type reaches its schema while it is alive") {
     try expect(doc.child(0).type.schema === schema)
 }
 
+test("text positions are grapheme-cluster offsets") {
+    // A position counts Characters, not scalars and not bytes, so slicing by
+    // index has to land where slicing an `Array(text)` would. These strings are
+    // the ones where those three disagree: a combining mark, regional indicator
+    // pairs, ZWJ sequences with a skin tone, a CRLF (one Character, two line
+    // endings), an Indic cluster, and a Prepend scalar in front of ASCII.
+    let samples = ["e\u{0301}cole", "\u{1F1EF}\u{1F1F5}\u{1F1FA}\u{1F1F8}ab",
+                   "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467}x\u{1F468}\u{1F3FD}\u{200D}\u{1F680}y",
+                   "a\r\nb\r\nc", "\u{0600}*x", "a\u{03C0}\u{65E5}z"]
+    for s in samples {
+        let chars = Array(s)
+        try expectEqual(B.t(s).nodeSize, chars.count, "size of \(s.debugDescription)")
+        for from in 0...chars.count {
+            for to in from...chars.count {
+                try expectEqual(B.t(s).cut(from, to).text ?? "", String(chars[from..<to]),
+                                "cut(\(from),\(to)) of \(s.debugDescription)")
+                let doc = B.doc(B.p(s))
+                // +1 for the paragraph's opening token.
+                try expectEqual(doc.textBetween(from + 1, to + 1), String(chars[from..<to]),
+                                "textBetween(\(from),\(to)) of \(s.debugDescription)")
+                let slice = doc.slice(from + 1, to + 1)
+                try expectEqual(slice.content.textBetween(0, slice.content.size),
+                                String(chars[from..<to]),
+                                "slice(\(from),\(to)) of \(s.debugDescription)")
+            }
+        }
+    }
+}
+
+registerBench()
+
 TestSuite.main("DocumentModelTests", collector.all)
