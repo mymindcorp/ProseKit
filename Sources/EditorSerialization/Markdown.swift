@@ -5,26 +5,32 @@ public import DocumentModel
 
 public enum MarkdownSerializer {
     public static func serialize(_ doc: Node) -> String {
-        serializeBlocks((0..<doc.childCount).map { doc.child($0) }, indent: "")
+        serializeBlocks(doc.content, indent: "")
     }
 
     /// Write a run of sibling blocks. Two lists of the same kind in a row have
     /// to use different markers — "- a" then "+ b", or "1. a" then "2) b" —
     /// because a reader joins two lists that look alike into one, which is
     /// exactly what told them apart in the source.
+    static func serializeBlocks(_ fragment: Fragment, indent: String,
+                                separator: String = "\n\n") -> String {
+        serializeBlocks(fragment.content, indent: indent, separator: separator)
+    }
+
     static func serializeBlocks(_ nodes: [Node], indent: String,
                                 separator: String = "\n\n") -> String {
-        var out: [String] = []
+        var out = ""
         var alternate = false
         var previous: String?
         for node in nodes {
             let name = node.type.name
             let isList = name == "bulletList" || name == "orderedList"
             if isList, name == previous { alternate.toggle() } else if isList { alternate = false }
-            out.append(serializeBlock(node, indent: indent, alternate: isList && alternate))
+            if previous != nil { out += separator }
+            out += serializeBlock(node, indent: indent, alternate: isList && alternate)
             previous = name
         }
-        return out.joined(separator: separator)
+        return out
     }
 
     static func serializeBlock(_ node: Node, indent: String, alternate: Bool = false) -> String {
@@ -36,7 +42,9 @@ public enum MarkdownSerializer {
             // A heading is one line, so a line break inside its content — which
             // a mark spanning a soft wrap can carry — reads as a space.
             var text = serializeInline(node.content)
-                .replacingOccurrences(of: "\n", with: " ")
+            if text.utf8.contains(UInt8(ascii: "\n")) {
+                text = text.replacingOccurrences(of: "\n", with: " ")
+            }
             // A trailing run of "#" reads as a closing sequence, so escape it.
             if text.hasSuffix("#") {
                 let run = text.reversed().prefix(while: { $0 == "#" }).count
@@ -44,8 +52,7 @@ public enum MarkdownSerializer {
             }
             return String(repeating: "#", count: level) + " " + text
         case "blockquote":
-            let inner = serializeBlocks((0..<node.childCount).map { node.child($0) }, indent: indent)
-            return inner.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
+            return prefixLines(serializeBlocks(node.content, indent: indent), with: "> ")
         case "codeBlock":
             // Fence with the delimiter the code itself doesn't use.
             let fence = node.textContent.contains("```") ? "~~~" : "```"
@@ -127,21 +134,20 @@ public enum MarkdownSerializer {
             let open = node.attrs["open"]?.boolValue ?? false
             let summary = node.childCount > 0 ? serializeInline(node.child(0).content) : ""
             let content = node.childCount > 1 ? node.child(1) : nil
-            let body = content.map { c in
-                serializeBlocks((0..<c.childCount).map { c.child($0) }, indent: indent)
-            } ?? ""
+            let body = content.map { serializeBlocks($0.content, indent: indent) } ?? ""
             return "<details\(open ? " open" : "")>\n<summary>\(summary)</summary>\n\n\(body)\n\n</details>"
         case "footnoteDefinition":
             // `[^label]: ` then the note. Blocks after the first are indented
             // four columns, which is what keeps them part of the note rather
             // than the document that follows it.
             let label = node.attrs["label"]?.stringValue ?? ""
-            let blocks = (0..<node.childCount).map { serializeBlock(node.child($0), indent: indent) }
-            let body = blocks.joined(separator: "\n\n")
-            let lines = body.split(separator: "\n", omittingEmptySubsequences: false)
-            let head = lines.first.map(String.init) ?? ""
-            let rest = lines.dropFirst().map { $0.isEmpty ? "" : "    " + $0 }
-            return (["[^\(label)]: " + head] + rest).joined(separator: "\n")
+            var body = ""
+            for (i, block) in node.content.content.enumerated() {
+                if i > 0 { body += "\n\n" }
+                body += serializeBlock(block, indent: indent)
+            }
+            return "[^\(label)]: "
+                + prefixLines(body, with: "    ", skippingFirst: true, blankLines: false)
         case "table":
             return serializeTable(node)
         default:
@@ -206,25 +212,67 @@ public enum MarkdownSerializer {
     /// Escape a leading `#`/`>`/`-`/`*`/`+`/`1.` so a paragraph that happens to
     /// start with block-marker syntax round-trips as a paragraph, not a heading/
     /// quote/list.
+    ///
+    /// Only the first few characters can spell a marker, so this walks the start
+    /// of the string instead of copying all of it into an array first: a
+    /// paragraph pays for its opening run here, not for its whole text.
     private static func escapeLeadingBlockMarker(_ s: String) -> String {
-        let chars = Array(s)
-        guard let first = chars.first else { return s }
+        guard let first = s.first else { return s }
         if first == "#" {
             var n = 0
-            while n < chars.count, chars[n] == "#" { n += 1 }
-            if n <= 6, n == chars.count || chars[n] == " " { return "\\" + s }
+            var i = s.startIndex
+            while i < s.endIndex, s[i] == "#" { n += 1; i = s.index(after: i) }
+            if n <= 6, i == s.endIndex || s[i] == " " { return "\\" + s }
         }
         if first == ">" { return "\\" + s }
         // A figure fence, when the figure nodes are registered. ("$$" needs no
         // case here — dollars are already escaped everywhere in prose.)
         if s.hasPrefix("^^^") { return "\\" + s }
-        if first == "-" || first == "*" || first == "+", chars.count > 1, chars[1] == " " { return "\\" + s }
-        var n = 0
-        while n < chars.count, chars[n].isNumber { n += 1 }
-        if n > 0, n < chars.count, chars[n] == ".", n + 1 < chars.count, chars[n + 1] == " " {
-            return String(chars[0..<n]) + "\\." + String(chars[(n + 1)...])
+        if first == "-" || first == "*" || first == "+" {
+            let second = s.index(after: s.startIndex)
+            if second < s.endIndex, s[second] == " " { return "\\" + s }
         }
-        return s
+        guard first.isNumber else { return s }
+        var i = s.startIndex
+        while i < s.endIndex, s[i].isNumber { i = s.index(after: i) }
+        guard i < s.endIndex, s[i] == "." else { return s }
+        let afterDot = s.index(after: i)
+        guard afterDot < s.endIndex, s[afterDot] == " " else { return s }
+        return s[..<i] + "\\." + s[afterDot...]
+    }
+
+    /// `body` with `prefix` in front of each of its lines — how a blockquote
+    /// marks the blocks inside it, and how a list item indents the ones it
+    /// holds. A list item skips its first line, which already sits after the
+    /// marker, and leaves blank lines blank rather than filling them with the
+    /// trailing spaces the indent would be.
+    ///
+    /// The lines are cut and copied as UTF-8: a newline byte can't be part of
+    /// any other character, so the split is exact, and each line moves in one
+    /// piece rather than a character or a scalar at a time. A list nested `d`
+    /// deep re-indents its innermost text `d` times, so what this costs per
+    /// line is paid over and over.
+    private static func prefixLines(_ body: String, with prefix: String,
+                                    skippingFirst: Bool = false,
+                                    blankLines: Bool = true) -> String {
+        let newline = UInt8(ascii: "\n")
+        let utf8 = body.utf8
+        var out: [UInt8] = []
+        out.reserveCapacity(utf8.count + prefix.utf8.count * 4)
+        var lineStart = utf8.startIndex
+        var first = true
+        while true {
+            let end = utf8[lineStart...].firstIndex(of: newline) ?? utf8.endIndex
+            let line = utf8[lineStart..<end]
+            if !first { out.append(newline) }
+            if !(first && skippingFirst) && !(line.isEmpty && !blankLines) {
+                out.append(contentsOf: prefix.utf8)
+            }
+            out.append(contentsOf: line)
+            first = false
+            if end == utf8.endIndex { return String(decoding: out, as: UTF8.self) }
+            lineStart = utf8.index(after: end)
+        }
     }
 
     /// CommonMark keeps a block in a list item only while every one of its lines
@@ -238,7 +286,7 @@ public enum MarkdownSerializer {
         // Writing it out would put a blank line after the marker, which reads
         // back as a different document — and the reader re-inserts the empty
         // paragraph anyway.
-        var children = (0..<item.childCount).map { item.child($0) }
+        var children = item.content.content[...]
         if children.count > 1, children[0].type.name == "paragraph", children[0].content.size == 0 {
             children.removeFirst()
         }
@@ -247,14 +295,15 @@ public enum MarkdownSerializer {
         // tight item: a blank line between two blocks is exactly what would make
         // the whole list loose again, and two paragraphs can't arise there for
         // the same reason.
-        let body = children
-            .map { $0.type.name == "horizontalRule"
-                ? "***" : serializeBlock($0, indent: continuation) }
-            .joined(separator: tight ? "\n" : "\n\n")
-        let lines = body.components(separatedBy: "\n")
-        guard lines.count > 1 else { return body }
-        return ([lines[0]] + lines.dropFirst().map { $0.isEmpty ? "" : continuation + $0 })
-            .joined(separator: "\n")
+        let separator = tight ? "\n" : "\n\n"
+        var body = ""
+        for (i, child) in children.enumerated() {
+            if i > 0 { body += separator }
+            body += child.type.name == "horizontalRule"
+                ? "***" : serializeBlock(child, indent: continuation)
+        }
+        guard body.unicodeScalars.contains("\n") else { return body }
+        return prefixLines(body, with: continuation, skippingFirst: true, blankLines: false)
     }
 
     /// A loose list normally shows it with a blank line between two items — but
@@ -276,8 +325,13 @@ public enum MarkdownSerializer {
     /// Marks that wrap a run of inline content, outermost first. A mark can
     /// cover several nodes — `**[a](x) b**` is one bold run across a link and
     /// some text — so they are opened and closed around runs, not per node.
-    private static let spanningMarks = ["link", "italic", "bold", "strike", "highlight",
-                                        "underline", "subscript", "superscript"]
+    ///
+    /// The rank also breaks the tie between two marks covering exactly the same
+    /// text, which can be nested either way round.
+    private static let spanningRank: [String: Int] = [
+        "link": 0, "italic": 1, "bold": 2, "strike": 3,
+        "highlight": 4, "underline": 5, "subscript": 6, "superscript": 7,
+    ]
 
     /// Marks Markdown has no spelling for, written as the HTML tags they came
     /// from — which the parser now reads back. They used to be dropped, so
@@ -314,56 +368,90 @@ public enum MarkdownSerializer {
 
     static func serializeInline(_ fragment: Fragment) -> String {
         var out = ""
+        // Text is what most of a document is, so the buffer starts out big
+        // enough for it and grows only for the markup around it.
+        out.reserveCapacity(fragment.size + 16)
+        writeInline(fragment, into: &out)
+        return out
+    }
+
+    static func writeInline(_ fragment: Fragment, into out: inout String) {
+        let children = fragment.content
         // Marks currently open, outermost first.
         var active: [Mark] = []
         func closeDown(to keep: Int) {
             while active.count > keep { out += markClose(active.removeLast()) }
         }
+        func same(_ a: Mark, _ b: Mark) -> Bool { a.type === b.type && a.attrs == b.attrs }
         func carries(_ node: Node, _ mark: Mark) -> Bool {
-            node.marks.contains { $0.type === mark.type && $0.attrs == mark.attrs }
+            node.marks.contains { same($0, mark) }
         }
-        // Where a mark's unbroken run starting at `from` ends.
+        // Where each mark's current run ends, remembered across the loop below.
+        //
+        // A run that ends at `e` ends at `e` from every position inside it, so
+        // the scan happens once per run instead of once per node in it. Without
+        // that, one mark spanning N children costs O(N²) — and a bolded passage
+        // with links or emphasis inside it is exactly that shape, since those
+        // children can't merge into one text node. A paragraph of 6000 such
+        // children took 160 ms to write out.
+        var runEnds: [(mark: Mark, end: Int)] = []
         func runEnd(_ mark: Mark, from: Int) -> Int {
+            let cached = runEnds.firstIndex { same($0.mark, mark) }
+            if let cached, runEnds[cached].end > from { return runEnds[cached].end }
             var j = from
-            while j < fragment.childCount, carries(fragment.child(j), mark) { j += 1 }
+            while j < children.count, carries(children[j], mark) { j += 1 }
+            if let cached { runEnds[cached].end = j } else { runEnds.append((mark, j)) }
             return j
         }
-        for i in 0..<fragment.childCount {
-            let node = fragment.child(i)
-            // The spanning marks this node carries. A mark covering more of what
-            // follows is written outside one covering less, so a bold run across
-            // a link and the text after it comes out as `**[a](x) b**` rather
-            // than as two bold runs with the link between them.
-            let own = spanningMarks
-                .compactMap { name in node.marks.first { $0.type.name == name } }
-                .enumerated()
-                .sorted { left, right in
-                    let a = runEnd(left.element, from: i), b = runEnd(right.element, from: i)
-                    return a == b ? left.offset < right.offset : a > b
-                }
-                .map(\.element)
+        // The spanning marks a node carries, outermost first, reused each pass
+        // so the loop doesn't allocate two arrays per child.
+        var own: [Mark] = []
+        var ranked: [(mark: Mark, rank: Int, end: Int)] = []
+        var wanted: [Mark] = []
+        for i in children.indices {
+            let node = children[i]
+            // Plain text between marked runs — the bulk of most paragraphs —
+            // has nothing to open or close.
+            if node.marks.isEmpty, active.isEmpty {
+                inlineBody(node, into: &out)
+                continue
+            }
+            // A mark covering more of what follows is written outside one
+            // covering less, so a bold run across a link and the text after it
+            // comes out as `**[a](x) b**` rather than as two bold runs with the
+            // link between them.
+            //
+            // Each run end is measured once here rather than inside the
+            // comparison, which asked for it O(m log m) times per node.
+            ranked.removeAll(keepingCapacity: true)
+            for mark in node.marks {
+                guard let rank = spanningRank[mark.type.name] else { continue }
+                ranked.append((mark, rank, runEnd(mark, from: i)))
+            }
+            ranked.sort { $0.end == $1.end ? $0.rank < $1.rank : $0.end > $1.end }
+            own.removeAll(keepingCapacity: true)
+            for entry in ranked { own.append(entry.mark) }
             // A node that can't carry a mark shouldn't close it either. A code
             // span excludes every other mark, so closing and reopening emphasis
             // around one would emit delimiter runs that don't parse — and the
             // reader drops the excluded mark from the code span regardless.
             func canCarry(_ mark: Mark) -> Bool {
-                !node.isText || mark.addToSet(node.marks).contains { $0.type === mark.type }
+                if !node.isText { return true }
+                if node.marks.contains(where: { $0.type === mark.type }) { return true }
+                return mark.addToSet(node.marks).contains { $0.type === mark.type }
             }
-            var wanted: [Mark] = []
+            wanted.removeAll(keepingCapacity: true)
             for mark in active
-            where own.contains(where: { $0.type === mark.type && $0.attrs == mark.attrs })
-                || !canCarry(mark) {
+            where own.contains(where: { same($0, mark) }) || !canCarry(mark) {
                 wanted.append(mark)
             }
-            for mark in own
-            where !wanted.contains(where: { $0.type === mark.type && $0.attrs == mark.attrs }) {
+            for mark in own where !wanted.contains(where: { same($0, mark) }) {
                 wanted.append(mark)
             }
             // Keep whatever the previous node already opened, in the same order.
             var shared = 0
             while shared < active.count, shared < wanted.count,
-                  active[shared].type === wanted[shared].type,
-                  active[shared].attrs == wanted[shared].attrs { shared += 1 }
+                  same(active[shared], wanted[shared]) { shared += 1 }
             closeDown(to: shared)
             for mark in wanted[shared...] {
                 // A "!" directly before a link's bracket would read back as an
@@ -376,27 +464,27 @@ public enum MarkdownSerializer {
                 out += markOpen(mark)
                 active.append(mark)
             }
-            out += inlineBody(node)
+            inlineBody(node, into: &out)
         }
         closeDown(to: 0)
-        return out
     }
 
     /// A node's own text, with the marks that don't wrap a run — currently only
     /// `code`, whose fence length depends on the content it holds.
-    private static func inlineBody(_ node: Node) -> String {
+    private static func inlineBody(_ node: Node, into out: inout String) {
         if node.isText {
             let text = node.text ?? ""
             guard node.marks.contains(where: { $0.type.name == "code" }) else {
                 // A delimiter character has to be escaped or it pairs with a
                 // later one and becomes markup.
-                return escapeInline(text)
+                escapeInline(text, into: &out)
+                return
             }
             // A code span is literal, so escapes inside one would read back as
             // backslashes; it is fenced by a run longer than any it contains.
             var longest = 0, current = 0
-            for ch in text {
-                current = ch == "`" ? current + 1 : 0
+            for ch in text.utf8 {
+                current = ch == UInt8(ascii: "`") ? current + 1 : 0
                 longest = max(longest, current)
             }
             let fence = String(repeating: "`", count: longest + 1)
@@ -404,11 +492,16 @@ public enum MarkdownSerializer {
             let edgy = text.hasPrefix("`") || text.hasSuffix("`")
                 || text.hasPrefix(" ") || text.hasSuffix(" ")
             let pad = (!allSpaces && edgy) ? " " : ""
-            return "\(fence)\(pad)\(text)\(pad)\(fence)"
+            out += fence
+            out += pad
+            out += text
+            out += pad
+            out += fence
+            return
         }
         switch node.type.name {
         case "hardBreak":
-            return "\\\n"
+            out += "\\\n"
         case "image":
             // An image can sit inline as well as in its own block, so the title
             // has to be written on both paths.
@@ -416,23 +509,27 @@ public enum MarkdownSerializer {
             let alt = altText(node.attrs["alt"]?.stringValue ?? "")
             if let title = node.attrs["title"]?.stringValue, !title.isEmpty {
                 let q = title.contains("\"") ? "'" : "\""
-                return "![\(alt)](\(destination(src)) \(q)\(title)\(q))"
+                out += "![\(alt)](\(destination(src)) \(q)\(title)\(q))"
+            } else {
+                out += "![\(alt)](\(destination(src)))"
             }
-            return "![\(alt)](\(destination(src)))"
         case "wikiLink":
             let target = node.attrs["target"]?.stringValue ?? ""
-            if let label = node.attrs["label"]?.stringValue { return "[[\(target)|\(label)]]" }
-            return "[[\(target)]]"
+            if let label = node.attrs["label"]?.stringValue {
+                out += "[[\(target)|\(label)]]"
+            } else {
+                out += "[[\(target)]]"
+            }
         case "footnoteReference":
-            return "[^\(node.attrs["label"]?.stringValue ?? "")]"
+            out += "[^\(node.attrs["label"]?.stringValue ?? "")]"
         case "inlineMath":
             // An empty formula has no spelling: "$$" opens display math, and no
             // dialect accepts "$$" as empty inline math. Emitting nothing beats
             // emitting a stray delimiter that swallows what follows.
             let latex = inlineMathSource(node.attrs["latex"]?.stringValue ?? "")
-            return latex.isEmpty ? "" : "$\(latex)$"
+            if !latex.isEmpty { out += "$\(latex)$" }
         default:
-            return ""
+            break
         }
     }
 
@@ -445,24 +542,60 @@ public enum MarkdownSerializer {
     /// and `====` as nothing at all — the delimiters were consumed as (empty)
     /// marks rather than read as text.
     static func escapeInline(_ text: String) -> String {
-        // A backslash has to be escaped too, or it would escape whatever we add.
-        let always: Set<Character> = ["\\", "`", "*", "_", "[", "]", "$", "&", "<"]
-        // These only open markup when doubled (`==highlight==`, `~~strike~~`), so
-        // a lone one is left alone — "x = y" shouldn't grow a backslash.
-        let whenDoubled: Set<Character> = ["=", "~"]
-        guard text.contains(where: { always.contains($0) || whenDoubled.contains($0) })
-        else { return text }
-
-        let chars = Array(text)
         var out = ""
-        out.reserveCapacity(chars.count + 8)
-        for (i, c) in chars.enumerated() {
-            let doubled = whenDoubled.contains(c)
-                && ((i > 0 && chars[i - 1] == c) || (i + 1 < chars.count && chars[i + 1] == c))
-            if always.contains(c) || doubled { out.append("\\") }
-            out.append(c)
-        }
+        escapeInline(text, into: &out)
         return out
+    }
+
+    /// A backslash has to be escaped too, or it would escape whatever we add.
+    private static func alwaysEscaped(_ b: UInt8) -> Bool {
+        switch b {
+        case UInt8(ascii: "\\"), UInt8(ascii: "`"), UInt8(ascii: "*"), UInt8(ascii: "_"),
+             UInt8(ascii: "["), UInt8(ascii: "]"), UInt8(ascii: "$"), UInt8(ascii: "&"),
+             UInt8(ascii: "<"): true
+        default: false
+        }
+    }
+
+    /// These only open markup when doubled (`==highlight==`, `~~strike~~`), so a
+    /// lone one is left alone — "x = y" shouldn't grow a backslash.
+    private static func escapedWhenDoubled(_ b: UInt8) -> Bool {
+        b == UInt8(ascii: "=") || b == UInt8(ascii: "~")
+    }
+
+    /// Every character this looks for is ASCII, so it scans UTF-8 bytes: a
+    /// multi-byte character's bytes are all above 0x7F and can never be mistaken
+    /// for one, and the text never has to be broken into grapheme clusters —
+    /// which is what a `Set<Character>` lookup per character was paying for.
+    /// Text needing no escape at all, which is nearly all of it, is copied
+    /// across whole.
+    static func escapeInline(_ text: String, into out: inout String) {
+        let utf8 = text.utf8
+        var needsEscape = false
+        for b in utf8 where alwaysEscaped(b) || escapedWhenDoubled(b) {
+            needsEscape = true
+            break
+        }
+        guard needsEscape else {
+            out += text
+            return
+        }
+
+        var escaped: [UInt8] = []
+        escaped.reserveCapacity(utf8.count + 8)
+        var previous: UInt8 = 0
+        var i = utf8.startIndex
+        while i < utf8.endIndex {
+            let b = utf8[i]
+            let next = utf8.index(after: i)
+            let doubled = escapedWhenDoubled(b)
+                && (previous == b || (next < utf8.endIndex && utf8[next] == b))
+            if alwaysEscaped(b) || doubled { escaped.append(UInt8(ascii: "\\")) }
+            escaped.append(b)
+            previous = b
+            i = next
+        }
+        out += String(decoding: escaped, as: UTF8.self)
     }
 
     /// Prepare a formula for `$…$`. A bare `$` would close the math early, so it
