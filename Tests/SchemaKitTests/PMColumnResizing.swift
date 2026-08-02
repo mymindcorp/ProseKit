@@ -98,3 +98,83 @@ private func cellAt(_ table: Node, row: Int, col: Int) -> Node {
     let map = TableMap.get(table)
     return table.nodeAt(map.map[row * map.width + col])!
 }
+
+// MARK: - Configuration
+
+func registerTableOptionTests() {
+    test("table options: resizing carries the grab area and minimum width") {
+        let options = ColumnResizingOptions(handleWidth: 12, cellMinWidth: 40)
+        let state = EditorState.create(EditorStateConfig(
+            schema: basicSchema, doc: doc(table(tr(cEmpty(), cEmpty()))).node,
+            plugins: [columnResizing(options: options)]))
+        try expectEqual(columnResizingKey.getState(state)?.options, options)
+        // They survive an edit: the options belong to the plugin, not the state
+        // it recomputes on every transaction.
+        let after = state.apply(try state.tr.insertText("x", 3))
+        try expectEqual(columnResizingKey.getState(after)?.options, options)
+    }
+
+    test("table options: the defaults are the renderer's, not upstream's") {
+        // 6pt suits a fingertip where the web's 5px suits a mouse.
+        try expectEqual(ColumnResizingOptions().handleWidth, 6)
+        try expectEqual(ColumnResizingOptions().cellMinWidth, 24)
+    }
+
+    test("table options: resizable false leaves the plugin out") {
+        // The view asks for the plugin's state to decide whether a border can
+        // be dragged, so leaving it out is how the option reaches the renderer.
+        let on = try Editor(extensions: fullKit())
+        try expect(columnResizingKey.getState(on.state) != nil, "expected the plugin when resizable")
+        let off = try Editor(extensions: fullKit(tableOptions: TableOptions(resizable: false)))
+        try expect(columnResizingKey.getState(off.state) == nil, "expected no plugin when not resizable")
+        // It is the resizing that was turned off, not the table: editing one
+        // still works.
+        try putCursorInATable(off)
+        try expect(off.run("addRowAfter"), "expected addRowAfter to still run")
+    }
+
+    test("table options: a table node selection is normalized unless allowed") {
+        for allowed in [false, true] {
+            let editor = try Editor(extensions: fullKit(
+                tableOptions: TableOptions(allowTableNodeSelection: allowed)))
+            try putCursorInATable(editor)
+            let tr = editor.state.tr
+            tr.setSelection(NodeSelection.create(tr.doc, 0))
+            editor.dispatch(tr)
+            // Off, the selection of the whole table becomes a selection of its
+            // cells — which is what the commands and the renderer expect.
+            try expectEqual(editor.state.selection is NodeSelection, allowed,
+                            "allowTableNodeSelection: \(allowed)")
+        }
+    }
+}
+
+/// Put a 2×2 table in the editor and the cursor in its first cell.
+private func putCursorInATable(_ editor: Editor) throws {
+    try expect(editor.run(insertTable(rows: 2, cols: 2)), "could not insert a table")
+}
+
+// MARK: - Regression
+
+func registerCellSelectionMappingTests() {
+    test("cellselection: a column selection over a ragged table doesn't trap") {
+        // A column selection is rebuilt from the table map, which is arithmetic
+        // over cell offsets. In a ragged table the map has no entry for the
+        // missing cell, so the arithmetic gives a position that isn't a cell —
+        // the table's own start. Resolving that and handing it to
+        // `CellSelection.init` trapped: a table map cannot be built from the
+        // document node. A table is ragged for real mid-transaction, before
+        // `fixTables` squares it up, which is how the fuzz reached this.
+        let d = doc(table(tr(cEmpty()), tr(cEmpty(), cEmpty()))).node
+        // The second cell of the second row: the column above it is missing.
+        var cells: [Int] = []
+        d.descendants { node, pos, _, _ in
+            if node.type.name == "tableCell" || node.type.name == "tableHeader" { cells.append(pos) }
+            return true
+        }
+        try expect(cells.count == 3, "expected a ragged 1+2 table, found \(cells.count) cells")
+        let selection = CellSelection.colSelection(d.resolve(cells[2]))
+        try expect(selection.to <= d.content.size, "selection out of range")
+    }
+}
+

@@ -117,6 +117,20 @@ func registerPMTableCommandsTests() {
     tcase("splitCell: split a row-spanning cell", table(tr(c11(), tdAttrs(["rowspan": .int(2)], p("foo<anchor>")), c11()), tr(c11(), c11())), splitCell,
           table(tr(c11(), td(p("foo")), c11()), tr(c11(), cEmpty(), c11())))
 
+    // MARK: mergeOrSplit — the one command a toolbar button can call
+    tcase("mergeOrSplit: merges what can be merged", table(tr(cAnchor(), cHead(), c11())), mergeOrSplit,
+          table(tr(tdAttrs(["colspan": .int(2)], p("x"), p("x")), c11())))
+    tcase("mergeOrSplit: splits a spanning cell when there is nothing to merge",
+          table(tr(tdAttrs(["colspan": .int(2)], p("foo<anchor>")), c11())), mergeOrSplit,
+          table(tr(td(p("foo")), cEmpty(), c11())))
+    // One plain cell is neither: nothing to merge it with, nothing to split.
+    tcase("mergeOrSplit: a single plain cell does nothing", table(tr(cAnchor(), c11())), mergeOrSplit, nil)
+    // Merging wins when both are possible, so a selection over a spanning cell
+    // joins it to its neighbour rather than taking it apart.
+    tcase("mergeOrSplit: prefers merging over splitting",
+          table(tr(tdAttrs(["colspan": .int(2)], p("x<anchor>")), cHead())), mergeOrSplit,
+          table(tr(tdAttrs(["colspan": .int(3)], p("x"), p("x")))))
+
     // MARK: setCellAttr
     tcase("setCellAttr: set on parent cell", table(tr(cCursor(), c11())), setCellAttr("test", .string("value")), table(tr(cAttr(), c11())))
     tcase("setCellAttr: no-op when already set", table(tr(cCursor(), c11())), setCellAttr("test", .string("default")), nil)

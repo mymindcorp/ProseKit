@@ -20,28 +20,52 @@ public struct ColumnDragging: Equatable, Sendable {
     }
 }
 
+/// How the view should treat a column border, carried in the plugin's state so
+/// the renderer reads it from the editor rather than being told separately.
+///
+/// The defaults are the ones the renderer already used, not upstream's: a 6pt
+/// grab area suits a fingertip where the web's 5px suits a mouse, and 24pt is
+/// the narrowest column the cell padding leaves room for. prosemirror-tables
+/// uses 5 and 25.
+public struct ColumnResizingOptions: Equatable, Sendable {
+    /// How far from a border a press still counts as grabbing it, in points.
+    public var handleWidth: Double
+    /// The narrowest a column may be dragged, in points.
+    public var cellMinWidth: Double
+
+    public init(handleWidth: Double = 6, cellMinWidth: Double = 24) {
+        self.handleWidth = handleWidth
+        self.cellMinWidth = cellMinWidth
+    }
+}
+
 /// The column-resizing plugin's state.
 public final class ResizeState {
     /// The position of the cell whose right edge the pointer is over (-1 = none).
     public let activeHandle: Int
     public let dragging: ColumnDragging?
+    /// The options the plugin was created with; constant for its lifetime.
+    public let options: ColumnResizingOptions
 
-    init(activeHandle: Int, dragging: ColumnDragging?) {
+    init(activeHandle: Int, dragging: ColumnDragging?, options: ColumnResizingOptions) {
         self.activeHandle = activeHandle
         self.dragging = dragging
+        self.options = options
     }
 
     func apply(_ tr: Transaction) -> ResizeState {
         if let action = tr.getMeta(columnResizingMeta) as? ResizeAction {
             switch action {
-            case .setHandle(let value): return ResizeState(activeHandle: value, dragging: nil)
-            case .setDragging(let dragging): return ResizeState(activeHandle: activeHandle, dragging: dragging)
+            case .setHandle(let value):
+                return ResizeState(activeHandle: value, dragging: nil, options: options)
+            case .setDragging(let dragging):
+                return ResizeState(activeHandle: activeHandle, dragging: dragging, options: options)
             }
         }
         if activeHandle > -1, tr.docChanged {
             var handle = tr.mapping.map(activeHandle, -1)
             if !pointsAtCell(tr.doc.resolve(min(max(0, handle), tr.doc.content.size))) { handle = -1 }
-            return ResizeState(activeHandle: handle, dragging: dragging)
+            return ResizeState(activeHandle: handle, dragging: dragging, options: options)
         }
         return self
     }
@@ -68,11 +92,15 @@ public func setResizeDragging(_ tr: Transaction, _ dragging: ColumnDragging?) ->
 }
 
 /// Create the column-resizing plugin.
-public func columnResizing() -> Plugin {
+///
+/// Its presence is what tells the view that columns may be resized at all: a
+/// table configured `resizable: false` leaves the plugin out, and the renderer
+/// finds no state to read.
+public func columnResizing(options: ColumnResizingOptions = ColumnResizingOptions()) -> Plugin {
     Plugin(
         key: columnResizingKey.key,
         stateField: PluginStateField(
-            initialize: { _, _ in ResizeState(activeHandle: -1, dragging: nil) },
+            initialize: { _, _ in ResizeState(activeHandle: -1, dragging: nil, options: options) },
             apply: { tr, value, _, _ in (value as! ResizeState).apply(tr) }),
         props: PluginProps(decorations: { state in
             guard let pluginState = columnResizingKey.getState(state), pluginState.activeHandle > -1

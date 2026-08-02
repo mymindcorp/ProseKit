@@ -350,6 +350,18 @@ public let splitCell: Command = { state, dispatch, host in
     }(state, dispatch, host)
 }
 
+/// Merge the selected cells, or split the one under the cursor — whichever the
+/// selection allows. One button can then do both, which is how a toolbar wants
+/// to spell it: with several cells selected there is nothing to split, and with
+/// one spanning cell there is nothing to merge.
+///
+/// Merging is tried first, so a selection covering a spanning cell merges it
+/// into its neighbours rather than splitting it apart.
+public let mergeOrSplit: Command = { state, dispatch, host in
+    if mergeCells(state, dispatch, host) { return true }
+    return splitCell(state, dispatch, host)
+}
+
 // MARK: - Cell attrs / header
 
 public func setCellAttr(_ name: String, _ value: AttributeValue) -> Command {
