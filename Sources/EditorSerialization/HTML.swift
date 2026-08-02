@@ -392,6 +392,16 @@ public enum HTMLParser {
         case text(String)
     }
 
+    /// A window on the token stream.
+    ///
+    /// Parsing descends into an element's children constantly, and each descent
+    /// used to copy that element's tokens into a fresh `Array` — which for a
+    /// `<body>` wrapper means copying, retaining, and then releasing the whole
+    /// document. A slice keeps the same indices as the array it came from, so
+    /// the `start`/`end` positions passed around here mean the same thing either
+    /// way.
+    typealias Tokens = ArraySlice<Token>
+
     /// The deepest element nesting `parse` will accept.
     ///
     /// Parsing descends recursively, one Swift stack frame per nested element,
@@ -404,10 +414,10 @@ public enum HTMLParser {
 
     public static func parse(_ html: String, schema: Schema, config: HTMLConfig = .default) throws -> Node {
         let tokens = tokenize(html)
-        if let depth = excessiveNestingDepth(tokens) {
+        if let depth = excessiveNestingDepth(tokens[...]) {
             throw HTMLParseError.nestingTooDeep(depth: depth, limit: maxNestingDepth)
         }
-        let parsed = parseBlocks(tokens, schema, config)
+        let parsed = parseBlocks(tokens[...], schema, config)
         // HTML arrives in fragments, so the top level can hold things no schema
         // allows there — a bare `<li>` or `<td>` from a partial copy. Fit them
         // to the document's content instead of building something invalid.
@@ -430,7 +440,7 @@ public enum HTMLParser {
     /// The depth at which `tokens` exceed `maxNestingDepth`, or nil if they
     /// never do. Scans the flat token stream, so it costs one pass and runs
     /// before any recursion has a chance to overflow the stack.
-    private static func excessiveNestingDepth(_ tokens: [Token]) -> Int? {
+    private static func excessiveNestingDepth(_ tokens: Tokens) -> Int? {
         var depth = 0
         for token in tokens {
             switch token {
@@ -466,7 +476,7 @@ public enum HTMLParser {
         "blockquote", "pre", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article",
     ]
 
-    private static func containsBlockTag(_ tokens: [Token]) -> Bool {
+    private static func containsBlockTag(_ tokens: Tokens) -> Bool {
         for t in tokens { if case let .open(tag, _, _) = t, blockTags.contains(tag) { return true } }
         return false
     }
@@ -496,7 +506,7 @@ public enum HTMLParser {
     // Parse a single block-level element starting at `start`, yielding zero or
     // more sibling nodes (an inline-context `<img>` in a block-image schema lifts
     // out of its paragraph, so one element can produce several blocks).
-    private static func parseBlock(_ tokens: [Token], _ start: Int, _ schema: Schema, _ config: HTMLConfig) -> ([Node], Int)? {
+    private static func parseBlock(_ tokens: Tokens, _ start: Int, _ schema: Schema, _ config: HTMLConfig) -> ([Node], Int)? {
         guard case let .open(tag, attrs, selfClosing) = tokens[start] else {
             // stray text at block level → wrap in a paragraph
             if case let .text(t) = tokens[start], !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -520,7 +530,7 @@ public enum HTMLParser {
         switch nodeName {
         case "heading":
             let level = Int(tag.dropFirst()) ?? 1
-            let inline = parseInline(Array(tokens[(start + 1)..<end]), schema, config)
+            let inline = parseInline(tokens[(start + 1)..<end], schema, config)
             var a: Attrs = ["level": .int(level)]
             a.merge(idAttrs(attrs, "heading", schema, config)) { _, new in new }
             return (textblockSplittingBlocks(inline) { try? schema.node("heading", a, content: Fragment.from($0)) }, end + 1)
@@ -546,7 +556,7 @@ public enum HTMLParser {
             }
             return (one(try? schema.node("codeBlock", idAttrs(attrs, "codeBlock", schema, config), content: content)), end + 1)
         case "paragraph":
-            let inline = parseInline(Array(tokens[(start + 1)..<end]), schema, config)
+            let inline = parseInline(tokens[(start + 1)..<end], schema, config)
             let a = idAttrs(attrs, "paragraph", schema, config)
             return (textblockSplittingBlocks(inline) { try? schema.node("paragraph", a, content: Fragment.from($0)) }, end + 1)
         case "bulletList", "orderedList":
@@ -555,7 +565,7 @@ public enum HTMLParser {
         case "details":
             return (parseDetails(attrs, tokens, start, end, schema, config), end + 1)
         case "tableCell", "tableHeader":
-            let parsed = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
+            let parsed = parseBlocks(tokens[(start + 1)..<end], schema, config)
             let children = schema.nodes[nodeName!].map { fitContent(parsed, into: $0, schema: schema) } ?? parsed
             var a: Attrs = idAttrs(attrs, nodeName!, schema, config)
             if let cs = attrs["colspan"].flatMap({ Int($0) }), cs != 1 { a["colspan"] = .int(cs) }
@@ -568,7 +578,7 @@ public enum HTMLParser {
             return (parsed, end + 1)
         case "figcaption":
             // A textblock like a paragraph, but keeping its own type.
-            let inline = parseInline(Array(tokens[(start + 1)..<end]), schema, config)
+            let inline = parseInline(tokens[(start + 1)..<end], schema, config)
             let a = idAttrs(attrs, "figcaption", schema, config)
             guard schema.nodes["figcaption"] != nil else {
                 // No caption node: keep the words as a paragraph rather than
@@ -581,7 +591,7 @@ public enum HTMLParser {
                 try? schema.node("figcaption", a, content: Fragment.from($0))
             }, end + 1)
         case "blockquote", "listItem", "table", "tableRow", "figure":
-            let parsed = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
+            let parsed = parseBlocks(tokens[(start + 1)..<end], schema, config)
             let name = nodeName!
             let a = idAttrs(attrs, name, schema, config)
             if let type = schema.nodes[name] {
@@ -593,7 +603,7 @@ public enum HTMLParser {
             return (parsed, end + 1)
         default:
             // Unknown block: try its children as blocks.
-            let children = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
+            let children = parseBlocks(tokens[(start + 1)..<end], schema, config)
             return (children, end + 1)
         }
     }
@@ -609,13 +619,13 @@ public enum HTMLParser {
         "time", "kbd", "samp", "var", "big", "font", "wbr", "bdi", "bdo", "ruby",
     ]
 
-    private static func parseBlocks(_ tokens: [Token], _ schema: Schema, _ config: HTMLConfig) -> [Node] {
+    private static func parseBlocks(_ tokens: Tokens, _ schema: Schema, _ config: HTMLConfig) -> [Node] {
         var result: [Node] = []
         // Consecutive inline tokens belong to one paragraph. Without this each
         // element became its own block and its marks were lost, so
         // `<li>a <strong>b</strong> c</li>` came back as three unformatted
         // paragraphs — only `<p>` and `<div>` ever routed through `parseInline`.
-        var inlineRun: [Token] = []
+        var inlineRun: Tokens = []
         func flushInline() {
             guard !inlineRun.isEmpty else { return }
             let inline = parseInline(inlineRun, schema, config)
@@ -631,8 +641,8 @@ public enum HTMLParser {
             })
         }
 
-        var i = 0
-        while i < tokens.count {
+        var i = tokens.startIndex
+        while i < tokens.endIndex {
             if case .text = tokens[i] {
                 inlineRun.append(tokens[i]); i += 1; continue
             }
@@ -644,7 +654,7 @@ public enum HTMLParser {
                     if selfClosing {
                         inlineRun.append(tokens[i]); i += 1
                     } else {
-                        let close = min(matchingClose(tokens, i, tag), tokens.count - 1)
+                        let close = min(matchingClose(tokens, i, tag), tokens.endIndex - 1)
                         inlineRun.append(contentsOf: tokens[i...close])
                         i = close + 1
                     }
@@ -680,7 +690,7 @@ public enum HTMLParser {
                 // clipboard HTML, e.g. Apple Notes): splice their children in.
                 if transparentWrappers.contains(tag) {
                     let e = matchingClose(tokens, i, tag)
-                    result.append(contentsOf: parseBlocks(Array(tokens[(i + 1)..<e]), schema, config))
+                    result.append(contentsOf: parseBlocks(tokens[(i + 1)..<e], schema, config))
                     i = e + 1; continue
                 }
                 // <head>/<style>/<script>/… — drop entirely.
@@ -689,7 +699,7 @@ public enum HTMLParser {
                 // otherwise treat its inline content as a paragraph (preserving marks).
                 if tag == "div" {
                     let e = matchingClose(tokens, i, tag)
-                    let inner = Array(tokens[(i + 1)..<e])
+                    let inner = tokens[(i + 1)..<e]
                     if containsBlockTag(inner) {
                         result.append(contentsOf: parseBlocks(inner, schema, config))
                     } else {
@@ -713,7 +723,7 @@ public enum HTMLParser {
     /// Parse a `<ul>`/`<ol>` as a task list (Tiptap `data-type`, or `<li>`s with
     /// checkboxes — e.g. pasted from Apple Notes) when applicable, else a bullet/
     /// ordered list.
-    private static func parseList(_ tag: String, _ attrs: [String: String], _ tokens: [Token], _ start: Int, _ end: Int, _ schema: Schema, _ config: HTMLConfig) -> Node? {
+    private static func parseList(_ tag: String, _ attrs: [String: String], _ tokens: Tokens, _ start: Int, _ end: Int, _ schema: Schema, _ config: HTMLConfig) -> Node? {
         let isTask = attrs["data-type"] == "taskList" || listLooksLikeTasks(tokens, start, end)
         if isTask, let listType = schema.nodes["taskList"], schema.nodes["taskItem"] != nil {
             var items: [Node] = []
@@ -728,7 +738,7 @@ public enum HTMLParser {
             if !items.isEmpty, let n = try? listType.create(idAttrs(attrs, "taskList", schema, config), content: Fragment.from(items)) { return n }
         }
         let name = config.tagToNode[tag] ?? "bulletList"
-        let parsed = parseBlocks(Array(tokens[(start + 1)..<end]), schema, config)
+        let parsed = parseBlocks(tokens[(start + 1)..<end], schema, config)
         guard let type = schema.nodes[name] else { return nil }
         // A `<ul>` can contain things that aren't list items — real pages put
         // stray paragraphs and nested markup in there.
@@ -751,7 +761,7 @@ public enum HTMLParser {
     }
 
     /// Whether any `<li>` directly under this list wraps its content in a `<p>`.
-    private static func tokensHaveItemParagraph(_ tokens: [Token], _ start: Int, _ end: Int) -> Bool {
+    private static func tokensHaveItemParagraph(_ tokens: Tokens, _ start: Int, _ end: Int) -> Bool {
         var i = start + 1
         while i < end {
             guard case let .open(tag, _, _) = tokens[i], tag == "li" else { i += 1; continue }
@@ -780,16 +790,16 @@ public enum HTMLParser {
     /// `data-type="detailsContent"` div (that div flattens through `parseBlocks`).
     /// With a schema that has no details nodes, the section degrades to the
     /// summary as a paragraph followed by its body blocks.
-    private static func parseDetails(_ attrs: [String: String], _ tokens: [Token], _ start: Int, _ end: Int,
+    private static func parseDetails(_ attrs: [String: String], _ tokens: Tokens, _ start: Int, _ end: Int,
                                      _ schema: Schema, _ config: HTMLConfig) -> [Node] {
-        var summaryTokens: [Token] = []
+        var summaryTokens: Tokens = []
         var summaryAttrs: [String: String] = [:]
         var bodyTokens: [Token] = []
         var i = start + 1
         while i < end {
             if case let .open(t, sAttrs, selfClosing) = tokens[i], t == "summary", !selfClosing, summaryTokens.isEmpty {
                 let sEnd = matchingClose(tokens, i, "summary")
-                summaryTokens = Array(tokens[(i + 1)..<min(sEnd, end)])
+                summaryTokens = tokens[(i + 1)..<min(sEnd, end)]
                 summaryAttrs = sAttrs
                 i = min(sEnd, end) + 1
                 continue
@@ -798,7 +808,7 @@ public enum HTMLParser {
             i += 1
         }
         let summaryInline = parseInline(summaryTokens, schema, config)
-        let body = parseBlocks(bodyTokens, schema, config)
+        let body = parseBlocks(bodyTokens[...], schema, config)
         guard let detailsType = schema.nodes["details"],
               let summaryType = schema.nodes["detailsSummary"],
               let contentType = schema.nodes["detailsContent"] else {
@@ -821,7 +831,7 @@ public enum HTMLParser {
         return [node]
     }
 
-    private static func parseTaskItem(_ tokens: [Token], _ liStart: Int, _ liEnd: Int, _ liAttrs: [String: String], _ schema: Schema, _ config: HTMLConfig) -> Node? {
+    private static func parseTaskItem(_ tokens: Tokens, _ liStart: Int, _ liEnd: Int, _ liAttrs: [String: String], _ schema: Schema, _ config: HTMLConfig) -> Node? {
         guard let itemType = schema.nodes["taskItem"] else { return nil }
         var checked = liAttrs["data-checked"] == "true"
         // Drop the checkbox <input> from the item's content, recording its state.
@@ -838,14 +848,14 @@ public enum HTMLParser {
         if case let .text(s) = inner.first {
             inner[0] = .text(String(s.drop(while: { $0 == " " || $0 == "\n" || $0 == "\t" })))
         }
-        let children = parseBlocks(inner, schema, config)
+        let children = parseBlocks(inner[...], schema, config)
         var a: Attrs = ["checked": .bool(checked)]
         a.merge(idAttrs(liAttrs, "taskItem", schema, config)) { _, new in new }
         if let n = try? itemType.create(a, content: Fragment.from(children)) { return n }
         return itemType.createAndFill(a, content: Fragment.from(children))
     }
 
-    private static func listLooksLikeTasks(_ tokens: [Token], _ start: Int, _ end: Int) -> Bool {
+    private static func listLooksLikeTasks(_ tokens: Tokens, _ start: Int, _ end: Int) -> Bool {
         var i = start + 1
         while i < end {
             if case let .open(t, a, _) = tokens[i] {
@@ -878,7 +888,7 @@ public enum HTMLParser {
     }
 
     // Parse inline content (text + marks + inline atoms) within a block.
-    private static func parseInline(_ tokens: [Token], _ schema: Schema, _ config: HTMLConfig) -> [Node] {
+    private static func parseInline(_ tokens: Tokens, _ schema: Schema, _ config: HTMLConfig) -> [Node] {
         var result: [Node] = []
         // Open mark scopes, each tagged with the HTML tag that opened it. A close
         // removes the *nearest matching* scope rather than blindly popping the
@@ -886,21 +896,26 @@ public enum HTMLParser {
         // `<span style=color><strong>a</span>b</strong>`) can't pop — and corrupt
         // — a mark they didn't open. The active mark set is the open scopes' marks.
         var openMarks: [(tag: String, marks: [Mark])] = []
+        // The set every piece of text in scope carries. It changes only when a
+        // scope opens or closes, but a paragraph asks for it once per run of
+        // text, so it's kept rather than rebuilt each time.
+        //
         // Built with `addToSet` rather than concatenated, so a mark the schema
         // says can't sit alongside another is dropped instead of producing a set
         // the document model rejects — `<strong><code>x</code></strong>` is
         // ordinary markup, and `code` excludes everything else.
-        func currentMarks() -> [Mark] {
-            openMarks.flatMap(\.marks).reduce(into: [Mark]()) { set, mark in
+        var currentMarks: [Mark] = []
+        func marksChanged() {
+            currentMarks = openMarks.flatMap(\.marks).reduce(into: [Mark]()) { set, mark in
                 set = mark.addToSet(set)
             }
         }
-        var i = 0
-        while i < tokens.count {
+        var i = tokens.startIndex
+        while i < tokens.endIndex {
             switch tokens[i] {
             case let .text(t):
                 let text = decodeEntities(t)
-                if !text.isEmpty { result.append(schema.text(text, currentMarks())) }
+                if !text.isEmpty { result.append(schema.text(text, currentMarks)) }
                 i += 1
             case let .open(tag, attrs, selfClosing):
                 if tag == "br", let br = try? schema.node("hardBreak") { result.append(br); i += 1; continue }
@@ -948,6 +963,7 @@ public enum HTMLParser {
                             }
                         }
                         openMarks.append((tag: "span", marks: marks))
+                        marksChanged()
                     }
                     i += 1; continue
                 }
@@ -959,7 +975,7 @@ public enum HTMLParser {
                     // the href and is serialized back into one — so it gets the
                     // same treatment. Unsafe targets degrade to plain text.
                     guard let target = sanitizeURL(rawTarget, for: .link) else {
-                        if !label.isEmpty { result.append(schema.text(label, currentMarks())) }
+                        if !label.isEmpty { result.append(schema.text(label, currentMarks)) }
                         i = close + 1; continue
                     }
                     if let wl = try? schema.nodes["wikiLink"]?.create(["target": .string(target), "label": .string(label)]) {
@@ -974,6 +990,7 @@ public enum HTMLParser {
                         // hands to the system on tap. Drop the mark, keep the text.
                         guard let href = sanitizeURL(attrs["href"] ?? "", for: .link) else {
                             openMarks.append((tag: tag, marks: []))
+                            marksChanged()
                             i += 1; continue
                         }
                         attrsDict["href"] = .string(href)
@@ -990,6 +1007,7 @@ public enum HTMLParser {
                         }
                     }
                     openMarks.append((tag: tag, marks: [markType.create(attrsDict)]))
+                    marksChanged()
                 }
                 i += 1
             case let .close(tag):
@@ -997,6 +1015,7 @@ public enum HTMLParser {
                 // crossed close (no matching open) is ignored.
                 if let idx = openMarks.lastIndex(where: { $0.tag == tag }) {
                     openMarks.remove(at: idx)
+                    marksChanged()
                 }
                 i += 1
             }
@@ -1011,7 +1030,7 @@ public enum HTMLParser {
     ///
     /// The source comes from `data-latex`; an element written by hand without
     /// that attribute falls back to unwrapping the `$` fences from its text.
-    private static func makeMath(_ attrs: [String: String], _ tokens: [Token], _ start: Int,
+    private static func makeMath(_ attrs: [String: String], _ tokens: Tokens, _ start: Int,
                                  _ schema: Schema, _ config: HTMLConfig) -> (node: Node, next: Int)? {
         let name: String
         switch attrs["data-type"] {
@@ -1037,7 +1056,7 @@ public enum HTMLParser {
     /// Returns nil when nothing usable can be read out, and the caller then
     /// drops the element: a formula that arrives as scraped prose ("x2+1") is
     /// worse than one that doesn't arrive.
-    private static func makeMathML(_ tokens: [Token], _ start: Int,
+    private static func makeMathML(_ tokens: Tokens, _ start: Int,
                                    _ schema: Schema, _ config: HTMLConfig) -> (node: Node, next: Int)? {
         guard case let .open(tag, _, selfClosing) = tokens[start], tag == "math", !selfClosing else { return nil }
         let close = matchingClose(tokens, start, tag)
@@ -1080,7 +1099,7 @@ public enum HTMLParser {
         return try? type.create(a)
     }
 
-    static func innerText(_ tokens: [Token], _ start: Int, _ end: Int) -> String {
+    static func innerText(_ tokens: Tokens, _ start: Int, _ end: Int) -> String {
         var text = ""
         var i = start
         while i < end {
@@ -1090,11 +1109,11 @@ public enum HTMLParser {
         return text
     }
 
-    static func matchingClose(_ tokens: [Token], _ openIndex: Int, _ tag: String) -> Int {
+    static func matchingClose(_ tokens: Tokens, _ openIndex: Int, _ tag: String) -> Int {
         guard case let .open(_, _, selfClosing) = tokens[openIndex], !selfClosing else { return openIndex }
         var depth = 0
         var i = openIndex
-        while i < tokens.count {
+        while i < tokens.endIndex {
             switch tokens[i] {
             case let .open(t, _, sc) where t == tag && !sc: depth += 1
             case let .close(t) where t == tag:
@@ -1107,7 +1126,7 @@ public enum HTMLParser {
         // No close tag: treat everything to the end as the element's children.
         // (Returning count, not count-1: callers slice (open+1)..<end, and an
         // unterminated tag as the last token must not produce an inverted range.)
-        return tokens.count
+        return tokens.endIndex
     }
 
     // MARK: Tokenizer
@@ -1123,10 +1142,18 @@ public enum HTMLParser {
     /// combining mark after a `>` used to fuse into one `Character` and hide the
     /// tag's end.
     static func tokenize(_ html: String) -> [Token] {
+        // Borrowing the string's own UTF-8 rather than copying it into an
+        // `Array` first: the scanner only ever reads bytes, and the copy was a
+        // second pass over every byte of the input before any work began.
+        var source = html
+        return source.withUTF8 { tokenize($0) }
+    }
+
+    private static func tokenize(_ chars: UnsafeBufferPointer<UInt8>) -> [Token] {
         var tokens: [Token] = []
-        let chars = Array(html.utf8)
         let lt = UInt8(ascii: "<"), gt = UInt8(ascii: ">")
         let bang = UInt8(ascii: "!"), question = UInt8(ascii: "?")
+        let slash = UInt8(ascii: "/")
         let doubleQuote = UInt8(ascii: "\""), singleQuote = UInt8(ascii: "'")
         var i = 0
         while i < chars.count {
@@ -1156,22 +1183,112 @@ public enum HTMLParser {
                     }
                     j += 1
                 }
-                let raw = String(decoding: chars[(i + 1)..<min(j, chars.count)], as: UTF8.self)
-                if raw.hasPrefix("/") {
-                    tokens.append(.close(tag: raw.dropFirst().trimmingCharacters(in: .whitespaces).lowercased()))
+                let lo = i + 1, hi = min(j, chars.count)
+                if lo < hi, chars[lo] == slash {
+                    // An end tag is just a name; anything after it (`</a foo>`)
+                    // is ignored, as browsers ignore end-tag attributes.
+                    var s = lo + 1
+                    while s < hi, isASCIIWhitespace(chars[s]) { s += 1 }
+                    var e = s
+                    while e < hi, !isASCIIWhitespace(chars[e]), chars[e] != slash { e += 1 }
+                    tokens.append(.close(tag: name(chars, s, e)))
                 } else {
-                    let (tag, attrs, selfClosing) = parseTag(raw)
+                    let (tag, attrs, selfClosing) = parseTag(chars, lo, hi)
                     tokens.append(.open(tag: tag, attrs: attrs, selfClosing: selfClosing || voidTags.contains(tag)))
                 }
                 i = j + 1
             } else {
                 var j = i
                 while j < chars.count && chars[j] != lt { j += 1 }
-                tokens.append(.text(String(decoding: chars[i..<j], as: UTF8.self)))
+                tokens.append(.text(decodeUTF8(chars, i, j)))
                 i = j
             }
         }
         return tokens
+    }
+
+    /// The whitespace HTML separates a tag's parts with. `CharacterSet` would
+    /// answer the same question for these bytes, but it is a Foundation call per
+    /// character and it leaves out the newlines that any prettied-up markup puts
+    /// between an element's attributes.
+    private static func isASCIIWhitespace(_ b: UInt8) -> Bool {
+        b == 0x20 || b == 0x0A || b == 0x09 || b == 0x0D || b == 0x0C
+    }
+
+    private static func decodeUTF8(_ b: UnsafeBufferPointer<UInt8>, _ lo: Int, _ hi: Int) -> String {
+        lo < hi ? String(decoding: UnsafeBufferPointer(rebasing: b[lo..<hi]), as: UTF8.self) : ""
+    }
+
+    /// The tag or attribute name in `b[lo..<hi]`, ASCII-lowercased.
+    ///
+    /// Names are ASCII by definition and in practice already lowercase, so the
+    /// common path just decodes the bytes: `lowercased()` consults Unicode case
+    /// tables and allocates a second string to reach the same answer.
+    private static func name(_ b: UnsafeBufferPointer<UInt8>, _ lo: Int, _ hi: Int) -> String {
+        guard lo < hi else { return "" }
+        var upper = false
+        for k in lo..<hi where b[k] >= 0x41 && b[k] <= 0x5A { upper = true; break }
+        guard upper else { return decodeUTF8(b, lo, hi) }
+        var lowered = [UInt8](repeating: 0, count: hi - lo)
+        for k in 0..<(hi - lo) {
+            let c = b[lo + k]
+            lowered[k] = (c >= 0x41 && c <= 0x5A) ? c | 0x20 : c
+        }
+        return String(decoding: lowered, as: UTF8.self)
+    }
+
+    /// Parse a start tag's interior — everything between `<` and `>` — into its
+    /// name, its attributes, and whether it closed itself.
+    private static func parseTag(_ b: UnsafeBufferPointer<UInt8>, _ start: Int, _ end: Int)
+        -> (String, [String: String], Bool) {
+        let slash = UInt8(ascii: "/"), equals = UInt8(ascii: "=")
+        let doubleQuote = UInt8(ascii: "\""), singleQuote = UInt8(ascii: "'")
+        var lo = start, hi = end
+        while lo < hi, isASCIIWhitespace(b[lo]) { lo += 1 }
+        while hi > lo, isASCIIWhitespace(b[hi - 1]) { hi -= 1 }
+        var selfClosing = false
+        if hi > lo, b[hi - 1] == slash {
+            selfClosing = true
+            hi -= 1
+            while hi > lo, isASCIIWhitespace(b[hi - 1]) { hi -= 1 }
+        }
+        var i = lo
+        while i < hi, !isASCIIWhitespace(b[i]) { i += 1 }
+        let tag = name(b, lo, i)
+        var attrs: [String: String] = [:]
+        while i < hi {
+            while i < hi, isASCIIWhitespace(b[i]) { i += 1 }
+            guard i < hi else { break }
+            let keyStart = i
+            while i < hi, !isASCIIWhitespace(b[i]), b[i] != equals { i += 1 }
+            let key = name(b, keyStart, i)
+            // `key = "value"` is one attribute, so the "=" is looked for past
+            // any space. A name with no "=" after it is a bare attribute.
+            while i < hi, isASCIIWhitespace(b[i]) { i += 1 }
+            guard i < hi, b[i] == equals else {
+                if !key.isEmpty { attrs[key] = "" }
+                continue
+            }
+            i += 1
+            while i < hi, isASCIIWhitespace(b[i]) { i += 1 }
+            let value: String
+            if i < hi, b[i] == doubleQuote || b[i] == singleQuote {
+                let quote = b[i]
+                i += 1
+                let valueStart = i
+                while i < hi, b[i] != quote { i += 1 }
+                value = decodeUTF8(b, valueStart, i)
+                if i < hi { i += 1 }
+            } else {
+                // An unquoted value runs to the next space — `<td colspan=2>` is
+                // legal markup, and hand-written markup is full of it.
+                let valueStart = i
+                while i < hi, !isASCIIWhitespace(b[i]) { i += 1 }
+                value = decodeUTF8(b, valueStart, i)
+            }
+            if !key.isEmpty { attrs[key] = decodeEntities(value) }
+        }
+        return (tag, attrs, selfClosing)
     }
 
     /// Skip a non-element construct starting at `start` (chars[start] == "<" and
@@ -1180,7 +1297,7 @@ public enum HTMLParser {
     /// CDATA, and the first ">" for everything else (DOCTYPEs and processing
     /// instructions — matching browsers' bogus-comment state). An unterminated
     /// construct consumes to end of input, as in browsers.
-    private static func skipDeclaration(_ chars: [UInt8], from start: Int) -> Int {
+    private static func skipDeclaration(_ chars: UnsafeBufferPointer<UInt8>, from start: Int) -> Int {
         func match(_ s: String, at j: Int) -> Bool {
             var k = j
             for c in s.utf8 {
@@ -1217,39 +1334,6 @@ public enum HTMLParser {
 
     private static let voidTags: Set<String> = ["br", "hr", "img", "input", "col", "wbr", "source", "area", "meta", "link"]
 
-    private static func parseTag(_ raw: String) -> (String, [String: String], Bool) {
-        var s = raw.trimmingCharacters(in: .whitespaces)
-        let selfClosing = s.hasSuffix("/")
-        if selfClosing { s.removeLast() }
-        let scanner = Array(s)
-        var idx = 0
-        func skipSpace() { while idx < scanner.count && scanner[idx] == " " { idx += 1 } }
-        // tag name
-        var name = ""
-        while idx < scanner.count && scanner[idx] != " " { name.append(scanner[idx]); idx += 1 }
-        var attrs: [String: String] = [:]
-        while idx < scanner.count {
-            skipSpace()
-            var key = ""
-            while idx < scanner.count && scanner[idx] != "=" && scanner[idx] != " " { key.append(scanner[idx]); idx += 1 }
-            if idx < scanner.count && scanner[idx] == "=" {
-                idx += 1
-                if idx < scanner.count && (scanner[idx] == "\"" || scanner[idx] == "'") {
-                    let quote = scanner[idx]; idx += 1
-                    var value = ""
-                    while idx < scanner.count && scanner[idx] != quote { value.append(scanner[idx]); idx += 1 }
-                    idx += 1
-                    if !key.isEmpty { attrs[key.lowercased()] = decodeEntities(value) }
-                }
-            } else if !key.isEmpty {
-                attrs[key.lowercased()] = ""
-            }
-            if idx < scanner.count && scanner[idx] == " " { continue }
-            if key.isEmpty { idx += 1 }
-        }
-        return (name.lowercased(), attrs, selfClosing)
-    }
-
     /// The named character references that actually turn up in web article text.
     ///
     /// Not the full HTML5 set (~2,200 names, most of them mathematical): this is
@@ -1274,70 +1358,101 @@ public enum HTMLParser {
     /// quadratic on "&"-dense text like a list of URLs.
     private static let entityWindow: Int = max(longestEntityName + 1, 12)
 
-    /// Tested against the raw ASCII byte: `Character.isLetter` consults Unicode
+    /// Tested against the raw byte: `Character.isLetter` consults Unicode
     /// properties, which costs more per character than the whole scan should.
-    private static func isEntityNameCharacter(_ c: Character, first: Bool) -> Bool {
-        guard let b = c.asciiValue else { return false }
+    /// A byte of a multi-byte UTF-8 sequence is never in range, so a name ends
+    /// at one just as it would have on the `Character`.
+    private static func isEntityNameByte(_ b: UInt8, first: Bool) -> Bool {
         if first, b == UInt8(ascii: "#") { return true }
         return (b >= 48 && b <= 57) || ((b | 0x20) >= 97 && (b | 0x20) <= 122)
     }
 
-    /// Whether a numeric reference's digits are within the dialect's limit.
-    ///
-    /// HTML has none: its tokenizer takes every digit and resolves whatever is
-    /// out of range to the replacement character. CommonMark allows 7 decimal
-    /// digits and 6 hexadecimal, and anything longer is not a reference at all
-    /// — `&#87654321;` is that text, not U+FFFD. Both dialects share this
-    /// decoder, so the caller says which one it is reading.
-    private static func withinDigitLimit(_ name: Substring, capped: Bool) -> Bool {
-        guard capped else { return true }
-        if name.hasPrefix("#x") || name.hasPrefix("#X") { return name.count - 2 <= 6 }
-        return name.count - 1 <= 7
+    static func decodeEntities(_ s: String, cappingNumericDigits capped: Bool = false) -> String {
+        // Text with no "&" in it is the overwhelming majority, and this is the
+        // only work done for it. Asked of the UTF-8 rather than the string,
+        // because `contains` on a `Character` compares grapheme clusters —
+        // which means breaking the whole string into them first.
+        guard s.utf8.contains(UInt8(ascii: "&")) else { return s }
+        var source = s
+        return source.withUTF8 { decodeEntities($0, capped) }
     }
 
-    static func decodeEntities(_ s: String, cappingNumericDigits capped: Bool = false) -> String {
-        guard s.contains("&") else { return s }
-        var out = ""
-        out.reserveCapacity(s.count)
-        var i = s.startIndex
-        while i < s.endIndex {
+    /// Like the tokenizer, this reads bytes rather than `Character`s. Walking a
+    /// `String.Index` costs a grapheme-cluster break per step, and the old
+    /// window scan paid for up to 32 of them at every "&" — which on prose full
+    /// of `&rsquo;` and `&mdash;` was most of the work.
+    private static func decodeEntities(_ b: UnsafeBufferPointer<UInt8>, _ capped: Bool) -> String {
+        let amp = UInt8(ascii: "&"), semi = UInt8(ascii: ";")
+        var out = [UInt8]()
+        out.reserveCapacity(b.count)
+        var i = 0
+        while i < b.count {
+            guard b[i] == amp else {
+                // Everything up to the next "&" is copied in one move.
+                var j = i + 1
+                while j < b.count, b[j] != amp { j += 1 }
+                out.append(contentsOf: UnsafeBufferPointer(rebasing: b[i..<j]))
+                i = j
+                continue
+            }
             // An entity is "&" + a name or numeric reference + ";". Search for the
             // ";" only within the longest one that could match — an unbounded
             // scan is quadratic on '&'-dense text like URL lists. Numeric
             // references can be longer than any name, hence the floor.
-            guard s[i] == "&" else { out.append(s[i]); i = s.index(after: i); continue }
-            let next = s.index(after: i)
-            let windowEnd = s.index(next, offsetBy: entityWindow, limitedBy: s.endIndex) ?? s.endIndex
-            var scan = next
-            while scan < windowEnd, isEntityNameCharacter(s[scan], first: scan == next) {
-                scan = s.index(after: scan)
-            }
-            guard scan < windowEnd, s[scan] == ";", scan > next
-            else { out.append(s[i]); i = next; continue }
-            let semi = scan
-            let name = s[next..<semi]
-            var decoded: String?
-            if let c = namedEntities[String(name)] {
-                decoded = c
-            } else if withinDigitLimit(name, capped: capped) {
-                // Past the limit the text isn't a reference, so it stays as
-                // written; within it, an out-of-range value is the replacement
-                // character. In HTML there is no limit and the value decides,
-                // which is why leading zeros are legal there.
-                if name.hasPrefix("#x") || name.hasPrefix("#X") {
-                    decoded = UInt32(name.dropFirst(2), radix: 16).map(scalarForReference).map(String.init)
-                } else if name.hasPrefix("#") {
-                    decoded = UInt32(name.dropFirst()).map(scalarForReference).map(String.init)
-                }
-            }
-            if let decoded {
-                out.append(decoded)
-                i = s.index(after: semi)
-            } else {
-                out.append(s[i])
-                i = s.index(after: i)
-            }
+            let start = i + 1
+            let windowEnd = min(start + entityWindow, b.count)
+            var scan = start
+            while scan < windowEnd, isEntityNameByte(b[scan], first: scan == start) { scan += 1 }
+            guard scan < windowEnd, b[scan] == semi, scan > start,
+                  let decoded = entityValue(b, start, scan, capped)
+            else { out.append(amp); i = start; continue }
+            out.append(contentsOf: decoded.utf8)
+            i = scan + 1
         }
-        return out
+        return String(decoding: out, as: UTF8.self)
+    }
+
+    /// The replacement for the reference named by `b[lo..<hi]` — the text
+    /// between the "&" and its ";" — or nil when it names nothing, in which case
+    /// the caller keeps the source as it was written.
+    private static func entityValue(_ b: UnsafeBufferPointer<UInt8>, _ lo: Int, _ hi: Int,
+                                    _ capped: Bool) -> String? {
+        if b[lo] != UInt8(ascii: "#") {
+            return namedEntities[decodeUTF8(b, lo, hi)]
+        }
+        var digits = lo + 1
+        var radix: UInt32 = 10
+        if digits < hi, (b[digits] | 0x20) == UInt8(ascii: "x") {
+            digits += 1
+            radix = 16
+        }
+        guard digits < hi else { return nil }
+        // HTML puts no limit on a reference's digits: its tokenizer takes them
+        // all and resolves whatever is out of range to the replacement
+        // character, which is why leading zeros are legal there. CommonMark
+        // allows 7 decimal digits and 6 hexadecimal, and past that the text was
+        // never a reference — `&#87654321;` is those characters, not U+FFFD.
+        // Both dialects share this decoder, so the caller says which it reads.
+        if capped, hi - digits > (radix == 16 ? 6 : 7) { return nil }
+        var value: UInt32 = 0
+        for k in digits..<hi {
+            let c = b[k]
+            let digit: UInt32
+            if c >= 48, c <= 57 {
+                digit = UInt32(c - 48)
+            } else if radix == 16, (c | 0x20) >= 97, (c | 0x20) <= 102 {
+                digit = UInt32((c | 0x20) - 87)
+            } else {
+                return nil
+            }
+            // A reference too long to hold is left as it was written, as it was
+            // when this went through `UInt32.init(_:radix:)`.
+            let (scaled, overflowed) = value.multipliedReportingOverflow(by: radix)
+            guard !overflowed else { return nil }
+            let (sum, carried) = scaled.addingReportingOverflow(digit)
+            guard !carried else { return nil }
+            value = sum
+        }
+        return String(scalarForReference(value))
     }
 }

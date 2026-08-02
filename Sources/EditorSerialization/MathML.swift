@@ -20,7 +20,7 @@ enum MathML {
     /// The LaTeX for a `<math>` element spanning `start...end` in `tokens`, and
     /// whether it asked to be displayed as a block. Nil when nothing usable
     /// could be read out of it.
-    static func latex(_ tokens: [HTMLParser.Token], from start: Int, to end: Int)
+    static func latex(_ tokens: HTMLParser.Tokens, from start: Int, to end: Int)
         -> (latex: String, display: Bool)? {
         guard case let .open(_, attributes, _) = tokens[start] else { return nil }
         // `display="block"` is MathML's own way of saying this is display maths;
@@ -44,7 +44,7 @@ enum MathML {
     // MARK: - Reading the original TeX
 
     /// The contents of a `<annotation encoding="application/x-tex">`, if present.
-    private static func annotation(_ tokens: [HTMLParser.Token], from start: Int, to end: Int) -> String? {
+    private static func annotation(_ tokens: HTMLParser.Tokens, from start: Int, to end: Int) -> String? {
         var i = start + 1
         while i < end {
             if case let .open(tag, attributes, selfClosing) = tokens[i], tag == "annotation", !selfClosing {
@@ -78,7 +78,7 @@ enum MathML {
     // MARK: - Converting presentation MathML
 
     /// Convert every child element between `from` and `to`, in order.
-    private static func convertChildren(_ tokens: [HTMLParser.Token], from: Int, to: Int) -> [String] {
+    private static func convertChildren(_ tokens: HTMLParser.Tokens, from: Int, to: Int) -> [String] {
         var out: [String] = []
         var i = from
         while i < to {
@@ -105,7 +105,7 @@ enum MathML {
 
     /// Convert one element, given the span of its children.
     private static func convert(_ tag: String, _ attributes: [String: String],
-                                _ tokens: [HTMLParser.Token], from: Int, to: Int) -> String {
+                                _ tokens: HTMLParser.Tokens, from: Int, to: Int) -> String {
         // Elements whose text is their whole meaning.
         if ["mi", "mn", "mo", "mtext", "ms"].contains(tag) {
             return convertLeaf(tag, attributes, HTMLParser.innerText(tokens, from + 1, to))
