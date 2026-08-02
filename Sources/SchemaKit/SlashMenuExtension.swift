@@ -1,7 +1,7 @@
 import Foundation
 import DocumentModel
 import DocumentTransform
-import EditorStateKit
+public import EditorStateKit
 
 /// One entry in the slash (`/`) command menu: a display title, search keywords,
 /// and the named command to run when chosen.

@@ -4,6 +4,7 @@ import UIKit
 import DocumentModel
 import EditorStateKit
 import SchemaKit
+import DocumentTransform
 @testable import EditorUIKit
 
 @MainActor

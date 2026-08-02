@@ -68,7 +68,7 @@ public enum TestSuite {
         var failures: [(String, any Error)] = []
         for c in cases {
             // Flush before each test so a fatal trap localizes to this case.
-            print("  • \(c.name) ...", terminator: ""); fflush(stdout)
+            print("  • \(c.name) ...", terminator: ""); unsafe fflush(stdout)
             do {
                 try c.body()
                 print("\r  ✓ \(c.name)    ")
@@ -76,7 +76,7 @@ public enum TestSuite {
                 print("\r  ✗ \(c.name)\n      \(error)")
                 failures.append((c.name, error))
             }
-            fflush(stdout)
+            unsafe fflush(stdout)
         }
         print("\n\(name): \(cases.count - failures.count)/\(cases.count) passed")
         exit(failures.isEmpty ? 0 : 1)

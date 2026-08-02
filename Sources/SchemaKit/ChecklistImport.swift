@@ -1,4 +1,5 @@
-import DocumentModel
+import Foundation
+public import DocumentModel
 
 // When pasting from sources whose HTML flattens checklists to bullet lists (Apple
 // Notes), the checked state is only available out-of-band: ordered checklist lines

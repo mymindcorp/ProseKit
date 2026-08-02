@@ -1,7 +1,7 @@
 import Foundation
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
-import EditorStateKit
+public import EditorStateKit
 
 /// An input rule maps a regular expression matching the text before the cursor
 /// to a transformation. When the user types and the rule's pattern matches, the

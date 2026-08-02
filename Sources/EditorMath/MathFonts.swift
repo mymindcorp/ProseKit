@@ -61,7 +61,7 @@ func mathFontSet(size: CGFloat, body: CTFont) -> MathFontSet {
     let key = "\(size)|\(bodyName)"
     fontCacheLock.lock()
     defer { fontCacheLock.unlock() }
-    if let cached = fontSetCache[key] { return cached }
+    if let cached = unsafe fontSetCache[key] { return cached }
 
     let family = mathFamilyCandidates.first { candidate in
         let probe = CTFontCreateWithName(candidate as CFString, size, nil)
@@ -82,7 +82,7 @@ func mathFontSet(size: CGFloat, body: CTFont) -> MathFontSet {
         monospace: CTFontCreateWithName("Menlo" as CFString, size, nil),
         body: CTFontCreateCopyWithAttributes(body, size, nil, nil),
         size: size)
-    fontSetCache[key] = set
+    unsafe fontSetCache[key] = set
     return set
 }
 
@@ -264,16 +264,16 @@ func measure(_ text: String, in font: CTFont) -> GlyphRun? {
         let count = CTRunGetGlyphCount(run)
         guard count > 0 else { continue }
         var glyphs = [CGGlyph](repeating: 0, count: count)
-        CTRunGetGlyphs(run, CFRange(location: 0, length: 0), &glyphs)
+        unsafe CTRunGetGlyphs(run, CFRange(location: 0, length: 0), &glyphs)
         var positions = [CGPoint](repeating: .zero, count: count)
-        CTRunGetPositions(run, CFRange(location: 0, length: 0), &positions)
+        unsafe CTRunGetPositions(run, CFRange(location: 0, length: 0), &positions)
         guard let attributes = CTRunGetAttributes(run) as? [String: Any],
               let fontAttribute = attributes[kCTFontAttributeName as String] else { continue }
         let runFont = fontAttribute as! CTFont // run attributes always carry a font
         if (CTFontCopyPostScriptName(runFont) as String) != requestedName { usedRequestedFont = false }
 
         var bounds = [CGRect](repeating: .zero, count: count)
-        _ = CTFontGetBoundingRectsForGlyphs(runFont, .horizontal, &glyphs, &bounds, count)
+        _ = unsafe CTFontGetBoundingRectsForGlyphs(runFont, .horizontal, &glyphs, &bounds, count)
         for (box, position) in zip(bounds, positions) where !box.isNull && !box.isEmpty {
             ascent = max(ascent, box.maxY + position.y)
             descent = max(descent, -(box.minY + position.y))

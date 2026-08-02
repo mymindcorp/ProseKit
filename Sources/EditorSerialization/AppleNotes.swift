@@ -1,4 +1,4 @@
-import Foundation
+public import Foundation
 
 // Apple Notes puts a private `com.apple.notes.richtext` flavor on the pasteboard:
 // an NSKeyedArchiver bplist wrapping a raw protobuf ("Note") whose attribute runs
@@ -29,7 +29,7 @@ public enum AppleNotesPasteboard {
     /// lives in one of the archive's NSData blobs; hunt for it rather than
     /// resolving keyed-archive references (more robust to layout).
     static func noteBlobs(fromArchive data: Data) -> [Data] {
-        guard let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+        guard let plist = try? unsafe PropertyListSerialization.propertyList(from: data, options: [], format: nil),
               let dict = plist as? [String: Any],
               let objects = dict["$objects"] as? [Any] else { return [] }
         var blobs: [Data] = []

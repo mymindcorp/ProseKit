@@ -1,6 +1,6 @@
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
-import EditorStateKit
+public import EditorStateKit
 
 // Ported from prosemirror-tables' fixtables.ts — normalizes tables so no cells
 // overlap and every row has the same width, using the problems TableMap reports.

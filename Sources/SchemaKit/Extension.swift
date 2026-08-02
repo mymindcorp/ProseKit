@@ -1,7 +1,7 @@
-import DocumentModel
-import EditorStateKit
-import EditorCommands
-import EditorInputRules
+public import DocumentModel
+public import EditorStateKit
+public import EditorCommands
+public import EditorInputRules
 
 /// The context handed to an extension's hooks once the schema is compiled. It
 /// exposes the schema and this extension's resolved node/mark type.

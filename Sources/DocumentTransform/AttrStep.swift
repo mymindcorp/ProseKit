@@ -1,4 +1,4 @@
-import DocumentModel
+public import DocumentModel
 
 /// Update an attribute on a node at a given position.
 public struct AttrStep: Step {

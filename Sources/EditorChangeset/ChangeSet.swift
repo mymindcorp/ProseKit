@@ -1,5 +1,5 @@
-import DocumentModel
-import DocumentTransform
+public import DocumentModel
+public import DocumentTransform
 
 // A port of prosemirror-changeset's changeset.ts: ChangeSet tracks the changes
 // to a document from a point in the past, condensing step maps into a flat

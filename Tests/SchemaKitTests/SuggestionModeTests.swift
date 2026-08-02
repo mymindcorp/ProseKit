@@ -4,6 +4,7 @@ import EditorHistory
 import EditorStateKit
 import SchemaKit
 import TestHarness
+import DocumentTransform
 
 // Suggestion mode (track changes on prosemirror-changeset).
 

@@ -16,7 +16,7 @@ final class HighlightRenderTests: XCTestCase {
         guard let cg = image.cgImage else { return false }
         let w = cg.width, h = cg.height
         var data = [UInt8](repeating: 0, count: w * h * 4)
-        guard let ctx = CGContext(data: &data, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+        guard let ctx = unsafe CGContext(data: &data, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
                                   space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))

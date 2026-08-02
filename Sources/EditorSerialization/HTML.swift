@@ -1,5 +1,5 @@
 import Foundation
-import DocumentModel
+public import DocumentModel
 
 /// Maps node/mark type names to HTML tags for serialization & parsing. Defaults
 /// cover the StarterKit + tables/image/wiki-link names.
@@ -1302,7 +1302,7 @@ public enum HTMLParser {
         // `Array` first: the scanner only ever reads bytes, and the copy was a
         // second pass over every byte of the input before any work began.
         var source = html
-        return source.withUTF8 { tokenize($0) }
+        return source.withUTF8 { unsafe tokenize($0) }
     }
 
     private static func tokenize(_ chars: UnsafeBufferPointer<UInt8>) -> [Token] {
@@ -1313,14 +1313,14 @@ public enum HTMLParser {
         let doubleQuote = UInt8(ascii: "\""), singleQuote = UInt8(ascii: "'")
         var i = 0
         while i < chars.count {
-            if chars[i] == lt {
+            if unsafe chars[i] == lt {
                 // Markup declarations, comments, CDATA, and processing
                 // instructions: <!DOCTYPE …>, <!-- … -->, <![CDATA[ … ]]>, <? … >.
                 // These aren't elements — skip them (a leading <!DOCTYPE> from
                 // Cocoa's HTML writer / Apple Notes would otherwise swallow the
                 // whole document).
-                if i + 1 < chars.count, chars[i + 1] == bang || chars[i + 1] == question {
-                    i = skipDeclaration(chars, from: i)
+                if i + 1 < chars.count, unsafe chars[i + 1] == bang || chars[i + 1] == question {
+                    i = unsafe skipDeclaration(chars, from: i)
                     continue
                 }
                 // Find the end of the tag, ignoring any ">" inside a quoted
@@ -1329,7 +1329,7 @@ public enum HTMLParser {
                 var j = i + 1
                 var quote: UInt8?
                 while j < chars.count {
-                    let c = chars[j]
+                    let c = unsafe chars[j]
                     if let open = quote {
                         if c == open { quote = nil }
                     } else if c == doubleQuote || c == singleQuote {
@@ -1340,23 +1340,23 @@ public enum HTMLParser {
                     j += 1
                 }
                 let lo = i + 1, hi = min(j, chars.count)
-                if lo < hi, chars[lo] == slash {
+                if lo < hi, unsafe chars[lo] == slash {
                     // An end tag is just a name; anything after it (`</a foo>`)
                     // is ignored, as browsers ignore end-tag attributes.
                     var s = lo + 1
-                    while s < hi, isASCIIWhitespace(chars[s]) { s += 1 }
+                    while s < hi, unsafe isASCIIWhitespace(chars[s]) { s += 1 }
                     var e = s
-                    while e < hi, !isASCIIWhitespace(chars[e]), chars[e] != slash { e += 1 }
-                    tokens.append(.close(tag: name(chars, s, e)))
+                    while e < hi, unsafe !isASCIIWhitespace(chars[e]), unsafe chars[e] != slash { e += 1 }
+                    unsafe tokens.append(.close(tag: name(chars, s, e)))
                 } else {
-                    let (tag, attrs, selfClosing) = parseTag(chars, lo, hi)
+                    let (tag, attrs, selfClosing) = unsafe parseTag(chars, lo, hi)
                     tokens.append(.open(tag: tag, attrs: attrs, selfClosing: selfClosing || voidTags.contains(tag)))
                 }
                 i = j + 1
             } else {
                 var j = i
-                while j < chars.count && chars[j] != lt { j += 1 }
-                tokens.append(.text(decodeUTF8(chars, i, j)))
+                while unsafe j < chars.count && chars[j] != lt { j += 1 }
+                unsafe tokens.append(.text(decodeUTF8(chars, i, j)))
                 i = j
             }
         }
@@ -1372,7 +1372,7 @@ public enum HTMLParser {
     }
 
     private static func decodeUTF8(_ b: UnsafeBufferPointer<UInt8>, _ lo: Int, _ hi: Int) -> String {
-        lo < hi ? String(decoding: UnsafeBufferPointer(rebasing: b[lo..<hi]), as: UTF8.self) : ""
+        unsafe lo < hi ? String(decoding: UnsafeBufferPointer(rebasing: b[lo..<hi]), as: UTF8.self) : ""
     }
 
     /// The tag or attribute name in `b[lo..<hi]`, ASCII-lowercased.
@@ -1383,11 +1383,11 @@ public enum HTMLParser {
     private static func name(_ b: UnsafeBufferPointer<UInt8>, _ lo: Int, _ hi: Int) -> String {
         guard lo < hi else { return "" }
         var upper = false
-        for k in lo..<hi where b[k] >= 0x41 && b[k] <= 0x5A { upper = true; break }
-        guard upper else { return decodeUTF8(b, lo, hi) }
+        for k in lo..<hi where unsafe b[k] >= 0x41 && b[k] <= 0x5A { upper = true; break }
+        guard upper else { return unsafe decodeUTF8(b, lo, hi) }
         var lowered = [UInt8](repeating: 0, count: hi - lo)
         for k in 0..<(hi - lo) {
-            let c = b[lo + k]
+            let c = unsafe b[lo + k]
             lowered[k] = (c >= 0x41 && c <= 0x5A) ? c | 0x20 : c
         }
         return String(decoding: lowered, as: UTF8.self)
@@ -1400,47 +1400,47 @@ public enum HTMLParser {
         let slash = UInt8(ascii: "/"), equals = UInt8(ascii: "=")
         let doubleQuote = UInt8(ascii: "\""), singleQuote = UInt8(ascii: "'")
         var lo = start, hi = end
-        while lo < hi, isASCIIWhitespace(b[lo]) { lo += 1 }
-        while hi > lo, isASCIIWhitespace(b[hi - 1]) { hi -= 1 }
+        while lo < hi, unsafe isASCIIWhitespace(b[lo]) { lo += 1 }
+        while hi > lo, unsafe isASCIIWhitespace(b[hi - 1]) { hi -= 1 }
         var selfClosing = false
-        if hi > lo, b[hi - 1] == slash {
+        if hi > lo, unsafe b[hi - 1] == slash {
             selfClosing = true
             hi -= 1
-            while hi > lo, isASCIIWhitespace(b[hi - 1]) { hi -= 1 }
+            while hi > lo, unsafe isASCIIWhitespace(b[hi - 1]) { hi -= 1 }
         }
         var i = lo
-        while i < hi, !isASCIIWhitespace(b[i]) { i += 1 }
-        let tag = name(b, lo, i)
+        while i < hi, unsafe !isASCIIWhitespace(b[i]) { i += 1 }
+        let tag = unsafe name(b, lo, i)
         var attrs: [String: String] = [:]
         while i < hi {
-            while i < hi, isASCIIWhitespace(b[i]) { i += 1 }
+            while i < hi, unsafe isASCIIWhitespace(b[i]) { i += 1 }
             guard i < hi else { break }
             let keyStart = i
-            while i < hi, !isASCIIWhitespace(b[i]), b[i] != equals { i += 1 }
-            let key = name(b, keyStart, i)
+            while i < hi, unsafe !isASCIIWhitespace(b[i]), unsafe b[i] != equals { i += 1 }
+            let key = unsafe name(b, keyStart, i)
             // `key = "value"` is one attribute, so the "=" is looked for past
             // any space. A name with no "=" after it is a bare attribute.
-            while i < hi, isASCIIWhitespace(b[i]) { i += 1 }
-            guard i < hi, b[i] == equals else {
+            while i < hi, unsafe isASCIIWhitespace(b[i]) { i += 1 }
+            guard i < hi, unsafe b[i] == equals else {
                 if !key.isEmpty { attrs[key] = "" }
                 continue
             }
             i += 1
-            while i < hi, isASCIIWhitespace(b[i]) { i += 1 }
+            while i < hi, unsafe isASCIIWhitespace(b[i]) { i += 1 }
             let value: String
-            if i < hi, b[i] == doubleQuote || b[i] == singleQuote {
-                let quote = b[i]
+            if i < hi, unsafe b[i] == doubleQuote || b[i] == singleQuote {
+                let quote = unsafe b[i]
                 i += 1
                 let valueStart = i
-                while i < hi, b[i] != quote { i += 1 }
-                value = decodeUTF8(b, valueStart, i)
+                while i < hi, unsafe b[i] != quote { i += 1 }
+                value = unsafe decodeUTF8(b, valueStart, i)
                 if i < hi { i += 1 }
             } else {
                 // An unquoted value runs to the next space — `<td colspan=2>` is
                 // legal markup, and hand-written markup is full of it.
                 let valueStart = i
-                while i < hi, !isASCIIWhitespace(b[i]) { i += 1 }
-                value = decodeUTF8(b, valueStart, i)
+                while i < hi, unsafe !isASCIIWhitespace(b[i]) { i += 1 }
+                value = unsafe decodeUTF8(b, valueStart, i)
             }
             if !key.isEmpty { attrs[key] = decodeEntities(value) }
         }
@@ -1457,7 +1457,7 @@ public enum HTMLParser {
         func match(_ s: String, at j: Int) -> Bool {
             var k = j
             for c in s.utf8 {
-                guard k < chars.count, chars[k] == c else { return false }
+                guard k < chars.count, unsafe chars[k] == c else { return false }
                 k += 1
             }
             return true
@@ -1484,7 +1484,7 @@ public enum HTMLParser {
             return chars.count
         }
         var j = start + 1
-        while j < chars.count, chars[j] != UInt8(ascii: ">") { j += 1 }
+        while j < chars.count, unsafe chars[j] != UInt8(ascii: ">") { j += 1 }
         return min(j + 1, chars.count)
     }
 
@@ -1530,7 +1530,7 @@ public enum HTMLParser {
         // which means breaking the whole string into them first.
         guard s.utf8.contains(UInt8(ascii: "&")) else { return s }
         var source = s
-        return source.withUTF8 { decodeEntities($0, capped) }
+        return source.withUTF8 { unsafe decodeEntities($0, capped) }
     }
 
     /// Like the tokenizer, this reads bytes rather than `Character`s. Walking a
@@ -1543,11 +1543,11 @@ public enum HTMLParser {
         out.reserveCapacity(b.count)
         var i = 0
         while i < b.count {
-            guard b[i] == amp else {
+            guard unsafe b[i] == amp else {
                 // Everything up to the next "&" is copied in one move.
                 var j = i + 1
-                while j < b.count, b[j] != amp { j += 1 }
-                out.append(contentsOf: UnsafeBufferPointer(rebasing: b[i..<j]))
+                while j < b.count, unsafe b[j] != amp { j += 1 }
+                unsafe out.append(contentsOf: UnsafeBufferPointer(rebasing: b[i..<j]))
                 i = j
                 continue
             }
@@ -1558,9 +1558,9 @@ public enum HTMLParser {
             let start = i + 1
             let windowEnd = min(start + entityWindow, b.count)
             var scan = start
-            while scan < windowEnd, isEntityNameByte(b[scan], first: scan == start) { scan += 1 }
-            guard scan < windowEnd, b[scan] == semi, scan > start,
-                  let decoded = entityValue(b, start, scan, capped)
+            while scan < windowEnd, unsafe isEntityNameByte(b[scan], first: scan == start) { scan += 1 }
+            guard scan < windowEnd, unsafe b[scan] == semi, scan > start,
+                  let decoded = unsafe entityValue(b, start, scan, capped)
             else { out.append(amp); i = start; continue }
             out.append(contentsOf: decoded.utf8)
             i = scan + 1
@@ -1573,12 +1573,12 @@ public enum HTMLParser {
     /// the caller keeps the source as it was written.
     private static func entityValue(_ b: UnsafeBufferPointer<UInt8>, _ lo: Int, _ hi: Int,
                                     _ capped: Bool) -> String? {
-        if b[lo] != UInt8(ascii: "#") {
-            return namedEntities[decodeUTF8(b, lo, hi)]
+        if unsafe b[lo] != UInt8(ascii: "#") {
+            return unsafe namedEntities[decodeUTF8(b, lo, hi)]
         }
         var digits = lo + 1
         var radix: UInt32 = 10
-        if digits < hi, (b[digits] | 0x20) == UInt8(ascii: "x") {
+        if digits < hi, unsafe (b[digits] | 0x20) == UInt8(ascii: "x") {
             digits += 1
             radix = 16
         }
@@ -1592,7 +1592,7 @@ public enum HTMLParser {
         if capped, hi - digits > (radix == 16 ? 6 : 7) { return nil }
         var value: UInt32 = 0
         for k in digits..<hi {
-            let c = b[k]
+            let c = unsafe b[k]
             let digit: UInt32
             if c >= 48, c <= 57 {
                 digit = UInt32(c - 48)

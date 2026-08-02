@@ -10,7 +10,7 @@
 #   scripts/release.sh <version> [--yes]
 #   e.g.  scripts/release.sh 0.1.0
 #
-# Requirements: an authenticated GitHub CLI (`gh auth login`) and a Swift 6.2
+# Requirements: an authenticated GitHub CLI (`gh auth login`) and a Swift 6.3
 # toolchain, run from a clean checkout.
 
 set -euo pipefail

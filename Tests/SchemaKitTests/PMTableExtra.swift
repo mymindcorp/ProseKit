@@ -4,6 +4,7 @@ import EditorStateKit
 import EditorCommands
 import SchemaKit
 import TestHarness
+import DocumentTransform
 
 // Ported from prosemirror-tables/test/{cellselection,fixtable}.test.ts — validates
 // CellSelection (head/anchor placement, map-extension, content) + fixTables.

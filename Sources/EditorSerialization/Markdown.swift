@@ -1,5 +1,5 @@
 import Foundation
-import DocumentModel
+public import DocumentModel
 
 // MARK: - Serialize
 

@@ -1,5 +1,5 @@
 #if canImport(UIKit)
-import UIKit
+public import UIKit
 
 /// A typeset formula, ready to draw.
 ///

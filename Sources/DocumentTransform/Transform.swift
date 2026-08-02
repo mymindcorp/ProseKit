@@ -1,4 +1,4 @@
-import DocumentModel
+public import DocumentModel
 
 public enum TransformError: Error, CustomStringConvertible {
     case failed(String)

@@ -1,4 +1,4 @@
-import DocumentModel
+public import DocumentModel
 
 /// Map every inline node in a fragment through a transformation function.
 private func mapFragment(_ fragment: Fragment, _ f: (Node, Node?, Int) -> Node, _ parent: Node?) -> Fragment {

@@ -1,4 +1,4 @@
-// swift-tools-version: 6.2
+// swift-tools-version: 6.3
 import PackageDescription
 
 let package = Package(
@@ -112,18 +112,32 @@ let package = Package(
 
 // Package-wide Swift settings.
 //
-// `ExistentialAny` is always on — it only enforces the `any` spelling in our own
-// (already-compliant) source ahead of the Swift 7 default (SE-0335), and never
-// conflicts with a consumer's build.
+// Every upcoming feature this toolchain knows about is on unconditionally. They
+// only constrain *our* source — each one is a Swift 7 default we adopt early
+// (SE-0335 `any`, SE-0409 internal imports, SE-0444 member import visibility,
+// SE-0449/0461 isolation, immutable weak captures) — so none of them can conflict
+// with how a consumer builds the package. The language mode is Swift 6 (implied
+// by the tools version), which already brings complete strict concurrency.
 //
-// Warnings-as-errors is a policy for *developing* ProseKit, not something to
-// impose on consumers: it emits `-warnings-as-errors`, and when ProseKit is built
-// as an Xcode SPM dependency Xcode injects `-suppress-warnings` for package code —
-// swiftc refuses both at once ("Conflicting options '-warnings-as-errors' and
-// '-suppress-warnings'"). So it's gated behind PROSEKIT_STRICT, which our CI and
-// release script set; consumer builds (no env var) get a normal, conflict-free
-// compile.
-var packageSwiftSettings: [SwiftSetting] = [.enableUpcomingFeature("ExistentialAny")]
+// `strictMemorySafety` is likewise unconditional: every unsafe construct in the
+// package is explicitly spelled `unsafe`, so it emits no diagnostics on its own.
+//
+// Warnings-as-errors is the one exception. It is a policy for *developing*
+// ProseKit, not something to impose on consumers: it emits `-warnings-as-errors`,
+// and when ProseKit is built as an Xcode SPM dependency Xcode injects
+// `-suppress-warnings` for package code — swiftc refuses both at once
+// ("Conflicting options '-warnings-as-errors' and '-suppress-warnings'"). So it's
+// gated behind PROSEKIT_STRICT, which our CI and release script set; consumer
+// builds (no env var) get a normal, conflict-free compile.
+var packageSwiftSettings: [SwiftSetting] = [
+    .enableUpcomingFeature("ExistentialAny"),
+    .enableUpcomingFeature("InferIsolatedConformances"),
+    .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+    .enableUpcomingFeature("ImmutableWeakCaptures"),
+    .enableUpcomingFeature("MemberImportVisibility"),
+    .enableUpcomingFeature("InternalImportsByDefault"),
+    .strictMemorySafety(),
+]
 if Context.environment["PROSEKIT_STRICT"] != nil {
     packageSwiftSettings.append(.treatAllWarnings(as: .error))
 }

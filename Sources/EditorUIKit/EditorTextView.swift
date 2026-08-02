@@ -1,12 +1,12 @@
 #if canImport(UIKit)
-import UIKit
+public import UIKit
 import UniformTypeIdentifiers
 import DocumentModel
 import DocumentTransform
 import EditorStateKit
 import EditorCommands
 import EditorKeymap
-import SchemaKit
+public import SchemaKit
 import EditorSerialization
 
 /// One on-screen run of a highlight-mark background, passed to a custom
@@ -1009,6 +1009,7 @@ open class EditorTextView: UIView, UIKeyInput {
         if let old = textInteraction { removeInteraction(old) }
         let interaction = UITextInteraction(for: isEditable ? .editable : .nonEditable)
         interaction.textInput = self
+        interaction.delegate = self
         addInteraction(interaction)
         textInteraction = interaction
     }
@@ -1249,7 +1250,11 @@ open class EditorTextView: UIView, UIKeyInput {
 
     private func toggleCheckbox(at pos: Int) {
         guard isEditable else { return }
-        if !isFirstResponder { becomeFirstResponder() }
+        // Deliberately no `becomeFirstResponder()`: ticking a task off is a
+        // one-shot action, not a request to edit, so it must not raise the
+        // keyboard on an unfocused editor (Notes/Reminders behave the same).
+        // `interactionShouldBegin` keeps the native text interaction from
+        // focusing us behind the checkbox's back.
         let checked = editor.doc.nodeAt(pos)?.attrs["checked"]?.boolValue ?? false
         if let tr = try? editor.state.tr.setNodeAttribute(pos, "checked", .bool(!checked)) {
             editor.dispatch(tr)
@@ -1935,9 +1940,9 @@ open class EditorTextView: UIView, UIKeyInput {
     /// round-trips through HTML/serialization).
     static func cssHex(_ color: UIColor) -> String {
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        unsafe color.getRed(&r, green: &g, blue: &b, alpha: &a)
         func byte(_ v: CGFloat) -> Int { Int((max(0, min(1, v)) * 255).rounded()) }
-        return String(format: "#%02x%02x%02x", byte(r), byte(g), byte(b))
+        return unsafe String(format: "#%02x%02x%02x", byte(r), byte(g), byte(b))
     }
 
     /// The supported formatting actions, for a host to build its menu from.
@@ -2025,7 +2030,7 @@ open class EditorTextView: UIView, UIKeyInput {
         // The archived-attributed-string flavor first: it skips the RTF
         // round-trip's losses entirely when a UIKit-sourced copy provides it.
         func documentType(_ docType: NSAttributedString.DocumentType) -> (Data) -> NSAttributedString? {
-            { try? NSAttributedString(data: $0, options: [.documentType: docType], documentAttributes: nil) }
+            { unsafe try? NSAttributedString(data: $0, options: [.documentType: docType], documentAttributes: nil) }
         }
         let candidates: [(String, (Data) -> NSAttributedString?)] = [
             ("com.apple.uikit.attributedstring", { data in
@@ -2085,7 +2090,7 @@ open class EditorTextView: UIView, UIKeyInput {
     private func checkedLines(from attr: NSAttributedString) -> Set<String> {
         var result = Set<String>()
         let ns = attr.string as NSString
-        attr.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: attr.length), options: []) { val, range, _ in
+        unsafe attr.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: attr.length), options: []) { val, range, _ in
             guard let ps = val as? NSParagraphStyle,
                   ps.textLists.contains(where: { $0.markerFormat.rawValue.contains("check") }) else { return }
             // NB: literal RTF list markers ("☑\tmilk") are NOT stripped here —
@@ -2743,6 +2748,18 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
     static func dataURLAttrs(for data: Data, typeIdentifier: String?) -> Attrs {
         let mime = typeIdentifier.flatMap { UTType($0)?.preferredMIMEType } ?? "image/png"
         return ["src": .string("data:\(mime);base64," + data.base64EncodedString())]
+    }
+}
+
+extension EditorTextView: UITextInteractionDelegate {
+    /// Keep the native text interaction out of the checkboxes. The checkbox
+    /// views sit on top of us, but UITextInteraction's recognizers are attached
+    /// to *this* view and still see touches that land in a subview — so without
+    /// this a tap on a checkbox would also place the caret and (when editable)
+    /// raise the keyboard, on top of toggling the item. Ticking a task off
+    /// shouldn't move the caret or focus the editor.
+    public func interactionShouldBegin(_ interaction: UITextInteraction, at point: CGPoint) -> Bool {
+        ensureLayout().checkbox(at: docPoint(point)) == nil
     }
 }
 

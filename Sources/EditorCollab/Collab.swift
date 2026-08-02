@@ -1,6 +1,6 @@
 import DocumentModel
-import DocumentTransform
-import EditorStateKit
+public import DocumentTransform
+public import EditorStateKit
 
 /// A step paired with its inverse and the origin transaction, kept around while
 /// it is unconfirmed by the central authority.

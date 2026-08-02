@@ -1,5 +1,5 @@
 #if canImport(UIKit)
-import UIKit
+public import UIKit
 
 /// The color for each token category a grammar can emit. Pass a custom instance
 /// to `makeSyntaxHighlighter(colors:)` to theme the output; the defaults use

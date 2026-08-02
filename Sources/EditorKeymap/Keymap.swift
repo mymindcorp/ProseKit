@@ -1,6 +1,6 @@
 import DocumentModel
-import EditorStateKit
-import EditorCommands
+public import EditorStateKit
+public import EditorCommands
 
 /// A platform-neutral description of a key press. Adapters translate native
 /// events (NSEvent / UIKey) into this and feed it to the keymap.

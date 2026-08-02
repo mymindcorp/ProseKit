@@ -1,5 +1,5 @@
-import DocumentModel
-import DocumentTransform
+public import DocumentModel
+public import DocumentTransform
 
 /// A text selection represents a classical editor selection, with a head
 /// (the moving side) and anchor (immobile side), both of which point into

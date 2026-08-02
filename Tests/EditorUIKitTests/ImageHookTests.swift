@@ -43,7 +43,7 @@ final class ImageHookTests: XCTestCase {
     private func redPixels(of view: UIView) -> Int {
         let w = Int(view.bounds.width), h = Int(view.bounds.height)
         var bytes = [UInt8](repeating: 0, count: w * h * 4)
-        let ctx = CGContext(data: &bytes, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+        let ctx = unsafe CGContext(data: &bytes, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
                             space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
         UIGraphicsPushContext(ctx)
         view.draw(view.bounds)

@@ -1,4 +1,4 @@
-import DocumentModel
+public import DocumentModel
 
 /// A pair of a node type and the attributes to create it with, used by the
 /// structural transform helpers.
@@ -230,7 +230,7 @@ public extension Transform {
                     try step(RemoveMarkStep(cur, end, m))
                 }
                 if clearNewlines, !keepNewlines, child.isText, let text = child.text {
-                    let space = Slice(content: Fragment.from(parentType.schema.text(" ", parentType.allowedMarks(child.marks))), openStart: 0, openEnd: 0)
+                    let space = unsafe Slice(content: Fragment.from(parentType.schema.text(" ", parentType.allowedMarks(child.marks))), openStart: 0, openEnd: 0)
                     for (k, ch) in Array(text).enumerated() where ch == "\n" || ch == "\r" {
                         replSteps.append(ReplaceStep(cur + k, cur + k + 1, space))
                     }
