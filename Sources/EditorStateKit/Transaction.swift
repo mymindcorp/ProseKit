@@ -132,7 +132,7 @@ public final class Transaction: Transform {
     /// Replace the given range (or the selection) with text.
     @discardableResult
     public func insertText(_ text: String, _ from: Int? = nil, _ to: Int? = nil) throws -> Transaction {
-        let schema = unsafe doc.type.schema!
+        let schema = doc.type.schema!
         if from == nil {
             if text.isEmpty { return deleteSelection() }
             return replaceSelectionWith(schema.text(text), inheritMarks: true)
