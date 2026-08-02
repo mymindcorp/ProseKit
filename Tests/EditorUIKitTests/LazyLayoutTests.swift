@@ -20,10 +20,10 @@ final class LazyLayoutTests: XCTestCase {
     }
 
     private func full(_ doc: Node) -> DocumentLayout {
-        DocumentLayout(doc: doc, width: 390, theme: TextTheme())
+        DocumentLayout(doc: doc, width: 390, theme: DocumentTheme())
     }
     private func lazy(_ doc: Node, window: ClosedRange<CGFloat>) -> DocumentLayout {
-        DocumentLayout(doc: doc, width: 390, theme: TextTheme(), realizeWindow: window)
+        DocumentLayout(doc: doc, width: 390, theme: DocumentTheme(), realizeWindow: window)
     }
 
     func testLazyOnlyTypesetsNearWindowButReportsFullHeight() {

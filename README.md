@@ -136,7 +136,7 @@ override func draw(_ rect: CGRect) {
                      model: ImageModel(path: "originals/DSC_0001.raw", width: 4000, height: 3000))
   image.imageModel?.path   // reading it back
   ```
-- **Theme & fonts** — `EditorTextView.theme` / `DocumentView.theme` (a `TextTheme`): colors, spacing, and a custom typeface via `theme.fontName`, `theme.monoFontName`, and `theme.headingScale`. Dynamic Type is honored by default.
+- **Theme & fonts** — `EditorTextView.theme` / `DocumentView.theme` (a `DocumentTheme`): colors, spacing, and a custom typeface via `theme.fontName`, `theme.monoFontName`, and `theme.headingScale`. Dynamic Type is honored by default.
 - **Suggestion menus** — any extension can provide a `SuggestionSource` and the renderer shows a popup for it. The `/` slash menu (`SlashMenuExtension`, `atLineStart` by default) and `[[` wiki links (`WikiLinkExtension(suggestions:)`) ship in `fullKit`; use `fullKit(wikiLinkSuggestions:)` to supply the candidate list.
 - **Collapsible sections** — Tiptap's Details extension (`details` / `detailsSummary` / `detailsContent`, in `fullKit`): `editor.run("toggleDetails")` (also `Mod-Alt-d`, or `/details`) wraps the selected blocks in a section, and `toggleDetailsOpen` folds it. The renderer draws a disclosure triangle, and a closed section's body isn't laid out at all. Serializes to `<details><summary>…</summary>…</details>` in both HTML and Markdown.
 - **Mathematics** — Tiptap's Mathematics extension (`inlineMath` / `blockMath`, in `fullKit`). See below.

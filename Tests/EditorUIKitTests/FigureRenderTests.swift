@@ -19,7 +19,7 @@ final class FigureRenderTests: XCTestCase {
         return editor
     }
 
-    private func view(_ editor: Editor, theme: TextTheme = TextTheme()) -> EditorTextView {
+    private func view(_ editor: Editor, theme: DocumentTheme = DocumentTheme()) -> EditorTextView {
         let v = EditorTextView(editor: editor, theme: theme)
         v.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
         v.backgroundColor = .white
@@ -54,8 +54,8 @@ final class FigureRenderTests: XCTestCase {
     }
 
     func testCaptionAlignmentIsThemeable() throws {
-        var theme = TextTheme()
-        theme.captionAlignment = .natural
+        var theme = DocumentTheme()
+        theme.caption.alignment = .natural
         let layout = view(try editor(caption: "A cat"), theme: theme).ensureLayout()
         let caption = try XCTUnwrap(block(layout, "A cat"))
         let body = try XCTUnwrap(block(layout, "body"))
@@ -65,7 +65,7 @@ final class FigureRenderTests: XCTestCase {
     }
 
     func testCaptionFontIsSmallerThanBody() throws {
-        var theme = TextTheme()
+        var theme = DocumentTheme()
         theme.dynamicType = false
         let e = try editor(caption: "A cat")
         let node = try e.schema.nodes["figcaption"]!.create(
@@ -74,8 +74,8 @@ final class FigureRenderTests: XCTestCase {
     }
 
     func testCaptionColourReachesTheScreen() throws {
-        var theme = TextTheme()
-        theme.captionColor = .systemRed
+        var theme = DocumentTheme()
+        theme.caption.color = .systemRed
         let v = view(try editor(caption: "A cat"), theme: theme)
         let image = UIGraphicsImageRenderer(bounds: v.bounds).image { _ in
             v.layer.render(in: UIGraphicsGetCurrentContext()!)
@@ -85,7 +85,7 @@ final class FigureRenderTests: XCTestCase {
     }
 
     func testCaptionTucksUnderItsFigure() throws {
-        let theme = TextTheme()
+        let theme = DocumentTheme()
         let e = try editor(caption: "A cat")
         let node = try e.schema.nodes["figcaption"]!.create(
             [:], content: Fragment.from([e.schema.text("A cat")]))

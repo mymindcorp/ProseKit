@@ -41,7 +41,7 @@ final class GapCursorViewTests: XCTestCase {
     func testGapBoundaryPositionFindsTheGapBetweenTables() throws {
         let editor = try twoTableEditor()
         let view = makeView(editor)
-        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme())
+        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme())
         let t1 = try XCTUnwrap(layout.tables.first)
         let t2 = try XCTUnwrap(layout.tables.last)
         XCTAssertLessThan(t1.bottom, t2.top, "two stacked tables with a margin between them")
@@ -55,7 +55,7 @@ final class GapCursorViewTests: XCTestCase {
     func testTapBetweenTablesPlacesAGapCursorThroughUITextInput() throws {
         let editor = try twoTableEditor()
         let view = makeView(editor)
-        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme())
+        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme())
         let midY = (layout.tables[0].bottom + layout.tables[1].top) / 2
 
         // The native caret-placement path: closestPosition → setSelectedTextRange.
@@ -71,7 +71,7 @@ final class GapCursorViewTests: XCTestCase {
         let view = makeView(editor)
         let gapPos = betweenTablesPos(editor)
         editor.dispatch(editor.state.tr.setSelection(GapCursor(editor.doc.resolve(gapPos))))
-        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme())
+        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme())
         let rect = view.gapCaretRect(at: gapPos, in: view.ensureLayout())
         XCTAssertGreaterThan(rect.width, rect.height, "gap caret is horizontal")
         // It sits at the boundary between the two tables (the neighbor text
@@ -95,7 +95,7 @@ final class GapCursorViewTests: XCTestCase {
     func testDocEdgeGapsAreReachable() throws {
         let editor = try twoTableEditor()
         let view = makeView(editor)
-        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme())
+        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme())
         // Above the first table → gap at 0 (when there's headroom).
         if layout.tables[0].top > 1 {
             XCTAssertEqual(view.gapBoundaryPosition(at: CGPoint(x: 40, y: layout.tables[0].top / 2)), 0)

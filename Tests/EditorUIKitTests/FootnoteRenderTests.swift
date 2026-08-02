@@ -35,7 +35,7 @@ final class FootnoteRenderTests: XCTestCase {
     }
 
     private func layout(_ doc: Node) -> DocumentLayout {
-        DocumentLayout(doc: doc, width: 320, theme: TextTheme())
+        DocumentLayout(doc: doc, width: 320, theme: DocumentTheme())
     }
 
     func testAReferenceDrawsItsNumberNotItsLabel() throws {
@@ -60,7 +60,7 @@ final class FootnoteRenderTests: XCTestCase {
         let offset = try XCTUnwrap(attrs[.baselineOffset] as? CGFloat)
         XCTAssertGreaterThan(offset, 0, "a footnote marker sits above the baseline")
         let font = try XCTUnwrap(attrs[.font] as? UIFont)
-        XCTAssertLessThan(font.pointSize, TextTheme().bodyFont.pointSize, "and is set smaller")
+        XCTAssertLessThan(font.pointSize, DocumentTheme().bodyFont.pointSize, "and is set smaller")
     }
 
     func testTheNoteIsDrawnWithItsNumberInTheGutter() throws {

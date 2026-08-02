@@ -35,7 +35,7 @@ final class DropCursorAndCellDragTests: XCTestCase {
     func testDropCursorRectInsideTextIsAVerticalCaret() throws {
         let editor = try tableEditor()
         let view = makeView(editor)
-        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme())
+        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme())
         let firstBlock = try XCTUnwrap(layout.blocks.first)
         let rect = try XCTUnwrap(view.dropCursorRect(at: CGPoint(x: firstBlock.frame.midX, y: firstBlock.frame.midY)))
         XCTAssertGreaterThan(rect.height, rect.width, "text drop cursor is a vertical caret")
@@ -55,7 +55,7 @@ final class DropCursorAndCellDragTests: XCTestCase {
         }
         editor.setContent(try! s.node("doc", [:], content: Fragment.from([table("A"), table("B")])))
         let view = makeView(editor)
-        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme())
+        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme())
         let midY = (layout.tables[0].bottom + layout.tables[1].top) / 2
         let rect = try XCTUnwrap(view.dropCursorRect(at: CGPoint(x: 40, y: midY)))
         XCTAssertGreaterThan(rect.width, rect.height, "gap drop cursor is a horizontal bar")

@@ -15,7 +15,7 @@ final class FindBarView: UIView, UITextFieldDelegate {
     var onReplaceAll: (() -> Void)?
     var onClose: (() -> Void)?
 
-    init(theme: TextTheme) {
+    init(theme: DocumentTheme) {
         super.init(frame: .zero)
         backgroundColor = theme.popupBackground
         layer.cornerRadius = 10
@@ -81,7 +81,7 @@ final class FindBarView: UIView, UITextFieldDelegate {
         field.returnKeyType = .search
     }
 
-    private func separator(_ theme: TextTheme) -> UIView {
+    private func separator(_ theme: DocumentTheme) -> UIView {
         let v = UIView()
         v.backgroundColor = theme.quoteBarColor
         v.translatesAutoresizingMaskIntoConstraints = false

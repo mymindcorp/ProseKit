@@ -16,7 +16,7 @@ public final class DocumentView: UIView {
     /// reusing unchanged blocks from the previous layout).
     public var document: Node? { didSet { invalidateLayout() } }
     /// Visual styling (fonts, colors, spacing).
-    public var theme: TextTheme { didSet { invalidateLayout() } }
+    public var theme: DocumentTheme { didSet { invalidateLayout() } }
     /// The enclosing viewport's vertical scroll offset. Only the slice
     /// `[contentOffsetY, contentOffsetY + bounds.height]` is drawn.
     public var contentOffsetY: CGFloat = 0 { didSet { if oldValue != contentOffsetY { setNeedsDisplay() } } }
@@ -120,7 +120,7 @@ public final class DocumentView: UIView {
         }
     }
 
-    public init(document: Node? = nil, theme: TextTheme = TextTheme()) {
+    public init(document: Node? = nil, theme: DocumentTheme = DocumentTheme()) {
         self.document = document
         self.theme = theme
         super.init(frame: .zero)
@@ -131,7 +131,7 @@ public final class DocumentView: UIView {
     public required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     /// Render a document parsed from a ProseMirror-JSON string.
-    public convenience init(json: String, schema: Schema, theme: TextTheme = TextTheme()) throws {
+    public convenience init(json: String, schema: Schema, theme: DocumentTheme = DocumentTheme()) throws {
         self.init(document: try Node.fromJSON(json, schema: schema), theme: theme)
     }
 

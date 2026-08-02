@@ -78,7 +78,7 @@ final class TableEditingTests: XCTestCase {
 
     func testClickLandsInTheCorrectCellByX() throws {
         let editor = try tableEditor()
-        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme())
+        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme())
         // The block for cell "D" (second column, second row).
         let dPos = cellTextPosition(editor, "D")
         let dBlock = try XCTUnwrap(layout.blocks.first { $0.contentStart <= dPos && dPos <= $0.contentEnd })
@@ -122,7 +122,7 @@ final class TableEditingTests: XCTestCase {
             try! s.node("tableRow", [:], content: Fragment.from([cell("C"), cell("D")])),
         ]))
         editor.setContent(try! s.node("doc", [:], content: Fragment.from([table])))
-        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme())
+        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme())
         let info = try XCTUnwrap(layout.tables.first)
         XCTAssertEqual(info.widths.count, 2)
         // 3:1 ratio, normalized to whatever content width the table spans.
@@ -133,7 +133,7 @@ final class TableEditingTests: XCTestCase {
     func testDraggingAColumnBorderResizesColumns() throws {
         let editor = try tableEditor()
         let view = makeView(editor)
-        let info = try XCTUnwrap(DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme()).tables.first)
+        let info = try XCTUnwrap(DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme()).tables.first)
         let totalBefore = info.widths.reduce(0, +)
         // Border between the two equal columns. Drag it well to the left.
         let borderX = info.borderX(after: 0)
@@ -142,7 +142,7 @@ final class TableEditingTests: XCTestCase {
         view.updateColumnResize(to: CGPoint(x: borderX - 60, y: y))
         view.endColumnResize()
         // Re-read the layout: column 0 should now be narrower than column 1.
-        let after = DocumentLayout(doc: view.editor.doc, width: 320, theme: TextTheme())
+        let after = DocumentLayout(doc: view.editor.doc, width: 320, theme: DocumentTheme())
         let widths = try XCTUnwrap(after.tables.first).widths
         XCTAssertLessThan(widths[0], widths[1], "dragging the border left should shrink column 0")
         XCTAssertEqual(widths.reduce(0, +), totalBefore, accuracy: 1, "total width is preserved")
@@ -167,7 +167,7 @@ final class TableEditingTests: XCTestCase {
     func testResizableFalseRefusesTheBorderDrag() throws {
         let editor = try tableEditor(options: TableOptions(resizable: false))
         let view = makeView(editor)
-        let info = try XCTUnwrap(DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme()).tables.first)
+        let info = try XCTUnwrap(DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme()).tables.first)
         let widthsBefore = info.widths
         let borderX = info.borderX(after: 0)
         let y = (info.top + info.bottom) / 2
@@ -176,7 +176,7 @@ final class TableEditingTests: XCTestCase {
         view.beginColumnResize(at: CGPoint(x: borderX, y: y))
         view.updateColumnResize(to: CGPoint(x: borderX - 60, y: y))
         view.endColumnResize()
-        let after = try XCTUnwrap(DocumentLayout(doc: view.editor.doc, width: 320, theme: TextTheme()).tables.first)
+        let after = try XCTUnwrap(DocumentLayout(doc: view.editor.doc, width: 320, theme: DocumentTheme()).tables.first)
         XCTAssertEqual(after.widths, widthsBefore, "a table that isn't resizable shouldn't resize")
     }
 
@@ -187,7 +187,7 @@ final class TableEditingTests: XCTestCase {
             columnResizing: ColumnResizingOptions(handleWidth: 20)))
         for (editor, grabbable) in [(narrow, false), (wide, true)] {
             let view = makeView(editor)
-            let info = try XCTUnwrap(DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme()).tables.first)
+            let info = try XCTUnwrap(DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme()).tables.first)
             let y = (info.top + info.bottom) / 2
             // 10pt off the border: outside a 2pt grab area, inside a 20pt one.
             let point = CGPoint(x: info.borderX(after: 0) - 10, y: y)
@@ -200,20 +200,20 @@ final class TableEditingTests: XCTestCase {
         let editor = try tableEditor(options: TableOptions(
             columnResizing: ColumnResizingOptions(cellMinWidth: 100)))
         let view = makeView(editor)
-        let info = try XCTUnwrap(DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme()).tables.first)
+        let info = try XCTUnwrap(DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme()).tables.first)
         let borderX = info.borderX(after: 0)
         let y = (info.top + info.bottom) / 2
         // Drag far past the limit; the column should stop at it.
         view.beginColumnResize(at: CGPoint(x: borderX, y: y))
         view.updateColumnResize(to: CGPoint(x: borderX - 300, y: y))
         view.endColumnResize()
-        let after = try XCTUnwrap(DocumentLayout(doc: view.editor.doc, width: 320, theme: TextTheme()).tables.first)
+        let after = try XCTUnwrap(DocumentLayout(doc: view.editor.doc, width: 320, theme: DocumentTheme()).tables.first)
         XCTAssertGreaterThanOrEqual(after.widths[0], 99, "cellMinWidth should stop the shrink")
     }
 
     func testCellsAreLaidOutAsDistinctBlocks() throws {
         let editor = try tableEditor()
-        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme())
+        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme())
         // Four cells → at least four text blocks with distinct frames.
         let cellTexts = ["A", "B", "C", "D"]
         let frames = cellTexts.map { t -> CGRect in
