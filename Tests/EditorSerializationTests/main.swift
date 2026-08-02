@@ -1900,6 +1900,142 @@ test("Markdown: a tab after a list marker lands on the line's tab stop") {
     try expectEqual(nested.child(0).child(0).lastChild?.textContent, "foo")
 }
 
+// MARK: - GitHub pipe tables
+
+/// The table these tests write: a header row and one body row.
+private func twoByTwo() -> Node {
+    node("table", [:], [
+        node("tableRow", [:], [node("tableHeader", [:], [p("a")]), node("tableHeader", [:], [p("b")])]),
+        node("tableRow", [:], [node("tableCell", [:], [p("1")]), node("tableCell", [:], [p("2")])]),
+    ])
+}
+
+test("Markdown parses a pipe table") {
+    for md in ["| a | b |\n| --- | --- |\n| 1 | 2 |",
+               // The outer pipes are optional, and the spacing is free.
+               "a | b\n--- | ---\n1 | 2",
+               "|a|b|\n|-|-|\n|1|2|"] {
+        try expectEqual(try MarkdownParser.parse(md, schema: schema), doc(twoByTwo()), "input: \(md)")
+    }
+}
+
+test("Markdown reads a delimiter row's alignment, and keeps nothing of it") {
+    // The colons are accepted so the table is still a table; there is no
+    // attribute on the cells to record which way a column was aligned, so it
+    // is dropped rather than stored. Documented, not desired.
+    for delimiter in ["| :-- | --: |", "| :-: | :-: |", "| ---- | - |"] {
+        let md = "| a | b |\n\(delimiter)\n| 1 | 2 |"
+        try expectEqual(try MarkdownParser.parse(md, schema: schema), doc(twoByTwo()),
+                        "input: \(delimiter)")
+    }
+}
+
+test("Markdown round-trip: a pipe table") {
+    let d = doc(twoByTwo())
+    try expectEqual(MarkdownSerializer.serialize(d), "| a | b |\n| --- | --- |\n| 1 | 2 |")
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+    // A header and nothing under it is a table too.
+    let headerOnly = doc(node("table", [:], [
+        node("tableRow", [:], [node("tableHeader", [:], [p("a")])]),
+    ]))
+    try expectEqual(MarkdownSerializer.serialize(headerOnly), "| a |\n| --- |")
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(headerOnly), schema: schema),
+                    headerOnly)
+}
+
+test("Markdown: a cell keeps its marks, and an escaped pipe stays text") {
+    let md = "| a \\| b | c |\n| --- | --- |\n| *x* | [l](/u) |"
+    let d = try MarkdownParser.parse(md, schema: schema)
+    let header = d.child(0).child(0)
+    try expectEqual(header.child(0).textContent, "a | b")
+    let body = d.child(0).child(1)
+    try expectEqual(body.child(0).child(0).child(0).marks.first?.type.name, "italic")
+    try expectEqual(body.child(1).child(0).child(0).marks.first?.attrs["href"], .string("/u"))
+    // The pipe is escaped again on the way out, so the row still has two cells.
+    try expectEqual(MarkdownSerializer.serialize(d), md)
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown: a table interrupts the paragraph above it") {
+    let d = try MarkdownParser.parse(
+        "text above\n| a | b |\n| --- | --- |\n| 1 | 2 |\ntext below", schema: schema)
+    try expectEqual(d.childCount, 3)
+    try expectEqual(d.child(0), p("text above"))
+    try expectEqual(d.child(1).type.name, "table")
+    try expectEqual(d.child(2), p("text below"))
+}
+
+test("Markdown: a row is padded and truncated to the header's width") {
+    // What the header row promised is what every row has.
+    let d = try MarkdownParser.parse("| a | b |\n| --- | --- |\n| 1 |\n| 1 | 2 | 3 |", schema: schema)
+    let table = d.child(0)
+    try expectEqual(table.child(1).childCount, 2)
+    try expectEqual(table.child(1).child(1).textContent, "")
+    try expectEqual(table.child(2).childCount, 2)
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown: lines that only look like a table stay a paragraph") {
+    for md in [
+        "| a | b |\n| --- |\n| 1 | 2 |",     // the delimiter row's width disagrees
+        "| a | b |\n| --- | x |",            // not a delimiter row
+        "| a | b |",                         // no delimiter row at all
+        "a | b",
+    ] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expect(d.child(0).type.name != "table", "input \(md) became a table")
+    }
+}
+
+test("Markdown: a table the pipes can't hold is written as HTML") {
+    // Each of these needs something a row of pipes has no way to say, so the
+    // serializer writes the HTML block the parser reads back whole.
+    let span = doc(node("table", [:], [
+        node("tableRow", [:], [node("tableHeader", ["colspan": .int(2)], [p("wide")])]),
+        node("tableRow", [:], [node("tableCell", [:], [p("a")]), node("tableCell", [:], [p("b")])]),
+    ]))
+    let twoBlocks = doc(node("table", [:], [
+        node("tableRow", [:], [node("tableHeader", [:], [p("h")])]),
+        node("tableRow", [:], [node("tableCell", [:], [p("one"), p("two")])]),
+    ]))
+    // A column width is a list of pixel widths, the way the resizer stores it.
+    let width = doc(node("table", [:], [
+        node("tableRow", [:], [node("tableHeader", ["colwidth": .array([.int(120)])], [p("h")])]),
+    ]))
+    // A body row of plain cells with no header above it isn't a pipe table
+    // either: the header row is what gives the columns their width.
+    let noHeader = doc(node("table", [:], [
+        node("tableRow", [:], [node("tableCell", [:], [p("a")]), node("tableCell", [:], [p("b")])]),
+    ]))
+    for d in [span, twoBlocks, width, noHeader] {
+        let md = MarkdownSerializer.serialize(d)
+        try expect(md.hasPrefix("<table"), "expected an HTML fallback, got \(md)")
+        try expectEqual(try MarkdownParser.parse(md, schema: schema), d, "input: \(md)")
+    }
+}
+
+test("Markdown: a hard break in a cell falls back to HTML") {
+    // A break serializes as a newline, which would end the row.
+    let d = doc(node("table", [:], [
+        node("tableRow", [:], [node("tableHeader", [:], [p("h")])]),
+        node("tableRow", [:], [node("tableCell", [:], [p(t("a"), node("hardBreak"), t("b"))])]),
+    ]))
+    let md = MarkdownSerializer.serialize(d)
+    try expect(md.hasPrefix("<table"), "expected an HTML fallback, got \(md)")
+    try expectEqual(try MarkdownParser.parse(md, schema: schema), d)
+}
+
+test("Markdown tables are inert in a schema without the nodes") {
+    let plain = try Schema(nodes: [
+        ("doc", NodeSpec(content: "block+")),
+        ("paragraph", NodeSpec(content: "inline*", group: "block")),
+        ("text", NodeSpec(group: "inline")),
+    ], marks: [], topNode: "doc")
+    let d = try MarkdownParser.parse("| a | b |\n| --- | --- |\n| 1 | 2 |", schema: plain)
+    try expectEqual(d.child(0).type.name, "paragraph")
+    try expectEqual(d.child(0).textContent, "| a | b | | --- | --- | | 1 | 2 |")
+}
+
 test("Markdown round-trip: a link and image title") {
     let link = doc(p(schema.text("x", [schema.mark("link", ["href": .string("/uri"),
                                                             "title": .string("the title")])])))
