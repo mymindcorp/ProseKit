@@ -392,6 +392,11 @@ public enum HTMLSerializer {
             if case let .array(cw)? = node.attrs["colwidth"] {
                 a += " data-colwidth=\"\(cw.map { String($0.intValue ?? 0) }.joined(separator: ","))\""
             }
+            // `style` rather than the `align` attribute HTML deprecated, though
+            // the parser reads both — GitHub still writes `align`.
+            if let align = node.attrs["align"]?.stringValue, !align.isEmpty {
+                a += " style=\"text-align:\(align)\""
+            }
             element(tag, a)
         default:
             element(config.nodeTags[node.type.name] ?? "div")
@@ -704,6 +709,7 @@ public enum HTMLParser {
             if let cs = attrs["colspan"].flatMap({ Int($0) }), cs != 1 { a["colspan"] = .int(cs) }
             if let rs = attrs["rowspan"].flatMap({ Int($0) }), rs != 1 { a["rowspan"] = .int(rs) }
             if let cw = parseColwidth(attrs) { a["colwidth"] = .array(cw.map { .int($0) }) }
+            if let align = parseCellAlign(attrs) { a["align"] = .string(align) }
             if let type = schema.nodes[nodeName!] {
                 if let n = try? type.create(a, content: Fragment.from(children)) { return ([n], end + 1) }
                 if let filled = type.createAndFill(a, content: Fragment.from(children)) { return ([filled], end + 1) }
@@ -1025,6 +1031,14 @@ public enum HTMLParser {
             }
         }
         return nil
+    }
+
+    /// A cell's alignment, from either spelling: the `style` this serializer
+    /// writes, or the `align` attribute GitHub and older documents use.
+    private static func parseCellAlign(_ attrs: [String: String]) -> String? {
+        let raw = styleValue(attrs["style"] ?? "", "text-align") ?? attrs["align"]
+        guard let value = raw?.trimmingCharacters(in: .whitespaces).lowercased() else { return nil }
+        return ["left", "center", "right"].contains(value) ? value : nil
     }
 
     private static func parseColwidth(_ attrs: [String: String]) -> [Int]? {

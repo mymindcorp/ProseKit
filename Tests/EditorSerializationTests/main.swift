@@ -10,6 +10,7 @@ let cellAttrs: [String: AttributeSpec] = [
     "colspan": AttributeSpec(default: .int(1)),
     "rowspan": AttributeSpec(default: .int(1)),
     "colwidth": AttributeSpec(default: .null),
+    "align": AttributeSpec(default: .null),
 ]
 
 /// The attributes of a list written tight — no blank lines between its items,
@@ -1933,11 +1934,10 @@ test("Markdown parses a pipe table") {
     }
 }
 
-test("Markdown reads a delimiter row's alignment, and keeps nothing of it") {
-    // The colons are accepted so the table is still a table; there is no
-    // attribute on the cells to record which way a column was aligned, so it
-    // is dropped rather than stored. Documented, not desired.
-    for delimiter in ["| :-- | --: |", "| :-: | :-: |", "| ---- | - |"] {
+test("Markdown accepts every length of delimiter row") {
+    // The dashes only have to be dashes; the colons are what carry meaning,
+    // and they are covered by the alignment tests above.
+    for delimiter in ["| --- | --- |", "| ---- | - |", "| - | ---------- |"] {
         let md = "| a | b |\n\(delimiter)\n| 1 | 2 |"
         try expectEqual(try MarkdownParser.parse(md, schema: schema), doc(twoByTwo()),
                         "input: \(delimiter)")
@@ -1999,6 +1999,70 @@ test("Markdown: lines that only look like a table stay a paragraph") {
         let d = try MarkdownParser.parse(md, schema: schema)
         try expect(d.child(0).type.name != "table", "input \(md) became a table")
     }
+}
+
+test("Markdown: a delimiter row's colons set each column's alignment") {
+    let d = try MarkdownParser.parse("| a | b | c | d |\n| :-- | :-: | --: | --- |\n| 1 | 2 | 3 | 4 |",
+                                     schema: schema)
+    let header = d.child(0).child(0), body = d.child(0).child(1)
+    try expectEqual(header.child(0).attrs["align"], .string("left"))
+    try expectEqual(header.child(1).attrs["align"], .string("center"))
+    try expectEqual(header.child(2).attrs["align"], .string("right"))
+    try expectEqual(header.child(3).attrs["align"], .null)
+    // The delimiter row speaks for the column, so the body carries it too.
+    try expectEqual(body.child(1).attrs["align"], .string("center"))
+    try expectEqual(body.child(3).attrs["align"], .null)
+}
+
+test("Markdown round-trip: an aligned table") {
+    for md in ["| a | b |\n| :-- | --: |\n| 1 | 2 |",
+               "| a | b | c |\n| :-: | --- | :-- |\n| 1 | 2 | 3 |",
+               // No colons at all stays no colons: `---` and `:--` render
+               // differently, so the absence is worth keeping.
+               "| a | b |\n| --- | --- |\n| 1 | 2 |"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(MarkdownSerializer.serialize(d), md, "input: \(md)")
+        try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d,
+                        "input: \(md)")
+    }
+}
+
+test("Markdown: a column whose cells disagree is written as HTML") {
+    // A delimiter row can only say one thing per column, so a table that says
+    // two falls back the way a colspan does.
+    let d = doc(node("table", [:], [
+        node("tableRow", [:], [node("tableHeader", ["align": .string("left")], [p("h")])]),
+        node("tableRow", [:], [node("tableCell", ["align": .string("right")], [p("x")])]),
+    ]))
+    let md = MarkdownSerializer.serialize(d)
+    try expect(md.hasPrefix("<table"), "expected an HTML fallback, got \(md)")
+    try expectEqual(try MarkdownParser.parse(md, schema: schema), d)
+}
+
+test("HTML round-trip: an aligned cell") {
+    let d = doc(node("table", [:], [
+        node("tableRow", [:], [
+            node("tableHeader", ["align": .string("center")], [p("a")]),
+            node("tableHeader", [:], [p("b")]),
+        ]),
+    ]))
+    let html = HTMLSerializer.serialize(d)
+    try expect(html.contains("style=\"text-align:center\""), "got: \(html)")
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+}
+
+test("HTML: a cell's alignment is read from either spelling") {
+    // GitHub writes the `align` attribute; we write `style`. Both parse.
+    for markup in ["<table><tr><td align=\"right\">x</td></tr></table>",
+                   "<table><tr><td style=\"text-align: right\">x</td></tr></table>",
+                   "<table><tr><td style=\"text-align:RIGHT\">x</td></tr></table>"] {
+        let d = try HTMLParser.parse(markup, schema: schema)
+        try expectEqual(d.child(0).child(0).child(0).attrs["align"], .string("right"),
+                        "input: \(markup)")
+    }
+    // Anything that isn't an alignment is left alone.
+    let junk = try HTMLParser.parse("<table><tr><td align=\"middle\">x</td></tr></table>", schema: schema)
+    try expectEqual(junk.child(0).child(0).child(0).attrs["align"], .null)
 }
 
 test("Markdown: a table the pipes can't hold is written as HTML") {

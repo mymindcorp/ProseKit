@@ -11,6 +11,14 @@ private let cellAttrs: [String: AttributeSpec] = [
     "colspan": AttributeSpec(default: .int(1)),
     "rowspan": AttributeSpec(default: .int(1)),
     "colwidth": AttributeSpec(default: .null),
+    // How the cell's text is set: "left", "center", "right", or null for
+    // whatever the reading direction gives. Per cell rather than per column
+    // because that is where the column commands already carry attributes —
+    // add/remove/move a column and this rides along with `colwidth` — and
+    // because HTML says it per cell too. A pipe table can only spell one
+    // alignment per column, so a column whose cells disagree is written as
+    // HTML instead, the same as a colspan or a stored width.
+    "align": AttributeSpec(default: .null),
 ]
 
 /// How a table behaves, beyond its schema.
