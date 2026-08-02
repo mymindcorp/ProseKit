@@ -1237,74 +1237,6 @@ public enum HTMLParser {
     /// still round-trips as its literal source rather than being mangled, and
     /// numeric references (`&#8217;` / `&#xe9;`) are handled by the scanner
     /// itself, so they need no entries here.
-    private static let namedEntities: [String: Character] = [
-        // Markup delimiters.
-        "lt": "<", "gt": ">", "quot": "\"", "apos": "'", "amp": "&",
-
-        // Spaces and invisible formatting.
-        "nbsp": "\u{00A0}", "ensp": "\u{2002}", "emsp": "\u{2003}", "thinsp": "\u{2009}",
-        "shy": "\u{00AD}", "zwnj": "\u{200C}", "zwj": "\u{200D}",
-
-        // Typographic punctuation — the bulk of what breaks in practice.
-        "mdash": "—", "ndash": "–", "hellip": "…",
-        "lsquo": "\u{2018}", "rsquo": "\u{2019}", "ldquo": "\u{201C}", "rdquo": "\u{201D}",
-        "sbquo": "\u{201A}", "bdquo": "\u{201E}", "lsaquo": "\u{2039}", "rsaquo": "\u{203A}",
-        "laquo": "«", "raquo": "»", "bull": "•", "middot": "·",
-        "dagger": "†", "Dagger": "‡", "prime": "′", "Prime": "″",
-        "iexcl": "¡", "iquest": "¿", "para": "¶", "sect": "§", "brvbar": "¦",
-
-        // Symbols, currency, and the handful of maths that shows up in prose.
-        "copy": "©", "reg": "®", "trade": "™", "deg": "°", "micro": "µ",
-        "plusmn": "±", "times": "×", "divide": "÷", "minus": "−",
-        "frac12": "½", "frac14": "¼", "frac34": "¾", "sup1": "¹", "sup2": "²", "sup3": "³",
-        "cent": "¢", "pound": "£", "yen": "¥", "euro": "€", "curren": "¤",
-        "infin": "∞", "ne": "≠", "le": "≤", "ge": "≥",
-        "larr": "←", "uarr": "↑", "rarr": "→", "darr": "↓", "harr": "↔",
-
-        // Mathematical and Greek symbols. Worth carrying because the editor has
-        // a math extension: formulas pasted as HTML arrive written this way.
-        // Greek lowercase.
-        "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "epsilon": "ε", "zeta": "ζ",
-        "eta": "η", "theta": "θ", "iota": "ι", "kappa": "κ", "lambda": "λ", "mu": "μ",
-        "nu": "ν", "xi": "ξ", "omicron": "ο", "pi": "π", "rho": "ρ", "sigmaf": "ς",
-        "sigma": "σ", "tau": "τ", "upsilon": "υ", "phi": "φ", "chi": "χ", "psi": "ψ",
-        "omega": "ω", "thetasym": "ϑ", "upsih": "ϒ", "piv": "ϖ",
-        // Greek uppercase.
-        "Alpha": "Α", "Beta": "Β", "Gamma": "Γ", "Delta": "Δ", "Epsilon": "Ε", "Zeta": "Ζ",
-        "Eta": "Η", "Theta": "Θ", "Iota": "Ι", "Kappa": "Κ", "Lambda": "Λ", "Mu": "Μ",
-        "Nu": "Ν", "Xi": "Ξ", "Omicron": "Ο", "Pi": "Π", "Rho": "Ρ", "Sigma": "Σ", "Tau": "Τ",
-        "Upsilon": "Υ", "Phi": "Φ", "Chi": "Χ", "Psi": "Ψ", "Omega": "Ω",
-        // Operators and relations.
-        "sum": "∑", "prod": "∏", "int": "∫", "part": "∂", "nabla": "∇", "radic": "√",
-        "lowast": "∗", "sdot": "⋅", "equiv": "≡", "cong": "≅", "asymp": "≈", "prop": "∝",
-        "sim": "∼", "there4": "∴", "ang": "∠", "perp": "⊥",
-        // Set theory and logic.
-        "isin": "∈", "notin": "∉", "ni": "∋", "sub": "⊂", "sup": "⊃", "sube": "⊆", "supe": "⊇",
-        "nsub": "⊄", "cap": "∩", "cup": "∪", "empty": "∅", "forall": "∀", "exist": "∃",
-        "and": "∧", "or": "∨", "not": "¬",
-        // Double arrows.
-        "lArr": "⇐", "uArr": "⇑", "rArr": "⇒", "dArr": "⇓", "hArr": "⇔",
-        // Technical and misc.
-        "alefsym": "ℵ", "weierp": "℘", "image": "ℑ", "real": "ℜ", "fnof": "ƒ", "oline": "‾",
-        "frasl": "⁄", "lceil": "⌈", "rceil": "⌉", "lfloor": "⌊", "rfloor": "⌋", "lang": "⟨",
-        "rang": "⟩", "loz": "◊", "spades": "♠", "clubs": "♣", "hearts": "♥", "diams": "♦",
-
-        // Accented Latin letters.
-        "aacute": "á", "agrave": "à", "acirc": "â", "auml": "ä", "atilde": "ã", "aring": "å",
-        "eacute": "é", "egrave": "è", "ecirc": "ê", "euml": "ë",
-        "iacute": "í", "igrave": "ì", "icirc": "î", "iuml": "ï",
-        "oacute": "ó", "ograve": "ò", "ocirc": "ô", "ouml": "ö", "otilde": "õ", "oslash": "ø",
-        "uacute": "ú", "ugrave": "ù", "ucirc": "û", "uuml": "ü",
-        "yacute": "ý", "yuml": "ÿ", "ccedil": "ç", "ntilde": "ñ",
-        "szlig": "ß", "aelig": "æ", "oelig": "œ", "thorn": "þ", "eth": "ð",
-        "Aacute": "Á", "Agrave": "À", "Acirc": "Â", "Auml": "Ä", "Atilde": "Ã", "Aring": "Å",
-        "Eacute": "É", "Egrave": "È", "Ecirc": "Ê", "Euml": "Ë",
-        "Iacute": "Í", "Igrave": "Ì", "Icirc": "Î", "Iuml": "Ï",
-        "Oacute": "Ó", "Ograve": "Ò", "Ocirc": "Ô", "Ouml": "Ö", "Otilde": "Õ", "Oslash": "Ø",
-        "Uacute": "Ú", "Ugrave": "Ù", "Ucirc": "Û", "Uuml": "Ü",
-        "Yacute": "Ý", "Ccedil": "Ç", "Ntilde": "Ñ",
-        "AElig": "Æ", "OElig": "Œ", "THORN": "Þ", "ETH": "Ð",
-    ]
 
     /// A numeric reference's character. Zero, a surrogate, and anything past the
     /// last code point are all errors that both HTML and CommonMark resolve to
@@ -1314,10 +1246,20 @@ public enum HTMLParser {
         return Character(scalar)
     }
 
-    /// How far to look for an entity's ";": the longest name we know, or enough
-    /// for a numeric reference, whichever is longer.
-    private static let entityWindow: Int = max(
-        (namedEntities.keys.map(\.count).max() ?? 0) + 1, 12)
+    /// How far to look for an entity's ";". A name is letters and digits (a
+    /// numeric reference adds a leading "#"), so the search stops at the first
+    /// character that can't be part of one — which is usually the very next one,
+    /// and never more than the longest name we know. An unbounded scan is
+    /// quadratic on "&"-dense text like a list of URLs.
+    private static let entityWindow: Int = max(longestEntityName + 1, 12)
+
+    /// Tested against the raw ASCII byte: `Character.isLetter` consults Unicode
+    /// properties, which costs more per character than the whole scan should.
+    private static func isEntityNameCharacter(_ c: Character, first: Bool) -> Bool {
+        guard let b = c.asciiValue else { return false }
+        if first, b == UInt8(ascii: "#") { return true }
+        return (b >= 48 && b <= 57) || ((b | 0x20) >= 97 && (b | 0x20) <= 122)
+    }
 
     static func decodeEntities(_ s: String) -> String {
         guard s.contains("&") else { return s }
@@ -1332,19 +1274,24 @@ public enum HTMLParser {
             guard s[i] == "&" else { out.append(s[i]); i = s.index(after: i); continue }
             let next = s.index(after: i)
             let windowEnd = s.index(next, offsetBy: entityWindow, limitedBy: s.endIndex) ?? s.endIndex
-            guard let semi = s[next..<windowEnd].firstIndex(of: ";")
+            var scan = next
+            while scan < windowEnd, isEntityNameCharacter(s[scan], first: scan == next) {
+                scan = s.index(after: scan)
+            }
+            guard scan < windowEnd, s[scan] == ";", scan > next
             else { out.append(s[i]); i = next; continue }
+            let semi = scan
             let name = s[next..<semi]
-            var decoded: Character?
+            var decoded: String?
             if let c = namedEntities[String(name)] {
                 decoded = c
             } else if name.hasPrefix("#x") || name.hasPrefix("#X") {
                 // CommonMark caps a reference at six hex digits, but this decoder
                 // also serves the HTML parser, where leading zeros are legal —
                 // so the value decides, not the digit count.
-                decoded = UInt32(name.dropFirst(2), radix: 16).map(scalarForReference)
+                decoded = UInt32(name.dropFirst(2), radix: 16).map(scalarForReference).map(String.init)
             } else if name.hasPrefix("#") {
-                decoded = UInt32(name.dropFirst()).map(scalarForReference)
+                decoded = UInt32(name.dropFirst()).map(scalarForReference).map(String.init)
             }
             if let decoded {
                 out.append(decoded)
