@@ -86,5 +86,16 @@ func registerBench() {
         print("\n  --- entity-dense prose, \(entities.count / 1024) KB of HTML ---"); fflush(stdout)
         try time("HTMLParser.parse (total)") { _ = try HTMLParser.parse(entities, schema: schema) }
         time("  of which: tokenize") { _ = HTMLParser.tokenCountForBenchmark(entities) }
+
+        // One mark spanning a long run of children that differ underneath it.
+        // The children can't merge into one text node, so writing this asks
+        // where the bold run ends once per child — which is how far the writer
+        // has to look ahead, and what made it quadratic.
+        var run = "<p><strong>"
+        for i in 0..<3000 { run += "w\(i) <em>x\(i)</em> " }
+        run += "</strong></p>"
+        let marked = try HTMLParser.parse(run, schema: schema)
+        print("\n  --- one mark over \(marked.child(0).childCount) children ---"); fflush(stdout)
+        time("HTMLSerializer.serialize") { _ = HTMLSerializer.serialize(marked) }
     }
 }
