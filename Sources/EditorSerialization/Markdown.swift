@@ -131,6 +131,17 @@ public enum MarkdownSerializer {
                 serializeBlocks((0..<c.childCount).map { c.child($0) }, indent: indent)
             } ?? ""
             return "<details\(open ? " open" : "")>\n<summary>\(summary)</summary>\n\n\(body)\n\n</details>"
+        case "footnoteDefinition":
+            // `[^label]: ` then the note. Blocks after the first are indented
+            // four columns, which is what keeps them part of the note rather
+            // than the document that follows it.
+            let label = node.attrs["label"]?.stringValue ?? ""
+            let blocks = (0..<node.childCount).map { serializeBlock(node.child($0), indent: indent) }
+            let body = blocks.joined(separator: "\n\n")
+            let lines = body.split(separator: "\n", omittingEmptySubsequences: false)
+            let head = lines.first.map(String.init) ?? ""
+            let rest = lines.dropFirst().map { $0.isEmpty ? "" : "    " + $0 }
+            return (["[^\(label)]: " + head] + rest).joined(separator: "\n")
         case "table":
             return serializeTable(node)
         default:
@@ -412,6 +423,8 @@ public enum MarkdownSerializer {
             let target = node.attrs["target"]?.stringValue ?? ""
             if let label = node.attrs["label"]?.stringValue { return "[[\(target)|\(label)]]" }
             return "[[\(target)]]"
+        case "footnoteReference":
+            return "[^\(node.attrs["label"]?.stringValue ?? "")]"
         case "inlineMath":
             // An empty formula has no spelling: "$$" opens display math, and no
             // dialect accepts "$$" as empty inline math. Emitting nothing beats
@@ -748,6 +761,45 @@ public enum MarkdownParser {
                     blocks.append(contentsOf: section)
                 }
                 continue
+            }
+            // A footnote's note: `[^label]:` and everything that belongs to it —
+            // the rest of that line, the blocks indented four columns under it,
+            // and a plain line straight after, which continues its paragraph the
+            // way a lazy line continues a quote's.
+            if let head = footnoteHead(trimmed), schema.nodes["footnoteDefinition"] != nil {
+                var body = [head.rest]
+                i += 1
+                while i < lines.count {
+                    let raw = lines[i]
+                    let t = raw.trimmingCharacters(in: .whitespaces)
+                    if t.isEmpty {
+                        // A blank line belongs to the note only if indented
+                        // content follows it.
+                        var j = i + 1
+                        while j < lines.count, lines[j].trimmingCharacters(in: .whitespaces).isEmpty { j += 1 }
+                        guard j < lines.count, indentWidth(lines[j]) >= 4 else { break }
+                        body.append(contentsOf: repeatElement("", count: j - i))
+                        i = j
+                        continue
+                    }
+                    if indentWidth(raw) >= 4 { body.append(String(raw.dropFirst(4))); i += 1; continue }
+                    guard body.last?.isEmpty == false, !startsBlock(t), footnoteHead(t) == nil
+                    else { break }
+                    body.append(t); i += 1
+                }
+                let inner = try parseNested(body.joined(separator: "\n"), schema: schema,
+                                            definitions: definitions)
+                var content = (0..<inner.childCount).map { inner.child($0) }
+                // A note with nothing in it is still a note; `block+` needs a
+                // block to hold, so it gets the empty paragraph it would have
+                // been typed into.
+                if content.isEmpty, let empty = try? schema.node("paragraph") { content = [empty] }
+                if let definition = try? schema.node("footnoteDefinition",
+                                                     ["label": .string(head.label)],
+                                                     content: Fragment.from(content)) {
+                    blocks.append(definition)
+                    continue
+                }
             }
             // A `<table>` HTML block — what the serializer writes for a table
             // the pipes can't hold, and what a document pasted from the web
@@ -1141,7 +1193,11 @@ public enum MarkdownParser {
                 return ([line] + lines[(i + 1)...(i + extra)]
                     .map { $0.trimmingCharacters(in: .whitespaces) }).joined(separator: " ")
             }
-            guard let head, let (label, rest) = parseDefinitionHead(head) else {
+            guard let head, let (label, rest) = parseDefinitionHead(head),
+                  // `[^1]: …` is a footnote, not a link: the labels share a
+                  // syntax, and taking this one would delete the note from the
+                  // document before the block parser ever saw it.
+                  !label.hasPrefix("^") else {
                 remaining.append(line); i += 1; continue
             }
             let labelConsumed = labelExtra ?? 0
@@ -1395,6 +1451,7 @@ public enum MarkdownParser {
             || trimmed.lowercased().hasPrefix("<details")
             || trimmed.lowercased().hasPrefix("</details>")
             || trimmed.lowercased().hasPrefix("<table")
+            || footnoteHead(trimmed) != nil
     }
 
     /// Whether a list marker here would end the paragraph above it. Two markers
@@ -1595,6 +1652,23 @@ public enum MarkdownParser {
         let fitted = fitContent(children, into: figureType, schema: schema)
         if let figure = try? figureType.create([:], content: Fragment.from(fitted)) { return figure }
         return figureType.createAndFill([:], content: Fragment.from(fitted))
+    }
+
+    /// A footnote's opening: `[^label]:` and the rest of that line.
+    ///
+    /// A label may not contain whitespace, which keeps it apart from a link
+    /// definition's label and matches how footnotes are written in practice.
+    static func footnoteHead(_ line: String) -> (label: String, rest: String)? {
+        guard line.hasPrefix("[^") else { return nil }
+        let afterBracket = line.dropFirst(2)
+        guard let close = afterBracket.firstIndex(of: "]") else { return nil }
+        let label = String(afterBracket[afterBracket.startIndex..<close])
+        guard !label.isEmpty, !label.contains(where: { $0.isWhitespace }) else { return nil }
+        var rest = afterBracket[afterBracket.index(after: close)...]
+        guard rest.hasPrefix(":") else { return nil }
+        rest = rest.dropFirst()
+        if rest.hasPrefix(" ") { rest = rest.dropFirst() }
+        return (label, String(rest))
     }
 
     /// A checkbox at the head of a list item, as GitHub writes them. Returns the
@@ -1950,6 +2024,26 @@ public enum MarkdownParser {
                         }
                         i = close.end; continue
                     }
+                }
+            }
+            // A footnote reference: `[^label]`.
+            //
+            // GitHub only makes one of these when a matching note exists, and
+            // leaves the brackets as text otherwise. Here the node is what
+            // matters: a reference whose note has been deleted still has to
+            // write itself back as `[^label]` and read back the same, which
+            // GitHub's rule would break. Only a schema carrying the node is
+            // affected, and `\[^1]` is still literal text.
+            if c == UInt8(ascii: "["), i + 1 < chars.count, chars[i + 1] == UInt8(ascii: "^"),
+               let type = schema.nodes["footnoteReference"],
+               let close = findByte(chars, i + 2, UInt8(ascii: "]")), close > i + 2 {
+                let label = slice(chars, (i + 2)..<close)
+                if !label.contains(where: { $0.isWhitespace || $0 == "]" }),
+                   let reference = try? type.create(["label": .string(label)]) {
+                    flush()
+                    appendNode(reference)
+                    i = close + 1
+                    continue
                 }
             }
             // Wiki link [[...]]

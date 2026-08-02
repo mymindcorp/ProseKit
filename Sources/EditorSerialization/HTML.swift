@@ -31,6 +31,7 @@ public struct HTMLConfig: Sendable {
             "figure": "figure", "figcaption": "figcaption",
             "inlineMath": "span", "blockMath": "div",
             "wikiLink": "a", "mention": "span",
+            "footnoteReference": "sup", "footnoteDefinition": "div",
         ]
         let markTags: [String: String] = [
             "bold": "strong", "italic": "em", "strike": "s", "underline": "u",
@@ -44,6 +45,7 @@ public struct HTMLConfig: Sendable {
         // detailsContent is a data-typed <div>, parsed as part of its <details>.
         // The math nodes are data-typed span/div, recognized by `data-type`.
         let noReverse: Set<String> = ["wikiLink", "mention", "taskList", "taskItem", "detailsContent",
+                                      "footnoteReference", "footnoteDefinition",
                                       "inlineMath", "blockMath"]
         for (n, t) in nodeTags where !noReverse.contains(n) { tagToNode[t] = n }
         for h in 1...6 { tagToNode["h\(h)"] = "heading" }
@@ -338,6 +340,21 @@ public enum HTMLSerializer {
             out += "\">@"
             escape(node.attrs["label"]?.stringValue ?? id, into: &out)
             out += "</span>"
+        case "footnoteReference":
+            // The label identifies the note; the number shown is the reference's
+            // place in the document, which the caller knows and this doesn't —
+            // so the label is what goes in the text as well as the attribute.
+            let label = node.attrs["label"]?.stringValue ?? ""
+            out += "<sup data-type=\"footnoteReference\" data-label=\""
+            escapeAttribute(label, into: &out)
+            out += "\">"
+            escape(label, into: &out)
+            out += "</sup>"
+        case "footnoteDefinition":
+            var attributes = " data-type=\"footnoteDefinition\" data-label=\""
+            escapeAttribute(node.attrs["label"]?.stringValue ?? "", into: &attributes)
+            attributes += "\""
+            element("div", attributes)
         case "taskList":
             element("ul", " data-type=\"taskList\"")
         case "taskItem":
@@ -811,6 +828,19 @@ public enum HTMLParser {
                 }
                 // <head>/<style>/<script>/… — drop entirely.
                 if skippedWrappers.contains(tag) { i = matchingClose(tokens, i, tag) + 1; continue }
+                // A footnote's note, before the generic <div> branch flattens it
+                // and loses which note the blocks belonged to.
+                if tag == "div", attrs["data-type"] == "footnoteDefinition",
+                   let type = schema.nodes["footnoteDefinition"] {
+                    let e = matchingClose(tokens, i, tag)
+                    var blocks = parseBlocks(tokens[(i + 1)..<e], schema, config)
+                    if blocks.isEmpty, let para = try? schema.node("paragraph") { blocks = [para] }
+                    if let definition = try? type.create(["label": .string(attrs["data-label"] ?? "")],
+                                                         content: Fragment.from(blocks)) {
+                        result.append(definition)
+                        i = e + 1; continue
+                    }
+                }
                 // <div>: a generic block container. With block children, flatten it;
                 // otherwise treat its inline content as a paragraph (preserving marks).
                 if tag == "div" {
@@ -1053,6 +1083,16 @@ public enum HTMLParser {
                 // MathML beside it.
                 if attrs["aria-hidden"] == "true" {
                     i = matchingClose(tokens, i, tag) + 1; continue
+                }
+                if tag == "sup", attrs["data-type"] == "footnoteReference",
+                   let type = schema.nodes["footnoteReference"] {
+                    let close = matchingClose(tokens, i, tag)
+                    // The label is the identifier; the text is only the number
+                    // a reader sees, so it is the attribute that carries it.
+                    let label = attrs["data-label"] ?? innerText(tokens, i + 1, close)
+                    if let reference = try? type.create(["label": .string(label)]) {
+                        result.append(reference); i = close + 1; continue
+                    }
                 }
                 if tag == "span", let id = attrs["data-mention"], schema.nodes["mention"] != nil {
                     let close = matchingClose(tokens, i, tag)

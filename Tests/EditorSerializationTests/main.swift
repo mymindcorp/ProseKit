@@ -43,6 +43,13 @@ let schema: Schema = {
         ("figcaption", NodeSpec(content: "inline*", selectable: false, defining: true, isolating: true)),
         ("inlineMath", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["latex": AttributeSpec(default: .string(""))], leafText: { "$" + ($0.attrs["latex"]?.stringValue ?? "") + "$" })),
         ("blockMath", NodeSpec(group: "block", atom: true, attrs: ["latex": AttributeSpec(default: .string(""))], leafText: { "$$" + ($0.attrs["latex"]?.stringValue ?? "") + "$$" })),
+        ("footnoteReference", NodeSpec(group: "inline", inline: true, atom: true,
+                                       attrs: ["label": AttributeSpec(default: .string(""))],
+                                       selectable: true,
+                                       leafText: { n in "[^" + (n.attrs["label"]?.stringValue ?? "") + "]" })),
+        ("footnoteDefinition", NodeSpec(content: "block+", group: "block",
+                                        attrs: ["label": AttributeSpec(default: .string(""))],
+                                        defining: true, isolating: true)),
         ("table", NodeSpec(content: "tableRow+", group: "block", isolating: true)),
         ("tableRow", NodeSpec(content: "(tableCell | tableHeader)+")),
         ("tableCell", NodeSpec(content: "block+", attrs: cellAttrs, isolating: true)),
@@ -670,6 +677,8 @@ private let htmlProducingNode: [String: String] = [
     "orderedList": "<ol><li>x</li></ol>",
     "listItem": "<ul><li>x</li></ul>",
     "taskList": "<ul data-type=\"taskList\"><li data-type=\"taskItem\" data-checked=\"true\">x</li></ul>",
+    "footnoteReference": "<p>x<sup data-type=\"footnoteReference\" data-label=\"1\">1</sup></p>",
+    "footnoteDefinition": "<div data-type=\"footnoteDefinition\" data-label=\"1\"><p>note</p></div>",
     "taskItem": "<ul data-type=\"taskList\"><li data-type=\"taskItem\" data-checked=\"true\">x</li></ul>",
     "details": "<details open><summary>s</summary><p>b</p></details>",
     "detailsSummary": "<details><summary>s</summary><p>b</p></details>",
@@ -2039,6 +2048,99 @@ test("Markdown tables are inert in a schema without the nodes") {
     let d = try MarkdownParser.parse("| a | b |\n| --- | --- |\n| 1 | 2 |", schema: plain)
     try expectEqual(d.child(0).type.name, "paragraph")
     try expectEqual(d.child(0).textContent, "| a | b | | --- | --- | | 1 | 2 |")
+}
+
+// MARK: - Footnotes
+
+func footnoteRef(_ label: String) -> Node { node("footnoteReference", ["label": .string(label)], []) }
+func footnoteDef(_ label: String, _ c: Node...) -> Node {
+    node("footnoteDefinition", ["label": .string(label)], c)
+}
+
+test("Markdown parses a footnote and its note") {
+    let d = try MarkdownParser.parse("text[^1] more\n\n[^1]: the note", schema: schema)
+    try expectEqual(d, doc(p(t("text"), footnoteRef("1"), t(" more")), footnoteDef("1", p("the note"))))
+}
+
+test("Markdown: a label is an identifier, not a number") {
+    // `[^note]` keeps its spelling; what a reader sees as "1" is worked out
+    // from the order, which is the renderer's business, not the document's.
+    let d = try MarkdownParser.parse("a[^note]\n\n[^note]: named", schema: schema)
+    try expectEqual(d.child(0).child(1).attrs["label"], .string("note"))
+    try expectEqual(MarkdownSerializer.serialize(d), "a[^note]\n\n[^note]: named")
+}
+
+test("Markdown round-trip: a footnote") {
+    for md in [
+        "text[^1] more\n\n[^1]: the note",
+        "a[^1]\n\n[^1]: with *marks* and a [link](/u)",
+        // A note of several blocks, indented four columns under its label.
+        "a[^1]\n\n[^1]: first para\n\n    second para",
+        // The note may come before the text that refers to it.
+        "[^1]: note first\n\ntext[^1]",
+        // Two notes, and one label used twice.
+        "a[^1] b[^2] c[^1]\n\n[^1]: one\n\n[^2]: two",
+    ] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(MarkdownSerializer.serialize(d), md, "input: \(md)")
+        try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d,
+                        "input: \(md)")
+    }
+}
+
+test("Markdown: a note's lazy continuation line stays in the note") {
+    let d = try MarkdownParser.parse("a[^1]\n\n[^1]: lazy\ncontinued", schema: schema)
+    try expectEqual(d.child(1).type.name, "footnoteDefinition")
+    try expectEqual(d.child(1).textContent, "lazy continued")
+}
+
+test("Markdown: a reference with no note is still a reference") {
+    // GitHub leaves the brackets as text when nothing defines them. Here the
+    // node has to survive: deleting a note mustn't rewrite the text around it.
+    let d = try MarkdownParser.parse("dangling[^9] reference", schema: schema)
+    try expectEqual(d, doc(p(t("dangling"), footnoteRef("9"), t(" reference"))))
+    try expectEqual(MarkdownSerializer.serialize(d), "dangling[^9] reference")
+}
+
+test("Markdown: an escaped bracket is not a footnote") {
+    let d = try MarkdownParser.parse("escaped \\[^1] stays text", schema: schema)
+    try expectEqual(d.child(0).childCount, 1)
+    try expectEqual(d.child(0).textContent, "escaped [^1] stays text")
+}
+
+test("Markdown: a note's label is not read as a link definition") {
+    // `[^1]: /url` is shaped exactly like one, and taking it as a link would
+    // have deleted the note from the document before it could be parsed.
+    let d = try MarkdownParser.parse("a[^1]\n\n[^1]: /url", schema: schema)
+    try expectEqual(d.child(1).type.name, "footnoteDefinition")
+    try expectEqual(d.child(1).textContent, "/url")
+}
+
+test("Markdown: footnotes are inert in a schema without the nodes") {
+    let plain = try Schema(nodes: [
+        ("doc", NodeSpec(content: "block+")),
+        ("paragraph", NodeSpec(content: "inline*", group: "block")),
+        ("text", NodeSpec(group: "inline")),
+    ], marks: [], topNode: "doc")
+    let d = try MarkdownParser.parse("text[^1]\n\n[^1]: the note", schema: plain)
+    try expect(d.child(0).childCount == 1, "expected the reference to stay text")
+    try expectEqual(d.child(0).textContent, "text[^1]")
+    try expectEqual(d.child(1).textContent, "[^1]: the note")
+}
+
+test("HTML round-trip: a footnote") {
+    let d = doc(p(t("text"), footnoteRef("1")), footnoteDef("1", p("the note")))
+    let html = HTMLSerializer.serialize(d)
+    try expect(html.contains("<sup data-type=\"footnoteReference\" data-label=\"1\">"), "got: \(html)")
+    try expect(html.contains("<div data-type=\"footnoteDefinition\" data-label=\"1\">"), "got: \(html)")
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+}
+
+test("HTML: a footnote reference reads its label from the attribute") {
+    // The text is the number a reader sees, which is not the identifier.
+    let d = try HTMLParser.parse(
+        "<p>x<sup data-type=\"footnoteReference\" data-label=\"note\">3</sup></p>", schema: schema)
+    try expectEqual(d.child(0).child(1).attrs["label"], .string("note"))
 }
 
 test("Markdown round-trip: a link and image title") {
