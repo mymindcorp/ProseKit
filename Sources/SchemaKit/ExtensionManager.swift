@@ -1,8 +1,8 @@
-import DocumentModel
-import EditorStateKit
-import EditorCommands
+public import DocumentModel
+public import EditorStateKit
+public import EditorCommands
 import EditorKeymap
-import EditorInputRules
+public import EditorInputRules
 
 /// Resolves a list of extensions into a compiled `Schema`, a merged set of
 /// commands, and the ProseMirror plugins (input rules, keymap, and any

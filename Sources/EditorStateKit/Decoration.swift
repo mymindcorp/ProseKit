@@ -1,5 +1,5 @@
 import DocumentModel
-import DocumentTransform
+public import DocumentTransform
 
 /// A visual decoration over a document range that does not change the document
 /// itself — used for search highlights, spell-check underlines, collaboration

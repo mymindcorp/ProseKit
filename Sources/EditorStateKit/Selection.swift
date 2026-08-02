@@ -1,5 +1,5 @@
-import DocumentModel
-import DocumentTransform
+public import DocumentModel
+public import DocumentTransform
 
 /// Represents a selected range in a document.
 public struct SelectionRange {

@@ -1,5 +1,5 @@
-import DocumentModel
-import DocumentTransform
+public import DocumentModel
+public import DocumentTransform
 
 /// An editing transaction: a `Transform` that also tracks the selection,
 /// stored marks, scroll intent, and arbitrary metadata. Applying a transaction
@@ -132,7 +132,7 @@ public final class Transaction: Transform {
     /// Replace the given range (or the selection) with text.
     @discardableResult
     public func insertText(_ text: String, _ from: Int? = nil, _ to: Int? = nil) throws -> Transaction {
-        let schema = doc.type.schema!
+        let schema = unsafe doc.type.schema!
         if from == nil {
             if text.isEmpty { return deleteSelection() }
             return replaceSelectionWith(schema.text(text), inheritMarks: true)

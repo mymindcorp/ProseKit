@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import EditorMath
 import TestHarness

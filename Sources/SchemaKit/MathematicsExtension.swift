@@ -1,9 +1,9 @@
 import Foundation
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
-import EditorStateKit
-import EditorCommands
-import EditorInputRules
+public import EditorStateKit
+public import EditorCommands
+public import EditorInputRules
 
 // LaTeX math, matching Tiptap's Mathematics extension: two atom nodes — an
 // `inlineMath` that sits in a line of text and a `blockMath` that owns its own

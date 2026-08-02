@@ -1,4 +1,4 @@
-import DocumentModel
+public import DocumentModel
 
 // A Swift port of prosemirror-tables' tablemap.ts — a descriptive structure of a
 // table node that accounts for col/row spans. Positions are table-relative (i.e.

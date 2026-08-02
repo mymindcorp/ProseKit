@@ -1,8 +1,9 @@
 #if canImport(UIKit)
-import UIKit
+public import UIKit
 import DocumentModel
 import EditorStateKit
 import SchemaKit
+import DocumentTransform
 
 // `UITextInput` conformance: lets the system drive text input the native way —
 // IME / marked-text composition (CJK, accents), dictation, autocorrect, and the

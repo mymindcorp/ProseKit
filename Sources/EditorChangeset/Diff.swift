@@ -1,4 +1,4 @@
-import DocumentModel
+public import DocumentModel
 
 // A port of prosemirror-changeset's diff.ts: document tokenization and Myers'
 // diff over token streams. Tokens are per document POSITION, which in this

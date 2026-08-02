@@ -1,8 +1,8 @@
 import Foundation
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
-import EditorStateKit
-import EditorCommands
+public import EditorStateKit
+public import EditorCommands
 import EditorHistory
 import EditorKeymap
 import EditorSerialization

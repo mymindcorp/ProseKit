@@ -130,7 +130,7 @@ final class TextBlockLayoutCache {
     }
 
     private static func key(_ node: Node, _ width: CGFloat) -> Key {
-        let buffer = node.content.content.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
+        let buffer = unsafe node.content.content.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
         return Key(type: ObjectIdentifier(node.type), attrs: node.attrs, marks: node.marks,
                    buffer: buffer, width: width)
     }
@@ -923,7 +923,7 @@ final class DocumentLayout {
             if br.location != NSNotFound { count = br.location - lineStart + 1 }
             let ctLine = CTTypesetterCreateLine(typesetter, CFRangeMake(lineStart, count))
             var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
-            CTLineGetTypographicBounds(ctLine, &ascent, &descent, &leading)
+            unsafe CTLineGetTypographicBounds(ctLine, &ascent, &descent, &leading)
             let lineHeight = ascent + descent + leading + theme.lineSpacing
             // Lines are placed by hand, so alignment has to be applied here:
             // flush 0.5 centres, 1 pushes to the trailing edge.
@@ -1439,13 +1439,13 @@ private final class AtomRunBox {
 /// the typesetter lays out around an inline atom it can't measure itself.
 private func makeBoxRunDelegate(width: CGFloat, ascent: CGFloat, descent: CGFloat) -> CTRunDelegate {
     let box = AtomRunBox(width: width, ascent: ascent, descent: descent)
-    var callbacks = CTRunDelegateCallbacks(
+    var callbacks = unsafe CTRunDelegateCallbacks(
         version: kCTRunDelegateCurrentVersion,
-        dealloc: { refCon in Unmanaged<AtomRunBox>.fromOpaque(refCon).release() },
-        getAscent: { refCon in Unmanaged<AtomRunBox>.fromOpaque(refCon).takeUnretainedValue().ascent },
-        getDescent: { refCon in Unmanaged<AtomRunBox>.fromOpaque(refCon).takeUnretainedValue().descent },
-        getWidth: { refCon in Unmanaged<AtomRunBox>.fromOpaque(refCon).takeUnretainedValue().width })
-    return CTRunDelegateCreate(&callbacks, Unmanaged.passRetained(box).toOpaque())!
+        dealloc: { refCon in unsafe Unmanaged<AtomRunBox>.fromOpaque(refCon).release() },
+        getAscent: { refCon in unsafe Unmanaged<AtomRunBox>.fromOpaque(refCon).takeUnretainedValue().ascent },
+        getDescent: { refCon in unsafe Unmanaged<AtomRunBox>.fromOpaque(refCon).takeUnretainedValue().descent },
+        getWidth: { refCon in unsafe Unmanaged<AtomRunBox>.fromOpaque(refCon).takeUnretainedValue().width })
+    return unsafe CTRunDelegateCreate(&callbacks, Unmanaged.passRetained(box).toOpaque())!
 }
 
 /// An inline image hangs from the baseline, so it reserves height above it only.

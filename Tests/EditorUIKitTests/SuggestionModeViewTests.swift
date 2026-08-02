@@ -3,6 +3,7 @@ import XCTest
 import DocumentModel
 import EditorStateKit
 import SchemaKit
+import DocumentTransform
 @testable import EditorUIKit
 
 @MainActor
@@ -26,7 +27,7 @@ final class SuggestionModeViewTests: XCTestCase {
         guard let cg = image.cgImage else { return false }
         let width = cg.width, height = cg.height
         var data = [UInt8](repeating: 0, count: width * height * 4)
-        guard let ctx = CGContext(data: &data, width: width, height: height, bitsPerComponent: 8,
+        guard let ctx = unsafe CGContext(data: &data, width: width, height: height, bitsPerComponent: 8,
                                   bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
@@ -67,7 +68,7 @@ final class SuggestionModeViewTests: XCTestCase {
 
     private func rgb(_ color: UIColor) -> (UInt8, UInt8, UInt8) {
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        unsafe color.getRed(&r, green: &g, blue: &b, alpha: &a)
         return (UInt8(r * 255), UInt8(g * 255), UInt8(b * 255))
     }
     private func near(_ a: UInt8, _ b: UInt8, _ tol: Int = 14) -> Bool { abs(Int(a) - Int(b)) <= tol }

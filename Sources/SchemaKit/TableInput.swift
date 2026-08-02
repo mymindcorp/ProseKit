@@ -1,6 +1,6 @@
 import DocumentModel
 import EditorStateKit
-import EditorCommands
+public import EditorCommands
 
 // Keyboard cell navigation/selection, ported from prosemirror-tables' input.ts.
 // ProseMirror gates cell-exit on `view.endOfTextblock`; with no view here we

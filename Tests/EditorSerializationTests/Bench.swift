@@ -10,8 +10,8 @@ private func time(_ label: String, _ runs: Int = 5, _ body: () throws -> Void) r
         try body()
         best = min(best, Date().timeIntervalSince(start))
     }
-    print(String(format: "  %-46s %8.1f ms", (label as NSString).utf8String!, best * 1000))
-    fflush(stdout)
+    unsafe print(String(format: "  %-46s %8.1f ms", (label as NSString).utf8String!, best * 1000))
+    unsafe fflush(stdout)
 }
 
 /// Timings for the serialization paths, off by default so CI output stays quiet:
@@ -41,7 +41,7 @@ func registerBench() {
 
         for n in [200, 1000] {
             let html = article(n)
-            print("\n  --- \(n) paragraphs, \(html.count / 1024) KB of HTML ---"); fflush(stdout)
+            print("\n  --- \(n) paragraphs, \(html.count / 1024) KB of HTML ---"); unsafe fflush(stdout)
             var parsed: Node!
             try time("HTMLParser.parse (total)") { parsed = try HTMLParser.parse(html, schema: schema) }
             time("  of which: tokenize") { _ = HTMLParser.tokenCountForBenchmark(html) }
@@ -83,7 +83,7 @@ func registerBench() {
             entities += "<p>It&rsquo;s a &ldquo;test&rdquo; &mdash; number \(i) &amp; more&nbsp;text "
             entities += "with &eacute;, &copy;, &#8212; and &#x2019; in it.</p>"
         }
-        print("\n  --- entity-dense prose, \(entities.count / 1024) KB of HTML ---"); fflush(stdout)
+        print("\n  --- entity-dense prose, \(entities.count / 1024) KB of HTML ---"); unsafe fflush(stdout)
         try time("HTMLParser.parse (total)") { _ = try HTMLParser.parse(entities, schema: schema) }
         time("  of which: tokenize") { _ = HTMLParser.tokenCountForBenchmark(entities) }
 
@@ -95,7 +95,7 @@ func registerBench() {
         for i in 0..<3000 { run += "w\(i) <em>x\(i)</em> " }
         run += "</strong></p>"
         let marked = try HTMLParser.parse(run, schema: schema)
-        print("\n  --- one mark over \(marked.child(0).childCount) children ---"); fflush(stdout)
+        print("\n  --- one mark over \(marked.child(0).childCount) children ---"); unsafe fflush(stdout)
         time("HTMLSerializer.serialize") { _ = HTMLSerializer.serialize(marked) }
     }
 }

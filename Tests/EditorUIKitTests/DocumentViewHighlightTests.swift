@@ -35,7 +35,7 @@ final class DocumentViewHighlightTests: XCTestCase {
     private func colors(_ view: DocumentView) throws -> Set<String> {
         var found: Set<String> = []
         for block in try XCTUnwrap(view.ensureLayout()).blocks {
-            block.attributed.enumerateAttribute(
+            unsafe block.attributed.enumerateAttribute(
                 .foregroundColor, in: NSRange(location: 0, length: block.attributed.length)
             ) { value, _, _ in
                 if let color = value as? UIColor { found.insert(color.description) }

@@ -1,7 +1,9 @@
-import DocumentModel
-import EditorStateKit
-import EditorCommands
-import EditorInputRules
+import Foundation
+public import DocumentModel
+public import EditorStateKit
+public import EditorCommands
+public import EditorInputRules
+import DocumentTransform
 
 // The basic StarterKit extensions, using Tiptap node/mark names.
 

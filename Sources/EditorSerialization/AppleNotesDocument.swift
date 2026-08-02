@@ -1,5 +1,5 @@
-import Foundation
-import DocumentModel
+public import Foundation
+public import DocumentModel
 
 // Full-document conversion of Apple Notes' private pasteboard proto: note_text
 // plus styled attribute runs → a ProseMirror doc (headings, paragraphs, bullet/

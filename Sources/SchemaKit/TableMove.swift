@@ -1,4 +1,4 @@
-import DocumentModel
+public import DocumentModel
 
 // Row/column reordering helpers, ported from prosemirror-tables' utils
 // (transpose / convert / move-row-in-array-of-rows). Pure data transforms over a

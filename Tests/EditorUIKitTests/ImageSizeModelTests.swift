@@ -3,6 +3,7 @@ import XCTest
 import UIKit
 import DocumentModel
 import SchemaKit
+import EditorSerialization
 @testable import EditorUIKit
 
 /// An image's display size: `width` and `height` in points, both optional.

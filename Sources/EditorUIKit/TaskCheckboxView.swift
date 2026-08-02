@@ -1,5 +1,5 @@
 #if canImport(UIKit)
-import UIKit
+public import UIKit
 
 /// The contract for a task-item checkbox view. The editor positions and
 /// recycles these as task items scroll into view, sets `isChecked` to reflect
@@ -109,7 +109,7 @@ public final class DefaultTaskCheckboxView: UIView, TaskCheckboxView {
         // Optimistic check-on animation; uncheck is instant (system behavior).
         // The authoritative state arrives via `isChecked` once the editor
         // commits the toggle.
-        if !isChecked, !UIAccessibility.isReduceMotionEnabled { playCheckOn() }
+        if !isChecked, unsafe !UIAccessibility.isReduceMotionEnabled { playCheckOn() }
         onToggle?()
     }
 

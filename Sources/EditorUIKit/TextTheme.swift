@@ -1,6 +1,6 @@
 #if canImport(UIKit)
-import UIKit
-import DocumentModel
+public import UIKit
+public import DocumentModel
 
 extension UIColor {
     /// Create a color from a `#RRGGBB` (or `#RRGGBBAA`) hex string.

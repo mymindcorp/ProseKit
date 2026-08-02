@@ -1,6 +1,6 @@
 import DocumentModel
 import DocumentTransform
-import EditorStateKit
+public import EditorStateKit
 
 /// Contributes the search/highlight plugin (EditorStateKit's prosemirror-search
 /// port) to an editor, and a Tiptap-flavored facade over its query state and
