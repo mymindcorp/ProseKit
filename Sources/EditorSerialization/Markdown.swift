@@ -131,9 +131,65 @@ public enum MarkdownSerializer {
                 serializeBlocks((0..<c.childCount).map { c.child($0) }, indent: indent)
             } ?? ""
             return "<details\(open ? " open" : "")>\n<summary>\(summary)</summary>\n\n\(body)\n\n</details>"
+        case "table":
+            return serializeTable(node)
         default:
             return serializeInline(node.content)
         }
+    }
+
+    /// A table as a GitHub pipe table, or as HTML when the pipes can't hold it.
+    ///
+    /// A pipe table is a rectangle of single-line cells under a header row: it
+    /// has no way to spell a `colspan`, a cell holding two paragraphs, or a
+    /// stored column width. A table needing any of those is written as the HTML
+    /// block the parser reads back — the same fallback `details` uses — because
+    /// the alternative is flattening a structure the document really has.
+    static func serializeTable(_ node: Node) -> String {
+        guard let rows = pipeTableRows(node), let columns = rows.first?.count else {
+            return HTMLSerializer.serialize(fragment: Fragment.from([node]))
+        }
+        func line(_ cells: [String]) -> String {
+            "|" + cells.map { " \($0) " }.joined(separator: "|") + "|"
+        }
+        var out = [line(rows[0]), line(Array(repeating: "---", count: columns))]
+        out.append(contentsOf: rows.dropFirst().map(line))
+        return out.joined(separator: "\n")
+    }
+
+    /// The table's cells as pipe-table text, or nil if the shape doesn't fit:
+    /// a header row and only a header row, every row the same width, one
+    /// paragraph to a cell, no spans and no stored widths.
+    private static func pipeTableRows(_ table: Node) -> [[String]]? {
+        var rows: [[String]] = []
+        for r in 0..<table.childCount {
+            let row = table.child(r)
+            guard row.type.name == "tableRow", row.childCount > 0 else { return nil }
+            var cells: [String] = []
+            for c in 0..<row.childCount {
+                let cell = row.child(c)
+                // The first row is the header and no other row may be one.
+                guard (cell.type.name == "tableHeader") == (r == 0) else { return nil }
+                guard cell.attrs["colspan"]?.intValue ?? 1 == 1,
+                      cell.attrs["rowspan"]?.intValue ?? 1 == 1,
+                      cell.attrs["colwidth"]?.isNull ?? true else { return nil }
+                // An empty cell is a cell; more than one block in one isn't
+                // something a row of pipes can say.
+                guard cell.childCount <= 1 else { return nil }
+                guard let block = cell.childCount == 1 ? cell.child(0) : nil else {
+                    cells.append(""); continue
+                }
+                guard block.type.name == "paragraph" else { return nil }
+                let text = serializeInline(block.content)
+                // A hard break inside a cell writes as a newline, which would
+                // end the row.
+                guard !text.contains("\n") else { return nil }
+                cells.append(text.replacingOccurrences(of: "|", with: "\\|"))
+            }
+            guard cells.count == (rows.first?.count ?? cells.count) else { return nil }
+            rows.append(cells)
+        }
+        return rows.isEmpty ? nil : rows
     }
 
     /// Escape a leading `#`/`>`/`-`/`*`/`+`/`1.` so a paragraph that happens to
@@ -693,6 +749,48 @@ public enum MarkdownParser {
                 }
                 continue
             }
+            // A `<table>` HTML block — what the serializer writes for a table
+            // the pipes can't hold, and what a document pasted from the web
+            // carries. Handed to the HTML parser, which already builds the
+            // whole grid, spans and all.
+            if trimmed.lowercased().hasPrefix("<table"), schema.nodes["table"] != nil {
+                var html: [String] = []
+                while i < lines.count {
+                    html.append(lines[i])
+                    let closed = lines[i].lowercased().contains("</table>")
+                    i += 1
+                    if closed { break }
+                }
+                if let parsed = try? HTMLParser.parse(html.joined(separator: "\n"), schema: schema) {
+                    blocks.append(contentsOf: (0..<parsed.childCount).map { parsed.child($0) })
+                }
+                continue
+            }
+            // A GitHub pipe table: a header row, the delimiter row under it,
+            // then a body that runs to the first blank line or new block.
+            if startsPipeTable(lines, i, schema) {
+                let header = pipeCells(lines[i])
+                var rows: [[String]] = [header]
+                i += 2
+                while i < lines.count {
+                    let t = lines[i].trimmingCharacters(in: .whitespaces)
+                    guard !t.isEmpty, t.contains("|"), !startsBlock(t) else { break }
+                    // A short row is padded and a long one truncated, which is
+                    // what the header row promised the width would be.
+                    var cells = pipeCells(t)
+                    if cells.count > header.count { cells = Array(cells.prefix(header.count)) }
+                    while cells.count < header.count { cells.append("") }
+                    rows.append(cells)
+                    i += 1
+                }
+                if let table = makePipeTable(rows, schema: schema, definitions: definitions) {
+                    blocks.append(table)
+                    continue
+                }
+                // Without the nodes to build it, the lines are ordinary text;
+                // fall through so they parse as the paragraph they look like.
+                i -= rows.count + 1
+            }
             // Horizontal rule. Checked before lists: "- - -" and "* * *" are
             // thematic breaks, not one-item lists.
             if isThematicBreak(trimmed) {
@@ -795,6 +893,9 @@ public enum MarkdownParser {
                 // paragraph — so an indented line continues this one, whatever
                 // it would otherwise start.
                 if t.isEmpty || (indentWidth(lines[i]) < 4 && startsBlock(t)) { break }
+                // A header row and the delimiter under it end the paragraph:
+                // the table starts here, as it does on GitHub.
+                if startsPipeTable(lines, i, schema) { break }
                 // Only the leading whitespace is dropped: two or more spaces at
                 // the end of a line are a hard break, so they have to survive to
                 // the inline parser.
@@ -1204,6 +1305,78 @@ public enum MarkdownParser {
         startsAnyBlock(trimmed, listsMayInterrupt: false)
     }
 
+    /// Build the table: the first row's cells are headers, the rest are not.
+    private static func makePipeTable(_ rows: [[String]], schema: Schema,
+                                      definitions: [String: LinkDefinition]) -> Node? {
+        var rowNodes: [Node] = []
+        for (index, cells) in rows.enumerated() {
+            let cellType = index == 0 ? "tableHeader" : "tableCell"
+            var cellNodes: [Node] = []
+            for text in cells {
+                let inline = parseInline(text, schema, definitions)
+                guard let paragraph = try? schema.node("paragraph", [:], content: Fragment.from(inline)),
+                      let cell = try? schema.node(cellType, [:], content: Fragment.from([paragraph]))
+                else { return nil }
+                cellNodes.append(cell)
+            }
+            guard let row = try? schema.node("tableRow", [:], content: Fragment.from(cellNodes))
+            else { return nil }
+            rowNodes.append(row)
+        }
+        return try? schema.node("table", [:], content: Fragment.from(rowNodes))
+    }
+
+    /// A pipe-table row's cells, split on the "|" that aren't escaped.
+    ///
+    /// The outer pipes are optional in GitHub's tables, so one at either end is
+    /// the row's edge rather than an empty cell. A "\|" stays as written: the
+    /// inline parser resolves the escape, the same as anywhere else.
+    static func pipeCells(_ line: String) -> [String] {
+        var body = Substring(line.trimmingCharacters(in: .whitespaces))
+        if body.hasPrefix("|") { body = body.dropFirst() }
+        // Only an unescaped pipe closes the row.
+        if body.hasSuffix("|"), !body.dropLast().hasSuffix("\\") { body = body.dropLast() }
+        var cells: [String] = []
+        var current = ""
+        var escaped = false
+        for c in body {
+            if escaped { current.append(c); escaped = false; continue }
+            if c == "\\" { current.append(c); escaped = true; continue }
+            if c == "|" { cells.append(current.trimmingCharacters(in: .whitespaces)); current = ""; continue }
+            current.append(c)
+        }
+        cells.append(current.trimmingCharacters(in: .whitespaces))
+        return cells
+    }
+
+    /// Whether a line is the `| --- | :---: |` row under a table's header, with
+    /// the column count the header had — GitHub requires the two to agree.
+    ///
+    /// The alignment a colon asks for is read and dropped: the table nodes have
+    /// no attribute to keep it in, so storing it isn't possible yet.
+    static func isPipeDelimiterRow(_ line: String, columns: Int) -> Bool {
+        let cells = pipeCells(line)
+        guard cells.count == columns, !cells.isEmpty else { return false }
+        return cells.allSatisfy { cell in
+            var body = Substring(cell)
+            if body.hasPrefix(":") { body = body.dropFirst() }
+            if body.hasSuffix(":") { body = body.dropLast() }
+            return !body.isEmpty && body.allSatisfy { $0 == "-" }
+        }
+    }
+
+    /// Whether a table starts here: a row of cells, then a delimiter row of the
+    /// same width. Both lines are needed, which is why this takes the lookahead
+    /// rather than a single line the way the other block tests do.
+    static func startsPipeTable(_ lines: [String], _ i: Int, _ schema: Schema) -> Bool {
+        guard schema.nodes["table"] != nil, schema.nodes["tableRow"] != nil,
+              schema.nodes["tableCell"] != nil, schema.nodes["tableHeader"] != nil,
+              i + 1 < lines.count else { return false }
+        let header = lines[i].trimmingCharacters(in: .whitespaces)
+        guard header.contains("|"), indentWidth(lines[i]) < 4 else { return false }
+        return isPipeDelimiterRow(lines[i + 1], columns: pipeCells(header).count)
+    }
+
     /// Whether a line begins a block, asked without a paragraph above it to
     /// protect — which is the question an item's own content asks. "2. foo" is
     /// a list here even though it couldn't have interrupted a paragraph.
@@ -1221,6 +1394,7 @@ public enum MarkdownParser {
             || list
             || trimmed.lowercased().hasPrefix("<details")
             || trimmed.lowercased().hasPrefix("</details>")
+            || trimmed.lowercased().hasPrefix("<table")
     }
 
     /// Whether a list marker here would end the paragraph above it. Two markers
