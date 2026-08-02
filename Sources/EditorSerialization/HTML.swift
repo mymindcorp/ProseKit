@@ -1282,7 +1282,20 @@ public enum HTMLParser {
         return (b >= 48 && b <= 57) || ((b | 0x20) >= 97 && (b | 0x20) <= 122)
     }
 
-    static func decodeEntities(_ s: String) -> String {
+    /// Whether a numeric reference's digits are within the dialect's limit.
+    ///
+    /// HTML has none: its tokenizer takes every digit and resolves whatever is
+    /// out of range to the replacement character. CommonMark allows 7 decimal
+    /// digits and 6 hexadecimal, and anything longer is not a reference at all
+    /// — `&#87654321;` is that text, not U+FFFD. Both dialects share this
+    /// decoder, so the caller says which one it is reading.
+    private static func withinDigitLimit(_ name: Substring, capped: Bool) -> Bool {
+        guard capped else { return true }
+        if name.hasPrefix("#x") || name.hasPrefix("#X") { return name.count - 2 <= 6 }
+        return name.count - 1 <= 7
+    }
+
+    static func decodeEntities(_ s: String, cappingNumericDigits capped: Bool = false) -> String {
         guard s.contains("&") else { return s }
         var out = ""
         out.reserveCapacity(s.count)
@@ -1306,13 +1319,16 @@ public enum HTMLParser {
             var decoded: String?
             if let c = namedEntities[String(name)] {
                 decoded = c
-            } else if name.hasPrefix("#x") || name.hasPrefix("#X") {
-                // CommonMark caps a reference at six hex digits, but this decoder
-                // also serves the HTML parser, where leading zeros are legal —
-                // so the value decides, not the digit count.
-                decoded = UInt32(name.dropFirst(2), radix: 16).map(scalarForReference).map(String.init)
-            } else if name.hasPrefix("#") {
-                decoded = UInt32(name.dropFirst()).map(scalarForReference).map(String.init)
+            } else if withinDigitLimit(name, capped: capped) {
+                // Past the limit the text isn't a reference, so it stays as
+                // written; within it, an out-of-range value is the replacement
+                // character. In HTML there is no limit and the value decides,
+                // which is why leading zeros are legal there.
+                if name.hasPrefix("#x") || name.hasPrefix("#X") {
+                    decoded = UInt32(name.dropFirst(2), radix: 16).map(scalarForReference).map(String.init)
+                } else if name.hasPrefix("#") {
+                    decoded = UInt32(name.dropFirst()).map(scalarForReference).map(String.init)
+                }
             }
             if let decoded {
                 out.append(decoded)

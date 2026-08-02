@@ -1925,13 +1925,27 @@ test("Markdown parses an angle-bracketed link destination") {
     try expectEqual(d.child(0).child(0).marks.first?.attrs["href"], .string("/my uri"))
 }
 
-test("Markdown decodes a long numeric reference") {
+test("HTML decodes a long numeric reference") {
     // The search for the ";" is bounded so that '&'-dense text doesn't go
     // quadratic; a zero-padded reference is longer than a name and used to fall
-    // outside that bound.
-    try expectEqual(try MarkdownParser.parse("&#x0001F600;", schema: schema).child(0).textContent,
+    // outside that bound. HTML sets no limit on the digits, so the value alone
+    // decides whether one of these is a character.
+    try expectEqual(try HTMLParser.parse("<p>&#x0001F600;</p>", schema: schema).child(0).textContent,
                     "\u{1F600}")
+    try expectEqual(try HTMLParser.parse("<p>&#000035;</p>", schema: schema).child(0).textContent, "#")
+}
+
+test("Markdown holds a numeric reference to the digits CommonMark allows") {
+    // Seven decimal digits and six hexadecimal. Within the limit a padded
+    // reference still decodes, and a value with no character is the
+    // replacement one; past it the text was never a reference at all.
     try expectEqual(try MarkdownParser.parse("&#000035;", schema: schema).child(0).textContent, "#")
+    try expectEqual(try MarkdownParser.parse("&#x01F600;", schema: schema).child(0).textContent,
+                    "\u{1F600}")
+    for md in ["&#87654321;", "&#x0001F600;", "&#00000035;"] {
+        try expectEqual(try MarkdownParser.parse(md, schema: schema).child(0).textContent, md,
+                        "input: \(md)")
+    }
 }
 
 test("Markdown: a reference to no character becomes the replacement one") {
