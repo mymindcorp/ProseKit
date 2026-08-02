@@ -54,6 +54,40 @@ final class CheckboxStyleTests: XCTestCase {
         XCTAssertEqual(checkedCount, 2)
     }
 
+    func testTogglingACheckboxDoesNotFocusTheEditor() throws {
+        // Ticking a task off is a one-shot action, not a request to edit: an
+        // unfocused editor must stay unfocused (no keyboard).
+        let view = try taskListView()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        window.addSubview(view)
+        window.makeKeyAndVisible()
+        view.syncCheckboxViews()
+        XCTAssertFalse(view.isFirstResponder)
+        try XCTUnwrap(boxes(view).first { !$0.isChecked }).onToggle?()
+        XCTAssertFalse(view.isFirstResponder, "toggling must not raise the keyboard")
+
+        // And a focused editor keeps its focus (the tap doesn't blur it either).
+        XCTAssertTrue(view.becomeFirstResponder())
+        view.syncCheckboxViews()
+        try XCTUnwrap(boxes(view).first).onToggle?()
+        XCTAssertTrue(view.isFirstResponder, "an editing session survives a toggle")
+    }
+
+    func testTextInteractionIsBlockedOverCheckboxes() throws {
+        // The checkbox views are subviews, but UITextInteraction's recognizers
+        // live on the editor and still see those touches — so the interaction
+        // must decline to begin over a checkbox, or it would place the caret
+        // (and focus the editor) behind the toggle's back.
+        let view = try taskListView()
+        view.syncCheckboxViews()
+        let interaction = UITextInteraction(for: .editable)
+        let box = try XCTUnwrap(boxes(view).first)
+        XCTAssertFalse(view.interactionShouldBegin(interaction, at: CGPoint(x: box.frame.midX, y: box.frame.midY)),
+                       "no caret placement over a checkbox")
+        XCTAssertTrue(view.interactionShouldBegin(interaction, at: CGPoint(x: 200, y: box.frame.midY)),
+                      "tapping the item's text still places the caret")
+    }
+
     func testDefaultViewIsCircularAndReflectsState() {
         let checked = DefaultTaskCheckboxView(frame: CGRect(x: 0, y: 0, width: 30, height: 30))
         checked.isChecked = true
