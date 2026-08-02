@@ -175,6 +175,15 @@ public final class NodeType: @unchecked Sendable {
     }
 
     public func create(_ attrs: Attrs = [:], content: Fragment = .empty, marks: [Mark] = []) throws(ModelError) -> Node {
+        // A text node's text lives outside the content fragment, so building one
+        // this way produces a text node with no text — and `nodeSize` then force
+        // -unwraps it and traps. Use `Schema.text` instead. ProseMirror refuses
+        // here for the same reason; without the check, an `AttrStep` whose
+        // position lands on text — which rebasing a collab step can do — took
+        // the process down rather than failing the step.
+        if isText {
+            throw ModelError.invalidContent("Cannot construct a text node with create(); use Schema.text")
+        }
         if hasRequiredAttrs || !attrs.isEmpty {
             let computed = try compute(attrs: attrs)
             return Node(type: self, attrs: computed, content: content, marks: Mark.setFrom(marks))
