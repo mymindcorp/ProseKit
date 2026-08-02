@@ -24,7 +24,7 @@ final class VerticalCaretTests: XCTestCase {
                 li("the third list item is also quite wide"),
             ])),
         ])))
-        let layout = DocumentLayout(doc: editor.doc, width: 400, theme: TextTheme())
+        let layout = DocumentLayout(doc: editor.doc, width: 400, theme: DocumentTheme())
         return (layout, layout.blocks)
     }
 

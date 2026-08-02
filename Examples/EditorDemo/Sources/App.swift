@@ -276,8 +276,8 @@ let sampleProseJSON = """
 
 // MARK: - Theme config panel
 
-/// The editable subset of `TextTheme` the demo's theme panel exposes. Held as
-/// SwiftUI-friendly values (`Double`, `Color`) and converted to a `TextTheme`
+/// The editable subset of `DocumentTheme` the demo's theme panel exposes. Held as
+/// SwiftUI-friendly values (`Double`, `Color`) and converted to a `DocumentTheme`
 /// via `makeTheme()`. `Equatable` so the host only re-applies it on a real change.
 struct ThemeSettings: Equatable {
     // Font & spacing
@@ -304,10 +304,10 @@ struct ThemeSettings: Equatable {
     static let systemFont = "System"
     static let fontChoices = [systemFont, "Georgia", "Charter", "Palatino", "Times New Roman", "Avenir Next"]
 
-    /// Build the `TextTheme` these settings describe (keeping the demo's vivid
+    /// Build the `DocumentTheme` these settings describe (keeping the demo's vivid
     /// highlighter palette). Dynamic Type is turned off so the size slider wins.
-    func makeTheme() -> TextTheme {
-        var t = TextTheme()
+    func makeTheme() -> DocumentTheme {
+        var t = DocumentTheme()
         t.dynamicType = false
         t.fixedBodyFontSize = bodyFontSize
         t.lineSpacing = lineSpacing

@@ -24,14 +24,14 @@ final class LayoutCacheTests: XCTestCase {
     func testUnchangedBlocksAreReusedAfterAnEdit() throws {
         let cache = TextBlockLayoutCache()
         let doc1 = makeDoc("alpha")
-        let l1 = DocumentLayout(doc: doc1, width: 300, theme: TextTheme(), blockCache: cache)
+        let l1 = DocumentLayout(doc: doc1, width: 300, theme: DocumentTheme(), blockCache: cache)
         // Edit paragraph 1 the way a transaction does: unchanged siblings keep
         // their storage (the cache keys on content-buffer identity, which is
         // exactly what survives a real edit).
         var paras = (0 ..< doc1.childCount).map { doc1.child($0) }
         paras[0] = try schema.node("paragraph", [:], content: Fragment.from([schema.text("alpha edited longer text")]))
         let doc2 = try schema.node("doc", [:], content: Fragment.from(paras))
-        let l2 = DocumentLayout(doc: doc2, width: 300, theme: TextTheme(), blockCache: cache)
+        let l2 = DocumentLayout(doc: doc2, width: 300, theme: DocumentTheme(), blockCache: cache)
         // The CoreText lines for unchanged paragraphs are the same objects.
         XCTAssertNotNil(line(l1, containing: "bravo"))
         XCTAssertTrue(line(l1, containing: "bravo") === line(l2, containing: "bravo"), "an unchanged block must be reused, not re-typeset")
@@ -46,13 +46,13 @@ final class LayoutCacheTests: XCTestCase {
         // per-pass sweep — that's what keeps keystrokes cheap) but stay far
         // below the eviction cap.
         for i in 0..<10 {
-            _ = DocumentLayout(doc: makeDoc("alpha \(i)"), width: 300, theme: TextTheme(), blockCache: cache)
+            _ = DocumentLayout(doc: makeDoc("alpha \(i)"), width: 300, theme: DocumentTheme(), blockCache: cache)
         }
         XCTAssertLessThan(cache.debugEntryCount, 100)
         // Re-laying-out the same doc (same storage) hits the cache:
         let last = makeDoc("alpha 9")
-        let before = line(DocumentLayout(doc: last, width: 300, theme: TextTheme(), blockCache: cache), containing: "bravo")
-        let after = line(DocumentLayout(doc: last, width: 300, theme: TextTheme(), blockCache: cache), containing: "bravo")
+        let before = line(DocumentLayout(doc: last, width: 300, theme: DocumentTheme(), blockCache: cache), containing: "bravo")
+        let after = line(DocumentLayout(doc: last, width: 300, theme: DocumentTheme(), blockCache: cache), containing: "bravo")
         XCTAssertTrue(before === after, "live blocks stay cached across passes")
     }
 }

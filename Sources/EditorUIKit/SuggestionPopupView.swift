@@ -16,7 +16,7 @@ final class SuggestionPopupView: UIView {
     private let stack = UIStackView()
     private var rowViews: [RowView] = []
     private(set) var items: [Item] = []
-    private let theme: TextTheme
+    private let theme: DocumentTheme
 
     /// Card width and the maximum number of rows shown before scrolling.
     private let width: CGFloat = 280
@@ -28,7 +28,7 @@ final class SuggestionPopupView: UIView {
     var selectedIndex = 0 { didSet { updateHighlight(); scrollToSelection() } }
     var selected: Int? { items.indices.contains(selectedIndex) ? selectedIndex : nil }
 
-    init(theme: TextTheme) {
+    init(theme: DocumentTheme) {
         self.theme = theme
         super.init(frame: .zero)
         backgroundColor = theme.popupBackground
@@ -123,9 +123,9 @@ final class SuggestionPopupView: UIView {
         private let titleLabel = UILabel()
         private let subtitleLabel = UILabel()
         private let highlight = UIView()
-        private let theme: TextTheme
+        private let theme: DocumentTheme
 
-        init(item: Item, theme: TextTheme) {
+        init(item: Item, theme: DocumentTheme) {
             self.theme = theme
             super.init(frame: .zero)
 

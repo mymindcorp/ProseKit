@@ -45,7 +45,7 @@ A survey of standard text-editor behaviors against the current implementation, w
 ## Tier 3 — Accessibility & correctness (must-have before shipping)
 
 13. **VoiceOver / accessibility.** ❌ No accessibility tree, rotor, or trait exposure. Plan: expose the document as accessible text; map selection/caret to accessibility APIs.
-14. **Dynamic Type.** 🟡 `TextTheme` uses fixed sizes; honor `UIContentSizeCategory`.
+14. **Dynamic Type.** 🟡 `DocumentTheme` uses fixed sizes; honor `UIContentSizeCategory`.
 15. **RTL / bidirectional text.** ❌ CoreText handles runs, but caret/hit-testing/selection rects assume LTR. Plan: per-line writing-direction handling.
 16. **Spell-check underlines.** ❌ Surface `UITextChecker` results as decorations.
 

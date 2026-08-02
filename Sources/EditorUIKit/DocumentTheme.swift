@@ -5,7 +5,7 @@ public import DocumentModel
 extension UIColor {
     /// Create a color from a `#RRGGBB` (or `#RRGGBBAA`) hex string.
     /// Parse `#rgb` / `#rrggbb` / `#rrggbbaa` (with or without `#`). The single
-    /// hex parser in the module — `TextTheme.parseColor` adds named colors on top.
+    /// hex parser in the module — `DocumentTheme.parseColor` adds named colors on top.
     convenience init?(hex: String) {
         var s = hex.trimmingCharacters(in: .whitespaces)
         if s.hasPrefix("#") { s.removeFirst() }
@@ -20,9 +20,12 @@ extension UIColor {
     }
 }
 
-/// Visual styling for the editor: fonts, colors, and block spacing. The layout
-/// engine reads this to build attributed strings and position blocks.
-public struct TextTheme: Sendable, Equatable {
+/// Visual styling for a rendered document: fonts, colors, and block spacing.
+/// The layout engine reads this to build attributed strings and position
+/// blocks. Shared by the editable `EditorTextView` and the read-only
+/// `DocumentView` — hence "document" rather than "editor"; the editor's own
+/// chrome (find bar, popups) just borrows colors from it.
+public struct DocumentTheme: Sendable, Equatable {
     /// When true, fonts track the user's Dynamic Type content-size setting.
     public var dynamicType: Bool = true
     /// The base body point size used when `dynamicType` is off.
@@ -48,15 +51,39 @@ public struct TextTheme: Sendable, Equatable {
     /// Optional background "pill" painted behind inline `code` runs (nil = none).
     public var codeBackground: UIColor?
     public var quoteBarColor: UIColor = .separator
+
     /// A figure's caption: smaller and quieter than body text, and centred under
     /// what it describes, which is the convention print and the web share.
-    public var captionColor: UIColor = .secondaryLabel
-    /// Caption size relative to body text, used when Dynamic Type is off or a
-    /// custom face is set (Dynamic Type maps to `.footnote` instead).
-    public var captionScale: CGFloat = 0.85
-    public var captionAlignment: NSTextAlignment = .center
-    /// Gap between a figure's content and its caption.
-    public var captionSpacing: CGFloat = 4
+    public struct Caption: Sendable, Equatable {
+        public var color: UIColor = .secondaryLabel
+        /// Caption size relative to body text, used when Dynamic Type is off or
+        /// a custom face is set (Dynamic Type maps to `.footnote` instead).
+        public var scale: CGFloat = 0.85
+        public var alignment: NSTextAlignment = .center
+        /// Gap between a figure's content and its caption.
+        public var spacing: CGFloat = 4
+        public init() {}
+    }
+    public var caption = Caption()
+
+    /// Task items: how a *checked* item's text reads, and the checkbox's own
+    /// colors. Both text options are off by default, so a checked item looks
+    /// like any other line until a host opts in.
+    public struct TaskItem: Sendable, Equatable {
+        /// Strike through the text of a checked item (Tiptap's `[data-checked]`
+        /// line-through, which we can't express in CSS).
+        public var strikethroughWhenChecked = false
+        /// Text color for a checked item (nil = inherit `textColor`). Marks that
+        /// set their own color still win, as they do over every base color.
+        public var checkedTextColor: UIColor?
+        /// Fill of a checked checkbox (nil = `caretColor`).
+        public var checkboxTint: UIColor?
+        /// Outline of an unchecked checkbox (nil = `quoteBarColor`).
+        public var checkboxBorderColor: UIColor?
+        public init() {}
+    }
+    public var taskItem = TaskItem()
+
     public var caretColor: UIColor = .tintColor
     public var selectionColor: UIColor = UIColor.tintColor.withAlphaComponent(0.25)
     /// Highlight-mark background colors by name (the `color` attribute). The
@@ -126,11 +153,11 @@ public struct TextTheme: Sendable, Equatable {
         case "codeBlock":
             return monoFont
         case "figcaption":
-            if let fontName, let custom = UIFont(name: fontName, size: bodyPointSize * captionScale) {
+            if let fontName, let custom = UIFont(name: fontName, size: bodyPointSize * caption.scale) {
                 return custom
             }
             if dynamicType { return UIFont.preferredFont(forTextStyle: .footnote) }
-            return UIFont.systemFont(ofSize: fixedBodyFontSize * captionScale)
+            return UIFont.systemFont(ofSize: fixedBodyFontSize * caption.scale)
         case "detailsSummary":
             // The always-visible title of a collapsible section reads as a label.
             let descriptor = bodyFont.fontDescriptor.withSymbolicTraits(.traitBold) ?? bodyFont.fontDescriptor
@@ -144,7 +171,7 @@ public struct TextTheme: Sendable, Equatable {
     public func spacingBefore(_ node: Node, isFirst: Bool) -> CGFloat {
         // A caption belongs to what sits above it, so it tucks up close rather
         // than floating a full paragraph away.
-        if node.type.name == "figcaption" { return isFirst ? 0 : captionSpacing }
+        if node.type.name == "figcaption" { return isFirst ? 0 : caption.spacing }
         return isFirst ? 0 : paragraphSpacing
     }
 
@@ -174,7 +201,7 @@ public struct TextTheme: Sendable, Equatable {
                 attrs[.foregroundColor] = linkColor
                 if linkUnderline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
             case "textColor":
-                if let color = TextTheme.parseColor(mark.attrs["color"]?.stringValue) {
+                if let color = DocumentTheme.parseColor(mark.attrs["color"]?.stringValue) {
                     attrs[.foregroundColor] = color
                 }
             // backgroundColor is painted behind the run by DocumentLayout (CoreText

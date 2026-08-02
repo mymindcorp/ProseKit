@@ -28,7 +28,7 @@ final class TypingPerfTests: XCTestCase {
     /// Diagnostic: keystroke cost in the long-view (lazy window) path at several
     /// document sizes, editing NEAR THE TOP (worst case: a large suffix to shift).
     func testLongViewKeystrokeScaling() {
-        let theme = TextTheme()
+        let theme = DocumentTheme()
         for n in [1000, 4000, 8000] {
             let (s, doc) = bigDoc(n)
             let cache = TextBlockLayoutCache()
@@ -50,7 +50,7 @@ final class TypingPerfTests: XCTestCase {
     func testKeystrokeLayoutIsIncrementalAndCacheSurvives() {
         let (s, doc) = bigDoc(800)
         let cache = TextBlockLayoutCache()
-        let theme = TextTheme()
+        let theme = DocumentTheme()
 
         let t0 = CFAbsoluteTimeGetCurrent()
         let base = DocumentLayout(doc: doc, width: 390, theme: theme, blockCache: cache)

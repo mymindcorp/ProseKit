@@ -17,7 +17,7 @@ final class CheckboxOverlay {
     /// Supplies the view for each checkbox; nil uses `DefaultTaskCheckboxView`.
     var provider: CheckboxViewProvider?
     /// Theme applied to freshly made default checkbox views.
-    var theme = TextTheme()
+    var theme = DocumentTheme()
     /// Invoked when a checkbox is activated, with the task item's document
     /// position. Leave nil to make the checkboxes non-interactive (read-only):
     /// they render and sync their checked state but ignore taps.

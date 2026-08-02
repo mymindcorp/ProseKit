@@ -8,7 +8,7 @@ import DocumentTransform
 
 @MainActor
 final class CheckboxStyleTests: XCTestCase {
-    private func taskListView() throws -> EditorTextView {
+    private func taskListView(theme: DocumentTheme = DocumentTheme()) throws -> EditorTextView {
         let editor = try Editor(extensions: fullKit())
         let s = editor.schema
         func item(_ text: String, checked: Bool) -> Node {
@@ -21,7 +21,7 @@ final class CheckboxStyleTests: XCTestCase {
                 item("done", checked: true), item("todo", checked: false),
             ])),
         ])))
-        let view = EditorTextView(editor: editor)
+        let view = EditorTextView(editor: editor, theme: theme)
         view.frame = CGRect(x: 0, y: 0, width: 320, height: 480)
         view.layoutIfNeeded()
         return view
@@ -87,6 +87,108 @@ final class CheckboxStyleTests: XCTestCase {
                        "no caret placement over a checkbox")
         XCTAssertTrue(view.interactionShouldBegin(interaction, at: CGPoint(x: 200, y: box.frame.midY)),
                       "tapping the item's text still places the caret")
+    }
+
+    // MARK: - Checked-item text styling
+
+    private func strikethrough(_ view: EditorTextView, _ text: String) -> Bool {
+        guard let block = view.ensureLayout().blocks.first(where: { $0.attributed.string == text }),
+              block.attributed.length > 0 else { return false }
+        // `effectiveRange:` takes a pointer, hence `unsafe` (we pass nil).
+        return unsafe block.attributed.attribute(.strikethroughStyle, at: 0, effectiveRange: nil) != nil
+    }
+
+    private func textColor(_ view: EditorTextView, _ text: String) -> UIColor? {
+        guard let block = view.ensureLayout().blocks.first(where: { $0.attributed.string == text }),
+              block.attributed.length > 0 else { return nil }
+        return unsafe block.attributed.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? UIColor
+    }
+
+    func testCheckedItemsAreUnstyledByDefault() throws {
+        let view = try taskListView()
+        XCTAssertFalse(strikethrough(view, "done"), "no strikethrough unless the host asks for it")
+    }
+
+    func testStrikethroughAppliesOnlyToCheckedItems() throws {
+        var theme = DocumentTheme()
+        theme.taskItem.strikethroughWhenChecked = true
+        let view = try taskListView(theme: theme)
+        XCTAssertTrue(strikethrough(view, "done"), "the checked item reads as done")
+        XCTAssertFalse(strikethrough(view, "todo"), "the unchecked item is untouched")
+    }
+
+    func testCheckedTextColorAppliesOnlyToCheckedItems() throws {
+        var theme = DocumentTheme()
+        theme.taskItem.checkedTextColor = .systemRed
+        let view = try taskListView(theme: theme)
+        XCTAssertEqual(textColor(view, "done"), .systemRed)
+        XCTAssertEqual(textColor(view, "todo"), theme.textColor)
+    }
+
+    func testTogglingRestylesTheItem() throws {
+        // Regression: the block cache is keyed on the paragraph, which is the
+        // *same* node whether its item is checked or not — so without the
+        // checked flag in the key, a toggle reused the stale typeset.
+        var theme = DocumentTheme()
+        theme.taskItem.strikethroughWhenChecked = true
+        let view = try taskListView(theme: theme)
+        view.syncCheckboxViews()
+        try XCTUnwrap(boxes(view).first { !$0.isChecked }).onToggle?() // check "todo"
+        XCTAssertTrue(strikethrough(view, "todo"), "checking restyles the item")
+
+        try XCTUnwrap(boxes(view).sorted { $0.frame.minY < $1.frame.minY }.first).onToggle?() // uncheck "done"
+        XCTAssertFalse(strikethrough(view, "done"), "unchecking clears the strikethrough")
+    }
+
+    func testANestedUncheckedItemIsNotStruckThrough() throws {
+        // A sub-task is still to do, whatever its parent says. (Tiptap's
+        // descendant CSS selector strikes these; we deliberately don't.)
+        var theme = DocumentTheme()
+        theme.taskItem.strikethroughWhenChecked = true
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        func para(_ t: String) -> Node { try! s.node("paragraph", [:], content: Fragment.from([s.text(t)])) }
+        let sub = try s.node("taskList", [:], content: Fragment.from([
+            try s.node("taskItem", ["checked": .bool(false)], content: Fragment.from([para("sub")])),
+        ]))
+        let outer = try s.node("taskItem", ["checked": .bool(true)],
+                               content: Fragment.from([para("parent"), sub]))
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            try s.node("taskList", [:], content: Fragment.from([outer])),
+        ])))
+        let view = EditorTextView(editor: editor, theme: theme)
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 480)
+        view.layoutIfNeeded()
+        XCTAssertTrue(strikethrough(view, "parent"), "the checked item itself is struck")
+        XCTAssertFalse(strikethrough(view, "sub"), "its unchecked sub-task is not")
+    }
+
+    func testCheckboxColorsAreThemeable() {
+        var theme = DocumentTheme()
+        theme.taskItem.checkboxTint = .systemPink
+        theme.taskItem.checkboxBorderColor = .systemGreen
+        let box = DefaultTaskCheckboxView(frame: CGRect(x: 0, y: 0, width: 30, height: 30))
+        box.theme = theme
+        box.layoutIfNeeded()
+        let fill = box.layer.sublayers?.compactMap { ($0 as? CAShapeLayer)?.fillColor }
+        let stroke = box.layer.sublayers?.compactMap { ($0 as? CAShapeLayer)?.strokeColor }
+        XCTAssertEqual(fill?.contains(UIColor.systemPink.cgColor), true, "checkbox tint")
+        XCTAssertEqual(stroke?.contains(UIColor.systemGreen.cgColor), true, "checkbox border")
+    }
+
+    func testCheckboxColorsFallBackToTheCaretAndBarColors() {
+        // The historical behaviour, kept as the default so existing hosts see
+        // no change when they haven't set the new options.
+        var theme = DocumentTheme()
+        theme.caretColor = .systemPurple
+        theme.quoteBarColor = .systemTeal
+        let box = DefaultTaskCheckboxView(frame: CGRect(x: 0, y: 0, width: 30, height: 30))
+        box.theme = theme
+        box.layoutIfNeeded()
+        let fill = box.layer.sublayers?.compactMap { ($0 as? CAShapeLayer)?.fillColor }
+        let stroke = box.layer.sublayers?.compactMap { ($0 as? CAShapeLayer)?.strokeColor }
+        XCTAssertEqual(fill?.contains(UIColor.systemPurple.cgColor), true)
+        XCTAssertEqual(stroke?.contains(UIColor.systemTeal.cgColor), true)
     }
 
     func testDefaultViewIsCircularAndReflectsState() {
