@@ -506,7 +506,7 @@ public enum MarkdownParser {
     public static func parse(_ markdown: String, schema: Schema) throws -> Node {
         // A reference can appear before the definition it uses, so definitions
         // are collected — and their lines removed — before anything is parsed.
-        let expanded = markdown.components(separatedBy: "\n").map(expandLeadingTabs)
+        let expanded = markdown.components(separatedBy: "\n").map { expandLeadingTabs($0) }
         let (lines, definitions) = collectDefinitions(expanded)
         // A definition inside a quote still belongs to the document.
         let all = definitions.merging(collectNestedDefinitions(expanded)) { outer, _ in outer }
@@ -546,7 +546,7 @@ public enum MarkdownParser {
     static func parseNested(_ text: String, schema: Schema,
                             definitions: [String: LinkDefinition]) throws -> Node {
         let (lines, local) = collectDefinitions(
-            text.components(separatedBy: "\n").map(expandLeadingTabs))
+            text.components(separatedBy: "\n").map { expandLeadingTabs($0) })
         // An outer definition wins, matching the first-one-wins rule.
         return try parse(lines: lines, schema: schema,
                          definitions: definitions.merging(local) { outer, _ in outer })
@@ -923,9 +923,15 @@ public enum MarkdownParser {
     /// structure, tabs behave as if they were replaced by spaces with a tab stop
     /// of 4 characters". Indentation is exactly such a context, so the leading
     /// run is expanded and a tab inside the text is left as the author typed it.
-    static func expandLeadingTabs(_ line: String) -> String {
+    ///
+    /// `startColumn` is the column the text begins at, for callers passing the
+    /// remainder of a line rather than a whole one. A tab stop is a position on
+    /// the *line*, so expanding what follows a list marker as if it started at
+    /// column zero puts the stops in the wrong place: in `-\t\tfoo` the first
+    /// tab advances to column 4, not to column 4 past the marker.
+    static func expandLeadingTabs(_ line: String, startColumn: Int = 0) -> String {
         guard let first = line.first, first == " " || first == "\t" else { return line }
-        var column = 0
+        var column = startColumn
         var i = line.startIndex
         while i < line.endIndex {
             if line[i] == " " { column += 1 }
@@ -933,7 +939,7 @@ public enum MarkdownParser {
             else { break }
             i = line.index(after: i)
         }
-        return String(repeating: " ", count: column) + line[i...]
+        return String(repeating: " ", count: column - startColumn) + line[i...]
     }
 
     /// Whether a line opens a fenced code block.
@@ -1268,7 +1274,10 @@ public enum MarkdownParser {
     ///
     /// Five or more spaces would make the content indented code, so in that case
     /// the content column is one past the marker and the rest stays as content.
-    static func listMarker(_ line: String, ordered: Bool) -> (content: String, width: Int)? {
+    /// `startColumn` is the column `line` begins at, so that a tab after the
+    /// marker lands on the right stop for an item that is itself indented.
+    static func listMarker(_ line: String, ordered: Bool, startColumn: Int = 0)
+        -> (content: String, width: Int)? {
         let markerLength: Int
         if ordered {
             // More than nine digits isn't a list marker — "1234567890. x" is a
@@ -1282,7 +1291,8 @@ public enum MarkdownParser {
             guard let first = line.first, first == "-" || first == "*" || first == "+" else { return nil }
             markerLength = 1
         }
-        let rest = expandLeadingTabs(String(line.dropFirst(markerLength)))
+        let rest = expandLeadingTabs(String(line.dropFirst(markerLength)),
+                                     startColumn: startColumn + markerLength)
         guard rest.isEmpty || rest.first == " " else { return nil }
         let spaces = rest.prefix(while: { $0 == " " }).count
         let padding = (spaces == 0 || spaces > 4) ? 1 : spaces
@@ -1377,7 +1387,8 @@ public enum MarkdownParser {
                 i += 1
                 continue
             }
-            if !isThematicBreak(t), let marker = listMarker(t, ordered: ordered) {
+            if !isThematicBreak(t), let marker = listMarker(t, ordered: ordered,
+                                                            startColumn: indentWidth(raw)) {
                 let here = markerDelimiter(t)
                 if let delimiter, here != delimiter { break }
                 delimiter = here
@@ -1680,10 +1691,13 @@ public enum MarkdownParser {
                     i = semi + 1; continue
                 }
             }
-            // Autolink <scheme:...> — a bare URL in angle brackets.
+            // Autolink <scheme:...> — a bare URL in angle brackets — or
+            // <someone@example.com>, which links to the address. The text stays
+            // as written either way; only the href gains the "mailto:".
             if c == UInt8(ascii: "<"), let close = findByte(chars, i + 1, UInt8(ascii: ">")),
-               case let url = slice(chars, (i + 1)..<close), isAutolink(url),
-               let href = sanitizeURL(url, for: .link) {
+               case let url = slice(chars, (i + 1)..<close),
+               case let target = isAutolink(url) ? url : emailAutolink(url),
+               let candidate = target, let href = sanitizeURL(candidate, for: .link) {
                 flush()
                 appendNode(schema.text(url, mark("link", ["href": .string(href)])))
                 i = close + 1; continue
@@ -1965,7 +1979,8 @@ public enum MarkdownParser {
     }
 
     /// An autolink's contents: a scheme, then anything but spaces or angles.
-    /// Bare `<tag>` markup and `<a@b.c>` addresses are deliberately not matched.
+    /// Bare `<tag>` markup is deliberately not matched; an address with no
+    /// scheme is an email autolink, which `emailAutolink` handles.
     private static func isAutolink(_ s: String) -> Bool {
         guard let colon = s.firstIndex(of: ":"), colon != s.startIndex else { return false }
         let scheme = s[s.startIndex..<colon]
@@ -1974,6 +1989,38 @@ public enum MarkdownParser {
         else { return false }
         let rest = s[s.index(after: colon)...]
         return !rest.isEmpty && !rest.contains(where: { $0 == " " || $0 == "<" || $0 == ">" || $0 == "\n" })
+    }
+
+    /// `<foo@example.com>` is a link to that address, which the author wrote
+    /// without the `mailto:` the href needs. CommonMark specifies its own
+    /// grammar for this rather than deferring to RFC 5322 — it is deliberately
+    /// narrower, so an address with a quoted local part isn't one.
+    ///
+    /// Returns the href, or nil if this isn't an address.
+    private static func emailAutolink(_ s: String) -> String? {
+        func isAlphanumeric(_ c: Character) -> Bool {
+            guard let b = c.asciiValue else { return false }
+            return (b >= 48 && b <= 57) || ((b | 0x20) >= 97 && (b | 0x20) <= 122)
+        }
+        // The local part, before the last "@" — an address may contain only one,
+        // but the grammar allows "@" in neither side, so the first is the split.
+        guard let at = s.firstIndex(of: "@"), at != s.startIndex else { return nil }
+        let localPunctuation = Set(".!#$%&'*+/=?^_`{|}~-")
+        guard s[s.startIndex..<at].allSatisfy({ isAlphanumeric($0) || localPunctuation.contains($0) })
+        else { return nil }
+
+        // Then dot-separated labels: alphanumeric at each end, hyphens inside,
+        // at most 63 characters each. A trailing or doubled dot leaves an empty
+        // label, which is why the empty subsequences are kept.
+        let domain = s[s.index(after: at)...]
+        guard !domain.isEmpty else { return nil }
+        for label in domain.split(separator: ".", omittingEmptySubsequences: false) {
+            guard let first = label.first, let last = label.last,
+                  label.count <= 63, isAlphanumeric(first), isAlphanumeric(last),
+                  label.allSatisfy({ isAlphanumeric($0) || $0 == "-" })
+            else { return nil }
+        }
+        return "mailto:" + s
     }
 
     /// A `String` from a range of the byte buffer. Ranges only ever start and end
