@@ -231,14 +231,14 @@ final class TableEditingTests: XCTestCase {
         for (align, wanted) in expected {
             let layout = DocumentLayout(doc: try alignedTable(align), width: 320, theme: DocumentTheme())
             let block = try XCTUnwrap(layout.blocks.first { $0.attributed.string.contains("x") })
-            let style = try XCTUnwrap(block.attributed.attribute(.paragraphStyle, at: 0,
+            let style = try XCTUnwrap(unsafe block.attributed.attribute(.paragraphStyle, at: 0,
                                                                  effectiveRange: nil) as? NSParagraphStyle)
             XCTAssertEqual(style.alignment, wanted, "align: \(align ?? "nil")")
         }
         // Without one, the cell reads whichever way the text does.
         let plain = DocumentLayout(doc: try alignedTable(nil), width: 320, theme: DocumentTheme())
         let block = try XCTUnwrap(plain.blocks.first { $0.attributed.string.contains("x") })
-        let style = try XCTUnwrap(block.attributed.attribute(.paragraphStyle, at: 0,
+        let style = try XCTUnwrap(unsafe block.attributed.attribute(.paragraphStyle, at: 0,
                                                              effectiveRange: nil) as? NSParagraphStyle)
         XCTAssertEqual(style.alignment, .natural)
     }
@@ -268,7 +268,7 @@ final class TableEditingTests: XCTestCase {
         let cache = TextBlockLayoutCache()
         let before = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme(), blockCache: cache)
         let firstBlock = try XCTUnwrap(before.blocks.first { $0.attributed.string.contains("x") })
-        XCTAssertEqual((firstBlock.attributed.attribute(.paragraphStyle, at: 0,
+        XCTAssertEqual((unsafe firstBlock.attributed.attribute(.paragraphStyle, at: 0,
                                                         effectiveRange: nil) as? NSParagraphStyle)?.alignment,
                        .left)
 
@@ -278,7 +278,7 @@ final class TableEditingTests: XCTestCase {
         editor.dispatch(tr)
         let after = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme(), blockCache: cache)
         let block = try XCTUnwrap(after.blocks.first { $0.attributed.string.contains("x") })
-        let style = try XCTUnwrap(block.attributed.attribute(.paragraphStyle, at: 0,
+        let style = try XCTUnwrap(unsafe block.attributed.attribute(.paragraphStyle, at: 0,
                                                              effectiveRange: nil) as? NSParagraphStyle)
         XCTAssertEqual(style.alignment, .right, "a re-aligned cell must not reuse the old block")
     }
