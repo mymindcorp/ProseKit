@@ -3,6 +3,7 @@ import XCTest
 import UIKit
 import DocumentModel
 import EditorStateKit
+import DocumentTransform
 import SchemaKit
 @testable import EditorUIKit
 

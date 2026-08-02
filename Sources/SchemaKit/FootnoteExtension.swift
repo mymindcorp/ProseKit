@@ -1,8 +1,8 @@
 import Foundation
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
-import EditorStateKit
-import EditorCommands
+public import EditorStateKit
+public import EditorCommands
 
 // Footnotes, as GitHub and Markdig spell them: `[^1]` in the text, and
 // `[^1]: the note` as its own block holding the note's content.
