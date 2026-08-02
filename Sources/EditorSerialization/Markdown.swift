@@ -163,22 +163,33 @@ public enum MarkdownSerializer {
     /// block the parser reads back — the same fallback `details` uses — because
     /// the alternative is flattening a structure the document really has.
     static func serializeTable(_ node: Node) -> String {
-        guard let rows = pipeTableRows(node), let columns = rows.first?.count else {
+        guard let table = pipeTableRows(node), let columns = table.rows.first?.count else {
             return HTMLSerializer.serialize(fragment: Fragment.from([node]))
         }
         func line(_ cells: [String]) -> String {
             "|" + cells.map { " \($0) " }.joined(separator: "|") + "|"
         }
-        var out = [line(rows[0]), line(Array(repeating: "---", count: columns))]
-        out.append(contentsOf: rows.dropFirst().map(line))
+        let delimiters = (0..<columns).map { column -> String in
+            switch column < table.alignments.count ? table.alignments[column] : nil {
+            case "left": return ":--"
+            case "center": return ":-:"
+            case "right": return "--:"
+            default: return "---"
+            }
+        }
+        var out = [line(table.rows[0]), line(delimiters)]
+        out.append(contentsOf: table.rows.dropFirst().map(line))
         return out.joined(separator: "\n")
     }
 
-    /// The table's cells as pipe-table text, or nil if the shape doesn't fit:
-    /// a header row and only a header row, every row the same width, one
-    /// paragraph to a cell, no spans and no stored widths.
-    private static func pipeTableRows(_ table: Node) -> [[String]]? {
+    /// The table's cells as pipe-table text with each column's alignment, or
+    /// nil if the shape doesn't fit: a header row and only a header row, every
+    /// row the same width, one paragraph to a cell, no spans and no stored
+    /// widths — and every cell in a column aligned the same way, since a
+    /// delimiter row can only say one thing per column.
+    private static func pipeTableRows(_ table: Node) -> (rows: [[String]], alignments: [String?])? {
         var rows: [[String]] = []
+        var alignments: [String?] = []
         for r in 0..<table.childCount {
             let row = table.child(r)
             guard row.type.name == "tableRow", row.childCount > 0 else { return nil }
@@ -190,6 +201,11 @@ public enum MarkdownSerializer {
                 guard cell.attrs["colspan"]?.intValue ?? 1 == 1,
                       cell.attrs["rowspan"]?.intValue ?? 1 == 1,
                       cell.attrs["colwidth"]?.isNull ?? true else { return nil }
+                // The first row sets each column's alignment; a later cell that
+                // disagrees is something the pipes can't say.
+                let align = cell.attrs["align"]?.stringValue
+                if r == 0 { alignments.append(align) }
+                else if c < alignments.count, alignments[c] != align { return nil }
                 // An empty cell is a cell; more than one block in one isn't
                 // something a row of pipes can say.
                 guard cell.childCount <= 1 else { return nil }
@@ -206,7 +222,7 @@ public enum MarkdownSerializer {
             guard cells.count == (rows.first?.count ?? cells.count) else { return nil }
             rows.append(cells)
         }
-        return rows.isEmpty ? nil : rows
+        return rows.isEmpty ? nil : (rows, alignments)
     }
 
     /// Escape a leading `#`/`>`/`-`/`*`/`+`/`1.` so a paragraph that happens to
@@ -955,6 +971,7 @@ public enum MarkdownParser {
             // then a body that runs to the first blank line or new block.
             if startsPipeTable(lines, i, schema) {
                 let header = pipeCells(lines[i])
+                let alignments = pipeAlignments(lines[i + 1], columns: header.count) ?? []
                 var rows: [[String]] = [header]
                 i += 2
                 while i < lines.count {
@@ -968,7 +985,8 @@ public enum MarkdownParser {
                     rows.append(cells)
                     i += 1
                 }
-                if let table = makePipeTable(rows, schema: schema, definitions: definitions) {
+                if let table = makePipeTable(rows, alignments: alignments, schema: schema,
+                                             definitions: definitions) {
                     blocks.append(table)
                     continue
                 }
@@ -1495,16 +1513,24 @@ public enum MarkdownParser {
     }
 
     /// Build the table: the first row's cells are headers, the rest are not.
-    private static func makePipeTable(_ rows: [[String]], schema: Schema,
+    private static func makePipeTable(_ rows: [[String]], alignments: [String?],
+                                      schema: Schema,
                                       definitions: [String: LinkDefinition]) -> Node? {
         var rowNodes: [Node] = []
         for (index, cells) in rows.enumerated() {
             let cellType = index == 0 ? "tableHeader" : "tableCell"
             var cellNodes: [Node] = []
-            for text in cells {
+            for (column, text) in cells.enumerated() {
                 let inline = parseInline(text, schema, definitions)
+                // The delimiter row speaks for the whole column, so every cell
+                // in it carries the alignment — that is what makes it survive
+                // being written back out.
+                var attrs: Attrs = [:]
+                if column < alignments.count, let align = alignments[column] {
+                    attrs["align"] = .string(align)
+                }
                 guard let paragraph = try? schema.node("paragraph", [:], content: Fragment.from(inline)),
-                      let cell = try? schema.node(cellType, [:], content: Fragment.from([paragraph]))
+                      let cell = try? schema.node(cellType, attrs, content: Fragment.from([paragraph]))
                 else { return nil }
                 cellNodes.append(cell)
             }
@@ -1538,20 +1564,31 @@ public enum MarkdownParser {
         return cells
     }
 
-    /// Whether a line is the `| --- | :---: |` row under a table's header, with
-    /// the column count the header had — GitHub requires the two to agree.
+    /// The alignments in the `| --- | :---: |` row under a table's header, or
+    /// nil when the line isn't one — including when its width disagrees with
+    /// the header's, which GitHub requires it to match.
     ///
-    /// The alignment a colon asks for is read and dropped: the table nodes have
-    /// no attribute to keep it in, so storing it isn't possible yet.
-    static func isPipeDelimiterRow(_ line: String, columns: Int) -> Bool {
+    /// A colon on the left is "left", on both "center", on the right "right",
+    /// and neither is nil: `---` and `:---` render differently, so the absence
+    /// of a colon is worth keeping rather than folding into "left".
+    static func pipeAlignments(_ line: String, columns: Int) -> [String?]? {
         let cells = pipeCells(line)
-        guard cells.count == columns, !cells.isEmpty else { return false }
-        return cells.allSatisfy { cell in
+        guard cells.count == columns, !cells.isEmpty else { return nil }
+        var alignments: [String?] = []
+        for cell in cells {
             var body = Substring(cell)
-            if body.hasPrefix(":") { body = body.dropFirst() }
-            if body.hasSuffix(":") { body = body.dropLast() }
-            return !body.isEmpty && body.allSatisfy { $0 == "-" }
+            let left = body.hasPrefix(":")
+            if left { body = body.dropFirst() }
+            let right = body.hasSuffix(":")
+            if right { body = body.dropLast() }
+            guard !body.isEmpty, body.allSatisfy({ $0 == "-" }) else { return nil }
+            alignments.append(left && right ? "center" : left ? "left" : right ? "right" : nil)
         }
+        return alignments
+    }
+
+    static func isPipeDelimiterRow(_ line: String, columns: Int) -> Bool {
+        pipeAlignments(line, columns: columns) != nil
     }
 
     /// Whether a table starts here: a row of cells, then a delimiter row of the

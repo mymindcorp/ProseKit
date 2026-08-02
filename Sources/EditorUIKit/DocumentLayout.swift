@@ -107,6 +107,11 @@ final class TextBlockLayoutCache {
         let marks: [Mark]
         let buffer: UInt
         let width: CGFloat
+        /// The alignment inherited from an enclosing table cell, for the same
+        /// reason as `checked` below: the paragraph node is identical whichever
+        /// way its cell is aligned, so without this a re-aligned column would
+        /// reuse blocks typeset the old way.
+        let align: String?
         /// Styling inherited from an enclosing node rather than from the block
         /// itself: a paragraph is the *same* node whether its task item is
         /// checked or not, so without this a toggle would reuse the stale
@@ -145,21 +150,21 @@ final class TextBlockLayoutCache {
         lastFootnoteOrder = order
     }
 
-    private static func key(_ node: Node, _ width: CGFloat, _ checked: Bool) -> Key {
+    private static func key(_ node: Node, _ width: CGFloat, _ checked: Bool, _ align: String?) -> Key {
         let buffer = unsafe node.content.content.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
         return Key(type: ObjectIdentifier(node.type), attrs: node.attrs, marks: node.marks,
-                   buffer: buffer, width: width, checked: checked)
+                   buffer: buffer, width: width, align: align, checked: checked)
     }
 
-    func lookup(_ node: Node, width: CGFloat, checked: Bool) -> LocalTextBlock? {
-        let key = Self.key(node, width, checked)
+    func lookup(_ node: Node, width: CGFloat, checked: Bool, align: String?) -> LocalTextBlock? {
+        let key = Self.key(node, width, checked, align)
         guard var entry = entries[key] else { return nil }
         entry.generation = generation
         entries[key] = entry
         return entry.block
     }
-    func store(_ node: Node, width: CGFloat, checked: Bool, _ block: LocalTextBlock) {
-        entries[Self.key(node, width, checked)] = Entry(node: node, block: block, generation: generation)
+    func store(_ node: Node, width: CGFloat, checked: Bool, align: String?, _ block: LocalTextBlock) {
+        entries[Self.key(node, width, checked, align)] = Entry(node: node, block: block, generation: generation)
     }
     func beginPass() { generation += 1 }
     /// Drop everything (e.g. when the syntax highlighter changes).
@@ -192,6 +197,9 @@ final class DocumentLayout {
     /// item's subtree by `layoutTaskList`, and part of the block cache's key —
     /// the same paragraph node can appear checked or not.
     private var inCheckedItem = false
+    /// The alignment of the table cell being laid out, if any. Inherited by the
+    /// blocks inside it the way `inCheckedItem` is.
+    private var inCellAlignment: String?
     /// Tappable details disclosure triangles: their hit rect, the `details`
     /// node's document position, and whether it is currently open.
     private(set) var disclosures: [(rect: CGRect, pos: Int, open: Bool)] = []
@@ -903,9 +911,12 @@ final class DocumentLayout {
                 let cell = row.child(c)
                 let cellX = edges[min(c, edges.count - 1)]
                 let cellW = c < widths.count ? widths[c] : (width / CGFloat(max(cols, 1)))
+                let outerAlignment = inCellAlignment
+                inCellAlignment = cell.attrs["align"]?.stringValue
                 let bottom = layoutFragment(cell.content, docPos: cellPos + 1,
                                             x: cellX + padding, width: cellW - 2 * padding,
                                             y: y0 + padding, isFirst: true)
+                inCellAlignment = outerAlignment
                 rowHeight = max(rowHeight, bottom - y0 + padding)
                 cellPos += cell.nodeSize
             }
@@ -951,9 +962,10 @@ final class DocumentLayout {
         let contentStart = docPos + 1
         // Reuse the cached typeset block (in local coords) when unchanged; this
         // is what keeps per-keystroke cost off the whole document.
-        let local = blockCache?.lookup(node, width: width, checked: inCheckedItem) ?? {
+        let local = blockCache?.lookup(node, width: width, checked: inCheckedItem,
+                                       align: inCellAlignment) ?? {
             let built = typesetBlock(node, contentStart: contentStart, width: width)
-            blockCache?.store(node, width: width, checked: inCheckedItem, built)
+            blockCache?.store(node, width: width, checked: inCheckedItem, align: inCellAlignment, built)
             return built
         }()
 
@@ -998,10 +1010,19 @@ final class DocumentLayout {
         let rtl = isRightToLeft(attr.string)
         let base = NSMutableAttributedString(attributedString:
             attr.length == 0 ? NSAttributedString(string: " ", attributes: [.font: theme.blockFont(node)]) : attr)
-        let centred = node.type.name == "figcaption" && theme.caption.alignment == .center
+        // A cell's alignment wins over the reading direction: a column set
+        // `:---:` is centred whichever way its text runs.
+        let cellAlignment = inCellAlignment
+        let centred = (node.type.name == "figcaption" && theme.caption.alignment == .center)
+            || cellAlignment == "center"
         let para = NSMutableParagraphStyle()
         para.baseWritingDirection = rtl ? .rightToLeft : .leftToRight
-        para.alignment = centred ? .center : (rtl ? .right : .natural)
+        switch cellAlignment {
+        case "left": para.alignment = .left
+        case "center": para.alignment = .center
+        case "right": para.alignment = .right
+        default: para.alignment = centred ? .center : (rtl ? .right : .natural)
+        }
         base.addAttribute(.paragraphStyle, value: para, range: NSRange(location: 0, length: base.length))
 
         let typesetter = CTTypesetterCreateWithAttributedString(base as CFAttributedString)
@@ -1025,9 +1046,12 @@ final class DocumentLayout {
             let lineHeight = ascent + descent + leading + theme.lineSpacing
             // Lines are placed by hand, so alignment has to be applied here:
             // flush 0.5 centres, 1 pushes to the trailing edge.
-            let penOffset: CGFloat = centred
-                ? CGFloat(CTLineGetPenOffsetForFlush(ctLine, 0.5, Double(width)))
-                : (rtl ? CGFloat(CTLineGetPenOffsetForFlush(ctLine, 1, Double(width))) : 0)
+            let flush: CGFloat? = centred ? 0.5
+                : cellAlignment == "right" ? 1
+                : cellAlignment == "left" ? nil
+                : (rtl ? 1 : nil)
+            let penOffset: CGFloat = flush
+                .map { CGFloat(CTLineGetPenOffsetForFlush(ctLine, $0, Double(width))) } ?? 0
             lines.append(LineLayout(ctLine: ctLine,
                                     baselineOrigin: CGPoint(x: penOffset, y: lineY + ascent),
                                     stringRange: NSRange(location: lineStart, length: count),

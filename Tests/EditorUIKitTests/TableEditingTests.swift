@@ -3,6 +3,7 @@ import XCTest
 import UIKit
 import DocumentModel
 import EditorStateKit
+import DocumentTransform
 import SchemaKit
 @testable import EditorUIKit
 
@@ -209,6 +210,77 @@ final class TableEditingTests: XCTestCase {
         view.endColumnResize()
         let after = try XCTUnwrap(DocumentLayout(doc: view.editor.doc, width: 320, theme: DocumentTheme()).tables.first)
         XCTAssertGreaterThanOrEqual(after.widths[0], 99, "cellMinWidth should stop the shrink")
+    }
+
+    /// A one-row table whose single cell carries `align`, in `schema`.
+    private func alignedTable(_ align: String?, schema: Schema? = nil) throws -> Node {
+        let s = try schema ?? Editor(extensions: fullKit()).schema
+        var attrs: Attrs = [:]
+        if let align { attrs["align"] = .string(align) }
+        let cell = try s.node("tableCell", attrs, content: Fragment.from([
+            try s.node("paragraph", [:], content: Fragment.from([s.text("x")])),
+        ]))
+        let row = try s.node("tableRow", [:], content: Fragment.from([cell]))
+        return try s.node("doc", [:], content: Fragment.from([
+            try s.node("table", [:], content: Fragment.from([row])),
+        ]))
+    }
+
+    func testACellsAlignmentReachesTheTypesetText() throws {
+        let expected: [String?: NSTextAlignment] = ["left": .left, "center": .center, "right": .right]
+        for (align, wanted) in expected {
+            let layout = DocumentLayout(doc: try alignedTable(align), width: 320, theme: DocumentTheme())
+            let block = try XCTUnwrap(layout.blocks.first { $0.attributed.string.contains("x") })
+            let style = try XCTUnwrap(block.attributed.attribute(.paragraphStyle, at: 0,
+                                                                 effectiveRange: nil) as? NSParagraphStyle)
+            XCTAssertEqual(style.alignment, wanted, "align: \(align ?? "nil")")
+        }
+        // Without one, the cell reads whichever way the text does.
+        let plain = DocumentLayout(doc: try alignedTable(nil), width: 320, theme: DocumentTheme())
+        let block = try XCTUnwrap(plain.blocks.first { $0.attributed.string.contains("x") })
+        let style = try XCTUnwrap(block.attributed.attribute(.paragraphStyle, at: 0,
+                                                             effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(style.alignment, .natural)
+    }
+
+    func testAlignedTextIsPlacedAtTheRightPenOffset() throws {
+        // The paragraph style alone isn't enough: lines are positioned by hand,
+        // so the flush has to be applied when they're laid out.
+        func firstLineX(_ align: String?) throws -> CGFloat {
+            let layout = DocumentLayout(doc: try alignedTable(align), width: 320, theme: DocumentTheme())
+            let block = try XCTUnwrap(layout.blocks.first { $0.attributed.string.contains("x") })
+            return try XCTUnwrap(block.lines.first).baselineOrigin.x
+        }
+        let left = try firstLineX("left"), centre = try firstLineX("center"), right = try firstLineX("right")
+        XCTAssertLessThan(left, centre, "centred text should start further in than left-aligned")
+        XCTAssertLessThan(centre, right, "right-aligned should start further in still")
+    }
+
+    func testRealigningACellRetypesetsItsCachedBlock() throws {
+        // The block cache keys on the paragraph, and re-aligning a cell leaves
+        // the paragraph inside it untouched — same node, same buffer, so the
+        // cache hits. Without the alignment in the key it would hand back the
+        // block typeset the old way. Built through a real edit for exactly that
+        // reason: two separately-built documents share no buffers and would
+        // never hit the cache at all.
+        let editor = try Editor(extensions: fullKit())
+        editor.setContent(try alignedTable("left", schema: editor.schema))
+        let cache = TextBlockLayoutCache()
+        let before = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme(), blockCache: cache)
+        let firstBlock = try XCTUnwrap(before.blocks.first { $0.attributed.string.contains("x") })
+        XCTAssertEqual((firstBlock.attributed.attribute(.paragraphStyle, at: 0,
+                                                        effectiveRange: nil) as? NSParagraphStyle)?.alignment,
+                       .left)
+
+        // The cell is at 2: into the table, into the row.
+        let tr = editor.state.tr
+        _ = try tr.setNodeAttribute(2, "align", .string("right"))
+        editor.dispatch(tr)
+        let after = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme(), blockCache: cache)
+        let block = try XCTUnwrap(after.blocks.first { $0.attributed.string.contains("x") })
+        let style = try XCTUnwrap(block.attributed.attribute(.paragraphStyle, at: 0,
+                                                             effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(style.alignment, .right, "a re-aligned cell must not reuse the old block")
     }
 
     func testCellsAreLaidOutAsDistinctBlocks() throws {
