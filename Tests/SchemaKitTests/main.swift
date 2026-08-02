@@ -229,7 +229,7 @@ registerFuzzTests()
 
 registerPMListTests(); registerPMTableMapTests(); registerPMTableCommandsTests(); registerPMCellCopyPasteTests(); registerPMTableExtraTests()
 registerPMTableMoveTests()
-registerPMColumnResizingTests(); registerTableOptionTests(); registerCellSelectionMappingTests()
+registerFootnoteTests(); registerPMColumnResizingTests(); registerTableOptionTests(); registerCellSelectionMappingTests()
 registerSuggestionModeTests()
 registerPolishCoverageTests()
 registerFigureTests()

@@ -125,6 +125,7 @@ final class TextBlockLayoutCache {
     /// into each block's attributed string (not part of `Key`), so a theme change
     /// must drop the cache — otherwise a new theme reuses stale-styled blocks.
     private(set) var lastTheme: DocumentTheme?
+    private(set) var lastFootnoteOrder: [String: Int]?
 
     var debugEntryCount: Int { entries.count }
 
@@ -133,6 +134,15 @@ final class TextBlockLayoutCache {
     func syncTheme(_ theme: DocumentTheme) {
         if let lastTheme, lastTheme != theme { entries.removeAll() }
         lastTheme = theme
+    }
+
+    /// A footnote reference draws the number it has in the document, not
+    /// anything the node itself carries — so when the numbering changes, blocks
+    /// keyed on unchanged nodes are showing stale numbers and have to go. For a
+    /// document without footnotes both sides stay empty and nothing is dropped.
+    func syncFootnoteOrder(_ order: [String: Int]) {
+        if let lastFootnoteOrder, lastFootnoteOrder != order { entries.removeAll() }
+        lastFootnoteOrder = order
     }
 
     private static func key(_ node: Node, _ width: CGFloat, _ checked: Bool) -> Key {
@@ -194,6 +204,10 @@ final class DocumentLayout {
     /// run. Kept separate from `highlights` so the (demo) drying-ink renderer,
     /// which consumes `highlights`, never textures a code pill.
     private(set) var codeBackgrounds: [(from: Int, to: Int, color: UIColor)] = []
+    /// Which number each footnote label shows as, in reading order. A block
+    /// on its own can't know its place, so the whole document is numbered once
+    /// up front.
+    private var footnoteOrder: [String: Int] = [:]
     /// Laid-out tables, for column-border hit-testing and resize.
     struct TableInfo {
         let tablePos: Int
@@ -261,13 +275,16 @@ final class DocumentLayout {
         self.syntaxHighlighter = syntaxHighlighter
         self.codeLanguageLabel = codeLanguageLabel
         self.mathRenderer = mathRenderer
+        footnoteOrder = Self.footnoteOrdering(doc)
         blockCache?.syncTheme(theme) // drop stale-styled blocks when the theme changes
+        blockCache?.syncFootnoteOrder(footnoteOrder)
         blockCache?.beginPass()
         let contentWidth = width - theme.pageInsets.left - theme.pageInsets.right
         let x = theme.pageInsets.left
         // Only reuse a previous layout when it was built with the same theme — its
         // entries bake in the old colors/fonts, so a theme change must re-lay them.
         if let previous, previous.width == width, previous.theme == theme,
+           previous.footnoteOrder == footnoteOrder,
            let (front, back) = diff(doc, previous), front + back > 0 {
             // A real edit: reuse the unchanged prefix/suffix, re-lay the middle.
             buildIncremental(doc, previous: previous, front: front, back: back, x: x, width: contentWidth)
@@ -569,6 +586,8 @@ final class DocumentLayout {
             return layoutFragment(node.content, docPos: docPos + 1, x: x, width: width, y: y, isFirst: true)
         case "details":
             return layoutDetails(node, docPos: docPos, x: x, width: width, y: y)
+        case "footnoteDefinition":
+            return layoutFootnoteDefinition(node, docPos: docPos, x: x, width: width, y: y)
         case "horizontalRule":
             let lineY = y + 8
             decorations.append(.fill(CGRect(x: x, y: lineY, width: width, height: 1), theme.quoteBarColor))
@@ -714,6 +733,66 @@ final class DocumentLayout {
             pos += item.nodeSize
         }
         return y
+    }
+
+    /// A footnote's note: its number in the gutter, its blocks indented beside
+    /// it — the shape a note takes at the foot of a page.
+    private func layoutFootnoteDefinition(_ node: Node, docPos: Int, x: CGFloat,
+                                          width: CGFloat, y: CGFloat) -> CGFloat {
+        let indent = theme.listIndent
+        let marker = footnoteNumber(node.attrs["label"]?.stringValue ?? "") + "."
+        let markerAttrs: [NSAttributedString.Key: Any] = [
+            .font: theme.bodyFont, .foregroundColor: theme.linkColor,
+        ]
+        let markerWidth = (marker as NSString).size(withAttributes: markerAttrs).width
+        decorations.append(.text(marker, CGPoint(x: x + indent - markerWidth - 8, y: y), markerAttrs))
+        return layoutFragment(node.content, docPos: docPos + 1, x: x + indent,
+                              width: width - indent, y: y, isFirst: true)
+    }
+
+    /// What to show for a footnote label: its place among the references, so
+    /// the numbers read 1, 2, 3 however the labels are spelled. Computed once
+    /// for the document, since a block on its own can't know the order.
+    private func footnoteNumber(_ label: String) -> String {
+        footnoteOrder[label].map(String.init) ?? label
+    }
+
+    /// Every footnote label in the document, numbered in reading order:
+    /// references first, then any note nothing refers to.
+    static func footnoteOrdering(_ doc: Node) -> [String: Int] {
+        // One walk, not two: this runs for every layout, so a long document
+        // shouldn't be traversed more than it has to be. References are
+        // numbered in reading order and notes take what's left, so both are
+        // collected in the same pass and ordered afterwards.
+        //
+        // Deliberately not short-circuited on "does this schema have
+        // footnotes": `NodeType.schema` is `unowned(unsafe)`, and a document
+        // outliving the schema that made it is ordinary in this codebase —
+        // reading through it crashes.
+        var referenced: [String] = []
+        var defined: [String] = []
+        var seenReference = Set<String>()
+        var seenDefinition = Set<String>()
+        doc.descendants { node, _, _, _ in
+            switch node.type.name {
+            case "footnoteReference":
+                let label = node.attrs["label"]?.stringValue ?? ""
+                if seenReference.insert(label).inserted { referenced.append(label) }
+            case "footnoteDefinition":
+                let label = node.attrs["label"]?.stringValue ?? ""
+                if seenDefinition.insert(label).inserted { defined.append(label) }
+            default: break
+            }
+            return true
+        }
+        guard !referenced.isEmpty || !defined.isEmpty else { return [:] }
+        var order: [String: Int] = [:]
+        var next = 1
+        for label in referenced + defined where order[label] == nil {
+            order[label] = next
+            next += 1
+        }
+        return order
     }
 
     private func layoutTaskList(_ node: Node, docPos: Int, x: CGFloat, width: CGFloat, y: CGFloat) -> CGFloat {
@@ -1065,6 +1144,10 @@ final class DocumentLayout {
                     display = child.attrs["label"]?.stringValue ?? child.attrs["target"]?.stringValue ?? "link"
                 case "inlineMath":
                     display = "$" + (child.attrs["latex"]?.stringValue ?? "") + "$"
+                case "footnoteReference":
+                    // The number a reader sees, not the label: `[^note]` is the
+                    // second footnote, so it reads as "2".
+                    display = footnoteNumber(child.attrs["label"]?.stringValue ?? "")
                 default:
                     display = "🖼"
                 }
@@ -1072,6 +1155,13 @@ final class DocumentLayout {
                     ? [.font: blockFont, .foregroundColor: theme.linkColor]
                     : [.font: child.type.name == "inlineMath" ? theme.monoFont : blockFont,
                        .foregroundColor: theme.codeColor]
+                if child.type.name == "footnoteReference" {
+                    // Raised and smaller, the way a footnote marker is set.
+                    let superscript = blockFont.withSize(max(8, blockFont.pointSize * 0.75))
+                    atomAttrs = [.font: superscript,
+                                 .baselineOffset: blockFont.pointSize * 0.35,
+                                 .foregroundColor: theme.linkColor]
+                }
                 if child.type.name == "wikiLink", theme.linkUnderline {
                     atomAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
                 }
