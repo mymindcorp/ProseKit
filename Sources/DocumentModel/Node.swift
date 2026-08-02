@@ -103,10 +103,13 @@ public struct Node: Hashable, Sendable {
     /// it as a `Node`. For text nodes, this slices the text content.
     public func cut(_ from: Int, _ to: Int? = nil) -> Node {
         if isText {
-            let chars = Array(text ?? "")
-            let to = to ?? chars.count
-            if from == 0 && to == chars.count { return self }
-            return withText(String(chars[from..<to]))
+            let s = text ?? ""
+            let count = s.count
+            let to = to ?? count
+            if from == 0 && to == count { return self }
+            let start = s.index(s.startIndex, offsetBy: from)
+            let end = s.index(start, offsetBy: to - from)
+            return withText(String(s[start..<end]))
         }
         let to = to ?? content.size
         if from == 0 && to == content.size { return self }

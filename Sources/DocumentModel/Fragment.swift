@@ -100,10 +100,16 @@ public struct Fragment: Hashable, Sendable {
             var nodeText = ""
             if node.isText {
                 let s = node.text ?? ""
-                let chars = Array(s)
-                let lo = max(from, pos) - pos
-                let hi = min(s.count, to - pos)
-                nodeText = String(chars[max(0, lo)..<max(0, hi)])
+                let count = s.count
+                let lo = max(0, max(from, pos) - pos)
+                let hi = max(0, min(count, to - pos))
+                if lo == 0 && hi >= count {
+                    nodeText = s
+                } else if lo < hi {
+                    let start = s.index(s.startIndex, offsetBy: lo)
+                    let end = s.index(start, offsetBy: hi - lo)
+                    nodeText = String(s[start..<end])
+                }
             } else if node.isLeaf {
                 if let leafText {
                     nodeText = leafText
@@ -157,10 +163,12 @@ public struct Fragment: Hashable, Sendable {
                     var c = child
                     if pos < from || end > to {
                         if c.isText {
-                            let s = Array(c.text ?? "")
+                            let s = c.text ?? ""
                             let lo = max(0, from - pos)
                             let hi = min(s.count, to - pos)
-                            c = c.withText(String(s[lo..<hi]))
+                            let start = s.index(s.startIndex, offsetBy: lo)
+                            let end = s.index(start, offsetBy: max(0, hi - lo))
+                            c = c.withText(String(s[start..<end]))
                         } else {
                             c = c.cut(max(0, from - pos - 1), min(c.content.size, to - pos - 1))
                         }
