@@ -107,6 +107,12 @@ final class TextBlockLayoutCache {
         let marks: [Mark]
         let buffer: UInt
         let width: CGFloat
+        /// Styling inherited from an enclosing node rather than from the block
+        /// itself: a paragraph is the *same* node whether its task item is
+        /// checked or not, so without this a toggle would reuse the stale
+        /// (unstruck) typeset. Theme changes drop the cache wholesale, so this
+        /// only has to capture the inherited state, not the styling it implies.
+        let checked: Bool
     }
     private struct Entry {
         let node: Node // retains the keyed buffer
@@ -129,21 +135,21 @@ final class TextBlockLayoutCache {
         lastTheme = theme
     }
 
-    private static func key(_ node: Node, _ width: CGFloat) -> Key {
+    private static func key(_ node: Node, _ width: CGFloat, _ checked: Bool) -> Key {
         let buffer = node.content.content.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
         return Key(type: ObjectIdentifier(node.type), attrs: node.attrs, marks: node.marks,
-                   buffer: buffer, width: width)
+                   buffer: buffer, width: width, checked: checked)
     }
 
-    func lookup(_ node: Node, width: CGFloat) -> LocalTextBlock? {
-        let key = Self.key(node, width)
+    func lookup(_ node: Node, width: CGFloat, checked: Bool) -> LocalTextBlock? {
+        let key = Self.key(node, width, checked)
         guard var entry = entries[key] else { return nil }
         entry.generation = generation
         entries[key] = entry
         return entry.block
     }
-    func store(_ node: Node, width: CGFloat, _ block: LocalTextBlock) {
-        entries[Self.key(node, width)] = Entry(node: node, block: block, generation: generation)
+    func store(_ node: Node, width: CGFloat, checked: Bool, _ block: LocalTextBlock) {
+        entries[Self.key(node, width, checked)] = Entry(node: node, block: block, generation: generation)
     }
     func beginPass() { generation += 1 }
     /// Drop everything (e.g. when the syntax highlighter changes).
@@ -171,6 +177,11 @@ final class DocumentLayout {
     /// Tappable task-item checkboxes: their hit rect, the task item's document
     /// position, and current checked state.
     private(set) var checkboxes: [(rect: CGRect, pos: Int, checked: Bool)] = []
+    /// Whether the block being laid out sits inside a *checked* task item, so it
+    /// is typeset in the theme's checked style. Set for the duration of that
+    /// item's subtree by `layoutTaskList`, and part of the block cache's key —
+    /// the same paragraph node can appear checked or not.
+    private var inCheckedItem = false
     /// Tappable details disclosure triangles: their hit rect, the `details`
     /// node's document position, and whether it is currently open.
     private(set) var disclosures: [(rect: CGRect, pos: Int, open: Bool)] = []
@@ -718,7 +729,15 @@ final class DocumentLayout {
             // checkbox-view recycling) positioned over this rect — the layout
             // only reserves its (touch-padded) box for positioning + hit-test.
             checkboxes.append((rect: boxRect.insetBy(dx: -6, dy: -6), pos: pos, checked: checked))
+            // The item's whole subtree is typeset in its checked style. Saved and
+            // restored rather than just set, so a nested list under a checked
+            // item is governed by its *own* item — an unchecked sub-task is still
+            // to do, whatever its parent says. (Tiptap's descendant selector
+            // strikes those too; this reads better.)
+            let outer = inCheckedItem
+            inCheckedItem = checked
             y = layoutFragment(item.content, docPos: pos + 1, x: x + theme.listIndent, width: width - theme.listIndent, y: y, isFirst: true)
+            inCheckedItem = outer
             pos += item.nodeSize
         }
         return y
@@ -853,9 +872,9 @@ final class DocumentLayout {
         let contentStart = docPos + 1
         // Reuse the cached typeset block (in local coords) when unchanged; this
         // is what keeps per-keystroke cost off the whole document.
-        let local = blockCache?.lookup(node, width: width) ?? {
+        let local = blockCache?.lookup(node, width: width, checked: inCheckedItem) ?? {
             let built = typesetBlock(node, contentStart: contentStart, width: width)
-            blockCache?.store(node, width: width, built)
+            blockCache?.store(node, width: width, checked: inCheckedItem, built)
             return built
         }()
 
@@ -900,7 +919,7 @@ final class DocumentLayout {
         let rtl = isRightToLeft(attr.string)
         let base = NSMutableAttributedString(attributedString:
             attr.length == 0 ? NSAttributedString(string: " ", attributes: [.font: theme.blockFont(node)]) : attr)
-        let centred = node.type.name == "figcaption" && theme.captionAlignment == .center
+        let centred = node.type.name == "figcaption" && theme.caption.alignment == .center
         let para = NSMutableParagraphStyle()
         para.baseWritingDirection = rtl ? .rightToLeft : .leftToRight
         para.alignment = centred ? .center : (rtl ? .right : .natural)
@@ -969,11 +988,19 @@ final class DocumentLayout {
             // keeps the default `textColor`. (Marks still win over either.)
             let headingColor = (node.type.name == "heading" && (node.attrs["level"]?.intValue ?? 1) > 1)
                 ? theme.headingColor : nil
-            // A caption is quieter than body text (marks still win over both).
-            let baseColor = node.type.name == "figcaption" ? theme.captionColor : headingColor
-            let attrs = node.type.name == "codeBlock"
+            // A caption is quieter than body text (marks still win over both);
+            // inside a checked task item, the item's own color wins instead.
+            let baseColor = node.type.name == "figcaption"
+                ? theme.caption.color
+                : (inCheckedItem ? theme.taskItem.checkedTextColor : nil) ?? headingColor
+            var attrs = node.type.name == "codeBlock"
                 ? [NSAttributedString.Key.font: theme.monoFont, .foregroundColor: theme.textColor]
                 : theme.attributes(for: marks, baseFont: blockFont, baseColor: baseColor)
+            // A checked item reads as done: struck through, like Reminders.
+            // (A `strike` mark sets the same attribute, so they can't conflict.)
+            if inCheckedItem, theme.taskItem.strikethroughWhenChecked {
+                attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            }
             // Highlight and backgroundColor marks paint a background behind the
             // run (drawn separately since CoreText ignores `.backgroundColor`).
             if !text.isEmpty {

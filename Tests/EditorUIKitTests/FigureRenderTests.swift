@@ -54,7 +54,7 @@ final class FigureRenderTests: XCTestCase {
 
     func testCaptionAlignmentIsThemeable() throws {
         var theme = TextTheme()
-        theme.captionAlignment = .natural
+        theme.caption.alignment = .natural
         let layout = view(try editor(caption: "A cat"), theme: theme).ensureLayout()
         let caption = try XCTUnwrap(block(layout, "A cat"))
         let body = try XCTUnwrap(block(layout, "body"))
@@ -74,7 +74,7 @@ final class FigureRenderTests: XCTestCase {
 
     func testCaptionColourReachesTheScreen() throws {
         var theme = TextTheme()
-        theme.captionColor = .systemRed
+        theme.caption.color = .systemRed
         let v = view(try editor(caption: "A cat"), theme: theme)
         let image = UIGraphicsImageRenderer(bounds: v.bounds).image { _ in
             v.layer.render(in: UIGraphicsGetCurrentContext()!)
@@ -112,6 +112,24 @@ final class FigureRenderTests: XCTestCase {
         ]))
         e.setContent(try s.node("doc", [:], content: Fragment.from([figure])))
         XCTAssertNotNil(block(view(e).ensureLayout(), "body"))
+    }
+
+    /// The caption options moved into `theme.caption`; the flat names stay as
+    /// deprecated forwarders so hosts on the old spelling keep working.
+    @available(*, deprecated)
+    func testFlatCaptionNamesStillForwardToTheGroup() {
+        var theme = TextTheme()
+        theme.captionColor = .systemRed
+        theme.captionScale = 0.5
+        theme.captionAlignment = .natural
+        theme.captionSpacing = 9
+        XCTAssertEqual(theme.caption.color, .systemRed)
+        XCTAssertEqual(theme.caption.scale, 0.5)
+        XCTAssertEqual(theme.caption.alignment, .natural)
+        XCTAssertEqual(theme.caption.spacing, 9)
+        // And reading back through the old name sees a change made on the group.
+        theme.caption.color = .systemBlue
+        XCTAssertEqual(theme.captionColor, .systemBlue)
     }
 
     private func hasPixel(_ image: UIImage, _ predicate: (UInt8, UInt8, UInt8) -> Bool) -> Bool {

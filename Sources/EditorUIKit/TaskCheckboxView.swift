@@ -39,7 +39,6 @@ public final class DefaultTaskCheckboxView: UIView, TaskCheckboxView {
     public override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
-        fillLayer.fillColor = theme.caretColor.cgColor
         strokeLayer.fillColor = nil
         strokeLayer.lineWidth = 1.5
         checkLayer.fillColor = nil
@@ -91,8 +90,8 @@ public final class DefaultTaskCheckboxView: UIView, TaskCheckboxView {
     }
 
     private func updateColors() {
-        fillLayer.fillColor = theme.caretColor.cgColor
-        strokeLayer.strokeColor = theme.quoteBarColor.cgColor
+        fillLayer.fillColor = (theme.taskItem.checkboxTint ?? theme.caretColor).cgColor
+        strokeLayer.strokeColor = (theme.taskItem.checkboxBorderColor ?? theme.quoteBarColor).cgColor
     }
 
     /// Set the static (non-animated) visual state for `isChecked`.
