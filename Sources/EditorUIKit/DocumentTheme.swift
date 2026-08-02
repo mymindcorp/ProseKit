@@ -20,11 +20,6 @@ extension UIColor {
     }
 }
 
-/// Was `TextTheme`, which undersold it: it styles the page, the caret and
-/// selection, and the editor's popups too, not only text.
-@available(*, deprecated, renamed: "DocumentTheme")
-public typealias TextTheme = DocumentTheme
-
 /// Visual styling for a rendered document: fonts, colors, and block spacing.
 /// The layout engine reads this to build attributed strings and position
 /// blocks. Shared by the editable `EditorTextView` and the read-only
@@ -119,25 +114,6 @@ public struct DocumentTheme: Sendable, Equatable {
     public var quoteIndent: CGFloat = 16
 
     public init() {}
-
-    // The caption options moved into `caption` once they outgrew a flat prefix.
-    // Forwarders so existing hosts keep compiling; drop them at the next major.
-    @available(*, deprecated, renamed: "caption.color")
-    public var captionColor: UIColor {
-        get { caption.color } set { caption.color = newValue }
-    }
-    @available(*, deprecated, renamed: "caption.scale")
-    public var captionScale: CGFloat {
-        get { caption.scale } set { caption.scale = newValue }
-    }
-    @available(*, deprecated, renamed: "caption.alignment")
-    public var captionAlignment: NSTextAlignment {
-        get { caption.alignment } set { caption.alignment = newValue }
-    }
-    @available(*, deprecated, renamed: "caption.spacing")
-    public var captionSpacing: CGFloat {
-        get { caption.spacing } set { caption.spacing = newValue }
-    }
 
     /// The body point size (Dynamic Type scaled, or fixed).
     private var bodyPointSize: CGFloat {

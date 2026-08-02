@@ -114,24 +114,6 @@ final class FigureRenderTests: XCTestCase {
         XCTAssertNotNil(block(view(e).ensureLayout(), "body"))
     }
 
-    /// The caption options moved into `theme.caption`; the flat names stay as
-    /// deprecated forwarders so hosts on the old spelling keep working.
-    @available(*, deprecated)
-    func testFlatCaptionNamesStillForwardToTheGroup() {
-        var theme = DocumentTheme()
-        theme.captionColor = .systemRed
-        theme.captionScale = 0.5
-        theme.captionAlignment = .natural
-        theme.captionSpacing = 9
-        XCTAssertEqual(theme.caption.color, .systemRed)
-        XCTAssertEqual(theme.caption.scale, 0.5)
-        XCTAssertEqual(theme.caption.alignment, .natural)
-        XCTAssertEqual(theme.caption.spacing, 9)
-        // And reading back through the old name sees a change made on the group.
-        theme.caption.color = .systemBlue
-        XCTAssertEqual(theme.captionColor, .systemBlue)
-    }
-
     private func hasPixel(_ image: UIImage, _ predicate: (UInt8, UInt8, UInt8) -> Bool) -> Bool {
         guard let cg = image.cgImage else { return false }
         let w = cg.width, h = cg.height

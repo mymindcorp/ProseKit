@@ -49,17 +49,5 @@ final class ThemeFontTests: XCTestCase {
         // Falls back to the system font rather than crashing or returning nil.
         XCTAssertGreaterThan(theme.bodyFont.pointSize, 0)
     }
-
-    /// `DocumentTheme` was `TextTheme`; the old name stays as a deprecated
-    /// alias so hosts (and their stored properties) keep compiling.
-    @available(*, deprecated)
-    func testTextThemeStillNamesTheSameType() {
-        var theme = TextTheme()
-        theme.textColor = .systemRed
-        let asDocumentTheme: DocumentTheme = theme
-        XCTAssertEqual(asDocumentTheme.textColor, .systemRed)
-        XCTAssertEqual(DocumentView(theme: theme).theme, asDocumentTheme,
-                       "the alias is accepted wherever the new name is")
-    }
 }
 #endif
