@@ -1843,6 +1843,46 @@ test("Markdown parses autolinks") {
     }
 }
 
+test("Markdown parses an email autolink") {
+    // The address is written without a scheme; the href needs one.
+    for address in ["foo@bar.example.com", "foo+special@Bar.baz-bar0.com", "a@b.co"] {
+        let d = try MarkdownParser.parse("<\(address)>", schema: schema)
+        let text = d.child(0).child(0)
+        try expectEqual(text.text, address, "input: \(address)")
+        try expectEqual(text.marks.first?.attrs["href"], .string("mailto:" + address),
+                        "input: \(address)")
+    }
+    // Not addresses: nothing before or after the "@", a label that starts or
+    // ends with a hyphen, an empty label, and a space inside.
+    for md in ["<@example.com>", "<foo@>", "<foo@-example.com>", "<foo@example-.com>",
+               "<foo@example..com>", "<foo bar@example.com>", "<foo@exam ple.com>"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expect(d.child(0).child(0).marks.isEmpty, "input \(md) became a link")
+    }
+}
+
+test("Markdown round-trip: an email autolink") {
+    let md = "<foo@bar.example.com>"
+    let parsed = try MarkdownParser.parse(md, schema: schema)
+    try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(parsed), schema: schema),
+                    parsed)
+}
+
+test("Markdown: a tab after a list marker lands on the line's tab stop") {
+    // A tab stop is a column on the *line*, so the tab after "-" advances to
+    // column 4 — not to column 4 counted from after the marker, which left the
+    // code block a space too deep.
+    let d = try MarkdownParser.parse("-\t\tfoo", schema: schema)
+    let item = d.child(0).child(0)
+    try expectEqual(item.child(item.childCount - 1).textContent, "  foo")
+    // An item that is itself indented counts from where it really starts: with
+    // the marker at column 2 the tabs reach columns 4 and 8, the content column
+    // is 4, and the four columns left over are exactly the code indent — so the
+    // block holds "foo" with nothing before it. Counting from zero left three.
+    let nested = try MarkdownParser.parse("  -\t\tfoo", schema: schema)
+    try expectEqual(nested.child(0).child(0).lastChild?.textContent, "foo")
+}
+
 test("Markdown round-trip: a link and image title") {
     let link = doc(p(schema.text("x", [schema.mark("link", ["href": .string("/uri"),
                                                             "title": .string("the title")])])))
