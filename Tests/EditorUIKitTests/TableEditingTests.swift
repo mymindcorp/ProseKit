@@ -150,6 +150,67 @@ final class TableEditingTests: XCTestCase {
         XCTAssertTrue(view.editor.state.selection.empty)
     }
 
+    /// The same table, but with the table extension configured.
+    private func tableEditor(options: TableOptions) throws -> Editor {
+        let editor = try Editor(extensions: fullKit(tableOptions: options))
+        let s = editor.schema
+        let cell = try s.node("tableCell", [:], content: Fragment.from([
+            try s.node("paragraph", [:], content: Fragment.from([s.text("x")])),
+        ]))
+        let row = try s.node("tableRow", [:], content: Fragment.from([cell, cell]))
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            try s.node("table", [:], content: Fragment.from([row])),
+        ])))
+        return editor
+    }
+
+    func testResizableFalseRefusesTheBorderDrag() throws {
+        let editor = try tableEditor(options: TableOptions(resizable: false))
+        let view = makeView(editor)
+        let info = try XCTUnwrap(DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme()).tables.first)
+        let widthsBefore = info.widths
+        let borderX = info.borderX(after: 0)
+        let y = (info.top + info.bottom) / 2
+        // The plugin isn't installed, so the view finds nothing to grab.
+        XCTAssertNil(view.columnBorderHit(at: CGPoint(x: borderX, y: y)))
+        view.beginColumnResize(at: CGPoint(x: borderX, y: y))
+        view.updateColumnResize(to: CGPoint(x: borderX - 60, y: y))
+        view.endColumnResize()
+        let after = try XCTUnwrap(DocumentLayout(doc: view.editor.doc, width: 320, theme: TextTheme()).tables.first)
+        XCTAssertEqual(after.widths, widthsBefore, "a table that isn't resizable shouldn't resize")
+    }
+
+    func testHandleWidthDecidesHowCloseAGrabHasToBe() throws {
+        let narrow = try tableEditor(options: TableOptions(
+            columnResizing: ColumnResizingOptions(handleWidth: 2)))
+        let wide = try tableEditor(options: TableOptions(
+            columnResizing: ColumnResizingOptions(handleWidth: 20)))
+        for (editor, grabbable) in [(narrow, false), (wide, true)] {
+            let view = makeView(editor)
+            let info = try XCTUnwrap(DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme()).tables.first)
+            let y = (info.top + info.bottom) / 2
+            // 10pt off the border: outside a 2pt grab area, inside a 20pt one.
+            let point = CGPoint(x: info.borderX(after: 0) - 10, y: y)
+            XCTAssertEqual(view.columnBorderHit(at: point) != nil, grabbable,
+                           "handleWidth should decide whether a press 10pt away grabs the border")
+        }
+    }
+
+    func testCellMinWidthLimitsHowFarAColumnShrinks() throws {
+        let editor = try tableEditor(options: TableOptions(
+            columnResizing: ColumnResizingOptions(cellMinWidth: 100)))
+        let view = makeView(editor)
+        let info = try XCTUnwrap(DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme()).tables.first)
+        let borderX = info.borderX(after: 0)
+        let y = (info.top + info.bottom) / 2
+        // Drag far past the limit; the column should stop at it.
+        view.beginColumnResize(at: CGPoint(x: borderX, y: y))
+        view.updateColumnResize(to: CGPoint(x: borderX - 300, y: y))
+        view.endColumnResize()
+        let after = try XCTUnwrap(DocumentLayout(doc: view.editor.doc, width: 320, theme: TextTheme()).tables.first)
+        XCTAssertGreaterThanOrEqual(after.widths[0], 99, "cellMinWidth should stop the shrink")
+    }
+
     func testCellsAreLaidOutAsDistinctBlocks() throws {
         let editor = try tableEditor()
         let layout = DocumentLayout(doc: editor.doc, width: 320, theme: TextTheme())

@@ -602,8 +602,9 @@ public final class GapCursorExtension: Extension {
 public func fullKit(wikiLinkSuggestions: (@Sendable (String) -> [String])? = nil,
                     wikiLinkAsyncSuggestions: (@Sendable (String) async -> [String])? = nil,
                     mentionSuggestions: (@Sendable (String) -> [String])? = nil,
-                    mentionAsyncSuggestions: (@Sendable (String) async -> [String])? = nil) -> [any Extension] {
-    starterKit() + tableExtensions() + taskListExtensions() + detailsExtensions()
+                    mentionAsyncSuggestions: (@Sendable (String) async -> [String])? = nil,
+                    tableOptions: TableOptions = TableOptions()) -> [any Extension] {
+    starterKit() + tableExtensions(options: tableOptions) + taskListExtensions() + detailsExtensions()
         + mathematicsExtensions()
         + [ImageExtension(), WikiLinkExtension(suggestions: wikiLinkSuggestions,
                                                asyncSuggestions: wikiLinkAsyncSuggestions),

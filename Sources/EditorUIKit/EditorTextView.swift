@@ -1723,7 +1723,9 @@ open class EditorTextView: UIView, UIKeyInput {
 
     func columnBorderHit(at point: CGPoint) -> (table: DocumentLayout.TableInfo, leftColumn: Int)? {
         guard isEditable else { return nil } // read-only: no column resizing
-        let tolerance: CGFloat = 6
+        // No resizing plugin, no resizing: that is how a table configured
+        // `resizable: false` reaches the view.
+        guard let tolerance = columnResizingOptions.map({ CGFloat($0.handleWidth) }) else { return nil }
         for table in ensureLayout().tables where point.y >= table.top && point.y <= table.bottom {
             // Internal borders only (resizing the outer edges would change the
             // table's total width).
@@ -1734,8 +1736,14 @@ open class EditorTextView: UIView, UIKeyInput {
         return nil
     }
 
+    /// The resizing options the table extension was configured with, or nil
+    /// when the plugin isn't installed at all.
+    private var columnResizingOptions: ColumnResizingOptions? {
+        columnResizingKey.getState(editor.state)?.options
+    }
+
     private func performColumnResize(_ r: (tablePos: Int, leftColumn: Int, widths: [CGFloat], originX: CGFloat), to point: CGPoint) {
-        let minWidth: CGFloat = 24
+        let minWidth = CGFloat(columnResizingOptions?.cellMinWidth ?? 24)
         let left = r.leftColumn, right = r.leftColumn + 1
         guard right < r.widths.count else { return }
         let originalBorderX = r.originX + r.widths[0...left].reduce(0, +)

@@ -151,6 +151,23 @@ public final class CellSelection: Selection {
 
     public override func getBookmark() -> any SelectionBookmark { CellBookmark(anchor: anchorCell.pos, head: headCell.pos) }
 
+    /// The cell the map holds at `index`, if the position it gives really is a
+    /// cell of this table.
+    ///
+    /// Every caller below computes a position out of map arithmetic and then
+    /// resolves it. That is safe for a rectangular table, but a document is
+    /// briefly ragged mid-transaction — the selection is mapped before
+    /// `fixTables` squares the table up — and an index can then land outside it.
+    /// Resolving that and handing it to `CellSelection.init` trapped, because a
+    /// table map cannot be built from the document node.
+    private static func cell(_ doc: Node, _ map: TableMap, _ tableStart: Int, _ index: Int) -> ResolvedPos? {
+        guard index >= 0, index < map.map.count else { return nil }
+        let pos = tableStart + map.map[index]
+        guard pos >= 0, pos <= doc.content.size else { return nil }
+        let resolved = doc.resolve(pos)
+        return pointsAtCell(resolved) ? resolved : nil
+    }
+
     /// The smallest column selection covering the two cells.
     public static func colSelection(_ anchorCell0: ResolvedPos, _ headCell0: ResolvedPos? = nil) -> CellSelection {
         var anchorCell = anchorCell0
@@ -162,11 +179,13 @@ public final class CellSelection: Selection {
         let headRect = map.findCell(headCell.pos - tableStart)
         let doc = anchorCell.node(0)
         if anchorRect.top <= headRect.top {
-            if anchorRect.top > 0 { anchorCell = doc.resolve(tableStart + map.map[anchorRect.left]) }
-            if headRect.bottom < map.height { headCell = doc.resolve(tableStart + map.map[map.width * (map.height - 1) + headRect.right - 1]) }
+            if anchorRect.top > 0, let c = cell(doc, map, tableStart, anchorRect.left) { anchorCell = c }
+            if headRect.bottom < map.height,
+               let c = cell(doc, map, tableStart, map.width * (map.height - 1) + headRect.right - 1) { headCell = c }
         } else {
-            if headRect.top > 0 { headCell = doc.resolve(tableStart + map.map[headRect.left]) }
-            if anchorRect.bottom < map.height { anchorCell = doc.resolve(tableStart + map.map[map.width * (map.height - 1) + anchorRect.right - 1]) }
+            if headRect.top > 0, let c = cell(doc, map, tableStart, headRect.left) { headCell = c }
+            if anchorRect.bottom < map.height,
+               let c = cell(doc, map, tableStart, map.width * (map.height - 1) + anchorRect.right - 1) { anchorCell = c }
         }
         return CellSelection(anchorCell, headCell)
     }
@@ -182,11 +201,13 @@ public final class CellSelection: Selection {
         let headRect = map.findCell(headCell.pos - tableStart)
         let doc = anchorCell.node(0)
         if anchorRect.left <= headRect.left {
-            if anchorRect.left > 0 { anchorCell = doc.resolve(tableStart + map.map[anchorRect.top * map.width]) }
-            if headRect.right < map.width { headCell = doc.resolve(tableStart + map.map[map.width * (headRect.top + 1) - 1]) }
+            if anchorRect.left > 0, let c = cell(doc, map, tableStart, anchorRect.top * map.width) { anchorCell = c }
+            if headRect.right < map.width,
+               let c = cell(doc, map, tableStart, map.width * (headRect.top + 1) - 1) { headCell = c }
         } else {
-            if headRect.left > 0 { headCell = doc.resolve(tableStart + map.map[headRect.top * map.width]) }
-            if anchorRect.right < map.width { anchorCell = doc.resolve(tableStart + map.map[map.width * (anchorRect.top + 1) - 1]) }
+            if headRect.left > 0, let c = cell(doc, map, tableStart, headRect.top * map.width) { headCell = c }
+            if anchorRect.right < map.width,
+               let c = cell(doc, map, tableStart, map.width * (anchorRect.top + 1) - 1) { anchorCell = c }
         }
         return CellSelection(anchorCell, headCell)
     }
