@@ -193,7 +193,7 @@ final class RevealRectTests: XCTestCase {
         // Deterministic insets: without this, the simulated device's safe
         // area feeds adjustedContentInset and shifts every expected offset.
         scroll.contentInsetAdjustmentBehavior = .never
-        var theme = TextTheme()
+        var theme = DocumentTheme()
         theme.pageInsets = .zero   // caret at y=0 so the reveal target underflows
         let view = EditorTextView(editor: editor, theme: theme)
         scroll.addSubview(view)

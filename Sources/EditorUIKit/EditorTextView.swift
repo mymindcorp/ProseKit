@@ -26,7 +26,7 @@ public struct HighlightRun {
 @MainActor
 open class EditorTextView: UIView, UIKeyInput {
     public let editor: Editor
-    public var theme: TextTheme { didSet { invalidateLayout() } }
+    public var theme: DocumentTheme { didSet { invalidateLayout() } }
     /// Text shown when the document is empty.
     public var placeholder: String? { didSet { setNeedsDisplay() } }
     /// Whether misspelled words are underlined.
@@ -118,7 +118,7 @@ open class EditorTextView: UIView, UIKeyInput {
     private var activeEntries: [SuggestionEntry] = []
     private var suggestionPopup: SuggestionPopupView?
 
-    public init(editor: Editor, theme: TextTheme = TextTheme(), frame: CGRect = .zero) {
+    public init(editor: Editor, theme: DocumentTheme = DocumentTheme(), frame: CGRect = .zero) {
         self.editor = editor
         self.theme = theme
         super.init(frame: frame)

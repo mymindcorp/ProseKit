@@ -17,13 +17,13 @@ final class ThemeFontTests: XCTestCase {
     }
 
     func testDefaultUsesSystemFont() {
-        let theme = TextTheme()
+        let theme = DocumentTheme()
         XCTAssertTrue(theme.bodyFont.familyName.contains("System") || theme.bodyFont.fontName.hasPrefix("."),
                       "default body font should be the system font")
     }
 
     func testCustomBodyFontIsApplied() {
-        var theme = TextTheme()
+        var theme = DocumentTheme()
         theme.dynamicType = false
         theme.fontName = "Georgia"
         XCTAssertEqual(theme.bodyFont.familyName, "Georgia")
@@ -38,16 +38,28 @@ final class ThemeFontTests: XCTestCase {
     }
 
     func testCustomMonoFontIsApplied() {
-        var theme = TextTheme()
+        var theme = DocumentTheme()
         theme.monoFontName = "Courier New"
         XCTAssertEqual(theme.monoFont.familyName, "Courier New")
     }
 
     func testInvalidFontNameFallsBackToSystem() {
-        var theme = TextTheme()
+        var theme = DocumentTheme()
         theme.fontName = "ThisFontDoesNotExist-XYZ"
         // Falls back to the system font rather than crashing or returning nil.
         XCTAssertGreaterThan(theme.bodyFont.pointSize, 0)
+    }
+
+    /// `DocumentTheme` was `TextTheme`; the old name stays as a deprecated
+    /// alias so hosts (and their stored properties) keep compiling.
+    @available(*, deprecated)
+    func testTextThemeStillNamesTheSameType() {
+        var theme = TextTheme()
+        theme.textColor = .systemRed
+        let asDocumentTheme: DocumentTheme = theme
+        XCTAssertEqual(asDocumentTheme.textColor, .systemRed)
+        XCTAssertEqual(DocumentView(theme: theme).theme, asDocumentTheme,
+                       "the alias is accepted wherever the new name is")
     }
 }
 #endif

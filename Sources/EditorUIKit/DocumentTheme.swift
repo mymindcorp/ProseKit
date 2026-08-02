@@ -5,7 +5,7 @@ import DocumentModel
 extension UIColor {
     /// Create a color from a `#RRGGBB` (or `#RRGGBBAA`) hex string.
     /// Parse `#rgb` / `#rrggbb` / `#rrggbbaa` (with or without `#`). The single
-    /// hex parser in the module — `TextTheme.parseColor` adds named colors on top.
+    /// hex parser in the module — `DocumentTheme.parseColor` adds named colors on top.
     convenience init?(hex: String) {
         var s = hex.trimmingCharacters(in: .whitespaces)
         if s.hasPrefix("#") { s.removeFirst() }
@@ -20,9 +20,17 @@ extension UIColor {
     }
 }
 
-/// Visual styling for the editor: fonts, colors, and block spacing. The layout
-/// engine reads this to build attributed strings and position blocks.
-public struct TextTheme: Sendable, Equatable {
+/// Was `TextTheme`, which undersold it: it styles the page, the caret and
+/// selection, and the editor's popups too, not only text.
+@available(*, deprecated, renamed: "DocumentTheme")
+public typealias TextTheme = DocumentTheme
+
+/// Visual styling for a rendered document: fonts, colors, and block spacing.
+/// The layout engine reads this to build attributed strings and position
+/// blocks. Shared by the editable `EditorTextView` and the read-only
+/// `DocumentView` — hence "document" rather than "editor"; the editor's own
+/// chrome (find bar, popups) just borrows colors from it.
+public struct DocumentTheme: Sendable, Equatable {
     /// When true, fonts track the user's Dynamic Type content-size setting.
     public var dynamicType: Bool = true
     /// The base body point size used when `dynamicType` is off.
@@ -217,7 +225,7 @@ public struct TextTheme: Sendable, Equatable {
                 attrs[.foregroundColor] = linkColor
                 if linkUnderline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
             case "textColor":
-                if let color = TextTheme.parseColor(mark.attrs["color"]?.stringValue) {
+                if let color = DocumentTheme.parseColor(mark.attrs["color"]?.stringValue) {
                     attrs[.foregroundColor] = color
                 }
             // backgroundColor is painted behind the run by DocumentLayout (CoreText

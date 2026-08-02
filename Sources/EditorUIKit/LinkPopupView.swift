@@ -7,13 +7,13 @@ import UIKit
 /// caller captured to apply against on submit).
 final class LinkPopupView: UIView, UITextFieldDelegate {
     private let field = UITextField()
-    private let theme: TextTheme
+    private let theme: DocumentTheme
 
     /// The entered URL (empty string means "remove the link").
     var onSubmit: ((String) -> Void)?
     var onCancel: (() -> Void)?
 
-    init(theme: TextTheme, initialURL: String?, showRemove: Bool) {
+    init(theme: DocumentTheme, initialURL: String?, showRemove: Bool) {
         self.theme = theme
         super.init(frame: .zero)
         backgroundColor = theme.popupBackground

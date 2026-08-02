@@ -19,7 +19,7 @@ final class VerticalMovementTests: XCTestCase {
     }
 
     private func layout(_ editor: Editor, width: CGFloat = 320) -> DocumentLayout {
-        DocumentLayout(doc: editor.doc, width: width, theme: TextTheme())
+        DocumentLayout(doc: editor.doc, width: width, theme: DocumentTheme())
     }
 
     func testDownMovesToNextParagraph() throws {

@@ -124,13 +124,13 @@ final class TextBlockLayoutCache {
     /// The theme the cached blocks were typeset with. Colors and fonts are baked
     /// into each block's attributed string (not part of `Key`), so a theme change
     /// must drop the cache — otherwise a new theme reuses stale-styled blocks.
-    private(set) var lastTheme: TextTheme?
+    private(set) var lastTheme: DocumentTheme?
 
     var debugEntryCount: Int { entries.count }
 
     /// Drop all cached blocks when the theme changes (e.g. the user edits colors,
     /// fonts, or spacing live), so they're re-typeset with the new styling.
-    func syncTheme(_ theme: TextTheme) {
+    func syncTheme(_ theme: DocumentTheme) {
         if let lastTheme, lastTheme != theme { entries.removeAll() }
         lastTheme = theme
     }
@@ -169,7 +169,7 @@ final class TextBlockLayoutCache {
 /// Lays out a document into text blocks + decorations using CoreText, and
 /// answers caret/hit-test queries.
 final class DocumentLayout {
-    let theme: TextTheme
+    let theme: DocumentTheme
     let width: CGFloat
     private(set) var height: CGFloat = 0
     private(set) var blocks: [TextBlock] = []
@@ -249,7 +249,7 @@ final class DocumentLayout {
     /// (estimation only pays off for very large documents).
     private static let lazyThreshold = 60
 
-    init(doc: Node, width: CGFloat, theme: TextTheme, imageProvider: @escaping (Node) -> UIImage? = { _ in nil },
+    init(doc: Node, width: CGFloat, theme: DocumentTheme, imageProvider: @escaping (Node) -> UIImage? = { _ in nil },
          blockCache: TextBlockLayoutCache? = nil, previous: DocumentLayout? = nil,
          realizeWindow: ClosedRange<CGFloat>? = nil, syntaxHighlighter: SyntaxHighlighter? = nil,
          codeLanguageLabel: ((String, String?) -> String?)? = nil,
@@ -1008,7 +1008,7 @@ final class DocumentLayout {
                     highlights.append((from: docPos, to: docPos + text.count,
                                        color: theme.highlightColor(mark.attrs["color"]?.stringValue)))
                 } else if let mark = marks.first(where: { $0.type.name == "backgroundColor" }),
-                          let color = TextTheme.parseColor(mark.attrs["color"]?.stringValue) {
+                          let color = DocumentTheme.parseColor(mark.attrs["color"]?.stringValue) {
                     highlights.append((from: docPos, to: docPos + text.count, color: color))
                 }
                 // Inline `code` runs get a themed background pill (if configured).

@@ -26,7 +26,7 @@ public final class DefaultTaskCheckboxView: UIView, TaskCheckboxView {
     public var onToggle: (() -> Void)?
 
     /// Colors come from the editor's theme.
-    public var theme = TextTheme() { didSet { updateColors() } }
+    public var theme = DocumentTheme() { didSet { updateColors() } }
 
     public var isChecked: Bool = false {
         didSet { guard isChecked != oldValue else { return }; applyState() }

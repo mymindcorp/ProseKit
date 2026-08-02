@@ -7,7 +7,7 @@ import SchemaKit
 
 @MainActor
 final class CheckboxStyleTests: XCTestCase {
-    private func taskListView(theme: TextTheme = TextTheme()) throws -> EditorTextView {
+    private func taskListView(theme: DocumentTheme = DocumentTheme()) throws -> EditorTextView {
         let editor = try Editor(extensions: fullKit())
         let s = editor.schema
         func item(_ text: String, checked: Bool) -> Node {
@@ -108,7 +108,7 @@ final class CheckboxStyleTests: XCTestCase {
     }
 
     func testStrikethroughAppliesOnlyToCheckedItems() throws {
-        var theme = TextTheme()
+        var theme = DocumentTheme()
         theme.taskItem.strikethroughWhenChecked = true
         let view = try taskListView(theme: theme)
         XCTAssertTrue(strikethrough(view, "done"), "the checked item reads as done")
@@ -116,7 +116,7 @@ final class CheckboxStyleTests: XCTestCase {
     }
 
     func testCheckedTextColorAppliesOnlyToCheckedItems() throws {
-        var theme = TextTheme()
+        var theme = DocumentTheme()
         theme.taskItem.checkedTextColor = .systemRed
         let view = try taskListView(theme: theme)
         XCTAssertEqual(textColor(view, "done"), .systemRed)
@@ -127,7 +127,7 @@ final class CheckboxStyleTests: XCTestCase {
         // Regression: the block cache is keyed on the paragraph, which is the
         // *same* node whether its item is checked or not — so without the
         // checked flag in the key, a toggle reused the stale typeset.
-        var theme = TextTheme()
+        var theme = DocumentTheme()
         theme.taskItem.strikethroughWhenChecked = true
         let view = try taskListView(theme: theme)
         view.syncCheckboxViews()
@@ -141,7 +141,7 @@ final class CheckboxStyleTests: XCTestCase {
     func testANestedUncheckedItemIsNotStruckThrough() throws {
         // A sub-task is still to do, whatever its parent says. (Tiptap's
         // descendant CSS selector strikes these; we deliberately don't.)
-        var theme = TextTheme()
+        var theme = DocumentTheme()
         theme.taskItem.strikethroughWhenChecked = true
         let editor = try Editor(extensions: fullKit())
         let s = editor.schema
@@ -162,7 +162,7 @@ final class CheckboxStyleTests: XCTestCase {
     }
 
     func testCheckboxColorsAreThemeable() {
-        var theme = TextTheme()
+        var theme = DocumentTheme()
         theme.taskItem.checkboxTint = .systemPink
         theme.taskItem.checkboxBorderColor = .systemGreen
         let box = DefaultTaskCheckboxView(frame: CGRect(x: 0, y: 0, width: 30, height: 30))
@@ -177,7 +177,7 @@ final class CheckboxStyleTests: XCTestCase {
     func testCheckboxColorsFallBackToTheCaretAndBarColors() {
         // The historical behaviour, kept as the default so existing hosts see
         // no change when they haven't set the new options.
-        var theme = TextTheme()
+        var theme = DocumentTheme()
         theme.caretColor = .systemPurple
         theme.quoteBarColor = .systemTeal
         let box = DefaultTaskCheckboxView(frame: CGRect(x: 0, y: 0, width: 30, height: 30))

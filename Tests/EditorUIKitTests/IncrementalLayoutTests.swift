@@ -24,7 +24,7 @@ final class IncrementalLayoutTests: XCTestCase {
 
     private func assertMatchesFullRebuild(_ view: EditorTextView, _ context: String) {
         let incremental = view.ensureLayout()
-        let full = DocumentLayout(doc: view.editor.doc, width: 320, theme: TextTheme())
+        let full = DocumentLayout(doc: view.editor.doc, width: 320, theme: DocumentTheme())
         XCTAssertEqual(incremental.blocks.count, full.blocks.count, "block count \(context)")
         XCTAssertEqual(incremental.height, full.height, accuracy: 0.5, "height \(context)")
         for i in 0..<min(incremental.blocks.count, full.blocks.count) {
