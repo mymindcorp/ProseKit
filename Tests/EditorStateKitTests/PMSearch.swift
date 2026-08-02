@@ -4,12 +4,14 @@ import DocumentTransform
 import EditorStateKit
 import TestHarness
 
-// Ported from prosemirror-search/test/{test-query,test-search}.ts. Skipped (no
-// local equivalent): the footnote-schema cases that need non-leaf inline atoms
-// built via prosemirror-test-builder's `builders()` reconfiguration — the
-// behavior they cover (scanning inside non-leaf atoms) is exercised by the
-// nested-structure cases; and regexp syntax is ICU (NSRegularExpression), not
-// JS, which is equivalent for every pattern these tests use.
+// Ported from prosemirror-search/test/{test-query,test-search}.ts, including the
+// footnote-schema cases: upstream builds those with prosemirror-test-builder's
+// `builders()` reconfiguration, which has no local equivalent, so the documents
+// are assembled by hand below instead.
+//
+// Skipped (no local equivalent): nothing else, except that regexp syntax here is
+// ICU (NSRegularExpression) rather than JS — equivalent for every pattern these
+// tests use.
 
 // MARK: - test-query.ts
 
@@ -41,12 +43,13 @@ private func queryTest(_ query: SearchQuery, _ d: TaggedNode) throws {
 
 // MARK: - test-search.ts harness
 
-private func mkSearchState(_ query: SearchQuery, _ d: TaggedNode, range: SearchRange? = nil) -> EditorState {
+private func mkSearchState(_ query: SearchQuery, _ d: TaggedNode, range: SearchRange? = nil,
+                           schema: Schema = basicSchema) -> EditorState {
     let selection: Selection? = d.tags["a"].map { a in
         TextSelection.create(d.node, a, d.tags["b"] ?? a)
     }
     return EditorState.create(EditorStateConfig(
-        schema: basicSchema, doc: d.node, selection: selection,
+        schema: schema, doc: d.node, selection: selection,
         plugins: [searchQueryPlugin(initialQuery: query, initialRange: range)]))
 }
 
@@ -65,16 +68,70 @@ private func testSelCommand(_ query: SearchQuery, _ d: TaggedNode,
 
 private func testCommand(_ query: SearchQuery, _ start: TaggedNode, _ next: TaggedNode?,
                          _ command: (EditorState, ((Transaction) -> Void)?) -> Bool,
-                         range: SearchRange? = nil) throws {
-    var state = mkSearchState(query, start, range: range)
+                         range: SearchRange? = nil, schema: Schema = basicSchema) throws {
+    var state = mkSearchState(query, start, range: range, schema: schema)
     let result = command(state) { tr in state = state.apply(tr) }
     try expectEqual(result, next != nil)
     if let next {
-        let expected = mkSearchState(query, next, range: range)
+        let expected = mkSearchState(query, next, range: range, schema: schema)
         try expectEqual(state.doc, expected.doc)
         try expect(state.selection.eq(expected.selection),
                    "selection \(state.selection.from)..\(state.selection.to), wanted \(expected.selection.from)..\(expected.selection.to)")
     }
+}
+
+// MARK: - The footnote schema (test-search.ts `footnoteSchema`)
+
+/// `basicSchema` plus a `footnote` node: inline, with content, and `atom`.
+///
+/// Upstream adds it before `image` and comments that atom "makes the view treat
+/// the node as a leaf, even though it technically has content" — which is the
+/// point of these cases. Search still has to look inside it, so `blockText`
+/// pads a non-leaf inline child rather than standing it in with U+FFFC.
+private let footnoteSchema: Schema = {
+    var nodes: [(String, NodeSpec)] = [
+        ("doc", NodeSpec(content: "block+")),
+        ("paragraph", NodeSpec(content: "inline*", group: "block")),
+        ("blockquote", NodeSpec(content: "block+", group: "block", defining: true)),
+        ("horizontal_rule", NodeSpec(group: "block")),
+        ("heading", NodeSpec(content: "inline*", group: "block",
+                             attrs: ["level": AttributeSpec(default: .int(1))], defining: true)),
+        ("code_block", NodeSpec(content: "text*", marks: "", group: "block", code: true, defining: true)),
+        ("text", NodeSpec(group: "inline")),
+        ("footnote", NodeSpec(content: "text*", group: "inline", inline: true, atom: true)),
+        ("image", NodeSpec(group: "inline", inline: true,
+                           attrs: ["src": AttributeSpec(), "alt": AttributeSpec(default: .null),
+                                   "title": AttributeSpec(default: .null)])),
+        ("hard_break", NodeSpec(group: "inline", inline: true)),
+    ]
+    let marks: [(String, MarkSpec)] = [
+        ("link", MarkSpec(attrs: ["href": AttributeSpec(), "title": AttributeSpec(default: .null)], inclusive: false)),
+        ("em", MarkSpec()), ("strong", MarkSpec()), ("code", MarkSpec()),
+    ]
+    return try! Schema(nodes: nodes, marks: marks, topNode: "doc")
+}()
+
+/// `p("text", footnote("…"))`, with `<a>`/`<b>` in the footnote's text marking
+/// the selection — the shape all four upstream footnote cases take.
+///
+/// Hand-built because the builders in PMBuilder are bound to `basicSchema`.
+/// The footnote's text begins at position 6: 1 into the paragraph, 4 for the
+/// word "text", 1 into the footnote.
+private func footnoteCase(_ inner: String) -> TaggedNode {
+    var text = ""
+    var tags: [String: Int] = [:]
+    var rest = Substring(inner)
+    while let open = rest.firstIndex(of: "<"), let close = rest[open...].firstIndex(of: ">") {
+        text += rest[rest.startIndex..<open]
+        tags[String(rest[rest.index(after: open)..<close])] = 6 + text.count
+        rest = rest[rest.index(after: close)...]
+    }
+    text += rest
+    let s = footnoteSchema
+    let note = try! s.node("footnote", [:], content: Fragment.from([s.text(text)]))
+    let paragraph = try! s.node("paragraph", [:],
+                                content: Fragment.from([s.text("text"), note]))
+    return TaggedNode(node: try! s.node("doc", [:], content: Fragment.from([paragraph])), tags: tags)
 }
 
 func registerPMSearchTests() {
@@ -163,6 +220,20 @@ func registerPMSearchTests() {
     test("PM search findPrev: can match in nested structure") {
         try testSelCommand(SearchQuery(search: "one"),
                            doc(blockquote(p("para <c>one<d>"), p("para two")), p("and <a>one<b>")), findPrev)
+    }
+
+    // MARK: replaceCurrent inside a non-leaf atom (test-search.ts footnote cases)
+    test("PM search replaceCurrent: replaces inside non-leaf atoms") {
+        try testCommand(SearchQuery(search: "footnote", replace: "NOTE"),
+                        footnoteCase("This is the <a>footnote<b> text"),
+                        footnoteCase("This is the <a>NOTE<b> text"),
+                        replaceCurrent, schema: footnoteSchema)
+    }
+    test("PM search replaceCurrent: replaces delimiters with regexp inside non-leaf atoms") {
+        try testCommand(SearchQuery(search: "“([^”]+)”", regexp: true, replace: "$1"),
+                        footnoteCase("This is the <a>“footnote”<b> text"),
+                        footnoteCase("This is the <a>footnote<b> text"),
+                        replaceCurrent, schema: footnoteSchema)
     }
 
     // MARK: replaceNext / replaceCurrent / replaceAll
