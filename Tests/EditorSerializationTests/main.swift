@@ -3498,6 +3498,18 @@ test("HTML: an entity standing for more than one scalar decodes whole") {
                     "=\u{20E5}")
 }
 
+test("HTML: an entity whose value is whitespace survives packing") {
+    // These two are why the table stores code points rather than characters:
+    // "&NewLine;" is U+000A, which as a literal put a newline in the middle of
+    // a record and decoded the entity to nothing at all.
+    try expectEqual(try HTMLParser.parse("<p>a&NewLine;b</p>", schema: schema).child(0).textContent,
+                    "a\nb")
+    try expectEqual(try HTMLParser.parse("<p>a&Tab;b</p>", schema: schema).child(0).textContent,
+                    "a\tb")
+    // A backslash value is stored the same way and isn't an escape.
+    try expectEqual(try HTMLParser.parse("<p>&bsol;</p>", schema: schema).child(0).textContent, "\\")
+}
+
 test("HTML: something that isn't an entity is left alone") {
     for text in ["&notanentity;", "&ThisIsNotDefined;", "&MadeUpEntity;", "a & b", "&;", "&#;"] {
         try expectEqual(try HTMLParser.parse("<p>\(text)</p>", schema: schema).child(0).textContent,
