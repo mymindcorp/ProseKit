@@ -63,12 +63,19 @@ public struct HTMLConfig: Sendable {
 
 public enum HTMLSerializer {
     public static func serialize(_ doc: Node, config: HTMLConfig = .default) -> String {
-        serializeFragment(doc.content, config)
+        serialize(fragment: doc.content, config: config)
     }
 
     /// Serialize a bare fragment (e.g. a copied selection's content) to HTML.
     public static func serialize(fragment: Fragment, config: HTMLConfig = .default) -> String {
-        serializeFragment(fragment, config)
+        var out = ""
+        // Markup runs somewhat longer than the text it wraps. `size` is the
+        // document model's own measure and costs nothing to ask for, so this is
+        // a starting guess that saves the first several reallocations rather
+        // than an attempt to get the length right.
+        out.reserveCapacity(fragment.size * 2)
+        serializeFragment(fragment, config, into: &out)
+        return out
     }
 
     /// Which of two marks covering the same text is written outside the other,
@@ -86,28 +93,44 @@ public enum HTMLSerializer {
         nestingOrder.firstIndex(of: mark.type.name) ?? nestingOrder.count
     }
 
-    static func serializeFragment(_ fragment: Fragment, _ config: HTMLConfig) -> String {
-        var out = ""
+    static func serializeFragment(_ fragment: Fragment, _ config: HTMLConfig, into out: inout String) {
         // A mark can cover several nodes — bold across a link and the text after
         // it is one run — so marks are opened and closed around runs rather than
         // around each node, which would emit `<em>a</em><em><a>b</a></em>`.
         // Block nodes carry no marks, so this is a no-op for them.
         var active: [Mark] = []
         func closeDown(to keep: Int) {
-            while active.count > keep { out += markClose(active.removeLast(), config) }
+            while active.count > keep { markClose(active.removeLast(), config, into: &out) }
         }
         func same(_ a: Mark, _ b: Mark) -> Bool { a.type === b.type && a.attrs == b.attrs }
         func carries(_ node: Node, _ mark: Mark) -> Bool {
             node.marks.contains { same($0, mark) }
         }
-        // Where a mark's unbroken run starting at `from` ends.
+        // Where each mark's current run ends, remembered across the loop below.
+        //
+        // A run that ends at `e` ends at `e` from every position inside it, so
+        // the scan happens once per run instead of once per node in it. Without
+        // that, one mark spanning N children costs O(N²) — and a bolded passage
+        // with links or emphasis inside it is exactly that shape, since those
+        // children can't merge into one text node. A paragraph of 6000 such
+        // children took 280 ms to write out.
+        var runEnds: [(mark: Mark, end: Int)] = []
         func runEnd(_ mark: Mark, from: Int) -> Int {
+            let cached = runEnds.firstIndex { same($0.mark, mark) }
+            if let cached, runEnds[cached].end > from { return runEnds[cached].end }
             var j = from
             while j < fragment.childCount, carries(fragment.child(j), mark) { j += 1 }
+            if let cached { runEnds[cached].end = j } else { runEnds.append((mark, j)) }
             return j
         }
         for i in 0..<fragment.childCount {
             let node = fragment.child(i)
+            // Blocks carry no marks, and a fragment of them is the common case:
+            // nothing below has anything to do.
+            if node.marks.isEmpty, active.isEmpty {
+                serializeNode(node, config, into: &out)
+                continue
+            }
             // A mark covering more of what follows is written outside one
             // covering less, so a bold across a link and the text after it wraps
             // both instead of being opened twice.
@@ -115,14 +138,17 @@ public enum HTMLSerializer {
             // order — the tags apply to the same characters either way — so the
             // tie is broken by `nestingOrder` and then by the schema's own,
             // which is what the document lists them in.
-            let own = node.marks.enumerated()
+            //
+            // Each run end is measured once here rather than inside the
+            // comparison, which asked for it O(m log m) times per node.
+            let ends = node.marks.map { runEnd($0, from: i) }
+            let own = node.marks.indices
                 .sorted { left, right in
-                    let a = runEnd(left.element, from: i), b = runEnd(right.element, from: i)
-                    guard a == b else { return a > b }
-                    return (nestingRank(left.element), left.offset)
-                        < (nestingRank(right.element), right.offset)
+                    guard ends[left] == ends[right] else { return ends[left] > ends[right] }
+                    return (nestingRank(node.marks[left]), left)
+                        < (nestingRank(node.marks[right]), right)
                 }
-                .map(\.element)
+                .map { node.marks[$0] }
             // A node that can't carry a mark shouldn't close it either: `code`
             // excludes every other mark, but `<strong>a<code>b</code>c</strong>`
             // is exactly what should be written.
@@ -141,20 +167,21 @@ public enum HTMLSerializer {
                   same(active[shared], wanted[shared]) { shared += 1 }
             closeDown(to: shared)
             for mark in wanted[shared...] {
-                out += markOpen(mark, config)
+                markOpen(mark, config, into: &out)
                 active.append(mark)
             }
-            out += serializeNode(node, config)
+            serializeNode(node, config, into: &out)
         }
         closeDown(to: 0)
-        return out
     }
 
-    /// ` data-id="…"` for a node carrying the UniqueID attribute, else "".
-    static func idAttr(_ node: Node, _ config: HTMLConfig) -> String {
+    /// ` data-id="…"` for a node carrying the UniqueID attribute, else nothing.
+    static func idAttr(_ node: Node, _ config: HTMLConfig, into out: inout String) {
         guard let docAttr = config.idDocAttr,
-              case let .string(id)? = node.attrs[docAttr] else { return "" }
-        return " \(config.idHTMLAttr)=\"\(escapeAttribute(id))\""
+              case let .string(id)? = node.attrs[docAttr] else { return }
+        out += " \(config.idHTMLAttr)=\""
+        escapeAttribute(id, into: &out)
+        out += "\""
     }
 
     /// Whether a list item holds nothing — one empty paragraph, which is there
@@ -179,109 +206,166 @@ public enum HTMLSerializer {
     /// A list's items. In a tight list — one written with no blank lines
     /// between its items — a paragraph inside an item is unwrapped, which is
     /// how Markdown renders one and what a reader expects to see.
-    private static func listItems(_ list: Node, _ config: HTMLConfig) -> String {
+    private static func listItems(_ list: Node, _ config: HTMLConfig, into out: inout String) {
         guard list.attrs["tight"]?.boolValue == true else {
-            return serializeFragment(list.content, config)
+            return serializeFragment(list.content, config, into: &out)
         }
-        var out = ""
         for i in 0..<list.content.childCount {
             let item = list.content.child(i)
             guard item.type.name == "listItem" else {
-                out += serializeNode(item, config); continue
+                serializeNode(item, config, into: &out); continue
             }
-            if isEmptyItem(item) { out += "<li\(idAttr(item, config))></li>"; continue }
-            var inner = ""
+            out += "<li"
+            idAttr(item, config, into: &out)
+            if isEmptyItem(item) { out += "></li>"; continue }
+            out += ">"
             for block in itemBlocks(item) {
-                inner += block.type.name == "paragraph"
-                    ? serializeFragment(block.content, config)
-                    : serializeNode(block, config)
+                if block.type.name == "paragraph" {
+                    serializeFragment(block.content, config, into: &out)
+                } else {
+                    serializeNode(block, config, into: &out)
+                }
             }
-            out += "<li\(idAttr(item, config))>\(inner)</li>"
+            out += "</li>"
         }
-        return out
     }
 
-    static func serializeNode(_ node: Node, _ config: HTMLConfig) -> String {
+    /// Write `node` and everything under it.
+    ///
+    /// Everything here appends to one buffer rather than returning its own
+    /// string. Returning meant each element built the whole of its subtree and
+    /// then had it copied into its parent's string, and again into that one's
+    /// parent — so a document's bytes were copied once per level they sat under.
+    static func serializeNode(_ node: Node, _ config: HTMLConfig, into out: inout String) {
         if node.isText {
             // Marks are written by `serializeFragment`, which wraps them around
             // whole runs; this is just the node's own text.
-            return escape(node.text ?? "")
+            return escape(node.text ?? "", into: &out)
+        }
+        /// `<tag …attrs…>children</tag>`, the shape most of these have.
+        func element(_ tag: String, _ attributes: String = "", content: Fragment? = nil) {
+            out += "<\(tag)\(attributes)"
+            idAttr(node, config, into: &out)
+            out += ">"
+            serializeFragment(content ?? node.content, config, into: &out)
+            out += "</\(tag)>"
         }
         switch node.type.name {
         case "orderedList":
             // A list that doesn't start at 1 has to say so, or the numbering is
             // lost the moment it leaves the editor.
             let start = node.attrs["order"]?.intValue ?? 1
-            let startAttr = start == 1 ? "" : " start=\"\(start)\""
-            return "<ol\(startAttr)\(idAttr(node, config))>\(listItems(node, config))</ol>"
+            out += start == 1 ? "<ol" : "<ol start=\"\(start)\""
+            idAttr(node, config, into: &out)
+            out += ">"
+            listItems(node, config, into: &out)
+            out += "</ol>"
         case "bulletList":
-            return "<ul\(idAttr(node, config))>\(listItems(node, config))</ul>"
+            out += "<ul"
+            idAttr(node, config, into: &out)
+            out += ">"
+            listItems(node, config, into: &out)
+            out += "</ul>"
         case "listItem" where isEmptyItem(node):
-            return "<li\(idAttr(node, config))></li>"
+            out += "<li"
+            idAttr(node, config, into: &out)
+            out += "></li>"
         case "listItem":
-            return "<li\(idAttr(node, config))>"
-                + itemBlocks(node).map { serializeNode($0, config) }.joined() + "</li>"
+            out += "<li"
+            idAttr(node, config, into: &out)
+            out += ">"
+            for block in itemBlocks(node) { serializeNode(block, config, into: &out) }
+            out += "</li>"
         case "heading":
             let level = node.attrs["level"]?.intValue ?? 1
-            return "<h\(level)\(idAttr(node, config))>\(serializeFragment(node.content, config))</h\(level)>"
+            out += "<h\(level)"
+            idAttr(node, config, into: &out)
+            out += ">"
+            serializeFragment(node.content, config, into: &out)
+            out += "</h\(level)>"
         case "codeBlock":
             // The convention every highlighter reads, and what CommonMark's own
             // output uses for a fence's info string.
-            var codeAttrs = ""
+            out += "<pre"
+            idAttr(node, config, into: &out)
+            out += "><code"
             if let language = node.attrs["language"]?.stringValue, !language.isEmpty {
-                codeAttrs = " class=\"language-\(escapeAttribute(language))\""
+                out += " class=\"language-"
+                escapeAttribute(language, into: &out)
+                out += "\""
             }
-            return "<pre\(idAttr(node, config))><code\(codeAttrs)>"
-                + "\(escape(node.textContent))</code></pre>"
+            out += ">"
+            escape(node.textContent, into: &out)
+            out += "</code></pre>"
         case "horizontalRule":
-            return "<hr>"
+            out += "<hr>"
         case "hardBreak":
-            return "<br>"
+            out += "<br>"
         case "image":
-            var attrs = " src=\"\(escapeAttribute(node.attrs["src"]?.stringValue ?? ""))\""
-            if let alt = node.attrs["alt"]?.stringValue { attrs += " alt=\"\(escapeAttribute(alt))\"" }
-            if let title = node.attrs["title"]?.stringValue { attrs += " title=\"\(escapeAttribute(title))\"" }
-            if let w = node.attrs["width"]?.intValue { attrs += " width=\"\(w)\"" }
-            if let h = node.attrs["height"]?.intValue { attrs += " height=\"\(h)\"" }
+            out += "<img src=\""
+            escapeAttribute(node.attrs["src"]?.stringValue ?? "", into: &out)
+            out += "\""
+            if let alt = node.attrs["alt"]?.stringValue {
+                out += " alt=\""; escapeAttribute(alt, into: &out); out += "\""
+            }
+            if let title = node.attrs["title"]?.stringValue {
+                out += " title=\""; escapeAttribute(title, into: &out); out += "\""
+            }
+            if let w = node.attrs["width"]?.intValue { out += " width=\"\(w)\"" }
+            if let h = node.attrs["height"]?.intValue { out += " height=\"\(h)\"" }
             // The original behind this rendition, as flat `data-` attributes —
             // readable markup, and no JSON to escape inside an attribute.
             if case let .object(model)? = node.attrs["model"],
                case let .string(path)? = model["path"] {
-                attrs += " data-model-path=\"\(escapeAttribute(path))\""
-                if let w = model["width"]?.intValue { attrs += " data-model-width=\"\(w)\"" }
-                if let h = model["height"]?.intValue { attrs += " data-model-height=\"\(h)\"" }
+                out += " data-model-path=\""; escapeAttribute(path, into: &out); out += "\""
+                if let w = model["width"]?.intValue { out += " data-model-width=\"\(w)\"" }
+                if let h = model["height"]?.intValue { out += " data-model-height=\"\(h)\"" }
             }
-            return "<img\(attrs)>"
+            out += ">"
         case "wikiLink":
             let target = node.attrs["target"]?.stringValue ?? ""
-            let label = node.attrs["label"]?.stringValue ?? target
-            return "<a href=\"\(escapeAttribute(target))\" data-wikilink=\"\(escapeAttribute(target))\">\(escape(label))</a>"
+            out += "<a href=\""
+            escapeAttribute(target, into: &out)
+            out += "\" data-wikilink=\""
+            escapeAttribute(target, into: &out)
+            out += "\">"
+            escape(node.attrs["label"]?.stringValue ?? target, into: &out)
+            out += "</a>"
         case "mention":
             let id = node.attrs["id"]?.stringValue ?? ""
-            let label = node.attrs["label"]?.stringValue ?? id
-            return "<span data-mention=\"\(escapeAttribute(id))\">\(escape("@" + label))</span>"
+            out += "<span data-mention=\""
+            escapeAttribute(id, into: &out)
+            out += "\">@"
+            escape(node.attrs["label"]?.stringValue ?? id, into: &out)
+            out += "</span>"
         case "taskList":
-            return "<ul data-type=\"taskList\"\(idAttr(node, config))>\(serializeFragment(node.content, config))</ul>"
+            element("ul", " data-type=\"taskList\"")
         case "taskItem":
             let checked = node.attrs["checked"]?.boolValue ?? false
-            let box = "<input type=\"checkbox\"\(checked ? " checked=\"checked\"" : "")>"
-            return "<li data-type=\"taskItem\" data-checked=\"\(checked)\"\(idAttr(node, config))>\(box)\(serializeFragment(node.content, config))</li>"
+            out += "<li data-type=\"taskItem\" data-checked=\"\(checked)\""
+            idAttr(node, config, into: &out)
+            out += "><input type=\"checkbox\"\(checked ? " checked=\"checked\"" : "")>"
+            serializeFragment(node.content, config, into: &out)
+            out += "</li>"
         case "details":
-            let open = node.attrs["open"]?.boolValue ?? false
-            return "<details\(open ? " open" : "")\(idAttr(node, config))>\(serializeFragment(node.content, config))</details>"
+            element("details", node.attrs["open"]?.boolValue == true ? " open" : "")
         case "detailsSummary":
-            return "<summary\(idAttr(node, config))>\(serializeFragment(node.content, config))</summary>"
+            element("summary")
         case "detailsContent":
-            return "<div data-type=\"detailsContent\"\(idAttr(node, config))>\(serializeFragment(node.content, config))</div>"
+            element("div", " data-type=\"detailsContent\"")
         case "inlineMath", "blockMath":
             // Tiptap's shape: the source lives in `data-latex`, and the element's
             // text is the `$…$` form so non-math readers still see the formula.
             let inline = node.type.name == "inlineMath"
             let tag = inline ? "span" : "div", fence = inline ? "$" : "$$"
             let latex = node.attrs["latex"]?.stringValue ?? ""
-            return "<\(tag) data-type=\"\(inline ? "inline-math" : "block-math")\" "
-                + "data-latex=\"\(escapeAttribute(latex))\"\(idAttr(node, config))>"
-                + "\(escape(fence + latex + fence))</\(tag)>"
+            out += "<\(tag) data-type=\"\(inline ? "inline-math" : "block-math")\" data-latex=\""
+            escapeAttribute(latex, into: &out)
+            out += "\""
+            idAttr(node, config, into: &out)
+            out += ">"
+            escape(fence + latex + fence, into: &out)
+            out += "</\(tag)>"
         case "tableCell", "tableHeader":
             let tag = node.type.name == "tableHeader" ? "th" : "td"
             var a = ""
@@ -291,73 +375,105 @@ public enum HTMLSerializer {
             if case let .array(cw)? = node.attrs["colwidth"] {
                 a += " data-colwidth=\"\(cw.map { String($0.intValue ?? 0) }.joined(separator: ","))\""
             }
-            return "<\(tag)\(a)\(idAttr(node, config))>\(serializeFragment(node.content, config))</\(tag)>"
+            element(tag, a)
         default:
-            let tag = config.nodeTags[node.type.name] ?? "div"
-            return "<\(tag)\(idAttr(node, config))>\(serializeFragment(node.content, config))</\(tag)>"
+            element(config.nodeTags[node.type.name] ?? "div")
         }
     }
 
     /// The opening tag for a mark. Split from the closing half so a mark can
     /// wrap a run of several nodes rather than each node separately.
-    static func markOpen(_ mark: Mark, _ config: HTMLConfig) -> String {
+    static func markOpen(_ mark: Mark, _ config: HTMLConfig, into out: inout String) {
         switch mark.type.name {
         case "link":
-            let href = mark.attrs["href"]?.stringValue ?? ""
-            var attributes = " href=\"\(escapeAttribute(href))\""
+            out += "<a href=\""
+            escapeAttribute(mark.attrs["href"]?.stringValue ?? "", into: &out)
+            out += "\""
             if let title = mark.attrs["title"]?.stringValue {
-                attributes += " title=\"\(escapeAttribute(title))\""
+                out += " title=\""; escapeAttribute(title, into: &out); out += "\""
             }
-            return "<a\(attributes)>"
+            out += ">"
         case "highlight":
             // The colour is a named style the theme resolves ("yellow"), not
             // necessarily a CSS colour — `data-color` is what round-trips it.
             // A style is emitted alongside only when the name happens to be
             // real CSS, so a highlight survives pasting into another app
             // without this ever writing a bogus declaration.
-            var attributes = ""
+            out += "<mark"
             if let color = mark.attrs["color"]?.stringValue {
-                attributes = " data-color=\"\(escapeAttribute(color))\""
+                out += " data-color=\""
+                escapeAttribute(color, into: &out)
+                out += "\""
                 if let css = sanitizeCSSColor(color) {
-                    attributes += " style=\"background-color:\(escapeAttribute(css))\""
+                    out += " style=\"background-color:"
+                    escapeAttribute(css, into: &out)
+                    out += "\""
                 }
             }
-            return "<mark\(attributes)>"
-        case "textColor":
-            guard let c = mark.attrs["color"]?.stringValue else { return "" }
-            return "<span style=\"color:\(escapeAttribute(c))\">"
-        case "backgroundColor":
-            guard let c = mark.attrs["color"]?.stringValue else { return "" }
-            return "<span style=\"background-color:\(escapeAttribute(c))\">"
-        default:
-            guard let tag = config.markTags[mark.type.name] else { return "" }
-            return "<\(tag)>"
-        }
-    }
-
-    static func markClose(_ mark: Mark, _ config: HTMLConfig) -> String {
-        switch mark.type.name {
-        case "link": return "</a>"
-        case "highlight": return "</mark>"
+            out += ">"
         case "textColor", "backgroundColor":
-            return mark.attrs["color"]?.stringValue == nil ? "" : "</span>"
+            guard let c = mark.attrs["color"]?.stringValue else { return }
+            out += mark.type.name == "textColor"
+                ? "<span style=\"color:" : "<span style=\"background-color:"
+            escapeAttribute(c, into: &out)
+            out += "\">"
         default:
-            guard let tag = config.markTags[mark.type.name] else { return "" }
-            return "</\(tag)>"
+            guard let tag = config.markTags[mark.type.name] else { return }
+            out += "<\(tag)>"
         }
     }
 
-    static func escape(_ s: String) -> String {
-        s.replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
+    static func markClose(_ mark: Mark, _ config: HTMLConfig, into out: inout String) {
+        switch mark.type.name {
+        case "link": out += "</a>"
+        case "highlight": out += "</mark>"
+        case "textColor", "backgroundColor":
+            if mark.attrs["color"]?.stringValue != nil { out += "</span>" }
+        default:
+            guard let tag = config.markTags[mark.type.name] else { return }
+            out += "</\(tag)>"
+        }
+    }
+
+    /// The characters that can't be written literally where they'd be read as
+    /// markup. `"` only matters inside a quoted attribute value.
+    private static func isMarkupByte(_ b: UInt8, quote: Bool) -> Bool {
+        b == UInt8(ascii: "&") || b == UInt8(ascii: "<") || b == UInt8(ascii: ">")
+            || (quote && b == UInt8(ascii: "\""))
+    }
+
+    /// Append `s`, replacing the characters that would be read as markup.
+    ///
+    /// Text containing none of them is nearly all text, and costs one scan of
+    /// its bytes and one copy. It used to cost three passes of
+    /// `replacingOccurrences` — three Foundation calls each building a whole
+    /// new string — whether or not there was anything to replace.
+    static func escape(_ s: String, into out: inout String, quote: Bool = false) {
+        guard s.utf8.contains(where: { isMarkupByte($0, quote: quote) }) else { out += s; return }
+        var chunk = s.startIndex
+        var i = s.startIndex
+        while i < s.endIndex {
+            let entity: String
+            switch s[i] {
+            case "&": entity = "&amp;"
+            case "<": entity = "&lt;"
+            case ">": entity = "&gt;"
+            case "\"" where quote: entity = "&quot;"
+            default: i = s.index(after: i); continue
+            }
+            out += s[chunk..<i]
+            out += entity
+            i = s.index(after: i)
+            chunk = i
+        }
+        out += s[chunk...]
     }
 
     /// Escape a value going inside a double-quoted attribute. A bare `"` there
     /// would end the attribute early and corrupt the rest of the tag — reachable
     /// from any user-supplied text (an image `alt`, a `\text{"…"}` in a formula).
-    static func escapeAttribute(_ s: String) -> String {
-        escape(s).replacingOccurrences(of: "\"", with: "&quot;")
+    static func escapeAttribute(_ s: String, into out: inout String) {
+        escape(s, into: &out, quote: true)
     }
 }
 

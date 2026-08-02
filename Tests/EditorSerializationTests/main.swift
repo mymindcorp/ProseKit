@@ -3796,5 +3796,43 @@ test("HTML: numeric character references at their edges") {
     try expectEqual(try text("a &amp;&amp; b &"), "a && b &")
 }
 
+test("HTML: a mark's run is measured per run, not per node") {
+    // The writer remembers where each mark's current run ends so it doesn't
+    // rescan from every node inside it. These are the shapes where a stale
+    // answer would show: a run that stops and starts again, two marks of the
+    // same type that differ only in their attributes, and a mark that ends
+    // before another one covering the same node.
+    func html(_ source: String) throws -> String {
+        HTMLSerializer.serialize(try HTMLParser.parse(source, schema: schema))
+    }
+    // One bold run across a link and the text after it — written once around
+    // both, not opened twice.
+    try expectEqual(try html("<p><strong>a<a href=\"/u\">b</a>c</strong></p>"),
+                    "<p><strong>a<a href=\"/u\">b</a>c</strong></p>")
+    // Bold stops and starts again: two runs, not one spanning the gap.
+    try expectEqual(try html("<p><strong>a</strong>b<strong>c</strong></p>"),
+                    "<p><strong>a</strong>b<strong>c</strong></p>")
+    // Same mark type, different attributes — neither run may claim the other's.
+    try expectEqual(try html("<p><a href=\"/1\">a</a><a href=\"/2\">b</a></p>"),
+                    "<p><a href=\"/1\">a</a><a href=\"/2\">b</a></p>")
+    // Two marks ending together, and one ending before the other.
+    try expectEqual(try html("<p><strong><em>ab</em></strong></p>"),
+                    "<p><em><strong>ab</strong></em></p>")
+    try expectEqual(try html("<p><strong><em>a</em>b</strong></p>"),
+                    "<p><strong><em>a</em>b</strong></p>")
+    // A long alternating run: every child carries bold, every other one also
+    // carries italic, so bold's run covers all of them and italic's covers one
+    // each. Bold is opened once.
+    var long = "<p><strong>"
+    for i in 0..<400 { long += "w\(i) <em>x\(i)</em> " }
+    long += "</strong></p>"
+    let written = try html(long)
+    try expectEqual(written.components(separatedBy: "<strong>").count - 1, 1,
+                    "bold was reopened inside its own run")
+    try expectEqual(written.components(separatedBy: "<em>").count - 1, 400)
+    try expectEqual(try HTMLParser.parse(written, schema: schema),
+                    try HTMLParser.parse(long, schema: schema))
+}
+
 registerBench()
 TestSuite.main("EditorSerializationTests", collector.all)
