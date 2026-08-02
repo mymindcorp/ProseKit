@@ -1072,7 +1072,7 @@ public enum MarkdownParser {
     /// resolved, and backslash escapes taken off. Both are text there, not
     /// markup, so `/bar\*` is a path containing an asterisk.
     static func resolveEscapes(_ s: String) -> String {
-        unescapeInline(HTMLParser.decodeEntities(s))
+        unescapeInline(HTMLParser.decodeEntities(s, cappingNumericDigits: true))
     }
 
     /// A definition's destination and optional title, and how many *extra* lines
@@ -1367,7 +1367,11 @@ public enum MarkdownParser {
                 while j < lines.count, lines[j].trimmingCharacters(in: .whitespaces).isEmpty { j += 1 }
                 guard j < lines.count else { break }
                 if continues(lines[j]) {
-                    items[items.count - 1].append("")
+                    // Every blank line, not one standing for the run: inside an
+                    // item's code block they are content, and collapsing them
+                    // rewrote the code. Between two blocks any number reads the
+                    // same, so keeping them costs nothing there.
+                    items[items.count - 1].append(contentsOf: repeatElement("", count: j - i))
                     tight = false
                     i = j
                     continue
@@ -1682,7 +1686,7 @@ public enum MarkdownParser {
             // — already resolved to a literal "&" — isn't decoded a second time.
             if c == UInt8(ascii: "&"), let semi = findByte(chars, i + 1, UInt8(ascii: ";")), semi - i <= 32 {
                 let reference = slice(chars, i..<(semi + 1))
-                let decoded = HTMLParser.decodeEntities(reference)
+                let decoded = HTMLParser.decodeEntities(reference, cappingNumericDigits: true)
                 // "&#10;" is a newline, which is block structure in this model,
                 // not text — decoding it would produce a document we can't write
                 // back. Leave those references as written.
