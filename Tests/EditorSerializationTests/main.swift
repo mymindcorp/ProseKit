@@ -2741,6 +2741,41 @@ test("Markdown: a mark spanning a link is written around the whole run") {
     try expectEqual(MarkdownSerializer.serialize(d), "**[link](/x) is bold**")
 }
 
+test("Markdown: a mark's run is measured per run, not per node") {
+    // The writer remembers where each mark's current run ends so it doesn't
+    // rescan from every node inside it — without that, one mark over N children
+    // costs O(N²). These are the shapes where a stale answer would show: a run
+    // that stops and starts again, two marks of the same type differing only in
+    // their attributes, and a mark ending before another over the same node.
+    func md(_ source: String) throws -> String {
+        MarkdownSerializer.serialize(try MarkdownParser.parse(source, schema: schema))
+    }
+    try expectEqual(try md("**a[b](/u)c**"), "**a[b](/u)c**")
+    try expectEqual(try md("**a**b**c**"), "**a**b**c**")
+    try expectEqual(try md("[a](/1)[b](/2)"), "[a](/1)[b](/2)")
+    try expectEqual(try md("***ab***"), "***ab***")
+    try expectEqual(try md("***a*b**"), "***a*b**")
+    // A long alternating run: every child carries bold, every other one also
+    // carries italic, so bold's run covers all of them and italic's covers one
+    // each. Bold is opened once.
+    let long = "**" + (0..<400).map { "w\($0) *x\($0)*" }.joined(separator: " ") + " end**"
+    let written = try md(long)
+    try expectEqual(written.components(separatedBy: "**").count - 1, 2,
+                    "bold was reopened inside its own run")
+}
+
+test("Markdown: a CRLF inside a block is a line ending like any other") {
+    // "\r\n" is one Character but two line-ending bytes, and every Markdown
+    // reader ends the line at it. The line after one therefore has to carry the
+    // quote marker and the item's indentation, or the rest of the paragraph
+    // falls out of the block that holds it.
+    let quoted = doc(node("blockquote", [:], [p(t("a\r\nb"))]))
+    try expectEqual(MarkdownSerializer.serialize(quoted), "> a\r\n> b")
+    let listed = doc(node("bulletList", tightList,
+                          [node("listItem", [:], [p(t("a\r\nb"))])]))
+    try expectEqual(MarkdownSerializer.serialize(listed), "- a\r\n  b")
+}
+
 test("Markdown: emphasis spanning a code span stays open across it") {
     // `code` excludes every other mark, so the span itself can't be bold — but
     // closing and reopening the emphasis around it would emit delimiter runs

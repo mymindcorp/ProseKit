@@ -48,6 +48,7 @@ func registerBench() {
             try time("  of which: doc.check()") { try parsed.check() }
             time("HTMLSerializer.serialize") { _ = HTMLSerializer.serialize(parsed) }
             let markdown = MarkdownSerializer.serialize(parsed)
+            time("MarkdownSerializer.serialize") { _ = MarkdownSerializer.serialize(parsed) }
             try time("MarkdownParser.parse") { _ = try MarkdownParser.parse(markdown, schema: schema) }
             var json = ""
             try time("DocumentJSON.string (encode)") { json = try DocumentJSON.string(parsed) }
@@ -97,5 +98,28 @@ func registerBench() {
         let marked = try HTMLParser.parse(run, schema: schema)
         print("\n  --- one mark over \(marked.child(0).childCount) children ---"); unsafe fflush(stdout)
         time("HTMLSerializer.serialize") { _ = HTMLSerializer.serialize(marked) }
+        time("MarkdownSerializer.serialize") { _ = MarkdownSerializer.serialize(marked) }
+
+        // Prose thick with the characters Markdown reads as markup, which is
+        // the path that has to add a backslash rather than copy the text over.
+        var punctuated = ""
+        for i in 0..<2000 {
+            punctuated += "<p>snake_case_name_\(i) and 2 * 3 * 4 &amp; a [bracket] "
+            punctuated += "with `ticks`, $dollars$ and a &lt;tag&gt; in it.</p>"
+        }
+        let punctuatedDoc = try HTMLParser.parse(punctuated, schema: schema)
+        print("\n  --- escape-dense prose, \(punctuated.count / 1024) KB of HTML ---")
+        unsafe fflush(stdout)
+        time("MarkdownSerializer.serialize") { _ = MarkdownSerializer.serialize(punctuatedDoc) }
+
+        // A deeply nested list: every level re-indents the text of everything
+        // under it, so the cost of writing the innermost item is paid once per
+        // level above it.
+        var nested = ""
+        for i in 0..<40 { nested += "<ul><li><p>level \(i) with some words in it</p>" }
+        for _ in 0..<40 { nested += "</li></ul>" }
+        let deep = try HTMLParser.parse(nested, schema: schema)
+        print("\n  --- 40-deep nested list ---"); unsafe fflush(stdout)
+        time("MarkdownSerializer.serialize") { _ = MarkdownSerializer.serialize(deep) }
     }
 }
