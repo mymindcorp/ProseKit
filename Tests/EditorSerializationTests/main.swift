@@ -246,14 +246,31 @@ test("HTML: a mark stays open across a node that can't carry it") {
 }
 
 test("HTML: nested and adjacent marks") {
+    // "***both***" nests em outside strong, as CommonMark does. Both marks
+    // cover the same text, so the order is a choice; this is the one everyone
+    // else writes. The mark set — and so the parse back — is the same either way.
     for (md, html) in [("**foo *bar* baz**", "<p><strong>foo <em>bar</em> baz</strong></p>"),
-                       ("***both***", "<p><strong><em>both</em></strong></p>"),
+                       ("***both***", "<p><em><strong>both</strong></em></p>"),
                        ("*a* *b*", "<p><em>a</em> <em>b</em></p>")] {
         let d = try MarkdownParser.parse(md, schema: schema)
         try expectEqual(HTMLSerializer.serialize(d), html, "input: \(md)")
         try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema), d,
                         "input: \(md)")
     }
+}
+
+test("HTML: a link is written outside the emphasis covering the same text") {
+    // A link and a mark over exactly its text: the <a> goes outside, so the
+    // emphasis reads as part of the link's label rather than the other way on.
+    let d = try MarkdownParser.parse("**foo [*bar*](/url)**", schema: schema)
+    try expectEqual(HTMLSerializer.serialize(d),
+                    "<p><strong>foo <a href=\"/url\"><em>bar</em></a></strong></p>")
+    try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema), d)
+    // A mark covering more text still wins over the order above: bold spans
+    // the link and the word after it, so it stays outermost.
+    let wider = try MarkdownParser.parse("**[a](/u) b**", schema: schema)
+    try expectEqual(HTMLSerializer.serialize(wider),
+                    "<p><strong><a href=\"/u\">a</a> b</strong></p>")
 }
 
 test("HTML: bold code pastes instead of failing the whole document") {

@@ -71,6 +71,21 @@ public enum HTMLSerializer {
         serializeFragment(fragment, config)
     }
 
+    /// Which of two marks covering the same text is written outside the other,
+    /// outermost first. Marks not listed here keep the schema's order.
+    ///
+    /// The choice is invisible in a rendered document, but it isn't arbitrary:
+    /// CommonMark writes `<em><strong>x</strong></em>` for `***x***` and puts a
+    /// link outside the emphasis inside it, so every other Markdown renderer
+    /// does too. Matching them keeps our HTML comparable with theirs — which is
+    /// how the CommonMark suite reads it, and how anyone diffing our output
+    /// against a reference implementation will.
+    private static let nestingOrder = ["link", "italic", "bold"]
+
+    private static func nestingRank(_ mark: Mark) -> Int {
+        nestingOrder.firstIndex(of: mark.type.name) ?? nestingOrder.count
+    }
+
     static func serializeFragment(_ fragment: Fragment, _ config: HTMLConfig) -> String {
         var out = ""
         // A mark can cover several nodes — bold across a link and the text after
@@ -96,10 +111,16 @@ public enum HTMLSerializer {
             // A mark covering more of what follows is written outside one
             // covering less, so a bold across a link and the text after it wraps
             // both instead of being opened twice.
+            // Two marks covering exactly the same text can be written in either
+            // order — the tags apply to the same characters either way — so the
+            // tie is broken by `nestingOrder` and then by the schema's own,
+            // which is what the document lists them in.
             let own = node.marks.enumerated()
                 .sorted { left, right in
                     let a = runEnd(left.element, from: i), b = runEnd(right.element, from: i)
-                    return a == b ? left.offset < right.offset : a > b
+                    guard a == b else { return a > b }
+                    return (nestingRank(left.element), left.offset)
+                        < (nestingRank(right.element), right.offset)
                 }
                 .map(\.element)
             // A node that can't carry a mark shouldn't close it either: `code`
