@@ -1,7 +1,7 @@
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
-import EditorStateKit
-import EditorCommands
+public import EditorStateKit
+public import EditorCommands
 
 // Table commands ported from prosemirror-tables' commands.ts — spanning-aware,
 // operating on TableMap + CellSelection.
@@ -51,7 +51,7 @@ public func addColumn(_ tr: Transaction, _ rect: SelectedRect, _ col: Int) -> Tr
                                       addColSpan(cell.attrs, col - map.colCount(pos)))
             row += cellRowspan(cell) - 1
         } else {
-            let type: NodeType = refColumn == nil
+            let type: NodeType = unsafe refColumn == nil
                 ? tableNodeTypes(table.type.schema)["cell"]!
                 : table.nodeAt(map.map[index + refColumn!])!.type
             let pos = map.positionAt(row, col, table)
@@ -117,7 +117,7 @@ public let deleteColumn: Command = { state, dispatch, _ in
 // MARK: - Rows
 
 public func rowIsHeader(_ map: TableMap, _ table: Node, _ row: Int) -> Bool {
-    let headerCell = tableNodeTypes(table.type.schema)["header_cell"]
+    let headerCell = unsafe tableNodeTypes(table.type.schema)["header_cell"]
     for col in 0..<map.width {
         if table.nodeAt(map.map[col + row * map.width])?.type !== headerCell { return false }
     }
@@ -144,14 +144,14 @@ public func addRow(_ tr: Transaction, _ rect: SelectedRect, _ row: Int) -> Trans
             _ = try? tr.setNodeMarkup(tableStart + pos, nil, attrs)
             col += (attrs["colspan"]?.intValue ?? 1) - 1
         } else {
-            let type: NodeType? = refRow == nil
+            let type: NodeType? = unsafe refRow == nil
                 ? tableNodeTypes(table.type.schema)["cell"]
                 : table.nodeAt(map.map[index + refRow! * map.width])?.type
             if let node = type?.createAndFill() { cells.append(node) }
         }
         col += 1; index += 1
     }
-    let rowType = tableNodeTypes(table.type.schema)["row"]!
+    let rowType = unsafe tableNodeTypes(table.type.schema)["row"]!
     if let row = try? rowType.create([:], content: Fragment.from(cells)) {
         _ = try? tr.insert(rowPos, row)
     }
@@ -345,7 +345,7 @@ public func splitCellWithType(_ getCellType: @escaping @Sendable (Node, Int, Int
 
 public let splitCell: Command = { state, dispatch, host in
     splitCellWithType { node, _, _ in
-        let types = tableNodeTypes(node.type.schema)
+        let types = unsafe tableNodeTypes(node.type.schema)
         return types[tableRole(node.type) ?? "cell"] ?? types["cell"]!
     }(state, dispatch, host)
 }

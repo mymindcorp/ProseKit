@@ -1,5 +1,5 @@
 #if canImport(UIKit)
-import UIKit
+public import UIKit
 
 /// One styled span produced by a `SyntaxHighlighter`, addressing a range of the
 /// code block's text by **grapheme offset** (0-based, half-open).

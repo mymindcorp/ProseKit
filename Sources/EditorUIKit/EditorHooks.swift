@@ -1,6 +1,6 @@
 #if canImport(UIKit)
-import UIKit
-import DocumentModel
+public import UIKit
+public import DocumentModel
 
 // Named types for the closures a host wires into the editor/document views.
 // Using these (instead of inline closure types) keeps the view APIs readable

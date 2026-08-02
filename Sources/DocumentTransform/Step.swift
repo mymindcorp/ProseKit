@@ -1,6 +1,6 @@
 import Foundation
 import Synchronization
-import DocumentModel
+public import DocumentModel
 
 /// The result of applying a step. Contains either a new document or a failure
 /// message.

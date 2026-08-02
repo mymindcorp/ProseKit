@@ -1,8 +1,8 @@
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
-import EditorChangeset
-import EditorCommands
-import EditorStateKit
+public import EditorChangeset
+public import EditorCommands
+public import EditorStateKit
 
 // Suggestion mode (track changes), built on the ported prosemirror-changeset.
 // ORIGINAL ProseKit feature — there is no official ProseMirror suggestion-mode

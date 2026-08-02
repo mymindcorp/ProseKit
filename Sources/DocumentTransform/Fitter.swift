@@ -1,4 +1,4 @@
-import DocumentModel
+public import DocumentModel
 
 /// Build a `ReplaceStep` (or `ReplaceAroundStep`) that replaces `from..to` with
 /// `slice`, fitting the slice's open ends to the surrounding document

@@ -25,8 +25,8 @@ public struct Fragment: Hashable, Sendable {
         // COW fast path: when both fragments share the same backing storage
         // (e.g. an unchanged sibling copied during an edit), they're equal in
         // O(1) — which lets renderers diff documents without walking every node.
-        let shared = lhs.content.withUnsafeBufferPointer { a in
-            rhs.content.withUnsafeBufferPointer { b in a.baseAddress != nil && a.baseAddress == b.baseAddress }
+        let shared = unsafe lhs.content.withUnsafeBufferPointer { a in
+            unsafe rhs.content.withUnsafeBufferPointer { b in unsafe a.baseAddress != nil && a.baseAddress == b.baseAddress }
         }
         if shared { return true }
         return lhs.content == rhs.content

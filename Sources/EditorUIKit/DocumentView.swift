@@ -1,6 +1,6 @@
 #if canImport(UIKit)
-import UIKit
-import DocumentModel
+public import UIKit
+public import DocumentModel
 import EditorSerialization
 
 /// A lightweight, **read-only** view that renders a document with the shared

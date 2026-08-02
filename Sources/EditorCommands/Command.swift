@@ -1,6 +1,6 @@
 import DocumentModel
 import DocumentTransform
-import EditorStateKit
+public import EditorStateKit
 
 /// Optional host the command layer can query for view-dependent facts (such as
 /// whether the cursor is visually at the start/end of a textblock). The shared

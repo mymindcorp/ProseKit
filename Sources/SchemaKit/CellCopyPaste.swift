@@ -1,6 +1,6 @@
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
-import EditorStateKit
+public import EditorStateKit
 
 // Cell copy/paste, ported from prosemirror-tables' copypaste.ts. Pasting cells
 // into a table places the block so its top-left aligns with the target cell
@@ -26,7 +26,7 @@ public func pastedCells(_ slice: Slice) -> CellArea? {
     }
     let first = content.child(0)
     let role = tableRole(first)
-    let schema = first.type.schema!
+    let schema = unsafe first.type.schema!
     var rows: [Fragment] = []
     if role == "row" {
         for i in 0..<content.childCount {
@@ -132,7 +132,7 @@ public func clipCells(_ area: CellArea, _ newWidth: Int, _ newHeight: Int) -> Ce
 }
 
 private func growTable(_ tr: Transaction, _ map: TableMap, _ table: Node, _ start: Int, _ width: Int, _ height: Int, _ mapFrom: Int) -> Bool {
-    let types = tableNodeTypes(tr.doc.type.schema)
+    let types = unsafe tableNodeTypes(tr.doc.type.schema)
     var empty: Node?
     var emptyHead: Node?
     // Lazily build (and cache) a blank body/header cell; nil if the schema can't

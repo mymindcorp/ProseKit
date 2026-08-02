@@ -1,6 +1,7 @@
-import DocumentModel
+public import DocumentModel
 import EditorStateKit
-import EditorCommands
+public import EditorCommands
+import DocumentTransform
 
 /// An image node (a leaf atom) with `src`, `alt`, `title`, and a display size.
 ///

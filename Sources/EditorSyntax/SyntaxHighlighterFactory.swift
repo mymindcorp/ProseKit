@@ -1,6 +1,6 @@
 #if canImport(UIKit)
 import Foundation
-import EditorUIKit
+public import EditorUIKit
 
 /// Build a `SyntaxHighlighter` for the EditorUIKit code-block hook.
 ///

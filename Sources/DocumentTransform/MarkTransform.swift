@@ -1,4 +1,4 @@
-import DocumentModel
+public import DocumentModel
 
 public extension Transform {
     /// Add the given mark to the inline content between `from` and `to`.

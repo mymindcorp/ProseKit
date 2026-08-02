@@ -1,6 +1,6 @@
-import Foundation
-import CoreText
-import CoreGraphics
+public import Foundation
+public import CoreText
+public import CoreGraphics
 
 // The typesetter's output: a tree of positioned drawing primitives flattened
 // into one box per formula.
@@ -113,7 +113,7 @@ public struct MathBox {
         for item in items {
             switch item {
             case let .glyphs(font, glyphs, positions):
-                CTFontDrawGlyphs(font, glyphs, positions, glyphs.count, ctx)
+                unsafe CTFontDrawGlyphs(font, glyphs, positions, glyphs.count, ctx)
             case let .rule(rect):
                 ctx.fill(rect)
             case let .strokedPath(path, lineWidth):
@@ -147,6 +147,6 @@ extension MathDrawItem {
 
     private func transform(_ path: CGPath, dx: CGFloat, dy: CGFloat) -> CGPath {
         var t = CGAffineTransform(translationX: dx, y: dy)
-        return path.copy(using: &t) ?? path
+        return unsafe path.copy(using: &t) ?? path
     }
 }

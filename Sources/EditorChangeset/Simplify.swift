@@ -1,4 +1,4 @@
-import DocumentModel
+public import DocumentModel
 
 // A port of prosemirror-changeset's simplify.ts: presentation-level cleanup of
 // change lists — replacements inside a word expand to cover the whole word,

@@ -1,7 +1,7 @@
 import Foundation
 import DocumentModel
 import DocumentTransform
-import EditorStateKit
+public import EditorStateKit
 
 /// A remote participant's cursor/selection, in document positions. Positions are
 /// mapped through every transaction so they stay correct as the document changes

@@ -1,12 +1,12 @@
 #if canImport(UIKit)
-import UIKit
+public import UIKit
 import UniformTypeIdentifiers
 import DocumentModel
 import DocumentTransform
 import EditorStateKit
 import EditorCommands
 import EditorKeymap
-import SchemaKit
+public import SchemaKit
 import EditorSerialization
 
 /// One on-screen run of a highlight-mark background, passed to a custom
@@ -1935,9 +1935,9 @@ open class EditorTextView: UIView, UIKeyInput {
     /// round-trips through HTML/serialization).
     static func cssHex(_ color: UIColor) -> String {
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        unsafe color.getRed(&r, green: &g, blue: &b, alpha: &a)
         func byte(_ v: CGFloat) -> Int { Int((max(0, min(1, v)) * 255).rounded()) }
-        return String(format: "#%02x%02x%02x", byte(r), byte(g), byte(b))
+        return unsafe String(format: "#%02x%02x%02x", byte(r), byte(g), byte(b))
     }
 
     /// The supported formatting actions, for a host to build its menu from.
@@ -2025,7 +2025,7 @@ open class EditorTextView: UIView, UIKeyInput {
         // The archived-attributed-string flavor first: it skips the RTF
         // round-trip's losses entirely when a UIKit-sourced copy provides it.
         func documentType(_ docType: NSAttributedString.DocumentType) -> (Data) -> NSAttributedString? {
-            { try? NSAttributedString(data: $0, options: [.documentType: docType], documentAttributes: nil) }
+            { unsafe try? NSAttributedString(data: $0, options: [.documentType: docType], documentAttributes: nil) }
         }
         let candidates: [(String, (Data) -> NSAttributedString?)] = [
             ("com.apple.uikit.attributedstring", { data in
@@ -2085,7 +2085,7 @@ open class EditorTextView: UIView, UIKeyInput {
     private func checkedLines(from attr: NSAttributedString) -> Set<String> {
         var result = Set<String>()
         let ns = attr.string as NSString
-        attr.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: attr.length), options: []) { val, range, _ in
+        unsafe attr.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: attr.length), options: []) { val, range, _ in
             guard let ps = val as? NSParagraphStyle,
                   ps.textLists.contains(where: { $0.markerFormat.rawValue.contains("check") }) else { return }
             // NB: literal RTF list markers ("☑\tmilk") are NOT stripped here —

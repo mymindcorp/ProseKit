@@ -3,6 +3,7 @@ import DocumentModel
 import EditorStateKit
 import SchemaKit
 import TestHarness
+import DocumentTransform
 
 // Ported from prosemirror-tables/test/{transpose, move-row-in-array-of-rows,
 // convert-array-of-rows-to-table-node, convert-table-node-to-array-of-rows}.

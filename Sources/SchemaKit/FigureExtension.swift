@@ -1,7 +1,7 @@
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
 import EditorStateKit
-import EditorCommands
+public import EditorCommands
 
 // A captioned block — the document shape of HTML's `<figure>`/`<figcaption>`,
 // which is how essentially every article on the web marks up an illustration.

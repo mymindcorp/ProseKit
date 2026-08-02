@@ -1,5 +1,5 @@
-import Foundation
-import CoreText
+public import Foundation
+public import CoreText
 import CoreGraphics
 
 // The typesetter: an atom list in, one `MathBox` out.
@@ -529,7 +529,7 @@ public final class MathTypesetter {
         let xScale = min(scale, 1.8)
         var transform = CGAffineTransform(scaleX: xScale, y: scale)
         guard let single = run.singleGlyph,
-              let path = CTFontCreatePathForGlyph(single.font, single.glyph, &transform) else {
+              let path = unsafe CTFontCreatePathForGlyph(single.font, single.glyph, &transform) else {
             let center = (run.ascent - run.descent) / 2
             return MathBox(run).offset(dx: 0, dy: axis - center)
         }
@@ -537,7 +537,7 @@ public final class MathTypesetter {
         // Re-center the scaled outline on the axis.
         let dy = axis - bounds.midY
         var move = CGAffineTransform(translationX: 0, y: dy)
-        let centered = path.copy(using: &move) ?? path
+        let centered = unsafe path.copy(using: &move) ?? path
         return MathBox(width: run.width * xScale,
                        ascent: bounds.maxY + dy,
                        descent: -(bounds.minY + dy),
@@ -562,7 +562,7 @@ public final class MathTypesetter {
             let xScale = body.width / run.width
             var transform = CGAffineTransform(scaleX: xScale, y: 1)
             if let single = run.singleGlyph,
-               let path = CTFontCreatePathForGlyph(single.font, single.glyph, &transform) {
+               let path = unsafe CTFontCreatePathForGlyph(single.font, single.glyph, &transform) {
                 let bounds = path.boundingBox
                 accent = MathBox(width: run.width * xScale, ascent: bounds.maxY,
                                  descent: -bounds.minY, items: [.filledPath(path)])
@@ -591,7 +591,7 @@ public final class MathTypesetter {
         var brace = MathBox(run)
         if run.width > 0, body.width > 0, let single = run.singleGlyph {
             var transform = CGAffineTransform(scaleX: body.width / run.width, y: 1)
-            if let path = CTFontCreatePathForGlyph(single.font, single.glyph, &transform) {
+            if let path = unsafe CTFontCreatePathForGlyph(single.font, single.glyph, &transform) {
                 let bounds = path.boundingBox
                 brace = MathBox(width: body.width, ascent: bounds.maxY, descent: -bounds.minY,
                                 items: [.filledPath(path)])

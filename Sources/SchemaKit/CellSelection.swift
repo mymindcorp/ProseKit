@@ -1,7 +1,7 @@
-import DocumentModel
-import DocumentTransform
-import EditorStateKit
-import EditorCommands
+public import DocumentModel
+public import DocumentTransform
+public import EditorStateKit
+public import EditorCommands
 
 // A Selection subclass modelling a rectangular selection of table cells, ported
 // from prosemirror-tables' cellselection.ts (minus the view-layer decoration
