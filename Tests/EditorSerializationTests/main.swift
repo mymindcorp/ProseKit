@@ -4144,5 +4144,27 @@ test("HTML paste: Word keeps its emphasis and drops its scaffolding") {
     try expect(d.child(0).child(1).marks.contains { $0.type.name == "bold" })
 }
 
+test("HTML paste: superscript and subscript written as vertical-align") {
+    // Google Docs writes these as an alignment rather than a tag. The marks
+    // already existed; only this spelling was missing, which is the same gap
+    // `font-weight` had.
+    let html = "<p><span style=\"vertical-align:super\">up</span>" +
+               "<span style=\"vertical-align:sub\">down</span>" +
+               "<span style=\"vertical-align:baseline\">flat</span></p>"
+    let para = try HTMLParser.parse(html, schema: schema).child(0)
+    try expectEqual(para.child(0).marks.first?.type.name, "superscript")
+    try expectEqual(para.child(1).marks.first?.type.name, "subscript")
+    try expect(para.child(2).marks.isEmpty, "baseline is not a mark: \(para.child(2).marks)")
+}
+
+test("HTML round-trip: superscript and subscript from a style") {
+    // They serialize back as <sup>/<sub>, which is what this writer emits.
+    let d = try HTMLParser.parse("<p><span style=\"vertical-align:super\">x</span></p>",
+                                 schema: schema)
+    let html = HTMLSerializer.serialize(d)
+    try expect(html.contains("<sup>"), "got: \(html)")
+    try expectEqual(try HTMLParser.parse(html, schema: schema), d)
+}
+
 registerBench()
 TestSuite.main("EditorSerializationTests", collector.all)

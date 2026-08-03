@@ -1051,6 +1051,12 @@ public enum HTMLParser {
            style == "italic" || style == "oblique", let mt = schema.marks["italic"] {
             marks.append(mt.create())
         }
+        // Google Docs writes these as an alignment rather than a tag.
+        if let align = styleValue(style, "vertical-align")?
+            .trimmingCharacters(in: .whitespaces).lowercased() {
+            if align == "super", let mt = schema.marks["superscript"] { marks.append(mt.create()) }
+            if align == "sub", let mt = schema.marks["subscript"] { marks.append(mt.create()) }
+        }
         if let decoration = styleValue(style, "text-decoration")?.lowercased()
             ?? styleValue(style, "text-decoration-line")?.lowercased() {
             if decoration.contains("line-through"), let mt = schema.marks["strike"] {
