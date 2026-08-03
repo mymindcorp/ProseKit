@@ -1033,6 +1033,43 @@ public enum HTMLParser {
         return nil
     }
 
+    /// The marks an inline `style` asks for, beyond colour.
+    ///
+    /// Editors that emit styling rather than tags rely on this. Google Docs
+    /// writes bold as `font-weight:700` on a span and italic as
+    /// `font-style:italic`; a spreadsheet does the same in a cell. Without it a
+    /// pasted document arrives with its emphasis flattened away.
+    ///
+    /// The weights follow ProseMirror's rule: `bold`, `bolder`, or 500 and up.
+    private static func styleMarks(_ style: String, _ schema: Schema) -> [Mark] {
+        var marks: [Mark] = []
+        if let weight = styleValue(style, "font-weight")?.trimmingCharacters(in: .whitespaces).lowercased(),
+           isBoldWeight(weight), let mt = schema.marks["bold"] {
+            marks.append(mt.create())
+        }
+        if let style = styleValue(style, "font-style")?.trimmingCharacters(in: .whitespaces).lowercased(),
+           style == "italic" || style == "oblique", let mt = schema.marks["italic"] {
+            marks.append(mt.create())
+        }
+        if let decoration = styleValue(style, "text-decoration")?.lowercased()
+            ?? styleValue(style, "text-decoration-line")?.lowercased() {
+            if decoration.contains("line-through"), let mt = schema.marks["strike"] {
+                marks.append(mt.create())
+            }
+            if decoration.contains("underline"), let mt = schema.marks["underline"] {
+                marks.append(mt.create())
+            }
+        }
+        return marks
+    }
+
+    /// Whether a CSS font-weight reads as bold: a keyword, or 500 and above.
+    private static func isBoldWeight(_ value: String) -> Bool {
+        if value == "bold" || value == "bolder" { return true }
+        guard let n = Int(value) else { return false }
+        return n >= 500
+    }
+
     /// A cell's alignment, from either spelling: the `style` this serializer
     /// writes, or the `align` attribute GitHub and older documents use.
     private static func parseCellAlign(_ attrs: [String: String]) -> String? {
@@ -1131,6 +1168,7 @@ public enum HTMLParser {
                                let mt = schema.marks["textColor"] {
                                 marks.append(mt.create(["color": .string(c)]))
                             }
+                            marks.append(contentsOf: styleMarks(style, schema))
                         }
                         openMarks.append((tag: "span", marks: marks))
                         marksChanged()
@@ -1154,6 +1192,19 @@ public enum HTMLParser {
                 }
                 // A self-closing mark tag opens no lasting scope.
                 if !selfClosing, let markName = config.tagToMark[tag], let markType = schema.marks[markName] {
+                    // Google Docs wraps a whole copied document in
+                    // `<b style="font-weight:normal">`, which is not bold and
+                    // never was — taking the tag at its word made every paste
+                    // from it arrive entirely bold. ProseMirror's own schema
+                    // reads the style over the tag here for the same reason.
+                    if markName == "bold", let style = attrs["style"],
+                       let weight = styleValue(style, "font-weight")?
+                           .trimmingCharacters(in: .whitespaces).lowercased(),
+                       !isBoldWeight(weight) {
+                        openMarks.append((tag: tag, marks: []))
+                        marksChanged()
+                        i += 1; continue
+                    }
                     var attrsDict: Attrs = [:]
                     if markName == "link" {
                         // A `javascript:` href would become a link the editor
