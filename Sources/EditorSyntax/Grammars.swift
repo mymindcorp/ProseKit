@@ -133,6 +133,81 @@ func goRules(_ c: SyntaxColors) -> [SyntaxRule] {
     ]
 }
 
+func kotlinRules(_ c: SyntaxColors) -> [SyntaxRule] {
+    [
+        rule(#"/\*.*?\*/"#, c.comment),                          // block comment
+        rule(#"//[^\n]*"#, c.comment),                           // line comment
+        rule("\"\"\".*?\"\"\"", c.string),                       // raw string
+        rule(#""(?:\\.|[^"\\])*""#, c.string),                   // string
+        rule(#"'(?:\\.|[^'\\])*'"#, c.string),                   // char literal
+        rule(#"@\w+"#, c.atRule),                                // annotations
+        rule(#"\b(?:fun|val|var|class|object|interface|data|sealed|enum|companion|init|constructor|when|if|else|for|while|do|return|break|continue|in|is|as|by|try|catch|finally|throw|import|package|typealias|null|true|false|this|super|override|open|abstract|final|private|protected|public|internal|lateinit|suspend|inline|noinline|crossinline|reified|vararg|operator|infix|const|out|where)\b"#, c.keyword),
+        rule(#"\b[A-Z]\w*\b"#, c.property),                      // types (Capitalized)
+        rule(#"\b\d+(?:\.\d+)?[fFlLuU]?\b"#, c.number),
+    ]
+}
+
+/// PHP. The legacy `#` line comment is deliberately not matched: `#` is common
+/// inside PHP strings (`"#fff"`, `"#tag"`), and a rule for it would have to run
+/// before the string rules to work at all, which would miscolour them. `//` and
+/// `/* */` cover modern PHP.
+func phpRules(_ c: SyntaxColors) -> [SyntaxRule] {
+    [
+        rule(#"/\*.*?\*/"#, c.comment),                          // block comment
+        rule(#"//[^\n]*"#, c.comment),                           // line comment
+        rule(#"<\?php\b|<\?=|\?>"#, c.atRule),                   // open / close tags
+        rule(#""(?:\\.|[^"\\])*""#, c.string),                   // double-quoted
+        rule(#"'(?:\\.|[^'\\])*'"#, c.string),                   // single-quoted
+        rule(#"\$\w+"#, c.property),                             // variables
+        rule(#"\b(?:abstract|and|array|as|break|callable|case|catch|class|clone|const|continue|declare|default|do|echo|else|elseif|empty|enum|extends|final|finally|fn|for|foreach|function|global|goto|if|implements|include|include_once|instanceof|insteadof|interface|isset|list|match|namespace|new|or|print|private|protected|public|readonly|require|require_once|return|static|switch|throw|trait|try|unset|use|var|while|xor|yield|true|false|null|self|parent|int|float|string|bool|void|iterable|object|mixed|never)\b"#, c.keyword),
+        rule(#"\b\d+(?:\.\d+)?\b"#, c.number),
+    ]
+}
+
+/// Dockerfile. Instructions only count at the start of a line, which is where
+/// the format puts them; `#` comments here are unambiguous.
+func dockerfileRules(_ c: SyntaxColors) -> [SyntaxRule] {
+    [
+        rule(#"(?m)^\s*#[^\n]*"#, c.comment),                    // comment
+        rule(#"(?m)^\s*(?:FROM|RUN|CMD|LABEL|MAINTAINER|EXPOSE|ENV|ADD|COPY|ENTRYPOINT|VOLUME|USER|WORKDIR|ARG|ONBUILD|STOPSIGNAL|HEALTHCHECK|SHELL)\b"#, c.keyword),
+        rule(#""(?:\\.|[^"\\])*""#, c.string),                   // string
+        rule(#"'(?:\\.|[^'\\])*'"#, c.string),                   // string
+        rule(#"\$\{?\w+\}?"#, c.property),                       // build args / env
+        rule(#"\bAS\b"#, c.atRule),                              // multi-stage alias
+        rule(#"\b\d+(?:\.\d+)*\b"#, c.number),
+    ]
+}
+
+func javaRules(_ c: SyntaxColors) -> [SyntaxRule] {
+    [
+        rule(#"/\*.*?\*/"#, c.comment),                          // block and javadoc comment
+        rule(#"//[^\n]*"#, c.comment),                           // line comment
+        rule("\"\"\".*?\"\"\"", c.string),                       // text block
+        rule(#""(?:\\.|[^"\\])*""#, c.string),                   // string
+        rule(#"'(?:\\.|[^'\\])*'"#, c.string),                   // char literal
+        rule(#"@\w+"#, c.atRule),                                // annotations
+        rule(#"\b(?:abstract|assert|boolean|break|byte|case|catch|char|class|const|continue|default|do|double|else|enum|extends|final|finally|float|for|goto|if|implements|import|instanceof|int|interface|long|native|new|package|private|protected|public|record|return|sealed|short|static|strictfp|super|switch|synchronized|this|throw|throws|transient|try|var|void|volatile|while|yield|true|false|null)\b"#, c.keyword),
+        rule(#"\b[A-Z]\w*\b"#, c.property),                      // types (Capitalized)
+        rule(#"\b\d+(?:\.\d+)?[fFdDlL]?\b"#, c.number),
+    ]
+}
+
+func csharpRules(_ c: SyntaxColors) -> [SyntaxRule] {
+    [
+        rule(#"/\*.*?\*/"#, c.comment),                          // block comment
+        rule(#"///[^\n]*"#, c.comment),                          // doc comment
+        rule(#"//[^\n]*"#, c.comment),                           // line comment
+        rule(#"@"(?:""|[^"])*""#, c.string),                     // verbatim string
+        rule(#""(?:\\.|[^"\\])*""#, c.string),                   // string
+        rule(#"'(?:\\.|[^'\\])*'"#, c.string),                   // char literal
+        rule(#"(?m)^\s*#\s*\w+[^\n]*"#, c.atRule),               // #region, #if, #pragma
+        rule(#"\[[A-Z]\w*(?:\([^)\n]*\))?\]"#, c.atRule),        // attributes
+        rule(#"\b(?:abstract|as|async|await|base|bool|break|byte|case|catch|char|checked|class|const|continue|decimal|default|delegate|do|double|else|enum|event|explicit|extern|false|finally|fixed|float|for|foreach|get|goto|if|implicit|in|init|int|interface|internal|is|lock|long|namespace|new|null|object|operator|out|override|params|partial|private|protected|public|readonly|record|ref|return|sbyte|sealed|set|short|sizeof|stackalloc|static|string|struct|switch|this|throw|true|try|typeof|uint|ulong|unchecked|unsafe|ushort|using|value|var|virtual|void|volatile|when|where|while|yield|nameof)\b"#, c.keyword),
+        rule(#"\b[A-Z]\w*\b"#, c.property),                      // types (Capitalized)
+        rule(#"\b\d+(?:\.\d+)?[fFdDmMlLuU]?\b"#, c.number),
+    ]
+}
+
 func cRules(_ c: SyntaxColors, cpp: Bool) -> [SyntaxRule] {
     let base = "auto|break|case|char|const|continue|default|do|double|else|enum|extern|float|for|goto|if|int|long|register|return|short|signed|sizeof|static|struct|switch|typedef|union|unsigned|void|volatile|while|bool|true|false|NULL"
     let cppExtra = "|class|public|private|protected|virtual|template|typename|namespace|using|new|delete|this|nullptr|constexpr|override|final|friend|operator|explicit|mutable|noexcept|decltype|throw|try|catch|auto"

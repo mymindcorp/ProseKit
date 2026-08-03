@@ -1202,11 +1202,26 @@ final class DocumentLayout {
         // monospaced base. Token ranges are grapheme offsets into the code text.
         if node.type.name == "codeBlock", let highlighter = syntaxHighlighter, result.length > 0 {
             let code = result.string
-            for token in highlighter(code, node.attrs["language"]?.stringValue) {
-                guard let lo = code.index(code.startIndex, offsetBy: token.range.lowerBound, limitedBy: code.endIndex),
-                      let hi = code.index(code.startIndex, offsetBy: token.range.upperBound, limitedBy: code.endIndex),
-                      lo < hi else { continue }
-                let nsRange = NSRange(lo..<hi, in: code)
+            let tokens = highlighter(code, node.attrs["language"]?.stringValue)
+            // Grapheme offset -> UTF-16 offset for every grapheme boundary,
+            // built in one pass. A host highlighter may hand back tokens in any
+            // order, so this is a table rather than a moving cursor; either way
+            // it replaces walking from `startIndex` once per token, which made
+            // applying the tokens quadratic in the size of the block.
+            var utf16Offsets: [Int] = []
+            if !tokens.isEmpty {
+                utf16Offsets.reserveCapacity(code.utf16.count + 1)
+                var offset = 0
+                for character in code {
+                    utf16Offsets.append(offset)
+                    offset += character.utf16.count
+                }
+                utf16Offsets.append(offset)
+            }
+            for token in tokens {
+                let lo = token.range.lowerBound, hi = token.range.upperBound
+                guard lo >= 0, hi < utf16Offsets.count, lo < hi else { continue }
+                let nsRange = NSRange(location: utf16Offsets[lo], length: utf16Offsets[hi] - utf16Offsets[lo])
                 if let color = token.color { result.addAttribute(.foregroundColor, value: color, range: nsRange) }
                 if token.bold || token.italic {
                     var traits: UIFontDescriptor.SymbolicTraits = []

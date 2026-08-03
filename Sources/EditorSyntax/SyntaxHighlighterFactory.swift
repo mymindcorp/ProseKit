@@ -41,6 +41,11 @@ func rules(for language: CodeLanguage, _ c: SyntaxColors) -> [SyntaxRule] {
     case .go: return goRules(c)
     case .cpp: return cRules(c, cpp: true)
     case .c: return cRules(c, cpp: false)
+    case .kotlin: return kotlinRules(c)
+    case .csharp: return csharpRules(c)
+    case .java: return javaRules(c)
+    case .php: return phpRules(c)
+    case .dockerfile: return dockerfileRules(c)
     }
 }
 
