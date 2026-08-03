@@ -166,3 +166,67 @@ func registerPMSelectionTests() {
 
 
 
+
+// MARK: - Selections restored from JSON that no longer fits
+
+/// `{"doc": …, "selection": …}` for a two-paragraph document.
+private func stateJSON(_ selection: [String: AttributeValue]) -> [String: AttributeValue] {
+    ["doc": .object(doc(p("hello"), p("world")).node.toJSON()),
+     "selection": .object(selection)]
+}
+
+func registerSelectionJSONGuardTests() {
+    test("state JSON: a text selection past the end lands at the end") {
+        // A stored document, a peer's state, or the clipboard can carry a
+        // selection for a document that has since been edited somewhere else.
+        // `resolve` traps outside the document, so this used to be a crash on
+        // open rather than a selection that needed nudging.
+        let json = stateJSON(["type": .string("text"),
+                              "anchor": .int(999_999), "head": .int(999_999)])
+        let state = try EditorState.fromJSON(EditorStateConfig(schema: basicSchema), json)
+        try expectEqual(state.selection.from, state.doc.content.size - 1)
+        try expect(state.selection is TextSelection)
+    }
+
+    test("state JSON: a negative text selection lands at the start") {
+        let json = stateJSON(["type": .string("text"), "anchor": .int(-50), "head": .int(-50)])
+        let state = try EditorState.fromJSON(EditorStateConfig(schema: basicSchema), json)
+        try expectEqual(state.selection.from, 1)
+    }
+
+    test("state JSON: one end out of range keeps the end that fits") {
+        let json = stateJSON(["type": .string("text"), "anchor": .int(1), "head": .int(999_999)])
+        let state = try EditorState.fromJSON(EditorStateConfig(schema: basicSchema), json)
+        try expectEqual(state.selection.from, 1)
+        try expectEqual(state.selection.to, state.doc.content.size - 1)
+    }
+
+    test("state JSON: a selection that does fit is left alone") {
+        // The guard clamps; it doesn't move a selection that was already valid.
+        let json = stateJSON(["type": .string("text"), "anchor": .int(2), "head": .int(4)])
+        let state = try EditorState.fromJSON(EditorStateConfig(schema: basicSchema), json)
+        try expectEqual(state.selection.from, 2)
+        try expectEqual(state.selection.to, 4)
+    }
+
+    test("state JSON: every selection type survives a document it doesn't fit") {
+        // The node and gap-cursor cases were already clamped; this holds the
+        // whole switch to the same rule so the next case added inherits it.
+        for type in ["text", "node", "gapcursor"] {
+            let json = stateJSON(["type": .string(type), "anchor": .int(999_999),
+                                  "head": .int(999_999), "pos": .int(999_999)])
+            let state = try EditorState.fromJSON(EditorStateConfig(schema: basicSchema), json)
+            try expect(state.selection.to <= state.doc.content.size, "type: \(type)")
+        }
+    }
+
+    test("state JSON: a selection round-trips through JSON unchanged") {
+        let original = EditorState.create(EditorStateConfig(
+            schema: basicSchema, doc: doc(p("hello"), p("world")).node,
+            selection: TextSelection.create(doc(p("hello"), p("world")).node, 2, 4)))
+        let back = try EditorState.fromJSON(EditorStateConfig(schema: basicSchema),
+                                            original.toJSON())
+        try expectEqual(back.doc, original.doc)
+        try expect(back.selection.eq(original.selection), "the selection should survive")
+    }
+}
