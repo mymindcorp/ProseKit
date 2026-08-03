@@ -33,6 +33,16 @@ final class SyntaxHighlighterTests: XCTestCase {
         XCTAssertEqual(explicitLanguage("golang"), .go)
         XCTAssertEqual(explicitLanguage("c++"), .cpp)
         XCTAssertEqual(explicitLanguage("c"), .c)
+        XCTAssertEqual(explicitLanguage("kt"), .kotlin)
+        XCTAssertEqual(explicitLanguage("kts"), .kotlin)
+        XCTAssertEqual(explicitLanguage("Kotlin"), .kotlin)
+        XCTAssertEqual(explicitLanguage("cs"), .csharp)
+        XCTAssertEqual(explicitLanguage("c#"), .csharp)
+        XCTAssertEqual(explicitLanguage("csharp"), .csharp)
+        XCTAssertEqual(explicitLanguage("java"), .java)
+        XCTAssertEqual(explicitLanguage("php"), .php)
+        XCTAssertEqual(explicitLanguage("Dockerfile"), .dockerfile)
+        XCTAssertEqual(explicitLanguage("docker"), .dockerfile)
         XCTAssertNil(explicitLanguage("brainfuck"))
         XCTAssertNil(explicitLanguage(nil))
     }
@@ -53,6 +63,80 @@ final class SyntaxHighlighterTests: XCTestCase {
         XCTAssertEqual(detectCodeLanguage("package main\nfunc main() {}", hint: nil), .go)
         XCTAssertEqual(detectCodeLanguage("#include <iostream>\nint main() { std::cout << 1; }", hint: nil), .cpp)
         XCTAssertEqual(detectCodeLanguage("#include <stdio.h>\nint main() { printf(\"hi\"); }", hint: nil), .c)
+        XCTAssertEqual(detectCodeLanguage("fun main() { val names = listOf(\"a\") }", hint: nil), .kotlin)
+        XCTAssertEqual(
+            detectCodeLanguage("using System;\nclass P { static void Main() { Console.WriteLine(1); } }",
+                               hint: nil), .csharp)
+    }
+
+    /// PHP and shell both sigil their variables with `$`, so a PHP snippet with
+    /// no opening tag is competing with shell on every line.
+    func testPhpIsNotConfusedWithShell() {
+        XCTAssertEqual(
+            detectCodeLanguage("$totals = [];\nforeach ($orders as $order) {\n"
+                               + "    $totals[] = $order->amount;\n}", hint: nil), .php)
+        XCTAssertEqual(detectCodeLanguage("<?php\n$name = \"Ada\";", hint: nil), .php)
+        // Shell keeps its own: `$1` isn't a valid PHP identifier, and `x=1`
+        // assigns without a sigil.
+        XCTAssertEqual(detectCodeLanguage("#!/bin/bash\nif true; then echo x; fi", hint: nil), .shell)
+        XCTAssertEqual(
+            detectCodeLanguage("case \"$1\" in\n  start) echo \"starting\" ;;\n"
+                               + "  *) echo \"usage: $0 {start|stop}\" ;;\nesac", hint: nil), .shell)
+    }
+
+    /// A Dockerfile's `FROM` and SQL's are the same word in the same place.
+    func testDockerfileIsNotConfusedWithSql() {
+        XCTAssertEqual(detectCodeLanguage("FROM node:20-alpine\nWORKDIR /app\nRUN npm ci", hint: nil),
+                       .dockerfile)
+        XCTAssertEqual(detectCodeLanguage("SELECT id, name\nFROM users\nWHERE active = true;", hint: nil),
+                       .sql)
+    }
+
+    /// Three languages open a file with `package …`. The path is what separates
+    /// them: Go takes a bare name, Java and Kotlin take a dotted one, and only
+    /// Java ends it with a semicolon.
+    func testPackageHeaderTellsJavaKotlinAndGoApart() {
+        XCTAssertEqual(detectCodeLanguage("package com.example;\n\npublic class User { }", hint: nil),
+                       .java)
+        XCTAssertEqual(detectCodeLanguage("package com.example\n\ndata class User(val id: Int)", hint: nil),
+                       .kotlin)
+        XCTAssertEqual(detectCodeLanguage("package main\nfunc main() {}", hint: nil), .go)
+    }
+
+    /// Java's entry point and C#'s differ only in the case of `Main`, and both
+    /// sit behind `public class`.
+    func testJavaIsNotConfusedWithCSharp() {
+        XCTAssertEqual(
+            detectCodeLanguage("public class Main {\n  public static void main(String[] args) {\n"
+                               + "    System.out.println(\"hi\");\n  }\n}", hint: nil), .java)
+        XCTAssertEqual(
+            detectCodeLanguage("using System;\nclass P { static void Main() { Console.WriteLine(1); } }",
+                               hint: nil), .csharp)
+    }
+
+    /// C# shares `namespace`, `interface`, `readonly` and `var` with TypeScript,
+    /// and `using` with C++. The signals that separate them are shapes, not
+    /// words, so pin the ones that would collide.
+    func testCSharpIsNotConfusedWithTypeScriptOrCpp() {
+        XCTAssertEqual(detectCodeLanguage("using System;\npublic interface IRepo { }", hint: nil), .csharp)
+        XCTAssertEqual(detectCodeLanguage("public class User { public int Id { get; set; } }", hint: nil),
+                       .csharp)
+        // C++'s `using namespace std;` starts lowercase, so it isn't a C# using.
+        XCTAssertEqual(detectCodeLanguage("#include <iostream>\nusing namespace std;\nint main() { std::cout << 1; }",
+                                          hint: nil), .cpp)
+        // And a TypeScript interface stays TypeScript.
+        XCTAssertEqual(detectCodeLanguage("interface A { x: number }", hint: nil), .typescript)
+    }
+
+    /// Kotlin's `fun`/`val` must not be read as Swift's `func`/`let`, and
+    /// Kotlin's leading `package` must not read as Go.
+    func testKotlinIsNotConfusedWithSwiftOrGo() {
+        XCTAssertEqual(detectCodeLanguage("fun greet(name: String) = \"hi $name\"", hint: nil), .kotlin)
+        XCTAssertEqual(detectCodeLanguage("package com.example\n\ndata class User(val id: Int)", hint: nil),
+                       .kotlin)
+        // And the reverse: Swift and Go keep their own snippets.
+        XCTAssertEqual(detectCodeLanguage("func greet() -> String { return \"hi\" }", hint: nil), .swift)
+        XCTAssertEqual(detectCodeLanguage("package main\nfunc main() {}", hint: nil), .go)
     }
 
     func testAmbiguousIsNotConfident() {
@@ -95,6 +179,13 @@ final class SyntaxHighlighterTests: XCTestCase {
             ("cpp", "int main() {}", "int"),
             ("c", "int main() {}", "int"),
             ("html", "<a>x</a>", "<a"),
+            ("kotlin", "fun main() {}", "fun"),
+            ("kt", "val x = 1", "val"),
+            ("csharp", "class Program {}", "class"),
+            ("cs", "using System;", "using"),
+            ("java", "public class Main {}", "class"),
+            ("php", "<?php function f() {}", "function"),
+            ("dockerfile", "FROM node:20", "FROM"),
         ]
         for (lang, code, token) in cases {
             let c = color(of: token, in: code, language: lang)
