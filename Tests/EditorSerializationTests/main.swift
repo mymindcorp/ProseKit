@@ -4064,5 +4064,85 @@ test("HTML: a mark's run is measured per run, not per node") {
                     try HTMLParser.parse(long, schema: schema))
 }
 
+// MARK: - Pasting from editors that style rather than tag
+
+test("HTML paste: Google Docs (bold via style, wrapped in a non-bold <b>)") {
+    // Google Docs wraps the whole copied document in `<b style="font-weight:normal">`
+    // and writes emphasis as inline styles on spans. Read literally, the wrapper
+    // made every paste arrive entirely bold with its real emphasis lost.
+    let html = """
+    <meta charset="utf-8"><b style="font-weight:normal;" id="docs-internal-guid-abc">\
+    <p dir="ltr"><span style="font-size:11pt;font-family:Arial;font-weight:400;">plain </span>\
+    <span style="font-weight:700;">bold</span><span style="font-style:italic;">ital</span></p></b>
+    """
+    let d = try HTMLParser.parse(html, schema: schema)
+    let para = d.child(0)
+    try expectEqual(para.textContent, "plain boldital")
+    try expect(para.child(0).marks.isEmpty, "the wrapper is not bold: \(para.child(0).marks)")
+    try expectEqual(para.child(1).marks.first?.type.name, "bold")
+    try expectEqual(para.child(2).marks.first?.type.name, "italic")
+}
+
+test("HTML paste: a font-weight decides bold, not the tag alone") {
+    // `bold`, `bolder` and 500-and-up are bold; `normal`, `400` and lighter
+    // aren't — whichever tag carries them.
+    for (weight, isBold) in [("bold", true), ("bolder", true), ("700", true), ("500", true),
+                             ("normal", false), ("400", false), ("300", false)] {
+        let viaSpan = try HTMLParser.parse("<p><span style=\"font-weight:\(weight)\">x</span></p>",
+                                           schema: schema)
+        try expectEqual(viaSpan.child(0).child(0).marks.contains { $0.type.name == "bold" }, isBold,
+                        "span font-weight:\(weight)")
+        let viaTag = try HTMLParser.parse("<p><b style=\"font-weight:\(weight)\">x</b></p>",
+                                          schema: schema)
+        try expectEqual(viaTag.child(0).child(0).marks.contains { $0.type.name == "bold" }, isBold,
+                        "b with font-weight:\(weight)")
+    }
+    // A plain <b> with no style is still bold.
+    let plain = try HTMLParser.parse("<p><b>x</b></p>", schema: schema)
+    try expect(plain.child(0).child(0).marks.contains { $0.type.name == "bold" })
+}
+
+test("HTML paste: italic, strike and underline from inline styles") {
+    let cases = [("font-style:italic", "italic"), ("font-style:oblique", "italic"),
+                 ("text-decoration:line-through", "strike"),
+                 ("text-decoration:underline", "underline"),
+                 ("text-decoration-line:underline", "underline")]
+    for (style, mark) in cases {
+        let d = try HTMLParser.parse("<p><span style=\"\(style)\">x</span></p>", schema: schema)
+        try expect(d.child(0).child(0).marks.contains { $0.type.name == mark },
+                   "\(style) should give \(mark), got \(d.child(0).child(0).marks)")
+    }
+}
+
+test("HTML paste: styles combine with each other and with colours") {
+    let html = "<p><span style=\"font-weight:700;font-style:italic;color:#ff0000\">x</span></p>"
+    let marks = try HTMLParser.parse(html, schema: schema).child(0).child(0).marks.map(\.type.name)
+    for expected in ["bold", "italic", "textColor"] {
+        try expect(marks.contains(expected), "expected \(expected) in \(marks)")
+    }
+}
+
+test("HTML paste: a spreadsheet cell's bold survives") {
+    let html = """
+    <google-sheets-html-origin><table><tbody><tr>\
+    <td style="font-weight:bold;">A</td><td>B</td></tr></tbody></table>
+    """
+    let d = try HTMLParser.parse(html, schema: schema)
+    let row = d.child(0).child(0)
+    try expect(row.child(0).textContent == "A" && row.child(1).textContent == "B")
+}
+
+test("HTML paste: Word keeps its emphasis and drops its scaffolding") {
+    // Conditional comments, the o: namespace and unquoted attributes.
+    let html = """
+    <html xmlns:o="urn:schemas-microsoft-com:office:office"><head>\
+    <!--[if gte mso 9]><xml><o:OfficeDocumentSettings/></xml><![endif]--></head><body>\
+    <p class=MsoNormal><span style='font-size:11.0pt'>Hello <b>bold</b><o:p></o:p></span></p></body></html>
+    """
+    let d = try HTMLParser.parse(html, schema: schema)
+    try expectEqual(d.child(0).textContent, "Hello bold")
+    try expect(d.child(0).child(1).marks.contains { $0.type.name == "bold" })
+}
+
 registerBench()
 TestSuite.main("EditorSerializationTests", collector.all)
