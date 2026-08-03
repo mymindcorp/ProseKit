@@ -58,7 +58,15 @@ public extension AttributeValue {
     var intValue: Int? {
         switch self {
         case let .int(i): return i
-        case let .double(d): return Int(d)
+        case let .double(d):
+            // `Int(d)` traps on a NaN, an infinity, or anything past Int's
+            // range, and an attribute decoded from JSON can hold all three —
+            // `{"colwidth": 1e300}` in a pasted or synced document took the
+            // process down the moment a table read its width. Out of range is
+            // not an integer, so this answers what it already answers for a
+            // string: nothing.
+            guard d.isFinite, d >= Double(Int.min), d < Double(Int.max) else { return nil }
+            return Int(d)
         default: return nil
         }
     }
