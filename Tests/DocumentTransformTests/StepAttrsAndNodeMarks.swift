@@ -218,3 +218,104 @@ func registerStepAttrAndNodeMarkTests() {
         }
     }
 }
+
+// MARK: - Mark steps: the paths the node-mark tests above didn't reach
+
+func registerMarkStepEdgeTests() {
+    test("step jsonID matches the stepType it encodes") {
+        // They are written in two places and read in two more: `toJSON` writes
+        // the name, the registry decodes by it. If they drifted apart a step
+        // would encode under one name and decode under another — or not at all.
+        let mark = basicSchema.mark("em")
+        let steps: [any Step] = [
+            AddMarkStep(0, 1, mark), RemoveMarkStep(0, 1, mark),
+            AddNodeMarkStep(1, mark), RemoveNodeMarkStep(1, mark),
+            AttrStep(0, "level", .int(2)), DocAttrStep("version", .int(1)),
+            ReplaceStep(0, 0, .empty),
+        ]
+        for step in steps {
+            try expectEqual(step.toJSON()["stepType"], .string(step.jsonID),
+                            "\(type(of: step))")
+            // And the registry knows that name.
+            _ = try decodeStep(basicSchema, step.toJSON())
+        }
+    }
+
+    test("mark steps: bad JSON throws rather than guessing") {
+        // What a malformed step off the collab wire or the clipboard looks like.
+        let markJSON = AttributeValue.object(basicSchema.mark("em").toJSON())
+        let cases: [(String, [String: AttributeValue])] = [
+            ("addMark missing from", ["stepType": "addMark", "to": .int(1), "mark": markJSON]),
+            ("addMark missing mark", ["stepType": "addMark", "from": .int(0), "to": .int(1)]),
+            ("removeMark missing to", ["stepType": "removeMark", "from": .int(0), "mark": markJSON]),
+            ("removeMark missing mark", ["stepType": "removeMark", "from": .int(0), "to": .int(1)]),
+            ("addNodeMark missing pos", ["stepType": "addNodeMark", "mark": markJSON]),
+            ("addNodeMark missing mark", ["stepType": "addNodeMark", "pos": .int(1)]),
+            ("removeNodeMark missing pos", ["stepType": "removeNodeMark", "mark": markJSON]),
+            ("removeNodeMark missing mark", ["stepType": "removeNodeMark", "pos": .int(1)]),
+            ("unknown step type", ["stepType": "nosuchstep"]),
+            ("no step type at all", ["pos": .int(1)]),
+        ]
+        for (name, json) in cases {
+            var threw = false
+            do { _ = try decodeStep(basicSchema, json) } catch { threw = true }
+            try expect(threw, "expected \(name) to throw")
+        }
+    }
+
+    test("AddNodeMarkStep: inverting restores a mark it replaced") {
+        // Adding a second mark of the same type doesn't stack — it replaces.
+        // The inverse then has to put the *old* one back, not remove the type.
+        let before = try applied(AddNodeMarkStep(1, basicSchema.mark("link", ["href": "/first"])),
+                                 imageDoc())
+        let step = AddNodeMarkStep(1, basicSchema.mark("link", ["href": "/second"]))
+        let after = try applied(step, before)
+        try expectEqual(after.child(0).child(0).marks.first?.attrs["href"], .string("/second"))
+        // Inverting is an *add* of the old mark, not a remove.
+        let inverse = step.invert(before)
+        try expectEqual(inverse.jsonID, "addNodeMark")
+        try expectEqual(try applied(inverse, after), before)
+    }
+
+    test("AddNodeMarkStep: inverting an add that changed nothing is still sound") {
+        // Adding a mark the node already carries: the inverse re-adds it, so
+        // applying both leaves the document where it started.
+        let mark = basicSchema.mark("em")
+        let before = try applied(AddNodeMarkStep(1, mark), imageDoc())
+        let step = AddNodeMarkStep(1, mark)
+        let after = try applied(step, before)
+        try expectEqual(after, before)   // the add was a no-op
+        try expectEqual(try applied(step.invert(before), after), before)
+    }
+
+    test("RemoveNodeMarkStep: an insertion before it moves its position") {
+        // The mirror of the AddNodeMarkStep case, and the only path in the file
+        // the node-mark tests didn't reach.
+        let mark = basicSchema.mark("em")
+        let before = try applied(AddNodeMarkStep(1, mark), imageDoc())
+        let insert = ReplaceStep(0, 0, Slice(content: Fragment.from(p("new").node),
+                                             openStart: 0, openEnd: 0))
+        let afterInsert = try applied(insert, before)
+        guard let mapped = RemoveNodeMarkStep(1, mark).map(insert.getMap()) else {
+            try expect(false, "the step should survive an insertion before it"); return
+        }
+        let out = try applied(mapped, afterInsert)
+        try expect(out.child(1).child(0).marks.isEmpty, "the image moved, and it lost its mark")
+    }
+
+    test("RemoveNodeMarkStep: an insertion at its position drops it") {
+        let insert = ReplaceStep(1, 1, Slice(content: Fragment.from(basicSchema.text("x")),
+                                             openStart: 0, openEnd: 0))
+        try expect(RemoveNodeMarkStep(1, basicSchema.mark("em")).map(insert.getMap()) == nil,
+                   "a step that can no longer name its node is dropped")
+    }
+
+    test("node mark steps: a position with no node fails rather than crashing") {
+        for step: any Step in [AddNodeMarkStep(99, basicSchema.mark("em")),
+                               RemoveNodeMarkStep(99, basicSchema.mark("em"))] {
+            let result = step.apply(imageDoc())
+            try expect(result.doc == nil, "\(type(of: step)) should not apply")
+            try expect(result.failed != nil, "\(type(of: step)) should say why")
+        }
+    }
+}

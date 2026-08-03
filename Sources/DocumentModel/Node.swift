@@ -139,6 +139,13 @@ public struct Node: Hashable, Sendable {
 
     /// Find the node directly after the given position.
     public func nodeAt(_ pos: Int) -> Node? {
+        // A position outside the node has no node at it, which is what the
+        // optional already says. Without this the descent walks into
+        // `Fragment.findIndex`, whose precondition takes the process down —
+        // and a step's position can come from a stale history entry or a
+        // collab peer, where `apply` is written to fail rather than crash.
+        // ProseMirror throws here; a throw is catchable, a precondition is not.
+        guard pos >= 0, pos <= content.size else { return nil }
         var node = self
         var pos = pos
         while true {
