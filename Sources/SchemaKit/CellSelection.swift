@@ -225,8 +225,17 @@ public final class CellSelection: Selection {
         create(doc, anchorCellPos, headCellPos)
     }
 
-    public static func fromCellJSON(_ doc: Node, _ json: [String: AttributeValue]) -> CellSelection {
-        CellSelection(doc.resolve(json["anchor"]?.intValue ?? 0), doc.resolve(json["head"]?.intValue ?? 0))
+    /// A cell selection from JSON, or a plain text selection when the positions
+    /// don't describe two cells of one table.
+    ///
+    /// Both guards matter for JSON that came from outside: `resolve` traps
+    /// outside the document, and `CellSelection.init` builds a table map from
+    /// whatever it finds at the position — which is a precondition failure when
+    /// that isn't a table. `create` already answers both questions.
+    public static func fromCellJSON(_ doc: Node, _ json: [String: AttributeValue]) -> Selection {
+        let size = doc.content.size
+        func clamped(_ key: String) -> Int { min(max(json[key]?.intValue ?? 0, 0), size) }
+        return create(doc, clamped("anchor"), clamped("head"))
     }
 }
 

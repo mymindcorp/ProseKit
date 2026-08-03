@@ -171,7 +171,21 @@ open class Selection {
             guard let anchor = json["anchor"]?.intValue, let head = json["head"]?.intValue else {
                 throw ModelError.invalidJSON("Invalid text selection JSON")
             }
-            return TextSelection(doc.resolve(anchor), doc.resolve(head))
+            // Clamped like the node and gap-cursor cases below, and for the
+            // same reason: this JSON comes from a stored document, a peer, or
+            // the clipboard, and `resolve` traps outside the document rather
+            // than throwing. A selection that no longer fits the document it
+            // arrived with is the ordinary case — the document was edited
+            // elsewhere — so it lands at the nearest position instead of
+            // taking the process down.
+            let size = doc.content.size
+            // `between` rather than the raw positions: clamping alone can park
+            // a text selection at a structural position — the end of the
+            // document is not inside any paragraph — and `between` walks to the
+            // nearest place a caret can actually be, which is what the node and
+            // gap-cursor cases do with `Selection.near`.
+            return TextSelection.between(doc.resolve(min(max(anchor, 0), size)),
+                                         doc.resolve(min(max(head, 0), size)))
         case "node":
             guard let anchor = json["anchor"]?.intValue else {
                 throw ModelError.invalidJSON("Invalid node selection JSON")
