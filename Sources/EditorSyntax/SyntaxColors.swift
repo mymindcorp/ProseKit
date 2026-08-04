@@ -4,7 +4,7 @@ public import UIKit
 /// The color for each token category a grammar can emit. Pass a custom instance
 /// to `makeSyntaxHighlighter(colors:)` to theme the output; the defaults use
 /// system colors so they adapt to light/dark mode.
-public struct SyntaxColors: Sendable {
+public struct SyntaxColors: Sendable, Equatable {
     public var keyword: UIColor
     public var string: UIColor
     public var comment: UIColor

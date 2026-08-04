@@ -1,5 +1,6 @@
 #if canImport(UIKit)
 import Foundation
+import Synchronization
 public import EditorUIKit
 
 /// Build a `SyntaxHighlighter` for the EditorUIKit code-block hook.
@@ -25,8 +26,28 @@ public func makeSyntaxHighlighter(colors: SyntaxColors = .default,
     }
 }
 
-/// The rule set for a language.
+/// Rule sets built so far, keyed by language. Each one compiles its patterns,
+/// and they depend only on the language and the colors — so a highlight was
+/// recompiling the same constants every time a block changed. Cleared when the
+/// colors change, which for a given highlighter is never.
+private let cachedRules = Mutex<(colors: SyntaxColors, byLanguage: [CodeLanguage: [SyntaxRule]])?>(nil)
+
+/// The rule set for a language, compiled once.
 func rules(for language: CodeLanguage, _ c: SyntaxColors) -> [SyntaxRule] {
+    if let hit = cachedRules.withLock({ cache -> [SyntaxRule]? in
+        guard let cache, cache.colors == c else { return nil }
+        return cache.byLanguage[language]
+    }) { return hit }
+
+    let built = buildRules(for: language, c)
+    cachedRules.withLock { cache in
+        if cache?.colors != c { cache = (colors: c, byLanguage: [:]) }
+        cache?.byLanguage[language] = built
+    }
+    return built
+}
+
+private func buildRules(for language: CodeLanguage, _ c: SyntaxColors) -> [SyntaxRule] {
     switch language {
     case .javascript: return javascriptRules(c)
     case .typescript: return typescriptRules(c)
