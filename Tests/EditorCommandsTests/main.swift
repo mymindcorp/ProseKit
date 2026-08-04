@@ -221,4 +221,5 @@ test("wrappingInputRule turns '- ' into a bullet list") {
 
 registerPMCommandsTests(); registerPMHistoryTests(); registerPMKeymapTests(); registerPMInputRulesTests()
 
+registerKeyStrokeTests()
 TestSuite.main("EditorCommandsTests", collector.all)
