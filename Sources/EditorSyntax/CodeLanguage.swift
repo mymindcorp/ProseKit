@@ -1,6 +1,11 @@
-#if canImport(UIKit)
 import Foundation
 import Synchronization
+
+// Deliberately not wrapped in `#if canImport(UIKit)`, unlike the rest of
+// EditorSyntax. Language *detection* is pure Foundation — only the tokenizer,
+// its colours, and the highlighter adapter need UIKit — so this file and
+// `LanguageScanner` build on macOS too, which is what lets the detection corpus
+// run headless as `swift run EditorSyntaxTests` instead of on a simulator.
 
 /// The languages this highlighter understands.
 public enum CodeLanguage: String, Sendable, CaseIterable {
@@ -123,4 +128,3 @@ public func guessLanguage(_ code: String) -> LanguageGuess? {
     }
     return guess
 }
-#endif

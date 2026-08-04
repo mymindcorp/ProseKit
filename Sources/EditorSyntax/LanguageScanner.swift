@@ -1,4 +1,3 @@
-#if canImport(UIKit)
 import Foundation
 
 // Content-based language detection: one pass over the block's UTF-8, counting
@@ -13,6 +12,8 @@ import Foundation
 // Signals that can't be reduced to a word or a pair — an HTML tag, a CSS
 // declaration — are matched by the small hand-rolled scanners at the bottom of
 // this file, and their doc comments carry the regex they replaced.
+//
+// Foundation only, and not UIKit-gated — see the note in `CodeLanguage.swift`.
 
 /// The signals a bare identifier contributes to. One identifier can carry
 /// several (`import` is a Python word and part of Go's import-group shape).
@@ -683,4 +684,3 @@ func scanGuess(_ code: String) -> LanguageGuess? {
     let confident = best.value >= 3 && best.value >= runnerUp + 2
     return LanguageGuess(language: best.key, confident: confident)
 }
-#endif

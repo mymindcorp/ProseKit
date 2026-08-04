@@ -1,4 +1,3 @@
-#if canImport(UIKit)
 import EditorSyntax
 
 /// One labelled snippet. `language` is what the sample *is* — ground truth,
@@ -1330,4 +1329,3 @@ enum DetectionCorpus {
         DetectionSample(language: nil, name: "amb/word", code: "total"),
     ]
 }
-#endif
