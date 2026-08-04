@@ -53,7 +53,9 @@ private let wordSignals: [String: WordSignals] = {
     // while Rust's own samples are carried by `fn` and `let mut`.
     add(["impl", "trait", "pub", "usize", "Vec"], .rust)
     add(["cout", "cin", "nullptr", "namespace", "template"], .cpp)
-    add(["printf", "scanf", "malloc", "typedef"], .c)
+    // Deliberately excluding `NULL`, which SQL writes just as often (`NOT NULL`).
+    add(["printf", "scanf", "malloc", "typedef", "fopen", "fclose", "fgetc",
+         "fprintf", "stderr", "size_t", "EOF"], .c)
     add(["guard", "protocol", "extension", "mutating", "associatedtype"], .swift)
     add(["function", "const", "var", "let", "console", "require", "document", "window", "export"], .js)
     add(["interface", "namespace", "declare", "readonly", "keyof", "satisfies", "implements"], .ts)
@@ -91,6 +93,22 @@ private let phpSuperglobals: Set<String> = [
     "_GET", "_POST", "_SERVER", "_SESSION", "_REQUEST", "_ENV", "_FILES", "_COOKIE",
 ]
 
+/// Preprocessor directives that only C and C++ have. `#if`/`#endif` are
+/// deliberately absent — Swift spells its conditional compilation the same way.
+private let cPreprocessorWords = ["define", "ifndef", "ifdef", "undef", "pragma"]
+
+/// Words that open a line ending in `:` without it being a Python block. A
+/// `switch`'s `case`/`default` labels and C++'s access labels all end their
+/// line that way, and counting them as Python's block syntax was enough to
+/// hand a JavaScript or C switch to Python outright.
+///
+/// The cost is Python's own `match`/`case`, whose `case` lines no longer score
+/// — but its `match x:` line still does, along with everything else Python
+/// brings, and switches are the far more common shape.
+private let colonLabelOpeners: Set<String> = [
+    "case", "default", "public", "private", "protected",
+]
+
 private let sqlWords: Set<String> = [
     "select", "insert", "update", "delete", "create", "alter",
     "drop", "where", "join", "from", "into",
@@ -101,11 +119,13 @@ private struct SignalCounts {
     var htmlTag = 0, doctype = 0
     var cssAtRule = 0, cssSelector = 0, cssDeclaration = 0
     var pythonOpener = 0, pythonWord = 0, trailingColon = 0
-    var shellShebang = 0, shellVariable = 0, shellWord = 0
+    var shellShebang = 0, shellVariable = 0, shellWord = 0, shellAssign = 0
     var sqlWord = 0
     var rustFn = 0, rustLetMut = 0, rustAttribute = 0, rustWord = 0, scopeOperator = 0
+    var rustMacro = 0
     var goPackage = 0, goAssign = 0, goFunc = 0, goImportGroup = 0
     var cInclude = 0, cppNamespaced = 0, cppWord = 0, cppAccessLabel = 0, cMain = 0, cWord = 0
+    var cPreprocessor = 0, cArrow = 0, cStructRef = 0
     var swiftWord = 0, swiftFuncArrow = 0, returnArrow = 0, annotation = 0, swiftTypeDecl = 0
     var jsonOpening = 0, jsonKey = 0, semicolon = 0, functionWord = 0
     var fatArrow = 0, jsWord = 0, tsWord = 0, tsAnnotation = 0, tsEnum = 0
@@ -165,6 +185,7 @@ private func scanSignals(_ code: String) -> SignalCounts {
     var lastSignificant: UInt8 = 0  // last non-whitespace byte consumed
     var previousWord = ""           // last identifier, for adjacency rules
     var wordBeforeThat = ""         // the one before it, for three-word shapes
+    var lineOpener = ""             // this line's first identifier, for `case:` labels
     var lineHasFunc = false         // `func` earlier on this line, for `func … ->`
     var lineHasDeclaration = false  // `ident :` earlier on this line, for CSS
 
@@ -194,13 +215,16 @@ private func scanSignals(_ code: String) -> SignalCounts {
         let b = bytes[i]
 
         if b == newline {
-            if lastSignificant == colon { counts.trailingColon += 1 }
+            if lastSignificant == colon, !colonLabelOpeners.contains(lineOpener) {
+                counts.trailingColon += 1
+            }
             atLineStart = true
             lineHasFunc = false
             lineHasDeclaration = false
             lastSignificant = 0
             previousWord = ""
             wordBeforeThat = ""
+            lineOpener = ""
             i += 1
             continue
         }
@@ -221,6 +245,16 @@ private func scanSignals(_ code: String) -> SignalCounts {
             while i < bytes.count, isIdentifierBody(bytes[i]) { i += 1 }
             let word = String(decoding: bytes[start..<i], as: UTF8.self)
             let signals = wordSignals[word] ?? []
+            if wasLineStart { lineOpener = word }
+
+            // `^\w+=` — shell's assignment. It writes them without a sigil and
+            // without spaces (`tmp=$(mktemp -d)`); PHP sigils its variables,
+            // and every other language here spaces its `=`, so a bare one at
+            // the start of a line is shell's alone.
+            if wasLineStart, i < bytes.count, bytes[i] == equals,
+               !(i + 1 < bytes.count && bytes[i + 1] == equals) {
+                counts.shellAssign += 1
+            }
 
             if signals.contains(.python) { counts.pythonWord += 1 }
             if signals.contains(.pythonOpener), wasLineStart { counts.pythonOpener += 1 }
@@ -401,8 +435,17 @@ private func scanSignals(_ code: String) -> SignalCounts {
             default:
                 break
             }
-            // `\b(?:struct|enum)\b\s+\w`
-            if previousWord == "struct" || previousWord == "enum" { counts.swiftTypeDecl += 1 }
+            // `\b(?:struct|enum)\b\s+\w` — a declaration, whose body or
+            // conformance list follows. C spells a *reference* to a struct the
+            // same way (`struct node *next`), and scoring those as Swift
+            // declarations was enough to carry a whole C file to Swift.
+            if previousWord == "struct" || previousWord == "enum" {
+                switch peekSignificant(from: i) {
+                case openBrace, colon: counts.swiftTypeDecl += 1
+                case UInt8(ascii: "*"): counts.cStructRef += 1
+                default: break
+                }
+            }
             // `\bfun\s+\w+\.` — an extension function's receiver type.
             if previousWord == "fun", next == dot { counts.kotlinExtensionFun += 1 }
             // `\b[A-Z]\w*\[\]\s+\w` — a Java array declaration (`String[] args`).
@@ -460,8 +503,27 @@ private func scanSignals(_ code: String) -> SignalCounts {
             counts.fatArrow += 1
             i += 2
         case dash where next == greater:
-            counts.returnArrow += 1
-            if lineHasFunc { counts.swiftFuncArrow += 1 }
+            // `x->y` is a member access (C, C++); Swift, Rust and Go write `->`
+            // only as a return arrow. That arrow usually follows the parameter
+            // list's `)`, but Swift also writes `func f() async throws -> T`,
+            // so a line that has already declared a `func` is excluded too.
+            // PHP's member access is `$x->y`, which the sigil excludes.
+            var back = i
+            while back > 0, isHorizontalSpace(bytes[back - 1]) { back -= 1 }
+            let afterIdentifier = back
+            while back > 0, isIdentifierBody(bytes[back - 1]) { back -= 1 }
+            if !lineHasFunc, back < afterIdentifier, back == 0 || bytes[back - 1] != dollar {
+                counts.cArrow += 1
+            } else {
+                counts.returnArrow += 1
+                if lineHasFunc { counts.swiftFuncArrow += 1 }
+            }
+            i += 2
+        case bang where (next == openParen || next == openBracket) && isIdentifierBody(lastSignificant):
+            // `println!(…)` / `vec![…]` — a macro invocation, which only Rust
+            // spells this way. TypeScript's `!` asserts non-nil and is followed
+            // by `.` or an operator, never by an argument list.
+            counts.rustMacro += 1
             i += 2
         case semicolon:
             if lineHasDeclaration { counts.cssDeclaration += 1; lineHasDeclaration = false }
@@ -492,6 +554,10 @@ private func scanSignals(_ code: String) -> SignalCounts {
                 counts.rustAttribute += 1
             } else if wasLineStart, matchesWord("include", at: i + 1, in: bytes) {
                 counts.cInclude += 1
+            } else if wasLineStart,
+                      cPreprocessorWords.contains(where: { matchesWord($0, at: i + 1, in: bytes) }) {
+                // `^\s*#(?:define|ifndef|…)` — a header guard or a macro.
+                counts.cPreprocessor += 1
             } else if next != 0, isIdentifierStart(next) {
                 if scanSelectorTail(from: i + 1, in: bytes) { counts.cssSelector += 1 }
             }
@@ -555,7 +621,10 @@ private func scanSignals(_ code: String) -> SignalCounts {
         wordBeforeThat = ""
         lastSignificant = bytes[i - 1]
     }
-    if lastSignificant == colon { counts.trailingColon += 1 }
+    // The last line, which has no newline to close it.
+    if lastSignificant == colon, !colonLabelOpeners.contains(lineOpener) {
+        counts.trailingColon += 1
+    }
     return counts
 }
 
@@ -619,14 +688,17 @@ func scanGuess(_ code: String) -> LanguageGuess? {
     scores[.css] = 2 * counts.cssAtRule + counts.cssSelector + 2 * counts.cssDeclaration
     scores[.python] = 2 * counts.pythonOpener + counts.pythonWord + counts.trailingColon
     scores[.shell] = 5 * counts.shellShebang + counts.shellVariable + counts.shellWord
+        + counts.shellAssign
     scores[.sql] = counts.sqlWord >= 2 ? counts.sqlWord + 1 : 0
     scores[.rust] = 3 * counts.rustFn + 2 * counts.rustLetMut + 2 * counts.rustAttribute
-        + counts.rustWord + counts.scopeOperator
+        + 2 * counts.rustMacro + counts.rustWord + counts.scopeOperator
     scores[.go] = 3 * counts.goPackage + 2 * counts.goAssign + counts.goFunc
         + 2 * counts.goImportGroup
 
     let cppOnly = counts.cppNamespaced + counts.cppWord + counts.cppAccessLabel
-    let cBase = 2 * counts.cInclude + counts.cMain + counts.cWord
+    // Both languages share the preprocessor, `->` and struct references.
+    let cBase = 2 * counts.cInclude + 2 * counts.cPreprocessor + counts.cMain
+        + counts.cWord + counts.cArrow + counts.cStructRef
     if cBase + cppOnly > 0 {
         if cppOnly > 0 { scores[.cpp] = cBase + cppOnly + 1 } else { scores[.c] = cBase }
     }

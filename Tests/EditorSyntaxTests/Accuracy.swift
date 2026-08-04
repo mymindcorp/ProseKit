@@ -49,19 +49,20 @@ func registerAccuracyTests() {
             print("CORPUS false-positive: \(report.falsePositive.joined(separator: ", "))")
         }
 
-        // Floors from the measured baseline: 118/134 hit, no ambiguous sample
-        // detected, and one confident miss:
-        //
-        //   js/switch -> python  (`case "a":` lines look like Python's
-        //                         trailing-colon block syntax)
+        // Floors from the measured baseline: 164/184 hit, no ambiguous sample
+        // detected, and — since the signals added alongside the corpus's second
+        // half — no confident miss at all. The remaining 20 are timid, which is
+        // the safe failure: the block renders plain instead of wrong.
         //
         // Raise these floors when detection genuinely improves; never lower
         // them to make a change pass. The accuracy floor leaves one sample of
         // slack because ties in the score table break on Dictionary iteration
-        // order, which is not stable across processes.
-        try expect(accuracy >= 0.87, "detection accuracy regressed to \(accuracy)")
-        try expect(report.wrong.count <= 1,
-                   "too many samples confidently detected as the wrong language: \(report.wrong)")
+        // order, which is not stable across processes. A tie can't turn into a
+        // *wrong*, though — confidence needs a two-point lead — so that floor
+        // is exact.
+        try expect(accuracy >= 0.88, "detection accuracy regressed to \(accuracy)")
+        try expect(report.wrong.isEmpty,
+                   "samples confidently detected as the wrong language: \(report.wrong)")
         try expectEqual(report.falsePositive.count, 0,
                         "ambiguous text is being detected confidently: \(report.falsePositive)")
     }

@@ -144,6 +144,81 @@ func registerDetectionTests() {
         try expectEqual(detectCodeLanguage("package main\nfunc main() {}", hint: nil), .go)
     }
 
+    /// C names a struct type wherever it uses one (`struct node *next`), which
+    /// looks exactly like Swift declaring one. What separates them is what
+    /// follows the name: Swift's declaration opens a body or a conformance
+    /// list, C's is a pointer.
+    test("detect: a C struct pointer is not a Swift declaration") {
+        try expectEqual(
+            detectCodeLanguage("struct node {\n    int value;\n    struct node *next;\n};\n\n"
+                               + "struct node *push(struct node *head, int value) {\n"
+                               + "    struct node *n = malloc(sizeof(struct node));\n"
+                               + "    n->value = value;\n    return n;\n}", hint: nil), .c)
+        // And Swift keeps its own declarations.
+        try expectEqual(detectCodeLanguage("struct Greeter {\n    let name: String\n"
+                                           + "    func greet() -> String {\n"
+                                           + "        return \"hi\"\n    }\n}", hint: nil), .swift)
+    }
+
+    /// `->` is a member access in C and C++ and a return arrow in Swift, Rust
+    /// and Go. The tell is what precedes it: an identifier, versus the `)` that
+    /// closes a parameter list — or a `func` earlier on the line, since Swift
+    /// writes `func f() async throws -> T`.
+    test("detect: a C member arrow is not a return arrow") {
+        try expectEqual(detectCodeLanguage("Node *n = head;\nwhile (n != NULL) {\n"
+                                           + "    printf(\"%d\\n\", n->value);\n    n = n->next;\n}",
+                                           hint: nil), .c)
+        try expectEqual(detectCodeLanguage("func load() async throws -> [Item] {\n"
+                                           + "    return try await client.items()\n}", hint: nil), .swift)
+        // PHP's arrow carries a sigil, and PHP still wins its own snippet.
+        try expectEqual(detectCodeLanguage("<?php\n$total = $order->amount;", hint: nil), .php)
+    }
+
+    /// A `switch`'s `case`/`default` labels and C++'s access labels end their
+    /// line with a colon, which is also how Python opens a block. Counting them
+    /// as Python's used to hand a JavaScript switch to Python outright.
+    /// A switch is thin on signals either way, so what's pinned here is the
+    /// ranking rather than confidence: JavaScript has to come out ahead of
+    /// Python, where before it lost outright.
+    test("detect: case labels are not Python block openers") {
+        try expectEqual(
+            guessLanguage("function label(kind) {\n  switch (kind) {\n    case \"a\":\n"
+                          + "      return \"Alpha\"\n    default:\n      return \"Other\"\n  }\n}\n"
+                          + "console.log(label(\"a\"))")?.language, .javascript)
+        // Python's own trailing colons still count.
+        try expectEqual(detectCodeLanguage("class Account:\n    def deposit(self, n):\n"
+                                           + "        self.balance += n", hint: nil), .python)
+    }
+
+    /// Shell writes an assignment with no sigil and no spaces; PHP sigils its
+    /// variables and everything else here spaces the `=`. A `$var`-heavy
+    /// snippet with no shebang used to hand the lead to PHP — this pins the
+    /// ranking, which is what the signal buys; it isn't enough for confidence.
+    test("detect: a bare assignment at line start is shell's") {
+        try expectEqual(guessLanguage("tmp=$(mktemp -d)\ntrap 'rm -rf \"$tmp\"' EXIT\n"
+                                      + "cp -R src/. \"$tmp\"")?.language, .shell)
+        // Spaced assignments stay ambiguous — that's most languages' shape.
+        try expectNil(detectCodeLanguage("x = 1", hint: nil))
+    }
+
+    /// A header guard is C, and nothing else here spells one. `#if`/`#endif`
+    /// are excluded because Swift's conditional compilation looks the same.
+    test("detect: preprocessor directives are C's") {
+        try expectEqual(detectCodeLanguage("#ifndef BUFFER_H\n#define BUFFER_H\n\n"
+                                           + "#define MAX_LEN 1024\n\ntypedef struct {\n"
+                                           + "    size_t len;\n} buffer_t;\n\n#endif", hint: nil), .c)
+        try expectEqual(detectCodeLanguage("#if canImport(UIKit)\nimport UIKit\n#endif", hint: nil),
+                        nil, "Swift's #if must not read as C")
+    }
+
+    /// `name!(…)` is a macro invocation, which only Rust spells that way.
+    test("detect: a macro bang is Rust's") {
+        try expectEqual(detectCodeLanguage("let total: usize = items\n    .iter()\n"
+                                           + "    .filter(|item| item.active)\n"
+                                           + "    .map(|item| item.count)\n    .sum();\n"
+                                           + "println!(\"{}\", total);", hint: nil), .rust)
+    }
+
     test("detect: ambiguous text is not detected confidently") {
         // A bare token isn't enough to switch.
         try expectNil(detectCodeLanguage("x = 1", hint: nil))
