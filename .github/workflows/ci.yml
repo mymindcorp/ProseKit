@@ -34,14 +34,17 @@ jobs:
           set -e
           for suite in DocumentModelTests DocumentTransformTests EditorStateKitTests \
                        EditorCommandsTests SchemaKitTests EditorSerializationTests \
-                       EditorCollabTests EditorChangesetTests; do
+                       EditorCollabTests EditorChangesetTests EditorMathTests \
+                       EditorSyntaxTests; do
             echo "::group::$suite"
             swift run "$suite"
             echo "::endgroup::"
           done
 
-  # The UIKit renderer/editor (EditorUIKit + EditorSyntax) is `#if canImport(UIKit)`,
-  # so it only compiles for a simulator — run its XCTest target there.
+  # The UIKit renderer/editor (EditorUIKit, plus EditorSyntax's tokenizer and
+  # colours) is `#if canImport(UIKit)`, so it only compiles for a simulator —
+  # run its XCTest target there. EditorSyntax's language *detection* is
+  # Foundation-only and is covered by EditorSyntaxTests in the job above.
   ios:
     name: iOS renderer tests
     runs-on: macos-26

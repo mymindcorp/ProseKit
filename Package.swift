@@ -101,6 +101,12 @@ let package = Package(
             name: "EditorMathTests",
             dependencies: ["EditorMath", "TestHarness"],
             path: "Tests/EditorMathTests"),
+        // Language detection only — it's Foundation-only, so it runs headless.
+        // The tokenizer and its colours stay in the iOS target below.
+        .executableTarget(
+            name: "EditorSyntaxTests",
+            dependencies: ["EditorSyntax", "TestHarness"],
+            path: "Tests/EditorSyntaxTests"),
         // iOS-only XCTest target for the renderer (run via xcodebuild on a
         // simulator). Source is #if canImport(UIKit) so it's empty on macOS.
         .testTarget(

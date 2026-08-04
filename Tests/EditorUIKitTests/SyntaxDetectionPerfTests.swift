@@ -53,35 +53,9 @@ final class SyntaxDetectionPerfTests: XCTestCase {
         return try schema.node("doc", [:], content: Fragment.from(children))
     }
 
-    /// The memo must be invisible: a repeat guess agrees with the first, and
-    /// distinct sources keep distinct answers even once the memo has evicted.
-    func testMemoAgreesWithFreshGuesses() {
-        let samples: [(String, CodeLanguage?)] = [
-            ("const x = () => { console.log(x) }", .javascript),
-            ("interface A { x: number }", .typescript),
-            (".btn { color: red; padding: 4px; }", .css),
-            ("def f(x):\n    return x", .python),
-            ("fn main() { let mut v = Vec::new(); }", .rust),
-            ("package main\nfunc main() { x := 1 }", .go),
-            ("#include <stdio.h>\nint main() { printf(\"hi\"); }", .c),
-            ("guard let x else { return }\nfunc f() -> Int { 0 }", .swift),
-            ("{ \"a\": 1, \"b\": [2, 3] }", .json),
-            ("#!/bin/bash\nfor f in *; do echo $f; done", .shell),
-        ]
-        // First pass populates and overflows the memo (10 samples, 8 slots).
-        let first = samples.map { guessLanguage($0.0)?.language }
-        // Second pass: the early ones have been evicted and are recomputed, the
-        // late ones are served from the memo. Both must match the first pass.
-        let second = samples.map { guessLanguage($0.0)?.language }
-        XCTAssertEqual(first, second, "a repeat guess disagreed with the first")
-        XCTAssertEqual(first, samples.map(\.1), "detection changed")
-
-        // Interleaving must not let one block's answer leak into another's.
-        for (code, expected) in samples {
-            XCTAssertEqual(guessLanguage(code)?.language, expected, "wrong guess for: \(code)")
-            XCTAssertNil(guessLanguage("   ")?.language)
-        }
-    }
+    // The memo's *correctness* (a repeat guess agreeing with the first) is
+    // checked in the headless `EditorSyntaxTests` suite; what's timed here is
+    // what it saves.
 
     /// One guess, in isolation. Every timed run gets its own source so this
     /// measures the guess rather than a repeat lookup.
