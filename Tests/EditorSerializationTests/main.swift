@@ -4166,5 +4166,66 @@ test("HTML round-trip: superscript and subscript from a style") {
     try expectEqual(try HTMLParser.parse(html, schema: schema), d)
 }
 
+test("HTML paste: a spreadsheet's bold cell keeps its bold") {
+    // Excel, Sheets and Word all say a cell is bold by styling the cell rather
+    // than the words in it, so a pasted sheet used to arrive with every header
+    // plain.
+    let html = """
+    <meta name="ProgId" content="Excel.Sheet"><table><tbody>\
+    <tr><td style="font-weight:700;">Head</td><td>plain</td></tr></tbody></table>
+    """
+    let d = try HTMLParser.parse(html, schema: schema)
+    let row = d.child(0).child(0)
+    let headText = row.child(0).child(0).child(0)
+    try expectEqual(headText.text, "Head")
+    try expect(headText.marks.contains { $0.type.name == "bold" }, "got \(headText.marks)")
+    try expect(row.child(1).child(0).child(0).marks.isEmpty, "the other cell is not bold")
+}
+
+test("HTML paste: a cell's italic and strike are inherited too") {
+    for (style, mark) in [("font-style:italic", "italic"),
+                          ("text-decoration:line-through", "strike")] {
+        let d = try HTMLParser.parse("<table><tr><td style=\"\(style)\">x</td></tr></table>",
+                                     schema: schema)
+        let text = d.child(0).child(0).child(0).child(0).child(0)
+        try expect(text.marks.contains { $0.type.name == mark }, "\(style): got \(text.marks)")
+    }
+}
+
+test("HTML paste: an inherited style reaches every block in the cell") {
+    let html = "<table><tr><td style=\"font-weight:bold\"><p>one</p><p>two</p></td></tr></table>"
+    let cell = try HTMLParser.parse(html, schema: schema).child(0).child(0).child(0)
+    try expectEqual(cell.childCount, 2)
+    for i in 0..<cell.childCount {
+        try expect(cell.child(i).child(0).marks.contains { $0.type.name == "bold" },
+                   "block \(i) should be bold")
+    }
+}
+
+test("HTML paste: an inherited style doesn't override the text's own") {
+    // The word is already bold *and* italic; inheriting must add, not replace.
+    let html = "<table><tr><td style=\"font-weight:bold\"><em>x</em></td></tr></table>"
+    let text = try HTMLParser.parse(html, schema: schema).child(0).child(0).child(0).child(0).child(0)
+    let names = Set(text.marks.map(\.type.name))
+    try expect(names.contains("bold") && names.contains("italic"), "got \(names)")
+}
+
+test("HTML paste: a cell's style is not forced onto text that can't take marks") {
+    // A code block takes no marks; adding one would build a document that
+    // fails its own check.
+    let html = "<table><tr><td style=\"font-weight:bold\"><pre><code>let x = 1</code></pre></td></tr></table>"
+    let d = try HTMLParser.parse(html, schema: schema)
+    try d.check()
+    let cell = d.child(0).child(0).child(0)
+    let code = (0..<cell.childCount).map { cell.child($0) }.first { $0.type.name == "codeBlock" }
+    try expect(code != nil, "the code block should survive")
+    try expect(code?.child(0).marks.isEmpty ?? false, "code takes no marks")
+}
+
+test("HTML paste: a cell with no style is untouched") {
+    let d = try HTMLParser.parse("<table><tr><td>plain</td></tr></table>", schema: schema)
+    try expect(d.child(0).child(0).child(0).child(0).child(0).marks.isEmpty)
+}
+
 registerBench()
 TestSuite.main("EditorSerializationTests", collector.all)

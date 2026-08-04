@@ -703,7 +703,11 @@ public enum HTMLParser {
         case "details":
             return (parseDetails(attrs, tokens, start, end, schema, config), end + 1)
         case "tableCell", "tableHeader":
-            let parsed = parseBlocks(tokens[(start + 1)..<end], schema, config)
+            var parsed = parseBlocks(tokens[(start + 1)..<end], schema, config)
+            // A spreadsheet styles the cell, not the words inside it.
+            if let style = attrs["style"] {
+                parsed = inheritMarks(parsed, styleMarks(style, schema))
+            }
             let children = schema.nodes[nodeName!].map { fitContent(parsed, into: $0, schema: schema) } ?? parsed
             var a: Attrs = idAttrs(attrs, nodeName!, schema, config)
             if let cs = attrs["colspan"].flatMap({ Int($0) }), cs != 1 { a["colspan"] = .int(cs) }
@@ -1031,6 +1035,29 @@ public enum HTMLParser {
             }
         }
         return nil
+    }
+
+    /// Add a block's own emphasis to the text inside it.
+    ///
+    /// CSS inherits, so emphasis written on a block belongs to the words in it.
+    /// A spreadsheet says a cell is bold by styling the cell rather than the
+    /// text — `<td style="font-weight:700">Head</td>` is how Excel, Sheets and
+    /// Word all write a bold cell — so without this a pasted sheet arrives with
+    /// every header plain.
+    ///
+    /// Only where the schema allows it: a code block takes no marks, and adding
+    /// one would build a document that fails its own check.
+    private static func inheritMarks(_ nodes: [Node], _ marks: [Mark]) -> [Node] {
+        guard !marks.isEmpty else { return nodes }
+        return nodes.map { node in
+            if node.isText {
+                return node.mark(marks.reduce(node.marks) { $1.addToSet($0) })
+            }
+            guard node.childCount > 0 else { return node }
+            let allowed = marks.filter { node.type.allowsMarkType($0.type) }
+            let inner = (0..<node.childCount).map { node.child($0) }
+            return node.copy(content: Fragment.from(inheritMarks(inner, allowed)))
+        }
     }
 
     /// The marks an inline `style` asks for, beyond colour.
