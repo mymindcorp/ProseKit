@@ -532,7 +532,19 @@ private func scanSignals(_ code: String) -> SignalCounts {
             } else if next == bang, matchesWordCaseInsensitive("doctype", at: i + 2, in: bytes) {
                 counts.doctype += 1
             } else if isIdentifierStart(next) || (next == slash && i + 2 < bytes.count && isIdentifierStart(bytes[i + 2])) {
-                if scanTagTail(from: i + 1, in: bytes) { counts.htmlTag += 1 }
+                // A tag's `<` never follows an identifier character directly:
+                // markup writes `<div>` after whitespace or a `>`, while a
+                // generic writes `Result<T>` hard against its type name. That
+                // one byte is what separates them, and without it every
+                // TypeScript, Kotlin, C# and Java snippet using generics
+                // scored as HTML.
+                //
+                // Closing tags are exempt — `text</div>` legitimately follows
+                // content, and `</` can't open a generic.
+                let afterIdentifier = i > 0 && isIdentifierBody(bytes[i - 1])
+                if !afterIdentifier || next == slash {
+                    if scanTagTail(from: i + 1, in: bytes) { counts.htmlTag += 1 }
+                }
             }
             i += 1
         default:

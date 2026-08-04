@@ -69,6 +69,23 @@ final class SyntaxHighlighterTests: XCTestCase {
                                hint: nil), .csharp)
     }
 
+    /// Four of the supported languages write generics, and `Result<T>` used to
+    /// score as an HTML tag. A tag's `<` never follows an identifier character;
+    /// a generic's always does.
+    func testGenericsAreNotReadAsHtmlTags() {
+        let generics = "type Result<T> = { ok: true; value: T }\n"
+            + "function unwrap<T>(result: Result<T>): T { return result.value }"
+        XCTAssertNotEqual(detectCodeLanguage(generics, hint: nil), .html)
+        // Java's generics likewise, and here the real language wins outright.
+        XCTAssertEqual(
+            detectCodeLanguage("import java.util.List;\nList<String> names = new ArrayList<>();",
+                               hint: nil), .java)
+        // Real markup still reads as markup — including a closing tag that does
+        // follow content, which is why `</` is exempt.
+        XCTAssertEqual(
+            detectCodeLanguage("<div class=\"card\">\n  <span>Report</span>\n</div>", hint: nil), .html)
+    }
+
     /// PHP and shell both sigil their variables with `$`, so a PHP snippet with
     /// no opening tag is competing with shell on every line.
     func testPhpIsNotConfusedWithShell() {
