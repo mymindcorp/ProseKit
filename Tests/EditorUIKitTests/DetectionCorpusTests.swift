@@ -49,20 +49,18 @@ final class DetectionCorpusTests: XCTestCase {
             print("CORPUS false-positive: \(report.falsePositive.joined(separator: ", "))")
         }
 
-        // Floors from the measured baseline: 116/134 hit, no ambiguous sample
-        // detected, and two confident misses — both signals the detector
-        // genuinely reads wrong, not noise:
+        // Floors from the measured baseline: 118/134 hit, no ambiguous sample
+        // detected, and one confident miss:
         //
-        //   js/switch    -> python  (`case "a":` lines look like Python's
-        //                            trailing-colon block syntax)
-        //   ts/generics  -> html    (`Result<T>` looks like a tag)
+        //   js/switch -> python  (`case "a":` lines look like Python's
+        //                         trailing-colon block syntax)
         //
         // Raise these floors when detection genuinely improves; never lower
         // them to make a change pass. The accuracy floor leaves one sample of
         // slack because ties in the score table break on Dictionary iteration
         // order, which is not stable across processes.
-        XCTAssertGreaterThanOrEqual(accuracy, 0.85, "detection accuracy regressed")
-        XCTAssertLessThanOrEqual(report.wrong.count, 2,
+        XCTAssertGreaterThanOrEqual(accuracy, 0.87, "detection accuracy regressed")
+        XCTAssertLessThanOrEqual(report.wrong.count, 1,
                                  "too many samples confidently detected as the wrong language")
         XCTAssertEqual(report.falsePositive.count, 0,
                        "ambiguous text is being detected confidently")
