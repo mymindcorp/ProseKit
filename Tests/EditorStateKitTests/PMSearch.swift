@@ -151,6 +151,21 @@ func registerPMSearchTests() {
     test("PM SearchQuery: can match case-insensitive strings") {
         try queryTest(SearchQuery(search: "abC", caseSensitive: false), p("<s1>aBc<e1> flakdj a<s2>ABC<e2>"))
     }
+    // Case-insensitive literal search asks `range(of:options:)` to fold rather
+    // than lowercasing every block first. These pin the cases where the two
+    // spellings could disagree.
+    test("PM SearchQuery: case-insensitive search is symmetric in either direction") {
+        try queryTest(SearchQuery(search: "ABC", caseSensitive: false), p("<s1>abc<e1> x <s2>AbC<e2>"))
+        try queryTest(SearchQuery(search: "abc", caseSensitive: false), p("<s1>ABC<e1> x <s2>aBc<e2>"))
+    }
+    test("PM SearchQuery: case-sensitive search still distinguishes case") {
+        try queryTest(SearchQuery(search: "abc", caseSensitive: true), p("ABC x <s1>abc<e1>"))
+    }
+    test("PM SearchQuery: case-insensitive search folds non-ASCII") {
+        try queryTest(SearchQuery(search: "STRASSE", caseSensitive: false), p("die <s1>strasse<e1>"))
+        try queryTest(SearchQuery(search: "café", caseSensitive: false), p("un <s1>CAFÉ<e1>"))
+        try queryTest(SearchQuery(search: "İSTANBUL", caseSensitive: false), p("in <s1>İstanbul<e1>"))
+    }
     test("PM SearchQuery: can match literally") {
         try queryTest(SearchQuery(search: "a\\nb", literal: true), p("a\nb <s1>a\\nb<e1>"))
     }
