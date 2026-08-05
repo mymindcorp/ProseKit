@@ -551,7 +551,7 @@ public enum HTMLParser {
     public static let maxNestingDepth = 256
 
     public static func parse(_ html: String, schema: Schema, config: HTMLConfig = .default) throws -> Node {
-        let tokens = tokenize(html)
+        let tokens = inlineClassStyles(tokenize(html))
         if let depth = excessiveNestingDepth(tokens[...]) {
             throw HTMLParseError.nestingTooDeep(depth: depth, limit: maxNestingDepth)
         }
@@ -1026,15 +1026,87 @@ public enum HTMLParser {
     /// The value of a CSS declaration in an inline `style` string, matching the
     /// property name exactly (so `color` doesn't match `background-color`).
     private static func styleValue(_ style: String, _ property: String) -> String? {
+        // The last declaration wins, as CSS says: `inlineClassStyles` puts a
+        // class's declarations before the element's own so that the element's
+        // own is the later word, and a document that simply repeats a property
+        // means the one it wrote last.
+        var found: String?
         for decl in style.split(separator: ";") {
             let parts = decl.split(separator: ":", maxSplits: 1)
             guard parts.count == 2 else { continue }
             if parts[0].trimmingCharacters(in: .whitespaces).lowercased() == property {
                 let v = parts[1].trimmingCharacters(in: .whitespaces)
-                if !v.isEmpty { return v }
+                if !v.isEmpty { found = v }
             }
         }
-        return nil
+        return found
+    }
+
+    /// Fold a document's own `<style>` rules into the elements that use them.
+    ///
+    /// Every RTF paste on this platform arrives through the Cocoa HTML Writer,
+    /// and it puts emphasis in a class rather than inline:
+    ///
+    ///     span.s2 {font-family: '.SFUI-Semibold'; font-weight: bold}
+    ///     <span class="s1">plain </span><span class="s2">bold</span>
+    ///
+    /// Reading only inline styles meant a document pasted from Pages, TextEdit
+    /// or Mail lost every bold and italic in it. Resolving the classes here, up
+    /// front, means the rest of the parser needs no notion of CSS: by the time
+    /// it sees the element the declarations are on its `style` attribute.
+    ///
+    /// Deliberately the smallest resolver that answers this: class selectors
+    /// only (`.x`, and `tag.x`), no specificity, no combinators, no media
+    /// queries. An inline style still wins, since it comes last.
+    static func inlineClassStyles(_ tokens: [Token]) -> [Token] {
+        // Collect the text inside every <style> element.
+        var css = ""
+        var depth = 0
+        for token in tokens {
+            switch token {
+            case let .open(tag, _, selfClosing) where tag == "style":
+                if !selfClosing { depth += 1 }
+            case let .close(tag) where tag == "style":
+                depth = max(0, depth - 1)
+            case let .text(text) where depth > 0:
+                css += text
+            default: break
+            }
+        }
+        guard !css.isEmpty else { return tokens }
+
+        // selector { declarations } — anything else is skipped.
+        var rules: [String: String] = [:]
+        for chunk in css.split(separator: "}") {
+            let parts = chunk.split(separator: "{", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let declarations = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !declarations.isEmpty else { continue }
+            for selector in parts[0].split(separator: ",") {
+                let name = selector.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let dot = name.lastIndex(of: "."), dot != name.endIndex else { continue }
+                let cls = String(name[name.index(after: dot)...])
+                // A compound like `span.s2` still keys on the class; a
+                // descendant selector is more than this resolver promises.
+                guard !cls.isEmpty, !cls.contains(where: { $0 == " " || $0 == ":" || $0 == ">" })
+                else { continue }
+                rules[cls, default: ""] += declarations + ";"
+            }
+        }
+        guard !rules.isEmpty else { return tokens }
+
+        return tokens.map { token in
+            guard case let .open(tag, attrs, selfClosing) = token,
+                  let classes = attrs["class"] else { return token }
+            let matched = classes.split(whereSeparator: { $0 == " " })
+                .compactMap { rules[String($0)] }
+                .joined()
+            guard !matched.isEmpty else { return token }
+            var merged = attrs
+            // The element's own style comes last, so it wins.
+            merged["style"] = matched + (attrs["style"] ?? "")
+            return .open(tag: tag, attrs: merged, selfClosing: selfClosing)
+        }
     }
 
     /// Add a block's own emphasis to the text inside it.
