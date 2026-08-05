@@ -12,5 +12,6 @@ func test(_ name: String, _ body: @escaping @Sendable () throws -> Void) { colle
 
 registerDetectionTests()
 registerAccuracyTests()
+registerVocabularyTests()
 
 TestSuite.main("EditorSyntaxTests", collector.all)

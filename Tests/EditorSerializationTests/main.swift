@@ -1829,6 +1829,23 @@ test("HTML round-trip: a code block's language") {
                "got: \(HTMLSerializer.serialize(plain))")
 }
 
+test("HTML: a class attribute is split on any whitespace, not just spaces") {
+    // `class` holds whitespace-separated tokens, and a wrapped or generated
+    // attribute puts a newline or a tab between two of them. Splitting on a
+    // literal space leaves the whole run as one token, and the language is
+    // silently lost — the block renders plain with no sign of why.
+    for separator in ["\n", "\n    ", "\t", "\r\n", "  "] {
+        let html = "<pre><code class=\"highlight\(separator)language-swift\">let x = 1</code></pre>"
+        let parsed = try HTMLParser.parse(html, schema: schema)
+        try expectEqual(parsed.child(0).attrs["language"], .string("swift"),
+                        "lost the language across \(separator.debugDescription)")
+    }
+    // And the language token itself must not absorb what follows it.
+    let trailing = "<pre><code class=\"language-swift\nhighlight\">let x = 1</code></pre>"
+    try expectEqual(try HTMLParser.parse(trailing, schema: schema).child(0).attrs["language"],
+                    .string("swift"))
+}
+
 test("Markdown parses a ~~~ fence, including one holding backticks") {
     try expectEqual(try MarkdownParser.parse("~~~\na + b\n~~~", schema: schema),
                     doc(node("codeBlock", [:], [t("a + b")])))
@@ -4320,6 +4337,23 @@ test("HTML paste: a class carries emphasis from a <style> block") {
     try expect(para.child(1).marks.contains { $0.type.name == "bold" },
                "the class should carry the bold: \(para.child(1).marks)")
     try expect(para.child(2).marks.isEmpty)
+}
+
+test("HTML paste: a class list wrapped across lines still resolves") {
+    // The same whitespace rule as the code block's `language-` class, on the
+    // other path that reads `class`. A generator that wraps a long attribute
+    // puts a newline inside it, and a rule keyed to the second token would
+    // never fire — the paste arrives unstyled with nothing to point at.
+    let html = """
+    <style>.bold {font-weight: 700} .ital {font-style: italic}</style>
+    <p><span class="pad\nbold">b</span><span class="ital\tpad">i</span></p>
+    """
+    let d = try HTMLParser.parse(html, schema: schema)
+    let para = d.child(0)
+    try expect(para.child(0).marks.contains { $0.type.name == "bold" },
+               "a class after a newline should still match: \(para.child(0).marks)")
+    try expect(para.child(1).marks.contains { $0.type.name == "italic" },
+               "a class before a tab should still match: \(para.child(1).marks)")
 }
 
 test("HTML paste: class rules reach italic, strike and colour too") {
