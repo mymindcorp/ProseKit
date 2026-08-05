@@ -53,8 +53,14 @@ func sanitizeURL(_ raw: String, for usage: URLUsage) -> String? {
     // so `java\tscript:alert(1)` and `java\nscript:alert(1)` both run. Match
     // against a stripped, lowercased copy so those don't slip through, but
     // return the original if it passes.
-    let probe = String(String.UnicodeScalarView(
-        trimmed.unicodeScalars.filter { $0.value > 0x20 && $0.value != 0x7F })).lowercased()
+    // Almost no URL actually contains one of those characters, and building the
+    // filtered copy is the expensive part — it collects an array of scalars and
+    // then a fresh string. Check first, and only rebuild when there's something
+    // to strip.
+    let clean = trimmed.unicodeScalars.allSatisfy { $0.value > 0x20 && $0.value != 0x7F }
+    let probe = clean ? trimmed.lowercased()
+        : String(String.UnicodeScalarView(
+            trimmed.unicodeScalars.filter { $0.value > 0x20 && $0.value != 0x7F })).lowercased()
 
     guard let colon = probe.firstIndex(of: ":") else { return trimmed } // relative
     let scheme = probe[..<colon]

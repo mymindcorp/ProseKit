@@ -1194,14 +1194,22 @@ public enum MarkdownParser {
     }
 
     private static func headingMatch(_ line: String) -> (level: Int, text: String)? {
+        // One pass for both the run and the character after it. Reading that
+        // character used to be `Array(line)[level]`, which built an array of
+        // the whole line to look at one position of it — on every line of the
+        // document, whether or not it began with a hash.
         var level = 0
-        for c in line { if c == "#" { level += 1 } else { break } }
-        let afterRun = line.count > level ? Array(line)[level] : nil
+        var afterRun: Character?
+        for c in line {
+            if c == "#" { level += 1 } else { afterRun = c; break }
+        }
         // A hash run alone is an empty heading; otherwise a space has to follow
         // it, or "#foo" would be one.
         guard level >= 1, level <= 6,
               afterRun == nil || afterRun == " " || afterRun == "\t" else { return nil }
-        var text = String(line.dropFirst(min(level + 1, line.count)))
+        // `dropFirst` already clamps, so the old `min(level + 1, line.count)`
+        // only bought another walk of the line.
+        var text = String(line.dropFirst(level + 1))
             .trimmingCharacters(in: .whitespaces)
         // An optional closing run of "#" is decoration, not content — but only
         // when it's a run on its own, so "# foo #bar" keeps its hash.
@@ -1598,8 +1606,14 @@ public enum MarkdownParser {
         guard schema.nodes["table"] != nil, schema.nodes["tableRow"] != nil,
               schema.nodes["tableCell"] != nil, schema.nodes["tableHeader"] != nil,
               i + 1 < lines.count else { return false }
+        // Asked of every line in the document, and answered "no" for almost all
+        // of them, so the order of these two checks is most of the cost of
+        // parsing prose. A pipe can't be introduced or removed by trimming, so
+        // scan the raw line's bytes: `contains("|")` on a `String` resolves to
+        // Foundation's generic substring search, which was a quarter of the
+        // time spent parsing a document that contains hardly any tables.
+        guard lines[i].utf8.contains(UInt8(ascii: "|")), indentWidth(lines[i]) < 4 else { return false }
         let header = lines[i].trimmingCharacters(in: .whitespaces)
-        guard header.contains("|"), indentWidth(lines[i]) < 4 else { return false }
         return isPipeDelimiterRow(lines[i + 1], columns: pipeCells(header).count)
     }
 
@@ -2764,7 +2778,14 @@ public enum MarkdownParser {
 
     private static func isUnicodePunctuation(_ scalar: Unicode.Scalar) -> Bool {
         if scalar.value < 0x80 {
-            return "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~".unicodeScalars.contains(scalar)
+            // The four ASCII punctuation ranges, which is exactly
+            // `!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~` — previously written out as
+            // that string and scanned linearly, once per scalar of every run
+            // of emphasis in the document.
+            switch scalar.value {
+            case 0x21...0x2F, 0x3A...0x40, 0x5B...0x60, 0x7B...0x7E: return true
+            default: return false
+            }
         }
         let character = Character(scalar)
         return character.isPunctuation || character.isSymbol
