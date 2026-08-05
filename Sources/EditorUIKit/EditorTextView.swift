@@ -2110,13 +2110,41 @@ open class EditorTextView: UIView, UIKeyInput {
         if let string = UIPasteboard.general.string { pastePlainText(string) }
     }
 
-    private func looksLikeMarkdown(_ s: String) -> Bool {
-        let lines = s.components(separatedBy: "\n")
-        return lines.contains { line in
+    // Internal rather than private so tests can reach it: this decides whether
+    // pasted text is reinterpreted, which is worth pinning directly.
+    func looksLikeMarkdown(_ s: String) -> Bool {
+        s.components(separatedBy: "\n").contains { line in
             let t = line.trimmingCharacters(in: .whitespaces)
-            return t.hasPrefix("# ") || t.hasPrefix("## ") || t.hasPrefix("- ") || t.hasPrefix("> ")
-                || t.hasPrefix("```") || t.contains("**")
+            if t.hasPrefix("```") || t.hasPrefix("> ") { return true }
+            // Any bullet character, not only the hyphen.
+            if let first = t.first, "-*+".contains(first), t.dropFirst().hasPrefix(" ") { return true }
+            // Any heading level: `### ` is as much a heading as `# `.
+            if t.hasPrefix("#") {
+                let hashes = t.prefix { $0 == "#" }
+                if hashes.count <= 6, t.dropFirst(hashes.count).hasPrefix(" ") { return true }
+            }
+            // An ordered item, in either spelling.
+            let digits = t.prefix { $0.isNumber }
+            if !digits.isEmpty, digits.count <= 9 {
+                let after = t.dropFirst(digits.count)
+                if after.hasPrefix(". ") || after.hasPrefix(") ") { return true }
+            }
+            return hasPairedEmphasis(t)
         }
+    }
+
+    /// Whether a line has a closing `**` for an opening one, with something
+    /// between them.
+    ///
+    /// A single `**` is not emphasis — `x = 2**8` is a power and `int **argv`
+    /// is a pointer — and treating it as one meant code copied out of a
+    /// terminal, which arrives as plain text with no HTML to go on, was
+    /// restructured into headings and lists on the way in.
+    private func hasPairedEmphasis(_ line: String) -> Bool {
+        guard let open = line.range(of: "**") else { return false }
+        let rest = line[open.upperBound...]
+        guard let close = rest.range(of: "**") else { return false }
+        return close.lowerBound > rest.startIndex
     }
 
     open override func selectAll(_ sender: Any?) {
