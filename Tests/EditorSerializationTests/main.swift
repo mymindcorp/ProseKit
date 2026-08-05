@@ -4299,5 +4299,95 @@ test("HTML paste: a document copied from Pages, bridged from RTF") {
     try expect(!d.textContent.contains("DOCTYPE"))
 }
 
+// MARK: - Styles a document declares for itself
+
+test("HTML paste: a class carries emphasis from a <style> block") {
+    // What the Cocoa HTML Writer produces for every RTF paste — Pages,
+    // TextEdit, Mail. The emphasis is in the class, not on the element.
+    let html = """
+    <html><head><style type="text/css">
+    p.p1 {margin: 0.0px; font: 12.0px Helvetica}
+    span.s1 {font-family: 'Helvetica'; font-weight: normal}
+    span.s2 {font-family: '.SFUI-Semibold'; font-weight: bold}
+    </style></head><body>
+    <p class="p1"><span class="s1">plain </span><span class="s2">bold</span><span class="s1"> end</span></p>
+    </body></html>
+    """
+    let d = try HTMLParser.parse(html, schema: schema)
+    try expectEqual(d.child(0).textContent, "plain bold end")
+    let para = d.child(0)
+    try expect(para.child(0).marks.isEmpty, "weight normal is not bold")
+    try expect(para.child(1).marks.contains { $0.type.name == "bold" },
+               "the class should carry the bold: \(para.child(1).marks)")
+    try expect(para.child(2).marks.isEmpty)
+}
+
+test("HTML paste: class rules reach italic, strike and colour too") {
+    let html = """
+    <style>.i {font-style: italic} .s {text-decoration: line-through} .c {color: #ff0000}</style>
+    <p><span class="i">i</span><span class="s">s</span><span class="c">c</span></p>
+    """
+    let para = try HTMLParser.parse(html, schema: schema).child(0)
+    try expect(para.child(0).marks.contains { $0.type.name == "italic" })
+    try expect(para.child(1).marks.contains { $0.type.name == "strike" })
+    try expect(para.child(2).marks.contains { $0.type.name == "textColor" })
+}
+
+test("HTML paste: an inline style beats the class it sits beside") {
+    let html = """
+    <style>.b {font-weight: bold}</style>
+    <p><span class="b" style="font-weight: normal">x</span></p>
+    """
+    let text = try HTMLParser.parse(html, schema: schema).child(0).child(0)
+    try expect(text.marks.isEmpty, "the element's own style is the later word: \(text.marks)")
+}
+
+test("HTML paste: a compound or grouped selector still keys on the class") {
+    for css in ["span.b {font-weight: bold}", ".b {font-weight: bold}",
+                "p.x, span.b {font-weight: bold}"] {
+        let d = try HTMLParser.parse("<style>\(css)</style><p><span class=\"b\">x</span></p>",
+                                     schema: schema)
+        try expect(d.child(0).child(0).marks.contains { $0.type.name == "bold" }, "css: \(css)")
+    }
+}
+
+test("HTML paste: several classes on one element all apply") {
+    let html = """
+    <style>.b {font-weight: bold} .i {font-style: italic}</style>
+    <p><span class="b i">x</span></p>
+    """
+    let names = Set(try HTMLParser.parse(html, schema: schema).child(0).child(0).marks.map(\.type.name))
+    try expect(names.contains("bold") && names.contains("italic"), "got \(names)")
+}
+
+test("HTML paste: a class rule reaches a table cell as well") {
+    let html = """
+    <style>td.h {font-weight: bold}</style>
+    <table><tr><td class="h">Head</td><td>plain</td></tr></table>
+    """
+    let row = try HTMLParser.parse(html, schema: schema).child(0).child(0)
+    try expect(row.child(0).child(0).child(0).marks.contains { $0.type.name == "bold" })
+    try expect(row.child(1).child(0).child(0).marks.isEmpty)
+}
+
+test("HTML paste: styles the document doesn't use change nothing") {
+    for html in ["<p>plain</p>",                                        // no style block
+                 "<style>.b {font-weight: bold}</style><p>plain</p>",   // class unused
+                 "<style>@media print { .b {font-weight: bold} }</style><p><span class=\"b\">x</span></p>",
+                 "<style>not css at all</style><p>plain</p>",
+                 "<style></style><p>plain</p>"] {
+        let d = try HTMLParser.parse(html, schema: schema)
+        try d.check()
+        for i in 0..<d.child(0).childCount {
+            try expect(d.child(0).child(i).marks.isEmpty, "html: \(html)")
+        }
+    }
+}
+
+test("HTML paste: a <style> block is never content") {
+    let d = try HTMLParser.parse("<style>.b {font-weight: bold}</style><p>only</p>", schema: schema)
+    try expectEqual(d.textContent, "only")
+}
+
 registerBench()
 TestSuite.main("EditorSerializationTests", collector.all)
