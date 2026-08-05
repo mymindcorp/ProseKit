@@ -2115,7 +2115,11 @@ open class EditorTextView: UIView, UIKeyInput {
     func looksLikeMarkdown(_ s: String) -> Bool {
         s.components(separatedBy: "\n").contains { line in
             let t = line.trimmingCharacters(in: .whitespaces)
-            if t.hasPrefix("```") || t.hasPrefix("> ") { return true }
+            if t.hasPrefix("```") || t.hasPrefix("~~~") || t.hasPrefix("> ") { return true }
+            // A table's delimiter row — `| --- | :-: |` — which is the one line
+            // of a table that prose doesn't produce by accident.
+            if t.contains("|"), t.contains("-"),
+               t.allSatisfy({ $0 == "|" || $0 == "-" || $0 == ":" || $0 == " " }) { return true }
             // Any bullet character, not only the hyphen.
             if let first = t.first, "-*+".contains(first), t.dropFirst().hasPrefix(" ") { return true }
             // Any heading level: `### ` is as much a heading as `# `.
@@ -2141,10 +2145,27 @@ open class EditorTextView: UIView, UIKeyInput {
     /// terminal, which arrives as plain text with no HTML to go on, was
     /// restructured into headings and lists on the way in.
     private func hasPairedEmphasis(_ line: String) -> Bool {
-        guard let open = line.range(of: "**") else { return false }
-        let rest = line[open.upperBound...]
-        guard let close = rest.range(of: "**") else { return false }
-        return close.lowerBound > rest.startIndex
+        // CommonMark's flanking rule, which is what separates emphasis from
+        // arithmetic: an opening `**` is followed by something other than
+        // space, and a closing one is preceded by something other than space.
+        // `**bold**` passes both; `2**8` has no closer, `a ** b` opens onto a
+        // space, and `char **argv, int **envp` is two openers rather than a
+        // pair — two pointer declarations, not a bold run.
+        var search = line.startIndex
+        while let open = line.range(of: "**", range: search..<line.endIndex) {
+            guard let afterOpen = line[open.upperBound...].first, !afterOpen.isWhitespace else {
+                search = open.upperBound
+                continue
+            }
+            var closeSearch = line.index(after: open.upperBound)
+            while let close = line.range(of: "**", range: closeSearch..<line.endIndex) {
+                let before = line[line.index(before: close.lowerBound)]
+                if !before.isWhitespace { return true }
+                closeSearch = close.upperBound
+            }
+            search = open.upperBound
+        }
+        return false
     }
 
     open override func selectAll(_ sender: Any?) {
