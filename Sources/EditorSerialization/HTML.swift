@@ -681,7 +681,12 @@ public enum HTMLParser {
             for j in (start + 1)..<max(start + 1, min(end, start + 3)) {
                 if case let .open(tag, innerAttrs, _) = tokens[j], tag == "code",
                    let classes = innerAttrs["class"] {
-                    language = classes.split(separator: " ")
+                    // Class is a set of *whitespace*-separated tokens, not
+                    // space-separated: a wrapped attribute puts a newline
+                    // between two of them, and splitting on " " alone would
+                    // leave `language-swift\n  other` as one token that
+                    // resolves to no language at all.
+                    language = classes.split(whereSeparator: \.isWhitespace)
                         .first { $0.hasPrefix("language-") }
                         .map { String($0.dropFirst("language-".count)) }
                 }
@@ -1098,7 +1103,7 @@ public enum HTMLParser {
         return tokens.map { token in
             guard case let .open(tag, attrs, selfClosing) = token,
                   let classes = attrs["class"] else { return token }
-            let matched = classes.split(whereSeparator: { $0 == " " })
+            let matched = classes.split(whereSeparator: \.isWhitespace)
                 .compactMap { rules[String($0)] }
                 .joined()
             guard !matched.isEmpty else { return token }
