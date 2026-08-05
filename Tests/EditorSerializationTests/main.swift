@@ -4227,5 +4227,77 @@ test("HTML paste: a cell with no style is untouched") {
     try expect(d.child(0).child(0).child(0).child(0).child(0).marks.isEmpty)
 }
 
+// MARK: - Captured from Numbers and Pages
+
+test("HTML paste: a table copied from Numbers") {
+    // Captured from Numbers 26 by copying a two-cell range: the pasteboard's
+    // public.html flavour, verbatim apart from trimming the second cell's
+    // font attributes. Numbers dresses every cell in <font> tags and inline
+    // styles and puts the emphasis in a real <b>.
+    let html = """
+    <table cellspacing="0" cellpadding="0" style="border-collapse: collapse">
+    <tbody>
+    <tr>
+    <td valign="top" style="width: 89.0px; height: 11.0px; background-color: #d4d4d4; \
+    border-style: solid; border-width: 1.0px 1.0px 1.0px 1.0px; padding: 4.0px 4.0px 4.0px 4.0px">
+    <p style="margin: 0.0px 0.0px 0.0px 0.0px; -webkit-hyphens: auto">\
+    <font face="Helvetica" size="2" color="#000000" style="font: 10.0px Helvetica; \
+    font-variant-ligatures: common-ligatures; color: #000000"><b>Head</b><b></b></font></p>
+    </td>
+    <td valign="top" style="width: 89.0px; height: 11.0px; padding: 4.0px 4.0px 4.0px 4.0px">
+    <p style="margin: 0.0px 0.0px 0.0px 0.0px"><font face="Helvetica Neue" size="2">42</font></p>
+    </td>
+    </tr>
+    </tbody>
+    </table>
+    """
+    let d = try HTMLParser.parse(html, schema: schema)
+    try d.check()
+    try expectEqual(d.child(0).type.name, "table")
+    let row = d.child(0).child(0)
+    try expectEqual(row.childCount, 2)
+    try expectEqual(row.child(0).textContent, "Head")
+    try expectEqual(row.child(1).textContent, "42")
+    // The header's bold survives the font wrapper and the empty <b> beside it.
+    let head = row.child(0).child(0).child(0)
+    try expect(head.marks.contains { $0.type.name == "bold" }, "got \(head.marks)")
+    try expect(row.child(1).child(0).child(0).marks.isEmpty, "the number is not bold")
+}
+
+test("HTML paste: a document copied from Pages, bridged from RTF") {
+    // Pages puts no HTML on the pasteboard — only RTF and plain text — so the
+    // renderer converts through NSAttributedString, and this is what that
+    // conversion produced for two bold lines. Hence the Cocoa HTML Writer
+    // shape: a doctype, a <style> block, and class attributes on every <p>.
+    let html = """
+    <!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+    <html>
+    <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <meta name="Generator" content="Cocoa HTML Writer">
+    <style type="text/css">
+    p.p1 {margin: 0.0px 0.0px 0.0px 0.0px; font: 11.0px 'Helvetica Neue'; color: #000000}
+    </style>
+    </head>
+    <body>
+    <p class="p1"><b>Plain heading line</b></p>
+    <p class="p1"><b>A second line with words</b></p>
+    </body>
+    </html>
+    """
+    let d = try HTMLParser.parse(html, schema: schema)
+    try d.check()
+    try expectEqual(d.childCount, 2, "two paragraphs, and no stray block from the head")
+    try expectEqual(d.child(0).textContent, "Plain heading line")
+    try expectEqual(d.child(1).textContent, "A second line with words")
+    for i in 0..<d.childCount {
+        try expect(d.child(i).child(0).marks.contains { $0.type.name == "bold" },
+                   "line \(i) should be bold")
+    }
+    // Nothing from <head> leaks into the document.
+    try expect(!d.textContent.contains("Helvetica"), "the style block is not content")
+    try expect(!d.textContent.contains("DOCTYPE"))
+}
+
 registerBench()
 TestSuite.main("EditorSerializationTests", collector.all)
