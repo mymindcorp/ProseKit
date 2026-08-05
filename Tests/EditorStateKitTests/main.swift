@@ -282,4 +282,5 @@ registerPMGapCursorTests()
 registerPMSearchTests()
 
 registerSelectionJSONGuardTests()
+registerSelectionEndpointTests()
 TestSuite.main("EditorStateKitTests", collector.all)
