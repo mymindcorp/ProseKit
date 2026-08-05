@@ -131,6 +131,46 @@ final class PasteAttributedStringTests: XCTestCase {
         XCTAssertEqual(doc.child(1).textContent, "second line")
     }
 
+    func testABulletedListSurvivesTheBridge() throws {
+        // A pasted page is mostly prose and lists; a list arriving as two loose
+        // paragraphs is the kind of loss nobody notices until it's shipped.
+        let view = try view()
+        let attr = NSMutableAttributedString(string: "one\ntwo\n")
+        let bullet = NSMutableParagraphStyle()
+        bullet.textLists = [NSTextList(markerFormat: .disc, options: 0)]
+        attr.addAttribute(.paragraphStyle, value: bullet,
+                          range: NSRange(location: 0, length: attr.length))
+        let data = try attr.data(from: NSRange(location: 0, length: attr.length),
+                                 documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+        let pb = UIPasteboard.withUniqueName()
+        pb.setData(data, forPasteboardType: "public.rtf")
+        let doc = try XCTUnwrap(view.richTextPasteDoc(pb))
+        XCTAssertEqual(doc.child(0).type.name, "bulletList")
+        XCTAssertEqual(doc.child(0).childCount, 2, "two items")
+    }
+
+    func testALinkSurvivesTheBridge() throws {
+        // RTF carries the href, and losing it turns a linked document into flat
+        // text that looks unchanged.
+        let view = try view()
+        let attr = NSMutableAttributedString(string: "see docs")
+        attr.addAttribute(.link, value: URL(string: "https://example.com")!,
+                          range: NSRange(location: 4, length: 4))
+        let data = try attr.data(from: NSRange(location: 0, length: attr.length),
+                                 documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+        let pb = UIPasteboard.withUniqueName()
+        pb.setData(data, forPasteboardType: "public.rtf")
+        let doc = try XCTUnwrap(view.richTextPasteDoc(pb))
+        var href: String?
+        doc.descendants { node, _, _, _ in
+            if node.isText, node.text == "docs" {
+                href = node.marks.first { $0.type.name == "link" }?.attrs["href"]?.stringValue
+            }
+            return true
+        }
+        XCTAssertEqual(href, "https://example.com")
+    }
+
     /// Whether the text containing `word` carries a bold mark.
     private func hasBold(_ doc: Node, around word: String) -> Bool {
         var bold = false
