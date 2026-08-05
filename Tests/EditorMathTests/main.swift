@@ -41,5 +41,7 @@ func ruleCount(_ box: MathBox) -> Int { ruleRects(box).count }
 registerParserTests()
 registerLayoutTests()
 registerCorpusTests()
+registerNotationTests()
+registerMathDrawingTests()
 
 TestSuite.main("EditorMathTests", collector.all)

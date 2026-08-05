@@ -124,20 +124,27 @@ let mathCorpus: [(group: String, latex: String)] = [
 ]
 
 func registerCorpusTests() {
-    test("corpus: every formula parses") {
+    corpusChecks("corpus", mathCorpus)
+}
+
+/// The three things every corpus entry has to do, whichever axis it was
+/// chosen along: parse, measure to something drawable, and survive the switch
+/// to inline style.
+func corpusChecks(_ name: String, _ corpus: [(group: String, latex: String)]) {
+    test("\(name): every formula parses") {
         var failures: [String] = []
-        for entry in mathCorpus {
+        for entry in corpus {
             if let error = typesetter().layout(entry.latex, display: true).error {
                 failures.append("  \(entry.latex)\n      → \(error)")
             }
         }
-        try expect(failures.isEmpty, "\(failures.count)/\(mathCorpus.count) failed to parse:\n"
+        try expect(failures.isEmpty, "\(failures.count)/\(corpus.count) failed to parse:\n"
                    + failures.joined(separator: "\n"))
     }
 
-    test("corpus: every formula produces a drawable box") {
+    test("\(name): every formula produces a drawable box") {
         var failures: [String] = []
-        for entry in mathCorpus {
+        for entry in corpus {
             let box = typesetter().layout(entry.latex, display: true).box
             // Finite, positive, and actually inked — a formula that silently
             // measured to nothing would still "render" without this.
@@ -151,10 +158,10 @@ func registerCorpusTests() {
                    + failures.joined(separator: "\n"))
     }
 
-    test("corpus: every formula renders the same inline as in display style") {
+    test("\(name): every formula renders the same inline as in display style") {
         // Inline style changes sizes and limit placement but must never fail.
         var failures: [String] = []
-        for entry in mathCorpus {
+        for entry in corpus {
             let result = typesetter().layout(entry.latex, display: false)
             if result.isError || result.box.width <= 0 {
                 failures.append("  \(entry.latex) → \(result.error ?? "empty box")")
