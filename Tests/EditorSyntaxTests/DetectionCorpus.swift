@@ -14,6 +14,12 @@ struct DetectionSample {
 /// The detector is a weighted heuristic, so it will never score 100% here; the
 /// point is to make its accuracy a measured number that a rewrite has to match
 /// or beat, rather than 13 one-liners that any implementation passes.
+///
+/// Every supported language carries ten samples (TypeScript fourteen, from the
+/// shapes it has to be told apart from JavaScript by), so no language's score
+/// can be propped up by owning more of the corpus — and a change that trades
+/// one language's samples for another's shows up as a wash in the total but a
+/// swing in the per-language lists the accuracy test prints.
 enum DetectionCorpus {
     static let samples: [DetectionSample] = javascript + typescript + css + python + swift
         + html + json + shell + sql + rust + go + cpp + c + kotlin + csharp + java
@@ -229,6 +235,52 @@ enum DetectionCorpus {
 
         export function configure(retries: number, verbose: boolean): void {}
         """#),
+        DetectionSample(language: .cpp, name: "cpp/namespace", code: #"""
+        namespace geometry {
+
+        double area(const Rect& r) {
+            return r.width * r.height;
+        }
+
+        }  // namespace geometry
+        """#),
+        DetectionSample(language: .cpp, name: "cpp/smart-pointer", code: #"""
+        #include <memory>
+
+        std::unique_ptr<Session> open(const std::string& host) {
+            auto session = std::make_unique<Session>(host);
+            if (!session->connect()) {
+                return nullptr;
+            }
+            return session;
+        }
+        """#),
+        DetectionSample(language: .cpp, name: "cpp/lambda", code: #"""
+        #include <algorithm>
+        #include <vector>
+
+        std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) {
+            return a.score > b.score;
+        });
+        """#),
+        DetectionSample(language: .cpp, name: "cpp/operator", code: #"""
+        class Vec2 {
+        public:
+            double x, y;
+            Vec2 operator+(const Vec2& other) const {
+                return Vec2{x + other.x, y + other.y};
+            }
+        };
+        """#),
+        DetectionSample(language: .cpp, name: "cpp/map-loop", code: #"""
+        #include <iostream>
+        #include <map>
+
+        std::map<std::string, int> counts;
+        for (const auto& [word, n] : counts) {
+            std::cout << word << ": " << n << std::endl;
+        }
+        """#),
     ]
 
     // MARK: - CSS
@@ -369,6 +421,54 @@ enum DetectionCorpus {
             if n < 2:
                 return n
             return fib(n - 1) + fib(n - 2)
+        """#),
+        DetectionSample(language: .python, name: "py/dataclass", code: #"""
+        from dataclasses import dataclass, field
+
+        @dataclass
+        class Order:
+            id: int
+            items: list = field(default_factory=list)
+
+            def total(self):
+                return sum(item.price for item in self.items)
+        """#),
+        DetectionSample(language: .python, name: "py/dict-comprehension", code: #"""
+        counts = {}
+        for word in text.split():
+            counts[word] = counts.get(word, 0) + 1
+
+        top = {k: v for k, v in counts.items() if v > 2}
+        print(sorted(top, key=top.get, reverse=True))
+        """#),
+        DetectionSample(language: .python, name: "py/async", code: #"""
+        import asyncio
+
+        async def fetch_all(urls):
+            async with Session() as session:
+                results = await asyncio.gather(*[session.get(u) for u in urls])
+            return [r.status for r in results]
+        """#),
+        DetectionSample(language: .python, name: "py/main-guard", code: #"""
+        def main():
+            args = parse_args()
+            if args.verbose:
+                print("starting")
+            run(args)
+
+        if __name__ == "__main__":
+            main()
+        """#),
+        DetectionSample(language: .python, name: "py/generator", code: #"""
+        def chunks(items, size):
+            batch = []
+            for item in items:
+                batch.append(item)
+                if len(batch) == size:
+                    yield batch
+                    batch = []
+            if batch:
+                yield batch
         """#),
     ]
 
@@ -528,6 +628,48 @@ enum DetectionCorpus {
           </ul>
         </nav>
         """#),
+        DetectionSample(language: .html, name: "html/list", code: #"""
+        <ul class="steps">
+          <li>Clone the repository</li>
+          <li>Install the dependencies</li>
+          <li><strong>Run</strong> the tests</li>
+        </ul>
+        """#),
+        DetectionSample(language: .html, name: "html/figure", code: #"""
+        <figure>
+          <img src="/images/chart.png" alt="Quarterly revenue" width="640">
+          <figcaption>Revenue by quarter, 2025</figcaption>
+        </figure>
+        """#),
+        DetectionSample(language: .html, name: "html/head", code: #"""
+        <!DOCTYPE html>
+        <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <link rel="stylesheet" href="/style.css">
+          </head>
+        </html>
+        """#),
+        DetectionSample(language: .html, name: "html/semantic", code: #"""
+        <article>
+          <header>
+            <h1>Release notes</h1>
+            <time datetime="2025-04-01">April 1</time>
+          </header>
+          <section>
+            <p>Two fixes and one new setting.</p>
+          </section>
+        </article>
+        """#),
+        DetectionSample(language: .html, name: "html/select", code: #"""
+        <label for="size">Size</label>
+        <select id="size" name="size">
+          <option value="s">Small</option>
+          <option value="m" selected>Medium</option>
+          <option value="l">Large</option>
+        </select>
+        """#),
     ]
 
     // MARK: - JSON
@@ -574,6 +716,53 @@ enum DetectionCorpus {
           "label": null
         }
         """#),
+        DetectionSample(language: .json, name: "json/dependencies", code: #"""
+        {
+          "name": "notes",
+          "version": "2.1.0",
+          "dependencies": {
+            "react": "^18.2.0",
+            "zod": "^3.22.4"
+          },
+          "private": true
+        }
+        """#),
+        DetectionSample(language: .json, name: "json/api-response", code: #"""
+        {
+          "data": {
+            "id": "usr_8123",
+            "email": "ada@example.com",
+            "roles": ["admin", "editor"]
+          },
+          "error": null
+        }
+        """#),
+        DetectionSample(language: .json, name: "json/booleans", code: #"""
+        {
+          "strict": true,
+          "sourceMap": false,
+          "target": "es2022",
+          "lib": ["dom", "es2022"],
+          "outDir": "./dist"
+        }
+        """#),
+        DetectionSample(language: .json, name: "json/array-of-objects", code: #"""
+        [
+          { "sku": "A-1", "qty": 2, "price": 19.99 },
+          { "sku": "B-7", "qty": 1, "price": 4.5 },
+          { "sku": "C-3", "qty": 12, "price": 0.75 }
+        ]
+        """#),
+        DetectionSample(language: .json, name: "json/deep", code: #"""
+        {
+          "server": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "tls": { "enabled": true, "cert": "/etc/certs/site.pem" }
+          },
+          "workers": 4
+        }
+        """#),
     ]
 
     // MARK: - Shell
@@ -616,6 +805,50 @@ enum DetectionCorpus {
         export EDITOR=vim
         alias ll="ls -lah"
         """#),
+        DetectionSample(language: .shell, name: "sh/conditional", code: #"""
+        #!/usr/bin/env bash
+        if [ -f "$CONFIG" ]; then
+          source "$CONFIG"
+        else
+          echo "no config at $CONFIG" >&2
+          exit 1
+        fi
+        """#),
+        DetectionSample(language: .shell, name: "sh/while-read", code: #"""
+        while read -r line; do
+          if [[ "$line" == "#"* ]]; then
+            continue
+          fi
+          echo "processing $line"
+        done < hosts.txt
+        """#),
+        DetectionSample(language: .shell, name: "sh/trap", code: #"""
+        set -euo pipefail
+
+        tmp=$(mktemp -d)
+        trap 'rm -rf "$tmp"' EXIT
+
+        cp -R src/. "$tmp"
+        tar -czf build.tgz -C "$tmp" .
+        """#),
+        DetectionSample(language: .shell, name: "sh/args", code: #"""
+        #!/bin/sh
+        name=${1:-world}
+        count=${2:-1}
+        i=0
+        while [ "$i" -lt "$count" ]; do
+          echo "hello, $name"
+          i=$((i + 1))
+        done
+        """#),
+        DetectionSample(language: .shell, name: "sh/git", code: #"""
+        branch=$(git rev-parse --abbrev-ref HEAD)
+        if [ "$branch" = "main" ]; then
+          echo "refusing to force-push main" >&2
+          exit 1
+        fi
+        git push --force-with-lease origin "$branch"
+        """#),
     ]
 
     // MARK: - SQL
@@ -649,6 +882,37 @@ enum DetectionCorpus {
         DELETE FROM cache
         WHERE expires_at < now()
           AND key NOT IN (SELECT key FROM pinned);
+        """#),
+        DetectionSample(language: .sql, name: "sql/group-by", code: #"""
+        SELECT country, COUNT(*) AS signups, AVG(age) AS mean_age
+        FROM users
+        WHERE created_at >= '2025-01-01'
+        GROUP BY country
+        HAVING COUNT(*) > 10
+        ORDER BY signups DESC;
+        """#),
+        DetectionSample(language: .sql, name: "sql/alter-index", code: #"""
+        ALTER TABLE orders ADD COLUMN shipped_at TIMESTAMP;
+        CREATE INDEX idx_orders_customer ON orders (customer_id, created_at);
+        DROP INDEX idx_orders_legacy;
+        """#),
+        DetectionSample(language: .sql, name: "sql/subquery", code: #"""
+        SELECT name
+        FROM products
+        WHERE id IN (
+          SELECT product_id FROM order_items WHERE quantity > 5
+        );
+        """#),
+        DetectionSample(language: .sql, name: "sql/union", code: #"""
+        SELECT id, 'order' AS kind FROM orders WHERE total > 100
+        UNION ALL
+        SELECT id, 'refund' AS kind FROM refunds WHERE total > 100
+        ORDER BY id;
+        """#),
+        DetectionSample(language: .sql, name: "sql/upsert", code: #"""
+        INSERT INTO settings (key, value)
+        VALUES ('theme', 'dark')
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
         """#),
     ]
 
@@ -699,6 +963,60 @@ enum DetectionCorpus {
         pub struct Config {
             pub names: Vec<String>,
             pub retries: usize,
+        }
+        """#),
+        DetectionSample(language: .rust, name: "rust/result", code: #"""
+        fn load(path: &str) -> Result<Config, std::io::Error> {
+            let text = std::fs::read_to_string(path)?;
+            let config = parse(&text)?;
+            Ok(config)
+        }
+        """#),
+        DetectionSample(language: .rust, name: "rust/iterator", code: #"""
+        let total: usize = items
+            .iter()
+            .filter(|item| item.active)
+            .map(|item| item.count)
+            .sum();
+        println!("{}", total);
+        """#),
+        DetectionSample(language: .rust, name: "rust/generics", code: #"""
+        pub fn largest<T: PartialOrd + Copy>(list: &[T]) -> T {
+            let mut largest = list[0];
+            for &item in list.iter() {
+                if item > largest {
+                    largest = item;
+                }
+            }
+            largest
+        }
+        """#),
+        DetectionSample(language: .rust, name: "rust/module-use", code: #"""
+        use std::collections::HashMap;
+
+        mod parser;
+
+        pub fn index(words: Vec<String>) -> HashMap<String, usize> {
+            let mut map = HashMap::new();
+            for w in words {
+                *map.entry(w).or_insert(0) += 1;
+            }
+            map
+        }
+        """#),
+        DetectionSample(language: .rust, name: "rust/enum-option", code: #"""
+        pub enum Shape {
+            Circle { radius: f64 },
+            Rect { w: f64, h: f64 },
+        }
+
+        impl Shape {
+            pub fn area(&self) -> f64 {
+                match self {
+                    Shape::Circle { radius } => 3.14159 * radius * radius,
+                    Shape::Rect { w, h } => w * h,
+                }
+            }
         }
         """#),
     ]
@@ -758,6 +1076,62 @@ enum DetectionCorpus {
             for job := range jobs {
                 results <- job * 2
             }
+        }
+        """#),
+        DetectionSample(language: .go, name: "go/interface", code: #"""
+        package store
+
+        type Repository interface {
+            Get(id string) (*User, error)
+            Save(u *User) error
+        }
+
+        type memoryRepo struct {
+            users map[string]*User
+        }
+        """#),
+        DetectionSample(language: .go, name: "go/slices", code: #"""
+        func unique(in []string) []string {
+            seen := make(map[string]bool, len(in))
+            out := []string{}
+            for _, s := range in {
+                if !seen[s] {
+                    seen[s] = true
+                    out = append(out, s)
+                }
+            }
+            return out
+        }
+        """#),
+        DetectionSample(language: .go, name: "go/waitgroup", code: #"""
+        var wg sync.WaitGroup
+        for _, url := range urls {
+            wg.Add(1)
+            go func(u string) {
+                defer wg.Done()
+                fetch(u)
+            }(url)
+        }
+        wg.Wait()
+        """#),
+        DetectionSample(language: .go, name: "go/http", code: #"""
+        package main
+
+        import "net/http"
+
+        func handler(w http.ResponseWriter, r *http.Request) {
+            w.Header().Set("Content-Type", "application/json")
+            w.Write([]byte(`{"ok":true}`))
+        }
+        """#),
+        DetectionSample(language: .go, name: "go/defer-close", code: #"""
+        func readAll(path string) ([]byte, error) {
+            f, err := os.Open(path)
+            if err != nil {
+                return nil, err
+            }
+            defer f.Close()
+            return io.ReadAll(f)
         }
         """#),
     ]
@@ -863,6 +1237,73 @@ enum DetectionCorpus {
                 printf("verbose\n");
             }
             return 0;
+        }
+        """#),
+        DetectionSample(language: .c, name: "c/linked-list", code: #"""
+        struct node {
+            int value;
+            struct node *next;
+        };
+
+        struct node *push(struct node *head, int value) {
+            struct node *n = malloc(sizeof(struct node));
+            n->value = value;
+            n->next = head;
+            return n;
+        }
+        """#),
+        DetectionSample(language: .c, name: "c/file-io", code: #"""
+        #include <stdio.h>
+
+        int count_lines(const char *path) {
+            FILE *f = fopen(path, "r");
+            if (f == NULL) return -1;
+            int c, lines = 0;
+            while ((c = fgetc(f)) != EOF) {
+                if (c == '\n') lines++;
+            }
+            fclose(f);
+            return lines;
+        }
+        """#),
+        DetectionSample(language: .c, name: "c/defines", code: #"""
+        #ifndef BUFFER_H
+        #define BUFFER_H
+
+        #define MAX_LEN 1024
+
+        typedef struct {
+            char data[MAX_LEN];
+            size_t len;
+        } buffer_t;
+
+        #endif
+        """#),
+        DetectionSample(language: .c, name: "c/matrix", code: #"""
+        #include <stdio.h>
+
+        int main(void) {
+            int grid[3][3];
+            for (int i = 0; i < 3; i++) {
+                for (int j = 0; j < 3; j++) {
+                    grid[i][j] = i * j;
+                    printf("%d ", grid[i][j]);
+                }
+                printf("\n");
+            }
+            return 0;
+        }
+        """#),
+        DetectionSample(language: .c, name: "c/switch", code: #"""
+        switch (opcode) {
+            case OP_ADD:
+                printf("add\n");
+                break;
+            case OP_SUB:
+                printf("sub\n");
+                break;
+            default:
+                fprintf(stderr, "unknown opcode %d\n", opcode);
         }
         """#),
     ]
@@ -1310,6 +1751,45 @@ enum DetectionCorpus {
         EXPOSE 80
         HEALTHCHECK --interval=30s CMD curl -f http://localhost/ || exit 1
         STOPSIGNAL SIGQUIT
+        """#),
+        DetectionSample(language: .dockerfile, name: "docker/go-build", code: #"""
+        FROM golang:1.22 AS build
+        WORKDIR /src
+        COPY . .
+        RUN go build -o /out/server ./cmd/server
+
+        FROM gcr.io/distroless/base
+        COPY --from=build /out/server /server
+        ENTRYPOINT ["/server"]
+        """#),
+        DetectionSample(language: .dockerfile, name: "docker/nginx", code: #"""
+        FROM nginx:1.27-alpine
+        COPY dist/ /usr/share/nginx/html/
+        COPY nginx.conf /etc/nginx/conf.d/default.conf
+        EXPOSE 80
+        """#),
+        DetectionSample(language: .dockerfile, name: "docker/java", code: #"""
+        FROM eclipse-temurin:21-jre
+        WORKDIR /app
+        COPY target/app.jar app.jar
+        ENV JAVA_OPTS="-Xmx512m"
+        ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
+        """#),
+        DetectionSample(language: .dockerfile, name: "docker/user", code: #"""
+        FROM debian:bookworm-slim
+        RUN groupadd -r app && useradd -r -g app app
+        WORKDIR /srv
+        COPY --chown=app:app . .
+        USER app
+        CMD ["./run.sh"]
+        """#),
+        DetectionSample(language: .dockerfile, name: "docker/labels", code: #"""
+        FROM alpine:3.20
+        LABEL org.opencontainers.image.source="https://example.com/repo"
+        ARG VERSION=dev
+        ENV APP_VERSION=$VERSION
+        RUN apk add --no-cache ca-certificates
+        VOLUME /data
         """#),
     ]
 
