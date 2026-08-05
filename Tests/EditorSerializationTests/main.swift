@@ -1917,6 +1917,155 @@ test("Markdown round-trip: an email autolink") {
                     parsed)
 }
 
+// MARK: - Literal autolinks
+//
+// GFM's "extended autolinks": the URL written the way people actually write
+// one, without the angle brackets CommonMark asks for. Only `http://`,
+// `https://` and `mailto:` are matched — see the note on `literalAutolink` for
+// why a bare `www.` host and a bare address are left out.
+
+/// The hrefs of every link in the parse of `md`, paired with their text.
+private func links(_ md: String) throws -> [String] {
+    var found: [String] = []
+    try MarkdownParser.parse(md, schema: schema).descendants { node, _, _, _ in
+        if let href = node.marks.first(where: { $0.type.name == "link" })?
+            .attrs["href"]?.stringValue {
+            found.append("\(node.text ?? "")→\(href)")
+        }
+        return true
+    }
+    return found
+}
+
+test("Markdown: a bare URL in running text is a link") {
+    try expectEqual(try links("https://example.com"),
+                    ["https://example.com→https://example.com"])
+    try expectEqual(try links("http://example.com"),
+                    ["http://example.com→http://example.com"])
+    try expectEqual(try links("mailto:foo@bar.com"),
+                    ["mailto:foo@bar.com→mailto:foo@bar.com"])
+    // Mid-sentence, and with a query string.
+    try expectEqual(try links("see https://example.com/a?b=1 ok"),
+                    ["https://example.com/a?b=1→https://example.com/a?b=1"])
+    // A scheme is a scheme however it's cased.
+    try expectEqual(try links("HTTPS://Example.COM/Path"),
+                    ["HTTPS://Example.COM/Path→HTTPS://Example.COM/Path"])
+    try expectEqual(try links("MailTo:Foo@Bar.com"), ["MailTo:Foo@Bar.com→MailTo:Foo@Bar.com"])
+}
+
+test("Markdown: what a bare URL isn't") {
+    // The two forms GFM defines that this deliberately doesn't match, because
+    // neither has a scheme to anchor on.
+    try expect(try links("www.example.com").isEmpty)
+    try expect(try links("foo@bar.com").isEmpty)
+    // A host needs a dot, or "https://localhost" and every word after a colon
+    // becomes a link.
+    try expect(try links("https://localhost").isEmpty)
+    try expect(try links("https://example_com").isEmpty)
+    // No underscore in the last two segments of the host.
+    try expect(try links("https://a.b_c.example").isEmpty)
+    try expect(try links("https://a_b.example.com") == ["https://a_b.example.com→https://a_b.example.com"],
+               "an underscore further left is allowed")
+    // A scheme has to start the run, not sit inside a word.
+    try expect(try links("ahttps://example.com").isEmpty)
+    try expect(try links("x=https://example.com").isEmpty)
+    // A code span is literal.
+    try expect(try links("`https://example.com`").isEmpty)
+    // Nothing to link to.
+    try expect(try links("mailto:bad").isEmpty)
+    try expect(try links("mailto:a@b").isEmpty, "the host needs a dot here too")
+}
+
+test("Markdown: a bare URL keeps the sentence's punctuation out of it") {
+    // The trailing character belongs to the prose, not the link.
+    for suffix in [".", ",", "!", "?", ":", "*", "_", "~", "...", ".,"] {
+        try expectEqual(try links("https://example.com\(suffix)"),
+                        ["https://example.com→https://example.com"],
+                        "failed on \(suffix.debugDescription)")
+    }
+}
+
+test("Markdown: a bare URL balances its brackets") {
+    // A link inside brackets doesn't keep the closing one...
+    try expectEqual(try links("(https://example.com)"),
+                    ["https://example.com→https://example.com"])
+    // ...but one that opened a bracket of its own does.
+    try expectEqual(try links("https://en.wikipedia.org/wiki/Foo_(bar)"),
+                    ["https://en.wikipedia.org/wiki/Foo_(bar)→https://en.wikipedia.org/wiki/Foo_(bar)"])
+    try expectEqual(try links("(https://en.wikipedia.org/wiki/Foo_(bar))"),
+                    ["https://en.wikipedia.org/wiki/Foo_(bar)→https://en.wikipedia.org/wiki/Foo_(bar)"])
+}
+
+test("Markdown: a trailing entity reference is the text's, not the link's") {
+    try expectEqual(try links("https://example.com/?a=b&amp;"),
+                    ["https://example.com/?a=b→https://example.com/?a=b"])
+    // Interior, so it stays — and it stays as written, which is what the
+    // angle-bracket autolink does with one too.
+    try expectEqual(try links("https://example.com/?a=b&amp;c=d"),
+                    ["https://example.com/?a=b&amp;c=d→https://example.com/?a=b&amp;c=d"])
+}
+
+test("Markdown: a bare URL inside a link's label stays text") {
+    // A link within a link isn't something the document can hold, and the
+    // outer one is what the author wrote.
+    try expectEqual(try links("[see https://example.com](/y)"), ["see https://example.com→/y"])
+    try expectEqual(try links("[https://example.com][ref]\n\n[ref]: /y"),
+                    ["https://example.com→/y"])
+}
+
+test("Markdown round-trip: a bare URL comes back bare") {
+    // The point of the serializer's side of this: a document written with bare
+    // URLs must not come back full of `[url](url)`.
+    for md in ["https://example.com", "see https://example.com/a?b=1 ok",
+               "(https://example.com)", "https://example.com.",
+               "mailto:foo@bar.com", "https://en.wikipedia.org/wiki/Foo_(bar)"] {
+        let parsed = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(MarkdownSerializer.serialize(parsed), md, "not written back as typed")
+        try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(parsed),
+                                                 schema: schema), parsed)
+    }
+    // The angle-bracket form means the same link, so it now writes back bare
+    // too rather than as `[url](url)`.
+    try expectEqual(MarkdownSerializer.serialize(
+        try MarkdownParser.parse("<https://example.com>", schema: schema)),
+                    "https://example.com")
+}
+
+test("Markdown round-trip: a link that only looks self-describing keeps its brackets") {
+    // The bare form is only safe when reading it back gives the same link.
+    // A title has nowhere to go in it...
+    func selfLink(_ text: String, _ href: String, title: String? = nil) -> Node {
+        var attrs: [String: AttributeValue] = ["href": .string(href)]
+        if let title { attrs["title"] = .string(title) }
+        return doc(p(schema.text(text, [schema.mark("link", attrs)])))
+    }
+    let titled = selfLink("https://example.com", "https://example.com", title: "t")
+    try expectEqual(MarkdownSerializer.serialize(titled),
+                    "[https://example.com](https://example.com \"t\")")
+    // ...a destination that differs from the text isn't self-describing...
+    let differs = selfLink("https://example.com", "https://other.example")
+    try expectEqual(MarkdownSerializer.serialize(differs),
+                    "[https://example.com](https://other.example)")
+    // ...and text that wouldn't autolink back has to stay bracketed, or the
+    // link is lost on the next read.
+    let notALiteral = selfLink("https://localhost", "https://localhost")
+    try expectEqual(MarkdownSerializer.serialize(notALiteral),
+                    "[https://localhost](https://localhost)")
+    for md in [MarkdownSerializer.serialize(titled), MarkdownSerializer.serialize(differs),
+               MarkdownSerializer.serialize(notALiteral)] {
+        _ = try MarkdownParser.parse(md, schema: schema)
+    }
+}
+
+test("Markdown: a bare URL can't smuggle a scheme past the sanitizer") {
+    // Only three schemes are matched at all, so the dangerous ones can't be
+    // written bare — but the sanitizer still sees every one of them.
+    for md in ["javascript:alert(1)", "data:text/html,<script>",
+               "vbscript:msgbox", "file:///etc/passwd"] {
+        try expect(try links(md).isEmpty, "should not link: \(md)")
+    }
+}
+
 test("Markdown: a tab after a list marker lands on the line's tab stop") {
     // A tab stop is a column on the *line*, so the tab after "-" advances to
     // column 4 — not to column 4 counted from after the marker, which left the

@@ -432,6 +432,22 @@ public enum MarkdownSerializer {
                 inlineBody(node, into: &out)
                 continue
             }
+            // A link that is nothing but its own destination is written the way
+            // it was typed — bare — rather than as `[url](url)`. Only when the
+            // link covers exactly this node and carries nothing else, and only
+            // when reading the bare form back would give this link again, which
+            // `isWholeLiteralAutolink` is the precise test for.
+            if node.isText, node.marks.count == 1, let link = node.marks.first,
+               link.type.name == "link",
+               (link.attrs["title"]?.stringValue ?? "").isEmpty,
+               let href = link.attrs["href"]?.stringValue,
+               let text = node.text, text == href, MarkdownParser.isWholeLiteralAutolink(text),
+               i == 0 || !carries(children[i - 1], link),
+               runEnd(link, from: i) == i + 1 {
+                closeDown(to: 0)
+                out += text
+                continue
+            }
             // A mark covering more of what follows is written outside one
             // covering less, so a bold run across a link and the text after it
             // comes out as `**[a](x) b**` rather than as two bold runs with the
@@ -2057,14 +2073,17 @@ public enum MarkdownParser {
     /// parses to nothing.
     private static func linkContent(_ label: String, _ link: Mark?, _ schema: Schema,
                                     _ definitions: [String: LinkDefinition]) -> [Node] {
-        let inner = parseInline(label, schema, definitions)
+        let inner = parseInline(label, schema, definitions, literals: link == nil)
         guard !inner.isEmpty else { return [] }
         guard let link else { return inner }
         return inner.map { $0.mark(link.addToSet($0.marks)) }
     }
 
+    /// `literals` is false while parsing a link's own label, where a bare URL
+    /// must stay text — the outer link already claims it.
     static func parseInline(_ text: String, _ schema: Schema,
-                            _ definitions: [String: LinkDefinition] = [:]) -> [Node] {
+                            _ definitions: [String: LinkDefinition] = [:],
+                            literals: Bool = true) -> [Node] {
         // Everything except emphasis is resolved as the text is scanned. Runs of
         // "*" and "_" are set aside as delimiters and paired afterwards, because
         // which of them open and which close can't be known until the whole line
@@ -2138,6 +2157,21 @@ public enum MarkdownParser {
                     buffer += Array(decoded.utf8)
                     i = semi + 1; continue
                 }
+            }
+            // A bare URL in running text. Checked before the angle-bracket
+            // form below, which can't match here anyway — that one starts at a
+            // "<" and this one at the scheme itself.
+            //
+            // Not inside a link's label: a link within a link is not a thing
+            // the document model can hold, and `[see https://x.test](/y)` means
+            // the outer link.
+            if literals, (c | 0x20) == UInt8(ascii: "h") || (c | 0x20) == UInt8(ascii: "m"),
+               literalAutolinkBoundary(chars, i),
+               let (url, next) = literalAutolink(chars, i),
+               let href = sanitizeURL(url, for: .link) {
+                flush()
+                appendNode(schema.text(url, mark("link", ["href": .string(href)])))
+                i = next; continue
             }
             // Autolink <scheme:...> — a bare URL in angle brackets — or
             // <someone@example.com>, which links to the address. The text stays
@@ -2496,6 +2530,161 @@ public enum MarkdownParser {
     /// is a copy of the bytes rather than a per-character append.
     private static func slice(_ bytes: [UInt8], _ range: Range<Int>) -> String {
         String(decoding: bytes[range], as: UTF8.self)
+    }
+
+    // MARK: - Literal autolinks
+    //
+    // GFM's "extended autolinks": a URL the author wrote bare, without the
+    // angle brackets CommonMark requires. `<https://example.com>` is core
+    // CommonMark and handled above; this is the same link written the way
+    // people actually write it.
+    //
+    // Only `http://`, `https://` and `mailto:` are matched. GFM also defines a
+    // bare `www.` host and a bare address with no scheme at all, and those are
+    // where the false positives live — neither has a scheme to anchor on, so
+    // both have to guess from shape alone. They are deliberately left out for
+    // now rather than half-done.
+
+    private static func isAsciiAlnum(_ b: UInt8) -> Bool {
+        (b >= 0x30 && b <= 0x39) || ((b | 0x20) >= 0x61 && (b | 0x20) <= 0x7A)
+    }
+
+    /// Whether `prefix` — which must be lowercase ASCII — is at `i`, ignoring
+    /// case. `HTTPS://` is as much a link as `https://`.
+    private static func hasPrefix(_ bytes: [UInt8], _ i: Int, _ prefix: [UInt8]) -> Bool {
+        guard i + prefix.count <= bytes.count else { return false }
+        for k in prefix.indices where (bytes[i + k] | 0x20) != prefix[k] { return false }
+        return true
+    }
+
+    private static let httpPrefix = Array("http://".utf8)
+    private static let httpsPrefix = Array("https://".utf8)
+    private static let mailtoPrefix = Array("mailto:".utf8)
+
+    /// Whether a literal autolink may begin at `i`.
+    ///
+    /// At the start of the text, or after whitespace or one of the characters
+    /// GFM lets hug one. Anything else — `x`, `/`, `=` — means the run is part
+    /// of something else the author is writing, and linking it would be a
+    /// guess. This errs towards not linking, which is the safe direction: a URL
+    /// that stays plain is a missing convenience, a wrongly-linked one is a
+    /// document that changed under the author.
+    private static func literalAutolinkBoundary(_ bytes: [UInt8], _ i: Int) -> Bool {
+        guard i > 0 else { return true }
+        switch bytes[i - 1] {
+        case UInt8(ascii: " "), UInt8(ascii: "\t"), UInt8(ascii: "\n"),
+             UInt8(ascii: "*"), UInt8(ascii: "_"), UInt8(ascii: "~"), UInt8(ascii: "("):
+            return true
+        default: return false
+        }
+    }
+
+    /// A bare URL beginning at `start`, and the index just past it.
+    static func literalAutolink(_ bytes: [UInt8], _ start: Int) -> (text: String, end: Int)? {
+        let mailto = hasPrefix(bytes, start, mailtoPrefix)
+        let bodyStart: Int
+        if mailto { bodyStart = start + mailtoPrefix.count }
+        else if hasPrefix(bytes, start, httpsPrefix) { bodyStart = start + httpsPrefix.count }
+        else if hasPrefix(bytes, start, httpPrefix) { bodyStart = start + httpPrefix.count }
+        else { return nil }
+
+        // The candidate runs to the next whitespace or `<`. What of its tail is
+        // punctuation the author wrote around the link rather than part of it
+        // is decided afterwards, because the answer depends on the whole run.
+        var end = bodyStart
+        while end < bytes.count {
+            let b = bytes[end]
+            if b == UInt8(ascii: " ") || b == UInt8(ascii: "\t") || b == UInt8(ascii: "\n")
+                || b == UInt8(ascii: "<") { break }
+            end += 1
+        }
+        end = trimAutolinkTail(bytes, start, end)
+        guard end > bodyStart else { return nil }
+
+        let body = slice(bytes, bodyStart..<end)
+        guard mailto ? isAutolinkAddress(body) : hasAutolinkDomain(body) else { return nil }
+        return (slice(bytes, start..<end), end)
+    }
+
+    /// Trim what the author wrote *around* a bare URL rather than in it.
+    ///
+    /// Three rules, applied until none of them applies: trailing punctuation is
+    /// a sentence's, not the link's; a closing paren is only the link's if the
+    /// link opened it, so "(see https://example.com/a)" doesn't keep the last
+    /// bracket while ".../Foo_(bar)" does; and a trailing `&…;` is an entity
+    /// reference belonging to the surrounding text.
+    private static func trimAutolinkTail(_ bytes: [UInt8], _ start: Int, _ initial: Int) -> Int {
+        var end = initial
+        loop: while end > start {
+            switch bytes[end - 1] {
+            case UInt8(ascii: "?"), UInt8(ascii: "!"), UInt8(ascii: "."), UInt8(ascii: ","),
+                 UInt8(ascii: ":"), UInt8(ascii: "*"), UInt8(ascii: "_"), UInt8(ascii: "~"):
+                end -= 1
+            case UInt8(ascii: ";"):
+                // `&` then letters or digits then this `;` is an entity.
+                var j = end - 1
+                while j > start, isAsciiAlnum(bytes[j - 1]) { j -= 1 }
+                guard j > start, j < end - 1, bytes[j - 1] == UInt8(ascii: "&") else { break loop }
+                end = j - 1
+            case UInt8(ascii: ")"):
+                var opening = 0, closing = 0
+                for k in start..<end {
+                    if bytes[k] == UInt8(ascii: "(") { opening += 1 }
+                    else if bytes[k] == UInt8(ascii: ")") { closing += 1 }
+                }
+                guard closing > opening else { break loop }
+                end -= 1
+            default: break loop
+            }
+        }
+        return end
+    }
+
+    /// GFM's "valid domain": dot-separated segments of alphanumerics, `-` and
+    /// `_`, at least one dot, and no underscore in the last two segments. The
+    /// host is what precedes the first `/`, `?` or `#`.
+    private static func hasAutolinkDomain(_ body: String) -> Bool {
+        let host = body.prefix { $0 != "/" && $0 != "?" && $0 != "#" }
+        guard !host.isEmpty else { return false }
+        let segments = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard segments.count >= 2 else { return false }
+        for segment in segments {
+            guard !segment.isEmpty,
+                  segment.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber
+                                                      || $0 == "-" || $0 == "_") })
+            else { return false }
+        }
+        return !segments.suffix(2).contains { $0.contains("_") }
+    }
+
+    /// The address after a `mailto:`. Narrower than the angle-bracket form's
+    /// grammar, matching GFM: alphanumerics and `.-_+` before the `@`, a
+    /// dotted host after it, and no `-` or `_` at the very end.
+    private static func isAutolinkAddress(_ body: String) -> Bool {
+        guard let at = body.firstIndex(of: "@"), at != body.startIndex else { return false }
+        let local = body[body.startIndex..<at]
+        guard local.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber
+                                                || $0 == "." || $0 == "-" || $0 == "_" || $0 == "+") })
+        else { return false }
+        let host = body[body.index(after: at)...]
+        guard let last = host.last, last != "-", last != "_" else { return false }
+        let segments = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard segments.count >= 2 else { return false }
+        return segments.allSatisfy { segment in
+            !segment.isEmpty && segment.allSatisfy {
+                $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_")
+            }
+        }
+    }
+
+    /// Whether `text` is exactly a literal autolink — nothing before it, and
+    /// nothing of it trimmed away. This is what lets the serializer write such
+    /// a link bare: it holds precisely when reading the bare form back gives
+    /// this link again.
+    static func isWholeLiteralAutolink(_ text: String) -> Bool {
+        let bytes = Array(text.utf8)
+        guard let (matched, end) = literalAutolink(bytes, 0) else { return false }
+        return end == bytes.count && matched == text
     }
 
     private static func parseLinkLike(_ bytes: [UInt8], _ start: Int)
