@@ -165,7 +165,8 @@ public struct Fragment: Hashable, Sendable {
                         if c.isText {
                             let s = c.text ?? ""
                             let lo = max(0, from - pos)
-                            let hi = min(s.count, to - pos)
+                            // `child.nodeSize` is the same count, already measured.
+                            let hi = min(child.nodeSize, to - pos)
                             let start = s.index(s.startIndex, offsetBy: lo)
                             let end = s.index(start, offsetBy: max(0, hi - lo))
                             c = c.withText(String(s[start..<end]))
