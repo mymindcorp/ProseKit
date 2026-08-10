@@ -1410,16 +1410,41 @@ final class DocumentLayout {
     }
 
     /// Selection highlight rectangles for a document range.
-    func selectionRects(from: Int, to: Int) -> [CGRect] {
+    /// The rectangles covering `from..<to`, one per line of text.
+    ///
+    /// `clipY` bounds the work to a band of the document. Every rect costs two
+    /// CoreText offset lookups, so a caller that only draws what's on screen
+    /// must say so here rather than filter the result: with the whole of a long
+    /// document selected, computing every rect and discarding all but the
+    /// visible few is the cost of a scroll frame, repeated for every frame.
+    ///
+    /// Nil means all of them, which is what UIKit wants when it asks for the
+    /// selection's geometry — it is placing handles and a loupe, not drawing.
+    func selectionRects(from: Int, to: Int, clipY: ClosedRange<CGFloat>? = nil) -> [CGRect] {
         guard to > from, !blocks.isEmpty else { return [] }
         var rects: [CGRect] = []
         // First block overlapping [from, to): smallest index with contentEnd > from.
         var lo = 0, hi = blocks.count
         while lo < hi { let mid = (lo + hi) / 2; if blocks[mid].contentEnd <= from { lo = mid + 1 } else { hi = mid } }
         var i = lo
+        // Blocks run down the page in document order, so a clip band is a
+        // contiguous run of them: skip to the first one that reaches it rather
+        // than walking the selection's whole prefix, and stop at the far edge.
+        if let clipY {
+            var blo = lo, bhi = blocks.count
+            while blo < bhi {
+                let mid = (blo + bhi) / 2
+                if blocks[mid].frame.maxY < clipY.lowerBound { blo = mid + 1 } else { bhi = mid }
+            }
+            i = max(lo, blo)
+        }
         while i < blocks.count, blocks[i].contentStart < to {
             let block = blocks[i]
             i += 1
+            if let clipY {
+                if block.frame.minY > clipY.upperBound { break }
+                if block.frame.maxY < clipY.lowerBound { continue }
+            }
             guard from < block.contentEnd, to > block.contentStart else { continue }
             let blockFrom = max(from, block.contentStart)
             let blockTo = min(to, block.contentEnd)
@@ -1521,7 +1546,7 @@ final class DocumentLayout {
         // Inline-code background pills, behind the text. Always a flat rounded
         // fill (never routed through the host highlight renderer / ink effect).
         for code in codeBackgrounds {
-            for rect in selectionRects(from: code.from, to: code.to) where visible(rect.minY, rect.maxY) {
+            for rect in selectionRects(from: code.from, to: code.to, clipY: clipY) where visible(rect.minY, rect.maxY) {
                 code.color.setFill()
                 UIBezierPath(roundedRect: rect.insetBy(dx: -2, dy: -1), cornerRadius: 4).fill()
             }
@@ -1531,14 +1556,14 @@ final class DocumentLayout {
             // Host-drawn (e.g. a textured "drying ink" effect): hand it the visible runs.
             var runs: [HighlightRun] = []
             for highlight in highlights {
-                for rect in selectionRects(from: highlight.from, to: highlight.to) where visible(rect.minY, rect.maxY) {
+                for rect in selectionRects(from: highlight.from, to: highlight.to, clipY: clipY) where visible(rect.minY, rect.maxY) {
                     runs.append(HighlightRun(from: highlight.from, to: highlight.to, rect: rect, color: highlight.color))
                 }
             }
             if !runs.isEmpty { highlightRenderer(ctx, runs) }
         } else {
             for highlight in highlights {
-                for rect in selectionRects(from: highlight.from, to: highlight.to) where visible(rect.minY, rect.maxY) {
+                for rect in selectionRects(from: highlight.from, to: highlight.to, clipY: clipY) where visible(rect.minY, rect.maxY) {
                     let r = rect.insetBy(dx: -1, dy: -1)
                     highlight.color.setFill()
                     UIBezierPath(roundedRect: r, cornerRadius: 3).fill()

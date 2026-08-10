@@ -552,7 +552,7 @@ open class EditorTextView: UIView, UIKeyInput {
                     if onScreen(r) { ctx.fill(r) }
                 }
             } else {
-                for r in l.selectionRects(from: deco.from, to: deco.to) where onScreen(r) { ctx.fill(r) }
+                for r in l.selectionRects(from: deco.from, to: deco.to, clipY: visibleY) { ctx.fill(r) }
             }
         }
         // Suggested deletions (track changes): the removed text floats just
@@ -580,7 +580,7 @@ open class EditorTextView: UIView, UIKeyInput {
         if !sel.empty {
             ctx.setFillColor(theme.selectionColor.cgColor)
             for range in sel.ranges {
-                for r in l.selectionRects(from: range.from.pos, to: range.to.pos) where onScreen(r) { ctx.fill(r) }
+                for r in l.selectionRects(from: range.from.pos, to: range.to.pos, clipY: visibleY) { ctx.fill(r) }
             }
         }
         l.draw(in: ctx, clipY: visibleY, highlightRenderer: highlightRenderer)
@@ -593,7 +593,7 @@ open class EditorTextView: UIView, UIKeyInput {
             ctx.setLineWidth(1.5)
             ctx.setLineDash(phase: 0, lengths: [2, 2])
             for (from, to) in visibleSpellingRanges(decorations) where to >= visiblePos.lowerBound && from <= visiblePos.upperBound {
-                for r in l.selectionRects(from: from, to: to) where onScreen(r) {
+                for r in l.selectionRects(from: from, to: to, clipY: visibleY) {
                     let y = r.maxY - 1
                     ctx.move(to: CGPoint(x: r.minX, y: y))
                     ctx.addLine(to: CGPoint(x: r.maxX, y: y))
@@ -607,7 +607,7 @@ open class EditorTextView: UIView, UIKeyInput {
         if let m = markedRange {
             ctx.setStrokeColor(theme.textColor.cgColor)
             ctx.setLineWidth(1)
-            for r in l.selectionRects(from: m.0, to: m.1) where onScreen(r) {
+            for r in l.selectionRects(from: m.0, to: m.1, clipY: visibleY) {
                 let y = r.maxY - 0.5
                 ctx.move(to: CGPoint(x: r.minX, y: y))
                 ctx.addLine(to: CGPoint(x: r.maxX, y: y))
@@ -621,7 +621,7 @@ open class EditorTextView: UIView, UIKeyInput {
             // Selection highlight (when not collapsed).
             if !cursor.isCollapsed {
                 ctx.setFillColor(color.withAlphaComponent(0.25).cgColor)
-                for r in l.selectionRects(from: min(cursor.anchor, cursor.head), to: max(cursor.anchor, cursor.head)) where onScreen(r) {
+                for r in l.selectionRects(from: min(cursor.anchor, cursor.head), to: max(cursor.anchor, cursor.head), clipY: visibleY) {
                     ctx.fill(r)
                 }
             }
