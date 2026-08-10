@@ -283,4 +283,6 @@ registerPMSearchTests()
 
 registerSelectionJSONGuardTests()
 registerSelectionEndpointTests()
+registerEditBench()
+
 TestSuite.main("EditorStateKitTests", collector.all)

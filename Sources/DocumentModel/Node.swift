@@ -19,6 +19,16 @@ public struct Node: Hashable, Sendable {
     public let marks: [Mark]
     /// For text nodes, this contains the node's text content.
     public let text: String?
+    /// A text node's length in grapheme clusters, measured once here.
+    ///
+    /// `nodeSize` is read on every walk of a fragment — `findIndex`, `cut`,
+    /// `replace`, resolving a position — and for a text node it is the
+    /// character count. ProseMirror can answer that in constant time because a
+    /// JavaScript string carries its UTF-16 length; `String.count` in Swift
+    /// walks the grapheme clusters instead, so the port inherited an
+    /// assumption of O(1) that had become O(n). Measuring it once per node
+    /// costs a walk that constructing the string paid for anyway.
+    private let textCount: Int
 
     init(type: NodeType, attrs: Attrs, content: Fragment = .empty, marks: [Mark] = [], text: String? = nil) {
         self.type = type
@@ -26,6 +36,7 @@ public struct Node: Hashable, Sendable {
         self.content = content
         self.marks = marks
         self.text = text
+        self.textCount = text?.count ?? 0
     }
 
     public static func == (lhs: Node, rhs: Node) -> Bool {
@@ -51,7 +62,7 @@ public struct Node: Hashable, Sendable {
     /// it is one. For non-leaf nodes, it is the size of the content plus two
     /// (the start and end token).
     public var nodeSize: Int {
-        if isText { return text!.count }
+        if isText { return textCount }
         if isLeaf { return 1 }
         return 2 + content.size
     }
