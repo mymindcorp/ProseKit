@@ -140,8 +140,11 @@ final class SelectionScrollPerfTests: XCTestCase {
         let kept = l.selectionRects(from: from, to: to, clipY: band).count
         XCTAssertLessThan(kept, block.lines.count / 2)
         XCTAssertGreaterThan(kept, 0, "the band is inside the block; it must draw something")
-        XCTAssertLessThan(clipped, whole,
-                          "a screenful of a tall highlighted block should cost less than the block")
+        // The rect count is the assertion; the times are printed, not asserted.
+        // Both are hundredths of a millisecond, close enough that which one
+        // wins flips between runs on a busy machine — that is a measurement of
+        // the machine, not of the clip. `testScrollingThroughOneTallHighlightIsFlat`
+        // makes the cost claim, on a ratio with a floor.
     }
 
     func testScrollingThroughOneTallHighlightIsFlat() {
@@ -221,6 +224,90 @@ final class SelectionScrollPerfTests: XCTestCase {
         // 800-paragraph selection spans.
         XCTAssertLessThan(lastCount, 100, "reported more than a screenful of rects")
         XCTAssertGreaterThan(lastCount, 0, "the selection covers the viewport; it must report rects")
+    }
+
+    func testUIKitGeometryDoesNotGrowAsTheLayoutRealizes() {
+        // The one that actually made the demo's Long view stutter. UIKit
+        // re-queries `selectionRects(for:)` on every scroll tick, because we
+        // ask it to so the native caret doesn't strand. That answer was
+        // unclipped, and a lazily realized layout never gives realized blocks
+        // back — so the further you scrolled, the more of the document was
+        // realized, and the more rects every single frame computed and boxed.
+        //
+        // Measured before the fix, selecting a 520-paragraph document of
+        // ~500-word paragraphs end to end:
+        //
+        //     y=0      blocks=3   rects=291    0.18ms
+        //     y=8000   blocks=7   rects=679    0.99ms
+        //     y=20000  blocks=12  rects=1164   2.39ms
+        //
+        // — and y=20000 is barely into a document over a million points tall.
+        let editor = try! Editor(extensions: fullKit())
+        let s = editor.schema
+        let words = (0 ..< 500).map { "word\($0 % 97)" }.joined(separator: " ")
+        let paras = (0 ..< 60).map { i in
+            try! s.node("paragraph", [:], content: Fragment.from([s.text("Para \(i). \(words)")]))
+        }
+        editor.setContent(try! s.node("doc", [:], content: Fragment.from(paras)))
+        let v = EditorTextView(editor: editor)
+        v.frame = CGRect(x: 0, y: 0, width: 390, height: 800)
+        v.layoutIfNeeded()
+        let tr = editor.state.tr
+        tr.setSelection(TextSelection.create(tr.doc, 1, tr.doc.content.size - 1))
+        editor.dispatch(tr)
+        let range = DocTextRange(1, editor.doc.content.size - 1)
+
+        var counts: [Int] = []
+        for step in 0 ... 6 {
+            v.contentOffsetY = CGFloat(step) * 4000
+            v.layoutIfNeeded()
+            counts.append(v.selectionRects(for: range).count)
+        }
+        print("UIKITSEL counts=\(counts) blocks=\(v.ensureLayout().blocks.count)")
+        // Three viewports' worth of lines, whatever has been realized behind us.
+        for c in counts {
+            XCTAssertGreaterThan(c, 0, "the selection covers the viewport")
+            XCTAssertLessThan(c, 250, "geometry grew with the realized layout: \(counts)")
+        }
+        XCTAssertLessThan(counts.max()!, counts.min()! * 3,
+                          "cost still climbs as you scroll: \(counts)")
+    }
+
+    func testSelectionHandlesOnlyWhereTheEndpointsActuallyAre() {
+        // Clipping must not invent handles: `containsStart`/`containsEnd` mark
+        // where the selection really begins and ends, so a selection running
+        // off the top reports no start handle rather than pinning one to the
+        // edge of the band.
+        let editor = try! Editor(extensions: fullKit())
+        let s = editor.schema
+        let words = Array(repeating: "lorem ipsum dolor sit amet", count: 12).joined(separator: " ")
+        let paras = (0 ..< 300).map { i in
+            try! s.node("paragraph", [:], content: Fragment.from([s.text("Para \(i): \(words)")]))
+        }
+        editor.setContent(try! s.node("doc", [:], content: Fragment.from(paras)))
+        let v = EditorTextView(editor: editor)
+        v.frame = CGRect(x: 0, y: 0, width: 390, height: 800)
+        v.layoutIfNeeded()
+        let tr = editor.state.tr
+        tr.setSelection(TextSelection.create(tr.doc, 1, tr.doc.content.size - 1))
+        editor.dispatch(tr)
+        let range = DocTextRange(1, editor.doc.content.size - 1)
+
+        // At the very top the selection starts on screen, so there is a start
+        // handle and — the document being far longer than the band — no end.
+        v.contentOffsetY = 0
+        v.layoutIfNeeded()
+        let top = v.selectionRects(for: range)
+        XCTAssertTrue(top.contains { $0.containsStart }, "the selection starts on screen")
+        XCTAssertFalse(top.contains { $0.containsEnd }, "it does not end on screen")
+
+        // Scrolled into the middle, neither endpoint is anywhere near.
+        v.contentOffsetY = 4000
+        v.layoutIfNeeded()
+        let middle = v.selectionRects(for: range)
+        XCTAssertFalse(middle.isEmpty, "the selection covers the viewport")
+        XCTAssertFalse(middle.contains { $0.containsStart }, "start handle pinned to the band edge")
+        XCTAssertFalse(middle.contains { $0.containsEnd }, "end handle pinned to the band edge")
     }
 
     // MARK: That it draws the same thing

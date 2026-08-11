@@ -227,7 +227,12 @@ extension EditorTextView: UITextInput {
 
     public func firstRect(for range: UITextRange) -> CGRect {
         guard let r = range as? DocTextRange else { return .zero }
-        let rects = ensureLayout().selectionRects(from: clamp(r.from), to: clamp(r.to))
+        let from = clamp(r.from), to = clamp(r.to)
+        let layout = ensureLayout()
+        // Only the first line is wanted, so look where the range starts rather
+        // than computing every rect of it and throwing all but one away.
+        let band = (layout.caretRect(at: from)?.minY).map { ($0 - 1) ... ($0 + max(bounds.height, 1)) }
+        let rects = layout.selectionRects(from: from, to: to, clipY: band)
         return (rects.first?.offsetBy(dx: 0, dy: -contentOffsetY)) ?? caretRect(for: DocTextPosition(r.from))
     }
 
@@ -236,11 +241,35 @@ extension EditorTextView: UITextInput {
         return (ensureLayout().caretRect(at: clamp(p.offset)) ?? .zero).offsetBy(dx: 0, dy: -contentOffsetY)
     }
 
+    /// UIKit re-queries this on every scroll tick — `notifySelectionGeometryChanged`
+    /// tells it to, so the native caret doesn't strand — and a lazily realized
+    /// layout only ever grows, so an unclipped answer grows with it: a document
+    /// selected end to end went from 291 rects to 1261 over the first few
+    /// screens, and to tens of thousands by the bottom, each one queried per
+    /// frame. Answer for a band around the viewport instead. UIKit is drawing
+    /// handles and a loupe, neither of which can show what isn't near the
+    /// screen, so the rects it cannot use are the ones we stop computing.
+    ///
+    /// `containsStart`/`containsEnd` stay honest about the *whole* selection:
+    /// they're only set when the real endpoint is inside the band, so a
+    /// selection running off screen reports no handle there rather than
+    /// pinning one to the edge.
     public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
         guard let r = range as? DocTextRange else { return [] }
-        let rects = ensureLayout().selectionRects(from: clamp(r.from), to: clamp(r.to))
+        let from = clamp(r.from), to = clamp(r.to)
+        let layout = ensureLayout()
+        let h = max(bounds.height, 1)
+        let band = (contentOffsetY - h) ... (contentOffsetY + 2 * h)
+        let rects = layout.selectionRects(from: from, to: to, clipY: band)
+        func endpointVisible(_ pos: Int) -> Bool {
+            guard let caret = layout.caretRect(at: pos) else { return false }
+            return caret.maxY >= band.lowerBound && caret.minY <= band.upperBound
+        }
+        let startVisible = endpointVisible(from), endVisible = endpointVisible(to)
         return rects.enumerated().map { index, rect in
-            DocSelectionRect(rect: rect.offsetBy(dx: 0, dy: -contentOffsetY), containsStart: index == 0, containsEnd: index == rects.count - 1)
+            DocSelectionRect(rect: rect.offsetBy(dx: 0, dy: -contentOffsetY),
+                             containsStart: index == 0 && startVisible,
+                             containsEnd: index == rects.count - 1 && endVisible)
         }
     }
 
