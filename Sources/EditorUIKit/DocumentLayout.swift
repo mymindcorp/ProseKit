@@ -1418,6 +1418,10 @@ final class DocumentLayout {
     /// document selected, computing every rect and discarding all but the
     /// visible few is the cost of a scroll frame, repeated for every frame.
     ///
+    /// The band keeps exactly the rects that intersect it, which is what those
+    /// callers were selecting for by hand — clipping changes the cost, never
+    /// the drawing.
+    ///
     /// Nil means all of them, which is what UIKit wants when it asks for the
     /// selection's geometry — it is placing handles and a loupe, not drawing.
     func selectionRects(from: Int, to: Int, clipY: ClosedRange<CGFloat>? = nil) -> [CGRect] {
@@ -1456,13 +1460,39 @@ final class DocumentLayout {
                 let s = max(aFrom, lineStart)
                 let e = min(aTo, lineEnd)
                 if e <= s { continue }
+                let top = line.baselineOrigin.y - line.ascent
+                // Clipping to blocks is not enough: a block can be far taller
+                // than the screen — one paragraph of a long document runs to
+                // hundreds of lines — and a highlight covering all of it makes
+                // every one of those lines pass the character test above. The
+                // two offset lookups are what a rect costs, so skip them here
+                // rather than let the caller throw the rect away.
+                if let clipY, top > clipY.upperBound || top + line.height < clipY.lowerBound { continue }
                 let xStart = CTLineGetOffsetForStringIndex(line.ctLine, s, nil)
                 let xEnd = CTLineGetOffsetForStringIndex(line.ctLine, e, nil)
-                let top = line.baselineOrigin.y - line.ascent
                 rects.append(CGRect(x: line.baselineOrigin.x + xStart, y: top, width: xEnd - xStart, height: line.height))
             }
         }
         return rects
+    }
+
+    /// The document positions covered by the blocks that intersect `band`, or
+    /// nil if the band falls outside the document entirely.
+    ///
+    /// Marks are stored as a flat list over the whole document, so drawing one
+    /// kind of mark means walking all of them. This turns a band of the page
+    /// into a range of positions once, so that walk can reject the off-screen
+    /// ones on two integer compares instead of a geometry lookup each.
+    func positionRange(intersecting band: ClosedRange<CGFloat>) -> Range<Int>? {
+        var lo = 0, hi = blocks.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if blocks[mid].frame.maxY < band.lowerBound { lo = mid + 1 } else { hi = mid }
+        }
+        guard lo < blocks.count, blocks[lo].frame.minY <= band.upperBound else { return nil }
+        var end = lo
+        while end < blocks.count, blocks[end].frame.minY <= band.upperBound { end += 1 }
+        return blocks[lo].contentStart ..< blocks[end - 1].contentEnd
     }
 
     /// Index of the block whose [contentStart, contentEnd] contains `pos`, via
@@ -1500,6 +1530,21 @@ final class DocumentLayout {
         func visible(_ minY: CGFloat, _ maxY: CGFloat) -> Bool {
             guard let clipY else { return true }
             return maxY >= clipY.lowerBound && minY <= clipY.upperBound
+        }
+        // `highlights` and `codeBackgrounds` cover the whole document, and a
+        // document can carry one per paragraph. Asking `selectionRects` about
+        // each of them costs a pair of binary searches even when the mark is
+        // hundreds of screens away, which on a long document is most of the
+        // time this method spends. Reject those on position first.
+        var bandPos: Range<Int>?
+        var bandIsEmpty = false
+        if let clipY {
+            if let r = positionRange(intersecting: clipY) { bandPos = r } else { bandIsEmpty = true }
+        }
+        func inBand(_ from: Int, _ to: Int) -> Bool {
+            if bandIsEmpty { return false }
+            guard let bandPos else { return true }
+            return to > bandPos.lowerBound && from < bandPos.upperBound
         }
         // Decorations first (under text where they overlap, e.g. quote bars).
         for deco in decorations {
@@ -1545,7 +1590,7 @@ final class DocumentLayout {
         }
         // Inline-code background pills, behind the text. Always a flat rounded
         // fill (never routed through the host highlight renderer / ink effect).
-        for code in codeBackgrounds {
+        for code in codeBackgrounds where inBand(code.from, code.to) {
             for rect in selectionRects(from: code.from, to: code.to, clipY: clipY) where visible(rect.minY, rect.maxY) {
                 code.color.setFill()
                 UIBezierPath(roundedRect: rect.insetBy(dx: -2, dy: -1), cornerRadius: 4).fill()
@@ -1555,14 +1600,14 @@ final class DocumentLayout {
         if let highlightRenderer {
             // Host-drawn (e.g. a textured "drying ink" effect): hand it the visible runs.
             var runs: [HighlightRun] = []
-            for highlight in highlights {
+            for highlight in highlights where inBand(highlight.from, highlight.to) {
                 for rect in selectionRects(from: highlight.from, to: highlight.to, clipY: clipY) where visible(rect.minY, rect.maxY) {
                     runs.append(HighlightRun(from: highlight.from, to: highlight.to, rect: rect, color: highlight.color))
                 }
             }
             if !runs.isEmpty { highlightRenderer(ctx, runs) }
         } else {
-            for highlight in highlights {
+            for highlight in highlights where inBand(highlight.from, highlight.to) {
                 for rect in selectionRects(from: highlight.from, to: highlight.to, clipY: clipY) where visible(rect.minY, rect.maxY) {
                     let r = rect.insetBy(dx: -1, dy: -1)
                     highlight.color.setFill()

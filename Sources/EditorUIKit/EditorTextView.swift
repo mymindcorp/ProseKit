@@ -420,12 +420,18 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     /// Report the selection's on-screen geometry to `onSelectionChange` (for a
-    /// host-drawn bubble menu). Rects are in view coordinates.
+    /// host-drawn bubble menu). Rects are in view coordinates, and cover the
+    /// visible band only — this fires on every scroll tick, and asking for a
+    /// whole-document selection's rects costs milliseconds each time.
+    ///
+    /// So a selection scrolled out of view reports no rects while still
+    /// reporting `isEmpty == false`: there is a selection, none of it is here.
     private func fireSelectionChange() {
         guard let onSelectionChange else { return }
         let sel = editor.state.selection
         guard !sel.empty else { onSelectionChange([], true); return }
-        let rects = ensureLayout().selectionRects(from: sel.from, to: sel.to)
+        let visibleY = contentOffsetY ... (contentOffsetY + max(bounds.height, 1))
+        let rects = ensureLayout().selectionRects(from: sel.from, to: sel.to, clipY: visibleY)
             .map { $0.offsetBy(dx: 0, dy: -contentOffsetY) }
         onSelectionChange(rects, false)
     }
@@ -1018,6 +1024,12 @@ open class EditorTextView: UIView, UIKeyInput {
     /// whether it's empty, whenever the selection or its geometry changes — edits,
     /// selection drags, and scrolling. Enough to anchor a floating "bubble" menu
     /// over the selection; `rects` is empty when the selection is collapsed.
+    ///
+    /// On-screen is literal: the rects cover the visible band, not the whole
+    /// selection, so a selection running off the top and bottom of the viewport
+    /// reports only the part you can see. A selection scrolled entirely out of
+    /// view reports no rects with `isEmpty` still false — anchor to what you
+    /// are given, and treat "not empty but nothing visible" as nothing to show.
     public var onSelectionChange: ((_ rects: [CGRect], _ isEmpty: Bool) -> Void)?
 
     /// Called when the editor gains keyboard focus (becomes first responder).

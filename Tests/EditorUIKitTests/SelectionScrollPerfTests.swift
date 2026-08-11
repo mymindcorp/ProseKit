@@ -3,6 +3,8 @@ import XCTest
 import UIKit
 import DocumentModel
 import SchemaKit
+import EditorStateKit
+import DocumentTransform
 @testable import EditorUIKit
 
 /// Drawing the selection while scrolling.
@@ -95,6 +97,132 @@ final class SelectionScrollPerfTests: XCTestCase {
                           "drawing the selection gets more expensive the further you scroll")
     }
 
+    /// The demo's "Long" document: 520 paragraphs of ~500 words. One paragraph
+    /// is a single block hundreds of lines tall — far taller than the screen.
+    private func longParagraphDoc(_ n: Int, words: Int = 500) -> Node {
+        let s = try! Editor(extensions: fullKit()).schema
+        let text = (0 ..< words).map { "word\($0 % 97)" }.joined(separator: " ")
+        let paras = (0 ..< n).map { i in
+            try! s.node("paragraph", [:], content: Fragment.from([s.text("Para \(i). \(text)")]))
+        }
+        return try! s.node("doc", [:], content: Fragment.from(paras))
+    }
+
+    func testAHighlightedBlockTallerThanTheScreenCostsOnlyTheScreen() {
+        // Clipping to blocks is not enough on its own. Highlight one ~500-word
+        // paragraph — a single block hundreds of lines tall — and every line of
+        // it passes the character test, so a per-block clip still pays for the
+        // whole paragraph on every frame of a scroll. This is the demo's Long
+        // view, and it stayed slow after the per-block clip landed.
+        let doc = longParagraphDoc(8)
+        let l = layout(doc)
+        let block = l.blocks[1]                       // the first full paragraph
+        XCTAssertGreaterThan(block.lines.count, 60,
+                             "a 500-word paragraph should be many screens tall")
+        XCTAssertGreaterThan(block.frame.height, 2400, "and far taller than a screen")
+
+        let from = block.contentStart, to = block.contentEnd
+        // A band in the middle of the block: every edge of it is inside the
+        // same block, so nothing but per-line clipping can help here.
+        let mid = block.frame.minY + block.frame.height / 2
+        let band = mid ... (mid + 800)
+        let whole = bestMs(20) { _ = l.selectionRects(from: from, to: to) }
+        let clipped = bestMs(20) { _ = l.selectionRects(from: from, to: to, clipY: band) }
+        print(unsafe "SELBLOCK lines=\(block.lines.count) whole=\(String(format: "%.3f", whole))ms "
+            + "clipped=\(String(format: "%.3f", clipped))ms ratio=\(String(format: "%.1f", whole / clipped))x")
+
+        // An 800pt band of a ~2400pt block: the rects it keeps are about a
+        // third of the paragraph's lines, so the offset lookups drop by that
+        // much. The line loop still *visits* every line (it does not break out
+        // — nothing here promises the lines are in vertical order), so the win
+        // inside one block is a fraction, not an order of magnitude. The claim
+        // that matters for scrolling is the flatness one, tested below.
+        let kept = l.selectionRects(from: from, to: to, clipY: band).count
+        XCTAssertLessThan(kept, block.lines.count / 2)
+        XCTAssertGreaterThan(kept, 0, "the band is inside the block; it must draw something")
+        XCTAssertLessThan(clipped, whole,
+                          "a screenful of a tall highlighted block should cost less than the block")
+    }
+
+    func testScrollingThroughOneTallHighlightIsFlat() {
+        // The same property as the depth test, but the scroll happens *within*
+        // a single block rather than across many.
+        let doc = longParagraphDoc(4)
+        let l = layout(doc)
+        let block = l.blocks[1]
+        let from = block.contentStart, to = block.contentEnd
+        var costs: [Double] = []
+        for fraction in [CGFloat(0), 0.3, 0.6, 0.9] {
+            let top = block.frame.minY + block.frame.height * fraction
+            costs.append(bestMs {
+                for _ in 0 ..< 100 { _ = l.selectionRects(from: from, to: to, clipY: top ... (top + 800)) }
+            })
+        }
+        let report = costs.map { c -> String in unsafe String(format: "%.3f", c) }.joined(separator: " ")
+        print("SELINBLOCK " + report)
+        XCTAssertLessThan(costs.max()!, costs.min()! * 3 + 0.5,
+                          "cost grows as you scroll down inside one highlighted block")
+    }
+
+    // MARK: The scroll tick itself
+
+    func testScrollTickDoesNotCostTheWholeSelection() {
+        // `onSelectionChange` fires from `contentOffsetY.didSet` — on every tick
+        // of a scroll, not just when the selection changes. It asked for the
+        // whole selection's rects, so scrolling with everything selected paid
+        // the unclipped cost per frame no matter how much of it was visible.
+        // This is the same bug as the drawing paths, in a caller that does not
+        // draw, which is why converting the drawing callers did not fix it.
+        // Built from this editor's own schema — a node made with another
+        // schema does not survive setContent, and the doc comes out empty.
+        let editor = try! Editor(extensions: fullKit())
+        let s = editor.schema
+        let words = Array(repeating: "lorem ipsum dolor sit amet", count: 12).joined(separator: " ")
+        let paras = (0 ..< 800).map { i in
+            try! s.node("paragraph", [:], content: Fragment.from([s.text("Para \(i): \(words)")]))
+        }
+        editor.setContent(try! s.node("doc", [:], content: Fragment.from(paras)))
+        let v = EditorTextView(editor: editor)
+        v.frame = CGRect(x: 0, y: 0, width: 390, height: 800)
+        v.layoutIfNeeded()
+        var reports = 0
+        var lastCount = 0
+        var lastEmpty = true
+        v.onSelectionChange = { rects, isEmpty in
+            reports += 1; lastCount = rects.count; lastEmpty = isEmpty
+        }
+        let tr = editor.state.tr
+        tr.setSelection(TextSelection.create(tr.doc, 1, tr.doc.content.size - 1))
+        editor.dispatch(tr)
+
+        // Somewhere the lazy layout has realized: an estimated block has no
+        // lines, so measuring over one would be measuring nothing.
+        v.contentOffsetY = 1000
+        v.layoutIfNeeded()
+        reports = 0
+        let ms = bestMs(5) {
+            for i in 0 ..< 50 { v.contentOffsetY = 1000 + CGFloat(i) }
+        }
+        let sel = editor.state.selection
+        // For scale: what the tick used to ask for. Note this is nothing like
+        // the unclipped cost on a fully realized layout — under lazy layout an
+        // off-screen block is estimated and has no lines, so the old call was
+        // already bounded by the realize window (a few screens), not by the
+        // document. The reported count is the invariant worth asserting on;
+        // the timings are printed for information, not asserted, since the
+        // tick also realizes, moves the caret, and syncs checkbox views.
+        let unclipped = bestMs(3) { _ = v.ensureLayout().selectionRects(from: sel.from, to: sel.to) }
+        print(unsafe "SELTICK reports=\(reports) rects=\(lastCount) empty=\(lastEmpty) "
+            + "sel=\(sel.from)..\(sel.to) perTick=\(String(format: "%.3f", ms / 50))ms "
+            + "unclipped=\(String(format: "%.2f", unclipped))ms")
+        XCTAssertGreaterThan(reports, 0, "scrolling must report geometry, or the caret strands")
+        XCTAssertFalse(lastEmpty, "the whole document is selected")
+        // A screenful of 15pt-ish lines is tens of rects, not the thousands a
+        // 800-paragraph selection spans.
+        XCTAssertLessThan(lastCount, 100, "reported more than a screenful of rects")
+        XCTAssertGreaterThan(lastCount, 0, "the selection covers the viewport; it must report rects")
+    }
+
     // MARK: That it draws the same thing
 
     func testClippingKeepsExactlyTheRectsInTheBand() {
@@ -108,15 +236,49 @@ final class SelectionScrollPerfTests: XCTestCase {
         for band in [CGFloat(0) ... 400, 500 ... 1200, 2000 ... 2600] {
             let clipped = l.selectionRects(from: from, to: to, clipY: band)
             let expected = unclipped.filter { $0.maxY >= band.lowerBound && $0.minY <= band.upperBound }
-            // Clipping is per block, so it may keep a little more than the
-            // per-rect filter would — never less, and never anything outside
-            // the blocks that overlap the band.
-            for rect in expected {
-                XCTAssertTrue(clipped.contains(rect),
-                              "dropped a visible rect \(rect) for band \(band)")
-            }
-            XCTAssertLessThanOrEqual(clipped.count, unclipped.count)
+            // Clipping is per line, using the same predicate the callers used
+            // to filter by hand — so this is equality, not containment. Drawing
+            // is bit-for-bit what it was before the clip existed.
+            XCTAssertEqual(clipped, expected, "band \(band) changed what gets drawn")
         }
+    }
+
+    /// A doc where every paragraph carries a highlight mark, as the demo's Long
+    /// view does once you highlight your way through it.
+    private func highlightedDoc(_ n: Int) -> Node {
+        let s = try! Editor(extensions: fullKit()).schema
+        let words = Array(repeating: "lorem ipsum dolor sit amet", count: 12).joined(separator: " ")
+        let hl = s.mark("highlight", ["color": .string("yellow")])
+        let paras = (0 ..< n).map { i in
+            try! s.node("paragraph", [:], content: Fragment.from([s.text("Para \(i): \(words)", [hl])]))
+        }
+        return try! s.node("doc", [:], content: Fragment.from(paras))
+    }
+
+    func testOffScreenHighlightsAreSkippedWithoutChangingTheRuns() {
+        // Marks live in one flat list over the document, so drawing them walks
+        // all of them however far off screen they are. Rejecting them on
+        // position must hand the host renderer exactly the same runs.
+        let doc = highlightedDoc(400)
+        let l = layout(doc)
+        XCTAssertEqual(l.highlights.count, 400)
+
+        func runs(clipY: ClosedRange<CGFloat>?) -> [CGRect] {
+            var seen: [CGRect] = []
+            let img = UIGraphicsImageRenderer(size: CGSize(width: 390, height: 800))
+            _ = img.image { c in
+                l.draw(in: c.cgContext, clipY: clipY) { _, rs in seen += rs.map(\.rect) }
+            }
+            return seen
+        }
+        let everything = runs(clipY: nil)
+        for band in [CGFloat(0) ... 800, 4000 ... 4800, l.height - 400 ... l.height] {
+            let expected = everything.filter { $0.maxY >= band.lowerBound && $0.minY <= band.upperBound }
+            XCTAssertEqual(runs(clipY: band), expected, "band \(band) changed the runs")
+            XCTAssertFalse(expected.isEmpty, "band \(band) should cover some highlighted text")
+        }
+        // A band past the end draws nothing at all.
+        XCTAssertTrue(runs(clipY: 100_000 ... 200_000).isEmpty)
     }
 
     func testNoClipStillMeansEverything() {
