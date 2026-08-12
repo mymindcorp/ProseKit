@@ -228,12 +228,20 @@ extension EditorTextView: UITextInput {
     public func firstRect(for range: UITextRange) -> CGRect {
         guard let r = range as? DocTextRange else { return .zero }
         let from = clamp(r.from), to = clamp(r.to)
-        let layout = ensureLayout()
+        // In document space this doesn't move while you scroll, and UIKit asks
+        // for it on every tick — so cache it and re-apply only the offset.
+        let layout = ensureLayout()   // may realize, and so bump the generation
+        if let c = firstRectCache, c.revision == layoutGeneration, c.width == bounds.width,
+           c.from == from, c.to == to {
+            return c.rect.offsetBy(dx: 0, dy: -contentOffsetY)
+        }
         // Only the first line is wanted, so look where the range starts rather
         // than computing every rect of it and throwing all but one away.
         let band = (layout.caretRect(at: from)?.minY).map { ($0 - 1) ... ($0 + max(bounds.height, 1)) }
         let rects = layout.selectionRects(from: from, to: to, clipY: band)
-        return (rects.first?.offsetBy(dx: 0, dy: -contentOffsetY)) ?? caretRect(for: DocTextPosition(r.from))
+        guard let first = rects.first else { return caretRect(for: DocTextPosition(r.from)) }
+        firstRectCache = (layoutGeneration, bounds.width, from, to, first)
+        return first.offsetBy(dx: 0, dy: -contentOffsetY)
     }
 
     public func caretRect(for position: UITextPosition) -> CGRect {

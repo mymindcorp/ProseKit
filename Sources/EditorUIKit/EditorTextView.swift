@@ -351,18 +351,41 @@ open class EditorTextView: UIView, UIKeyInput {
     /// `nodesBetween`), so `text(in:)` is O(range), not O(document).
     func projectedText(from: Int, to: Int) -> String {
         guard to > from else { return "" }
+        // Keyed on the document revision: scrolling doesn't change the text, so
+        // the identical question UIKit asks each tick is answered once.
+        if let c = projectedTextCache, c.revision == docVersion, c.from == from, c.to == to {
+            return c.text
+        }
+        let result = buildProjectedText(from: from, to: to)
+        projectedTextCache = (docVersion, from, to, result)
+        return result
+    }
+
+    private func buildProjectedText(from: Int, to: Int) -> String {
         var chars: [Character] = []
         chars.reserveCapacity(to - from)
         var cursor = from
         func fillGap(upTo end: Int) { while cursor < end { chars.append("\n"); cursor += 1 } }
         editor.doc.nodesBetween(from, to) { node, pos, _, _ in
             if node.isText {
-                let s = Array(node.text ?? "")
+                guard let t = node.text else { return false }
+                // `nodeSize` is the cached character count, so the slice can be
+                // sized without measuring the string. Copying the node into an
+                // Array first cost the whole node on every call, however little
+                // of it the range wanted — and UIKit asks for the selected text
+                // on every scroll tick, where the selection can be the document.
+                let len = node.nodeSize
                 let lo = max(from, pos) - pos
-                let hi = min(to, pos + s.count) - pos
+                let hi = min(to, pos + len) - pos
                 guard lo < hi else { return false }
                 fillGap(upTo: pos + lo)
-                chars.append(contentsOf: s[lo..<hi])
+                if lo == 0, hi == len {
+                    chars.append(contentsOf: t)
+                } else {
+                    let start = t.index(t.startIndex, offsetBy: lo)
+                    let end = t.index(start, offsetBy: hi - lo)
+                    chars.append(contentsOf: t[start ..< end])
+                }
                 cursor = pos + hi
                 return false
             } else if node.isLeaf {
@@ -378,6 +401,21 @@ open class EditorTextView: UIView, UIKeyInput {
         return String(chars)
     }
 
+    /// The last answer to `text(in:)`, which UIKit re-asks on every scroll tick
+    /// with the same range while the document and selection sit still.
+    private var projectedTextCache: (revision: Int, from: Int, to: Int, text: String)?
+
+    /// The last document-space `firstRect(for:)`, likewise. Held unoffset, so a
+    /// scroll only re-applies `contentOffsetY` to it.
+    var firstRectCache: (revision: Int, width: CGFloat, from: Int, to: Int, rect: CGRect)?
+
+    /// Bumped whenever laid-out geometry moves — a rebuild, or a realization
+    /// turning estimated heights into real ones and shifting everything below.
+    /// Document-space rects cached across a scroll must be keyed on this, not
+    /// just on the document revision: the text can sit still while the layout
+    /// underneath it does not.
+    private(set) var layoutGeneration = 0
+
     private var layoutVersion = -1
 
     func ensureLayout() -> DocumentLayout {
@@ -390,6 +428,7 @@ open class EditorTextView: UIView, UIKeyInput {
         layout = l
         lastLayoutWidth = bounds.width
         layoutVersion = docVersion
+        layoutGeneration += 1
         loadPendingImages(l.pendingImages)
         if l.height != lastReportedHeight {
             lastReportedHeight = l.height
@@ -413,6 +452,16 @@ open class EditorTextView: UIView, UIKeyInput {
     /// COLLAPSED caret too (an empty selection): otherwise UITextInteraction
     /// leaves its native caret stranded on scroll, appearing as a second,
     /// motionless cursor beside the one we draw.
+    /// UIKit answers this by rebuilding its whole RTI document state — asking
+    /// us back for the selected text and for character rects — and on a
+    /// document-sized selection that was ~59% of the time spent scrolling.
+    ///
+    /// It still fires every tick, because the system draws the selection and
+    /// its own caret from this geometry: coalescing it leaves both lagging
+    /// behind the content mid-scroll. The cost is answered on the other side
+    /// instead — scrolling changes neither the document nor the selection, so
+    /// UIKit asks the same questions each time and `text(in:)` and
+    /// `firstRect(for:)` serve them from a cache.
     private func notifySelectionGeometryChanged() {
         guard !applyingTextInput else { return }
         textInputDelegate?.selectionWillChange(self)
@@ -444,6 +493,7 @@ open class EditorTextView: UIView, UIKeyInput {
         let head = editor.state.selection.head
         guard layout.isEstimated(pos: head),
               layout.realize(aroundPos: head, viewportHeight: bounds.height) else { return }
+        layoutGeneration += 1
         loadPendingImages(layout.pendingImages)
         if layout.height != lastReportedHeight {
             lastReportedHeight = layout.height
@@ -455,6 +505,7 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Typeset any estimated blocks that have scrolled near the viewport.
     private func realizeVisibleIfNeeded() {
         guard let layout, layout.hasEstimatedContent, layout.realize(window: realizeWindow()) else { return }
+        layoutGeneration += 1
         loadPendingImages(layout.pendingImages)
         if layout.height != lastReportedHeight {
             lastReportedHeight = layout.height
