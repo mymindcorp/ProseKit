@@ -246,7 +246,7 @@ open class EditorTextView: UIView, UIKeyInput {
     /// doesn't echo the change back to the input delegate (which would confuse
     /// autocorrect / marked-text state).
     var applyingTextInput = false
-    lazy var inputTokenizer: any UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
+    lazy var inputTokenizer: any UITextInputTokenizer = DocumentTokenizer(textInput: self)
 
     public required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
