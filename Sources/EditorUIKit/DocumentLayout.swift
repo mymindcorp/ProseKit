@@ -1253,17 +1253,27 @@ final class DocumentLayout {
     /// boundary shared by two lines (right after a soft wrap or a hard "\n"), the
     /// LATER line wins, so the caret sits at the start of the new line rather
     /// than the end of the previous one.
-    private func lineIndex(_ block: TextBlock, _ attrIndex: Int) -> Int? {
+    ///
+    /// `preferEarlier` takes the other side of that boundary, for a caret that
+    /// belongs to the line which wrapped rather than the one it wrapped onto —
+    /// see `positionWithAffinity(at:)`.
+    private func lineIndex(_ block: TextBlock, _ attrIndex: Int, preferEarlier: Bool = false) -> Int? {
         var found: Int?
         for (i, line) in block.lines.enumerated()
         where line.stringRange.location <= attrIndex && attrIndex <= line.stringRange.location + line.stringRange.length {
+            if preferEarlier { return i }
             found = i
         }
         return found ?? (block.lines.isEmpty ? nil : block.lines.count - 1)
     }
 
     /// The caret rectangle for a document position, or nil if not in a text block.
-    func caretRect(at pos: Int) -> CGRect? {
+    ///
+    /// `atLineEnd` draws a caret that sits on a soft-wrap boundary at the end
+    /// of the line that wrapped, rather than the start of the next one. Both
+    /// are the same document position; only the tap that placed it knows which
+    /// was meant.
+    func caretRect(at pos: Int, atLineEnd: Bool = false) -> CGRect? {
         guard let block = blockContaining(pos) else {
             // fall back to nearest block edge
             if let block = nearestBlock(toPos: pos), let first = block.lines.first {
@@ -1272,7 +1282,7 @@ final class DocumentLayout {
             return nil
         }
         let attrIndex = block.attrIndex(forDocPos: pos)
-        let line = lineIndex(block, attrIndex).map { block.lines[$0] } ?? block.lines.last
+        let line = lineIndex(block, attrIndex, preferEarlier: atLineEnd).map { block.lines[$0] } ?? block.lines.last
         guard let line else {
             return CGRect(x: block.frame.minX, y: block.frame.minY, width: 2, height: block.frame.height)
         }
@@ -1366,7 +1376,18 @@ final class DocumentLayout {
     }
 
     /// The document position nearest to a point in view coordinates.
-    func position(at point: CGPoint) -> Int? {
+    func position(at point: CGPoint) -> Int? { positionWithAffinity(at: point)?.pos }
+
+    /// The position nearest to a point, and which side of a soft wrap the tap
+    /// was on.
+    ///
+    /// A wrap is one document position with two places on screen: the end of
+    /// the line that wrapped and the start of the line it wrapped onto. A tap
+    /// at or past the end of the first resolves to that position, and drawing
+    /// it as the start of the next line is what makes the end of a wrapped
+    /// line impossible to reach by tapping. `atLineEnd` records which one the
+    /// finger was actually on, since nothing about the position itself says.
+    func positionWithAffinity(at point: CGPoint) -> (pos: Int, atLineEnd: Bool)? {
         guard !blocks.isEmpty else { return nil }
         // Blocks whose vertical span contains the point. Several can match when
         // they sit side by side (table cells in a row), so disambiguate by x.
@@ -1378,13 +1399,19 @@ final class DocumentLayout {
         } else {
             block = blocks.min(by: { abs($0.frame.midY - point.y) < abs($1.frame.midY - point.y) })!
         }
-        // Find the line.
-        let line = block.lines.first { point.y >= $0.baselineOrigin.y - $0.ascent && point.y <= $0.baselineOrigin.y - $0.ascent + $0.height }
-            ?? block.lines.min(by: { abs($0.baselineOrigin.y - point.y) < abs($1.baselineOrigin.y - point.y) })
-        guard let line else { return block.contentStart }
+        // Find the line — by index, so the caller can be told whether there is
+        // a following line for the position to be shared with.
+        let li = block.lines.firstIndex { point.y >= $0.baselineOrigin.y - $0.ascent && point.y <= $0.baselineOrigin.y - $0.ascent + $0.height }
+            ?? block.lines.indices.min(by: {
+                abs(block.lines[$0].baselineOrigin.y - point.y) < abs(block.lines[$1].baselineOrigin.y - point.y)
+            })
+        guard let li else { return (block.contentStart, false) }
+        let line = block.lines[li]
         let relative = CGPoint(x: point.x - line.baselineOrigin.x, y: 0)
         let attrIndex = CTLineGetStringIndexForPosition(line.ctLine, relative)
-        return block.docPos(forAttrIndex: attrIndex)
+        let lineEnd = line.stringRange.location + line.stringRange.length
+        let atLineEnd = li < block.lines.count - 1 && attrIndex >= lineEnd
+        return (block.docPos(forAttrIndex: attrIndex), atLineEnd)
     }
 
     /// The width of the text/content column (the page width minus its insets) —
