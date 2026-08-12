@@ -231,16 +231,21 @@ extension EditorTextView: UITextInput {
         // In document space this doesn't move while you scroll, and UIKit asks
         // for it on every tick — so cache it and re-apply only the offset.
         let layout = ensureLayout()   // may realize, and so bump the generation
-        if let c = firstRectCache, c.revision == layoutGeneration, c.width == bounds.width,
-           c.from == from, c.to == to {
-            return c.rect.offsetBy(dx: 0, dy: -contentOffsetY)
+        if firstRectCacheStamp != (layoutGeneration, bounds.width) {
+            firstRectCache.removeAll(keepingCapacity: true)
+            firstRectCacheStamp = (layoutGeneration, bounds.width)
         }
+        let key = RangeKey(from: from, to: to)
+        if let hit = firstRectCache[key] { return hit.offsetBy(dx: 0, dy: -contentOffsetY) }
         // Only the first line is wanted, so look where the range starts rather
         // than computing every rect of it and throwing all but one away.
         let band = (layout.caretRect(at: from)?.minY).map { ($0 - 1) ... ($0 + max(bounds.height, 1)) }
         let rects = layout.selectionRects(from: from, to: to, clipY: band)
         guard let first = rects.first else { return caretRect(for: DocTextPosition(r.from)) }
-        firstRectCache = (layoutGeneration, bounds.width, from, to, first)
+        if firstRectCache.count >= Self.geometryCacheLimit {
+            firstRectCache.removeAll(keepingCapacity: true)
+        }
+        firstRectCache[key] = first
         return first.offsetBy(dx: 0, dy: -contentOffsetY)
     }
 

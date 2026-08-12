@@ -351,13 +351,19 @@ open class EditorTextView: UIView, UIKeyInput {
     /// `nodesBetween`), so `text(in:)` is O(range), not O(document).
     func projectedText(from: Int, to: Int) -> String {
         guard to > from else { return "" }
-        // Keyed on the document revision: scrolling doesn't change the text, so
-        // the identical question UIKit asks each tick is answered once.
-        if let c = projectedTextCache, c.revision == docVersion, c.from == from, c.to == to {
-            return c.text
+        // Scrolling doesn't change the text, so the questions UIKit repeats
+        // each tick are answered once per document revision.
+        if projectedTextCacheRevision != docVersion {
+            projectedTextCache.removeAll(keepingCapacity: true)
+            projectedTextCacheRevision = docVersion
         }
+        let key = RangeKey(from: from, to: to)
+        if let hit = projectedTextCache[key] { return hit }
         let result = buildProjectedText(from: from, to: to)
-        projectedTextCache = (docVersion, from, to, result)
+        if projectedTextCache.count >= Self.geometryCacheLimit {
+            projectedTextCache.removeAll(keepingCapacity: true)
+        }
+        projectedTextCache[key] = result
         return result
     }
 
@@ -401,13 +407,27 @@ open class EditorTextView: UIView, UIKeyInput {
         return String(chars)
     }
 
-    /// The last answer to `text(in:)`, which UIKit re-asks on every scroll tick
-    /// with the same range while the document and selection sit still.
-    private var projectedTextCache: (revision: Int, from: Int, to: Int, text: String)?
+    struct RangeKey: Hashable { let from: Int, to: Int }
 
-    /// The last document-space `firstRect(for:)`, likewise. Held unoffset, so a
-    /// scroll only re-applies `contentOffsetY` to it.
-    var firstRectCache: (revision: Int, width: CGFloat, from: Int, to: Int, rect: CGRect)?
+    /// Answers to `text(in:)` and `firstRect(for:)` for the current document
+    /// and layout.
+    ///
+    /// These are keyed sets rather than a single last-answer, because UIKit
+    /// does not ask one question per tick: `_addCharacterRectsToDocumentState`
+    /// walks *character* rects, and the tokenizer probes word boundaries, so a
+    /// one-entry cache thrashes and never hits. It asks the same ranges every
+    /// tick though, so keeping the set turns every tick after the first into
+    /// lookups. Both are dropped wholesale when what they describe changes.
+    private var projectedTextCache: [RangeKey: String] = [:]
+    private var projectedTextCacheRevision = -1
+
+    /// Document-space, so a scroll only re-applies `contentOffsetY`.
+    var firstRectCache: [RangeKey: CGRect] = [:]
+    var firstRectCacheStamp: (generation: Int, width: CGFloat) = (-1, 0)
+
+    /// Enough for a screenful of character rects and the tokenizer's probing,
+    /// and a bound so a long editing session can't accumulate.
+    static let geometryCacheLimit = 4096
 
     /// Bumped whenever laid-out geometry moves — a rebuild, or a realization
     /// turning estimated heights into real ones and shifting everything below.

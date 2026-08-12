@@ -93,12 +93,35 @@ final class ScrollNotifyCoalescingTests: XCTestCase {
             v.layoutIfNeeded()
             let cached = v.firstRect(for: range)
             // The truth, computed fresh against the layout as it stands now.
-            v.firstRectCache = nil
+            v.firstRectCache.removeAll()
             let fresh = v.firstRect(for: range)
             XCTAssertEqual(cached.origin.y, fresh.origin.y, accuracy: 0.01,
                            "cached first rect went stale at y=\(y)")
             XCTAssertEqual(cached.origin.x, fresh.origin.x, accuracy: 0.01)
         }
+    }
+
+    func testManyDistinctRangesAllStayCachedAcrossTicks() {
+        // The bug in the first attempt at this: the caches held one entry, and
+        // UIKit asks about many ranges per tick — character rects, tokenizer
+        // probes — so every question evicted the last one and nothing ever
+        // hit. It asks the *same* set each tick, so the set must be kept.
+        let (v, editor) = view(200)
+        let size = editor.doc.content.size
+        let ranges = (0 ..< 60).map { DocTextRange(1 + $0 * 7, 1 + $0 * 7 + 5) }
+        v.contentOffsetY = 500
+        v.layoutIfNeeded()
+        for r in ranges { _ = v.firstRect(for: r); _ = v.text(in: r) }
+
+        // A second pass at the same offset must be served from the caches, so
+        // clearing them has to change nothing about the answers.
+        let cachedRects = ranges.map { v.firstRect(for: $0) }
+        let cachedText = ranges.map { v.text(in: $0) }
+        XCTAssertEqual(v.firstRectCache.count, ranges.count, "rects did not all stay cached")
+        v.firstRectCache.removeAll()
+        XCTAssertEqual(ranges.map { v.firstRect(for: $0) }, cachedRects)
+        XCTAssertEqual(ranges.map { v.text(in: $0) }, cachedText)
+        XCTAssertLessThan(size, 1_000_000)   // sanity: the doc is what we think
     }
 
     func testProjectedTextIsUnchangedBySlicing() {
