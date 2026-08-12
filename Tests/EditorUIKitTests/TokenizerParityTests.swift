@@ -52,6 +52,7 @@ final class TokenizerParityTests: XCTestCase {
         ["first paragraph", "second paragraph"],
         ["before", "", "after"],
         ["café naïve résumé"],
+        ["שלום עולם shalom"],
         ["a"],
         [""],
     ]
@@ -106,6 +107,141 @@ final class TokenizerParityTests: XCTestCase {
 
     func testParityAcrossTheCorpus() {
         for doc in corpus { assertParity(doc) }
+    }
+
+    // MARK: Past the window
+
+    /// A document several windows long, with the paragraph lengths chosen so
+    /// words straddle the edges rather than landing neatly on them.
+    private func longView() -> EditorTextView {
+        let words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"]
+        let paragraphs = (0 ..< 24).map { i -> String in
+            let n = 17 + (i % 5) * 3          // uneven, so edges fall mid-word
+            return (0 ..< n).map { words[($0 + i) % words.count] }.joined(separator: " ")
+        }
+        return view(paragraphs)
+    }
+
+    /// Positions worth asking about: a spread across the document, plus dense
+    /// bands where the window is rebuilt.
+    private func probePositions(_ size: Int) -> [Int] {
+        var positions = Set(stride(from: 0, through: size, by: 13))
+        // `margin` is 512 and `guardBand` 64, so rebuilds cluster around these.
+        for edge in stride(from: 0, through: size, by: 448) {
+            for p in max(0, edge - 70) ... min(size, edge + 70) { positions.insert(p) }
+        }
+        return positions.sorted()
+    }
+
+    func testParityOnADocumentLongerThanTheWindow() {
+        // Every corpus document above fits inside one window, so none of them
+        // exercise the part of this class that makes it fast: the window is
+        // always the whole document, and the cache is always valid. This walks
+        // a document several windows long, over the positions where the window
+        // is rebuilt and a word can be cut by its edge.
+        let v = longView()
+        let system = UITextInputStringTokenizer(textInput: v)
+        let ours = DocumentTokenizer(textInput: v)
+        let size = v.editor.doc.content.size
+        XCTAssertGreaterThan(size, 512 * 4, "the document must span several windows")
+
+        for pos in probePositions(size) {
+            let p = DocTextPosition(pos)
+            for d in directions {
+                XCTAssertEqual(offset(ours.position(from: p, toBoundary: .word, inDirection: d)),
+                               offset(system.position(from: p, toBoundary: .word, inDirection: d)),
+                               "position(toBoundary) at \(pos), direction \(d.rawValue)")
+                XCTAssertEqual(bounds(ours.rangeEnclosingPosition(p, with: .word, inDirection: d)).map { [$0.0, $0.1] },
+                               bounds(system.rangeEnclosingPosition(p, with: .word, inDirection: d)).map { [$0.0, $0.1] },
+                               "rangeEnclosingPosition at \(pos), direction \(d.rawValue)")
+                XCTAssertEqual(ours.isPosition(p, atBoundary: .word, inDirection: d),
+                               system.isPosition(p, atBoundary: .word, inDirection: d),
+                               "isPosition(atBoundary) at \(pos), direction \(d.rawValue)")
+                XCTAssertEqual(ours.isPosition(p, withinTextUnit: .word, inDirection: d),
+                               system.isPosition(p, withinTextUnit: .word, inDirection: d),
+                               "isPosition(withinTextUnit) at \(pos), direction \(d.rawValue)")
+            }
+        }
+    }
+
+    func testAnswersDoNotDependOnTheOrderTheyAreAsked() {
+        // The cache holds one window, so the answer to a question could depend
+        // on which question came before it — walking forwards keeps it warm,
+        // jumping about rebuilds it constantly. Those must agree, or scrolling
+        // and tapping would disagree about where a word is.
+        let v = longView()
+        let ours = DocumentTokenizer(textInput: v)
+        let size = v.editor.doc.content.size
+        let forward = UITextDirection(rawValue: UITextStorageDirection.forward.rawValue)
+        let positions = probePositions(size)
+
+        func answer(_ pos: Int) -> [Int]? {
+            bounds(ours.rangeEnclosingPosition(DocTextPosition(pos), with: .word, inDirection: forward))
+                .map { [$0.0, $0.1] }
+        }
+        let ascending = positions.map { ($0, answer($0)) }
+        // A fixed shuffle (no RNG — the order must be reproducible on failure).
+        let jumbled = positions.enumerated()
+            .sorted { ($0.offset * 7919) % positions.count < ($1.offset * 7919) % positions.count }
+            .map { $0.element }
+        var outOfOrder: [Int: [Int]?] = [:]
+        for pos in jumbled { outOfOrder[pos] = answer(pos) }
+        // ...and once more descending, the other way a cache can go stale.
+        var descending: [Int: [Int]?] = [:]
+        for pos in positions.reversed() { descending[pos] = answer(pos) }
+
+        for (pos, expected) in ascending {
+            XCTAssertEqual(outOfOrder[pos] ?? nil, expected, "jumbled order disagreed at \(pos)")
+            XCTAssertEqual(descending[pos] ?? nil, expected, "descending order disagreed at \(pos)")
+        }
+    }
+
+    func testEditingInvalidatesTheCachedWords() {
+        // The window is cached against the document revision. If that key ever
+        // stops being enough, this is what breaks: a word range from before
+        // the edit, handed to UIKit after it.
+        let v = view(["hello world"])
+        let ours = DocumentTokenizer(textInput: v)
+        let forward = UITextDirection(rawValue: UITextStorageDirection.forward.rawValue)
+        func word(at pos: Int) -> [Int]? {
+            bounds(ours.rangeEnclosingPosition(DocTextPosition(pos), with: .word, inDirection: forward))
+                .map { [$0.0, $0.1] }
+        }
+        XCTAssertEqual(word(at: 1), [1, 6], "\"hello\"")
+
+        // Insert at the very start: every following word shifts.
+        v.selectedTextRange = DocTextRange(1, 1)
+        v.insertText("XY ")
+        v.layoutIfNeeded()
+        XCTAssertEqual(v.projectedText(from: 1, to: 4), "XY ", "the edit landed where expected")
+        XCTAssertEqual(word(at: 1), [1, 3], "\"XY\" after the insert")
+        XCTAssertEqual(word(at: 4), [4, 9], "\"hello\", now shifted")
+    }
+
+    func testALeafNodeIsNotAWord() {
+        // Leaves project as U+FFFC (object replacement). It should not read as
+        // a word, and the words either side of it should keep their positions.
+        let editor = try! Editor(extensions: fullKit())
+        let s = editor.schema
+        guard let rule = s.nodes["horizontalRule"] else { return }
+        editor.setContent(try! s.node("doc", [:], content: Fragment.from([
+            try! s.node("paragraph", [:], content: Fragment.from([s.text("before")])),
+            rule.createAndFill()!,
+            try! s.node("paragraph", [:], content: Fragment.from([s.text("after")])),
+        ])))
+        let v = EditorTextView(editor: editor)
+        v.frame = CGRect(x: 0, y: 0, width: 390, height: 800)
+        v.layoutIfNeeded()
+        let ours = DocumentTokenizer(textInput: v)
+        let system = UITextInputStringTokenizer(textInput: v)
+        for pos in 0 ... editor.doc.content.size {
+            let p = DocTextPosition(pos)
+            for d in directions {
+                XCTAssertEqual(bounds(ours.rangeEnclosingPosition(p, with: .word, inDirection: d)).map { [$0.0, $0.1] },
+                               bounds(system.rangeEnclosingPosition(p, with: .word, inDirection: d)).map { [$0.0, $0.1] },
+                               "a leaf changed word ranges at \(pos)")
+            }
+        }
     }
 
     /// The one place parity is the wrong goal.
@@ -165,6 +301,90 @@ final class TokenizerParityTests: XCTestCase {
             + "ratio=\(String(format: "%.1f", systemMs / max(oursMs, 0.0001)))x")
         XCTAssertLessThan(oursMs, systemMs,
                           "the point of this tokenizer is that it is cheaper")
+    }
+
+    /// One emoji is the easy case: a single scalar, two UTF-16 units. These are
+    /// the graphemes that are many scalars and many units but still one
+    /// document position — where `Window`'s character↔UTF-16 conversion has to
+    /// carry its weight.
+    ///
+    /// Asserted through the text a range projects back to, rather than against
+    /// hand-counted positions: it is the property that matters (the range
+    /// UIKit is handed covers the word a reader sees) and it does not quietly
+    /// rot when the corpus is edited.
+    func testWordRangesAroundMultiScalarGraphemes() {
+        let cases: [(String, String)] = [
+            ("family 👨‍👩‍👧‍👦 here", "ZWJ sequence — many scalars, one grapheme"),
+            ("flag 🇯🇵 here", "regional indicators"),
+            ("wave 👋🏽 here", "skin tone modifier"),
+            ("accent cafe\u{0301} here", "combining mark"),
+            ("multi 😀😀😀 here", "several in a row"),
+            ("tight👋🏽word here", "no spaces either side"),
+        ]
+        let forward = UITextDirection(rawValue: UITextStorageDirection.forward.rawValue)
+        for (text, label) in cases {
+            let v = view([text])
+            let ours = DocumentTokenizer(textInput: v)
+            // "here" is the last word. The paragraph's closing token occupies
+            // the final position, so the text ends at `size - 1`.
+            let size = v.editor.doc.content.size
+            let textEnd = size - 1
+            let hereStart = textEnd - 4      // one character per position
+            XCTAssertEqual(v.projectedText(from: hereStart, to: textEnd), "here",
+                           "\(label): the document is not shaped as expected")
+            guard let r = ours.rangeEnclosingPosition(DocTextPosition(hereStart), with: .word,
+                                                      inDirection: forward) as? DocTextRange else {
+                return XCTFail("\(label): no word at the trailing word")
+            }
+            XCTAssertEqual(v.projectedText(from: r.from, to: r.to), "here",
+                           "\(label): word range drifted past the grapheme")
+            // The leading word too, on the other side of it.
+            guard let first = ours.rangeEnclosingPosition(DocTextPosition(1), with: .word,
+                                                          inDirection: forward) as? DocTextRange else {
+                return XCTFail("\(label): no word at the start")
+            }
+            XCTAssertEqual(v.projectedText(from: first.from, to: first.to),
+                           String(text.prefix(while: { $0.isLetter })),
+                           "\(label): leading word range is wrong")
+        }
+    }
+
+    func testEmojiPastTheWindowEdge() {
+        // The window starts at a non-zero document position here, so a
+        // character index inside it and a document position are no longer the
+        // same number *and* the UTF-16 offsets differ from both. Nothing above
+        // reaches this combination.
+        let filler = Array(repeating: "alpha bravo charlie delta echo", count: 30).joined(separator: " ")
+        let v = view([filler, "tail 😀 marker words", filler])
+        let ours = DocumentTokenizer(textInput: v)
+        let forward = UITextDirection(rawValue: UITextStorageDirection.forward.rawValue)
+        // Locate "marker" by projecting the whole document once.
+        let size = v.editor.doc.content.size
+        let all = Array(v.projectedText(from: 0, to: size))
+        guard let markerStart = (0 ..< all.count - 6).first(where: { String(all[$0 ..< ($0 + 6)]) == "marker" }) else {
+            return XCTFail("test document does not contain the marker")
+        }
+        XCTAssertGreaterThan(markerStart, 512, "the marker must sit past the first window")
+
+        guard let r = ours.rangeEnclosingPosition(DocTextPosition(markerStart), with: .word,
+                                                  inDirection: forward) as? DocTextRange else {
+            return XCTFail("no word at the marker")
+        }
+        XCTAssertEqual(v.projectedText(from: r.from, to: r.to), "marker",
+                       "word range drifted for an emoji past the window edge")
+        // And the word on the far side of the emoji. Found the same way rather
+        // than by counting back from the marker, so the emoji's width in
+        // positions is not baked into the test.
+        guard let tailStart = (0 ..< markerStart).last(where: { String(all[$0 ..< ($0 + 4)]) == "tail" }) else {
+            return XCTFail("test document does not contain the tail word")
+        }
+        guard let tail = ours.rangeEnclosingPosition(DocTextPosition(tailStart), with: .word,
+                                                     inDirection: forward) as? DocTextRange else {
+            return XCTFail("no word before the emoji")
+        }
+        XCTAssertEqual(v.projectedText(from: tail.from, to: tail.to), "tail")
+        // The emoji really does sit between them, one position wide.
+        XCTAssertEqual(v.projectedText(from: tailStart + 5, to: tailStart + 6), "😀")
     }
 
     func testTheTokenizerIsTheOneWeInstalled() {

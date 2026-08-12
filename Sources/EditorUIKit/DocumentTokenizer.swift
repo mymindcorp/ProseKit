@@ -206,6 +206,13 @@ final class DocumentTokenizer: NSObject, UITextInputTokenizer {
             }
             type = CFStringTokenizerAdvanceToNextToken(icu)
         }
+        // A leaf node projects as U+FFFC, and the system tokenizer counts one
+        // as a word of its own — which is what makes double-tapping an image
+        // select it. ICU does not report it, so add it back.
+        for (i, c) in w.chars.enumerated() where c == "\u{fffc}" {
+            result.append((w.start + i) ..< (w.start + i + 1))
+        }
+        if result.count > 1 { result.sort { $0.lowerBound < $1.lowerBound } }
         return result
     }
 
