@@ -164,6 +164,69 @@ final class TokenizerParityTests: XCTestCase {
         }
     }
 
+    /// The second place parity is the wrong goal — and the one I expected to
+    /// go the other way.
+    ///
+    /// The worry was our own cache: it is reused whenever the position sits at
+    /// least `guardBand` (64) inside the window, which only protects words
+    /// shorter than that, so a 150-character token could in principle be cut
+    /// by a window edge while the position asking about it still looked safely
+    /// inside. It is not cut — the assertions below sweep every position of
+    /// such a token, in three orders, and get the whole of it every time.
+    ///
+    /// What the sweep found instead was in the tokenizer being replaced.
+    /// `UITextInputStringTokenizer` clamps a word to ±100 characters around
+    /// the position asked about, so for a longer token it returns a *sliding*
+    /// fragment rather than a word: [321, 421] asked at 321, [321, 431] at
+    /// 331, [322, 471] at 422. Ours returns the same true range wherever it is
+    /// asked from. That is a behaviour change — double-tapping a long URL now
+    /// selects all of it rather than a hundred characters of it — so it is
+    /// asserted here rather than left as a surprise.
+    func testLongTokensComeBackWholeAndStable() {
+        let token = String(repeating: "x", count: 150)
+        // The long run *inside* a URL, not the URL itself: ICU splits a URL at
+        // its punctuation, so "https" is a word and the whole thing is not.
+        let run = String(repeating: "a", count: 120)
+        let url = "https://example.com/" + run + "/end"
+        let filler = Array(repeating: "alpha bravo charlie delta", count: 12).joined(separator: " ")
+        let v = view([filler, "before \(token) after", filler, "link \(url) tail", filler])
+        let ours = DocumentTokenizer(textInput: v)
+        let size = v.editor.doc.content.size
+        let all = Array(v.projectedText(from: 0, to: size))
+        let forward = UITextDirection(rawValue: UITextStorageDirection.forward.rawValue)
+
+        for expected in [token, run] {
+            let chars = Array(expected)
+            guard let start = (0 ... (all.count - chars.count)).first(where: {
+                Array(all[$0 ..< ($0 + chars.count)]) == chars
+            }) else { return XCTFail("the long token is not in the document") }
+            let want = [start, start + chars.count]
+            XCTAssertGreaterThan(chars.count, 100, "shorter than this and the clamp would not show")
+
+            func rangeAt(_ pos: Int) -> [Int]? {
+                bounds(ours.rangeEnclosingPosition(DocTextPosition(pos), with: .word, inDirection: forward))
+                    .map { [$0.0, $0.1] }
+            }
+            let inside = Array(start ..< (start + chars.count))
+            // Ascending, descending, and jumping about: the cache is warmed
+            // differently by each, and a window edge cutting the token would
+            // show up as an answer that depends on the route taken.
+            for pos in inside {
+                XCTAssertEqual(rangeAt(pos), want, "ascending: token cut at \(pos)")
+            }
+            for pos in inside.reversed() {
+                XCTAssertEqual(rangeAt(pos), want, "descending: token cut at \(pos)")
+            }
+            for pos in inside.enumerated()
+                .sorted(by: { ($0.offset * 7919) % inside.count < ($1.offset * 7919) % inside.count })
+                .map({ $0.element }) {
+                XCTAssertEqual(rangeAt(pos), want, "jumbled: token cut at \(pos)")
+            }
+            XCTAssertEqual(v.projectedText(from: want[0], to: want[1]), expected,
+                           "the range does not project back to the whole token")
+        }
+    }
+
     func testAnswersDoNotDependOnTheOrderTheyAreAsked() {
         // The cache holds one window, so the answer to a question could depend
         // on which question came before it — walking forwards keeps it warm,
