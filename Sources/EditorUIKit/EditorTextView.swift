@@ -351,18 +351,47 @@ open class EditorTextView: UIView, UIKeyInput {
     /// `nodesBetween`), so `text(in:)` is O(range), not O(document).
     func projectedText(from: Int, to: Int) -> String {
         guard to > from else { return "" }
+        // Scrolling doesn't change the text, so the questions UIKit repeats
+        // each tick are answered once per document revision.
+        if projectedTextCacheRevision != docVersion {
+            projectedTextCache.removeAll(keepingCapacity: true)
+            projectedTextCacheRevision = docVersion
+        }
+        let key = RangeKey(from: from, to: to)
+        if let hit = projectedTextCache[key] { return hit }
+        let result = buildProjectedText(from: from, to: to)
+        if projectedTextCache.count >= Self.geometryCacheLimit {
+            projectedTextCache.removeAll(keepingCapacity: true)
+        }
+        projectedTextCache[key] = result
+        return result
+    }
+
+    private func buildProjectedText(from: Int, to: Int) -> String {
         var chars: [Character] = []
         chars.reserveCapacity(to - from)
         var cursor = from
         func fillGap(upTo end: Int) { while cursor < end { chars.append("\n"); cursor += 1 } }
         editor.doc.nodesBetween(from, to) { node, pos, _, _ in
             if node.isText {
-                let s = Array(node.text ?? "")
+                guard let t = node.text else { return false }
+                // `nodeSize` is the cached character count, so the slice can be
+                // sized without measuring the string. Copying the node into an
+                // Array first cost the whole node on every call, however little
+                // of it the range wanted — and UIKit asks for the selected text
+                // on every scroll tick, where the selection can be the document.
+                let len = node.nodeSize
                 let lo = max(from, pos) - pos
-                let hi = min(to, pos + s.count) - pos
+                let hi = min(to, pos + len) - pos
                 guard lo < hi else { return false }
                 fillGap(upTo: pos + lo)
-                chars.append(contentsOf: s[lo..<hi])
+                if lo == 0, hi == len {
+                    chars.append(contentsOf: t)
+                } else {
+                    let start = t.index(t.startIndex, offsetBy: lo)
+                    let end = t.index(start, offsetBy: hi - lo)
+                    chars.append(contentsOf: t[start ..< end])
+                }
                 cursor = pos + hi
                 return false
             } else if node.isLeaf {
@@ -378,6 +407,35 @@ open class EditorTextView: UIView, UIKeyInput {
         return String(chars)
     }
 
+    struct RangeKey: Hashable { let from: Int, to: Int }
+
+    /// Answers to `text(in:)` and `firstRect(for:)` for the current document
+    /// and layout.
+    ///
+    /// These are keyed sets rather than a single last-answer, because UIKit
+    /// does not ask one question per tick: `_addCharacterRectsToDocumentState`
+    /// walks *character* rects, and the tokenizer probes word boundaries, so a
+    /// one-entry cache thrashes and never hits. It asks the same ranges every
+    /// tick though, so keeping the set turns every tick after the first into
+    /// lookups. Both are dropped wholesale when what they describe changes.
+    private var projectedTextCache: [RangeKey: String] = [:]
+    private var projectedTextCacheRevision = -1
+
+    /// Document-space, so a scroll only re-applies `contentOffsetY`.
+    var firstRectCache: [RangeKey: CGRect] = [:]
+    var firstRectCacheStamp: (generation: Int, width: CGFloat) = (-1, 0)
+
+    /// Enough for a screenful of character rects and the tokenizer's probing,
+    /// and a bound so a long editing session can't accumulate.
+    static let geometryCacheLimit = 4096
+
+    /// Bumped whenever laid-out geometry moves — a rebuild, or a realization
+    /// turning estimated heights into real ones and shifting everything below.
+    /// Document-space rects cached across a scroll must be keyed on this, not
+    /// just on the document revision: the text can sit still while the layout
+    /// underneath it does not.
+    private(set) var layoutGeneration = 0
+
     private var layoutVersion = -1
 
     func ensureLayout() -> DocumentLayout {
@@ -390,6 +448,7 @@ open class EditorTextView: UIView, UIKeyInput {
         layout = l
         lastLayoutWidth = bounds.width
         layoutVersion = docVersion
+        layoutGeneration += 1
         loadPendingImages(l.pendingImages)
         if l.height != lastReportedHeight {
             lastReportedHeight = l.height
@@ -413,6 +472,16 @@ open class EditorTextView: UIView, UIKeyInput {
     /// COLLAPSED caret too (an empty selection): otherwise UITextInteraction
     /// leaves its native caret stranded on scroll, appearing as a second,
     /// motionless cursor beside the one we draw.
+    /// UIKit answers this by rebuilding its whole RTI document state — asking
+    /// us back for the selected text and for character rects — and on a
+    /// document-sized selection that was ~59% of the time spent scrolling.
+    ///
+    /// It still fires every tick, because the system draws the selection and
+    /// its own caret from this geometry: coalescing it leaves both lagging
+    /// behind the content mid-scroll. The cost is answered on the other side
+    /// instead — scrolling changes neither the document nor the selection, so
+    /// UIKit asks the same questions each time and `text(in:)` and
+    /// `firstRect(for:)` serve them from a cache.
     private func notifySelectionGeometryChanged() {
         guard !applyingTextInput else { return }
         textInputDelegate?.selectionWillChange(self)
@@ -420,12 +489,18 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     /// Report the selection's on-screen geometry to `onSelectionChange` (for a
-    /// host-drawn bubble menu). Rects are in view coordinates.
+    /// host-drawn bubble menu). Rects are in view coordinates, and cover the
+    /// visible band only — this fires on every scroll tick, and asking for a
+    /// whole-document selection's rects costs milliseconds each time.
+    ///
+    /// So a selection scrolled out of view reports no rects while still
+    /// reporting `isEmpty == false`: there is a selection, none of it is here.
     private func fireSelectionChange() {
         guard let onSelectionChange else { return }
         let sel = editor.state.selection
         guard !sel.empty else { onSelectionChange([], true); return }
-        let rects = ensureLayout().selectionRects(from: sel.from, to: sel.to)
+        let visibleY = contentOffsetY ... (contentOffsetY + max(bounds.height, 1))
+        let rects = ensureLayout().selectionRects(from: sel.from, to: sel.to, clipY: visibleY)
             .map { $0.offsetBy(dx: 0, dy: -contentOffsetY) }
         onSelectionChange(rects, false)
     }
@@ -438,6 +513,7 @@ open class EditorTextView: UIView, UIKeyInput {
         let head = editor.state.selection.head
         guard layout.isEstimated(pos: head),
               layout.realize(aroundPos: head, viewportHeight: bounds.height) else { return }
+        layoutGeneration += 1
         loadPendingImages(layout.pendingImages)
         if layout.height != lastReportedHeight {
             lastReportedHeight = layout.height
@@ -449,6 +525,7 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Typeset any estimated blocks that have scrolled near the viewport.
     private func realizeVisibleIfNeeded() {
         guard let layout, layout.hasEstimatedContent, layout.realize(window: realizeWindow()) else { return }
+        layoutGeneration += 1
         loadPendingImages(layout.pendingImages)
         if layout.height != lastReportedHeight {
             lastReportedHeight = layout.height
@@ -552,7 +629,7 @@ open class EditorTextView: UIView, UIKeyInput {
                     if onScreen(r) { ctx.fill(r) }
                 }
             } else {
-                for r in l.selectionRects(from: deco.from, to: deco.to) where onScreen(r) { ctx.fill(r) }
+                for r in l.selectionRects(from: deco.from, to: deco.to, clipY: visibleY) { ctx.fill(r) }
             }
         }
         // Suggested deletions (track changes): the removed text floats just
@@ -580,7 +657,7 @@ open class EditorTextView: UIView, UIKeyInput {
         if !sel.empty {
             ctx.setFillColor(theme.selectionColor.cgColor)
             for range in sel.ranges {
-                for r in l.selectionRects(from: range.from.pos, to: range.to.pos) where onScreen(r) { ctx.fill(r) }
+                for r in l.selectionRects(from: range.from.pos, to: range.to.pos, clipY: visibleY) { ctx.fill(r) }
             }
         }
         l.draw(in: ctx, clipY: visibleY, highlightRenderer: highlightRenderer)
@@ -593,7 +670,7 @@ open class EditorTextView: UIView, UIKeyInput {
             ctx.setLineWidth(1.5)
             ctx.setLineDash(phase: 0, lengths: [2, 2])
             for (from, to) in visibleSpellingRanges(decorations) where to >= visiblePos.lowerBound && from <= visiblePos.upperBound {
-                for r in l.selectionRects(from: from, to: to) where onScreen(r) {
+                for r in l.selectionRects(from: from, to: to, clipY: visibleY) {
                     let y = r.maxY - 1
                     ctx.move(to: CGPoint(x: r.minX, y: y))
                     ctx.addLine(to: CGPoint(x: r.maxX, y: y))
@@ -607,7 +684,7 @@ open class EditorTextView: UIView, UIKeyInput {
         if let m = markedRange {
             ctx.setStrokeColor(theme.textColor.cgColor)
             ctx.setLineWidth(1)
-            for r in l.selectionRects(from: m.0, to: m.1) where onScreen(r) {
+            for r in l.selectionRects(from: m.0, to: m.1, clipY: visibleY) {
                 let y = r.maxY - 0.5
                 ctx.move(to: CGPoint(x: r.minX, y: y))
                 ctx.addLine(to: CGPoint(x: r.maxX, y: y))
@@ -621,7 +698,7 @@ open class EditorTextView: UIView, UIKeyInput {
             // Selection highlight (when not collapsed).
             if !cursor.isCollapsed {
                 ctx.setFillColor(color.withAlphaComponent(0.25).cgColor)
-                for r in l.selectionRects(from: min(cursor.anchor, cursor.head), to: max(cursor.anchor, cursor.head)) where onScreen(r) {
+                for r in l.selectionRects(from: min(cursor.anchor, cursor.head), to: max(cursor.anchor, cursor.head), clipY: visibleY) {
                     ctx.fill(r)
                 }
             }
@@ -1018,6 +1095,12 @@ open class EditorTextView: UIView, UIKeyInput {
     /// whether it's empty, whenever the selection or its geometry changes — edits,
     /// selection drags, and scrolling. Enough to anchor a floating "bubble" menu
     /// over the selection; `rects` is empty when the selection is collapsed.
+    ///
+    /// On-screen is literal: the rects cover the visible band, not the whole
+    /// selection, so a selection running off the top and bottom of the viewport
+    /// reports only the part you can see. A selection scrolled entirely out of
+    /// view reports no rects with `isEmpty` still false — anchor to what you
+    /// are given, and treat "not empty but nothing visible" as nothing to show.
     public var onSelectionChange: ((_ rects: [CGRect], _ isEmpty: Bool) -> Void)?
 
     /// Called when the editor gains keyboard focus (becomes first responder).

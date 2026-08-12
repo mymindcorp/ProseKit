@@ -39,8 +39,17 @@ struct TextBlock {
             if let text = seg.text {
                 // Grapheme offset → UTF-16 index within the run.
                 let graphemeOffset = pos - seg.docStart
-                let prefix = String(text.prefix(graphemeOffset))
-                return seg.attrStart + (prefix as NSString).length
+                // Every grapheme is one UTF-16 unit exactly when the two counts
+                // agree (each is at least one, so equal totals force all ones),
+                // and then the mapping is the identity. That is ordinary text,
+                // and it is worth checking: this runs on the scroll path, where
+                // UIKit asks for character rects as you drag, and walking the
+                // run to build a prefix string made a ~500-word paragraph cost
+                // thousands of graphemes and an allocation per call.
+                if seg.docLen == seg.attrLen { return seg.attrStart + graphemeOffset }
+                let idx = text.index(text.startIndex, offsetBy: graphemeOffset,
+                                     limitedBy: text.endIndex) ?? text.endIndex
+                return seg.attrStart + text.utf16.distance(from: text.startIndex, to: idx)
             }
             return pos <= seg.docStart ? seg.attrStart : seg.attrStart + seg.attrLen
         }
@@ -50,8 +59,10 @@ struct TextBlock {
     func docPos(forAttrIndex index: Int) -> Int {
         for seg in segments where index >= seg.attrStart && index <= seg.attrStart + seg.attrLen {
             if let text = seg.text {
-                // UTF-16 index → grapheme offset within the run.
+                // UTF-16 index → grapheme offset within the run. Identity when
+                // the counts agree, as in `attrIndex(forDocPos:)`.
                 let utf16Offset = index - seg.attrStart
+                if seg.docLen == seg.attrLen { return seg.docStart + utf16Offset }
                 let ns = text as NSString
                 let prefix = ns.substring(to: min(utf16Offset, ns.length))
                 return seg.docStart + prefix.count
@@ -1410,16 +1421,45 @@ final class DocumentLayout {
     }
 
     /// Selection highlight rectangles for a document range.
-    func selectionRects(from: Int, to: Int) -> [CGRect] {
+    /// The rectangles covering `from..<to`, one per line of text.
+    ///
+    /// `clipY` bounds the work to a band of the document. Every rect costs two
+    /// CoreText offset lookups, so a caller that only draws what's on screen
+    /// must say so here rather than filter the result: with the whole of a long
+    /// document selected, computing every rect and discarding all but the
+    /// visible few is the cost of a scroll frame, repeated for every frame.
+    ///
+    /// The band keeps exactly the rects that intersect it, which is what those
+    /// callers were selecting for by hand — clipping changes the cost, never
+    /// the drawing.
+    ///
+    /// Nil means all of them, which is what UIKit wants when it asks for the
+    /// selection's geometry — it is placing handles and a loupe, not drawing.
+    func selectionRects(from: Int, to: Int, clipY: ClosedRange<CGFloat>? = nil) -> [CGRect] {
         guard to > from, !blocks.isEmpty else { return [] }
         var rects: [CGRect] = []
         // First block overlapping [from, to): smallest index with contentEnd > from.
         var lo = 0, hi = blocks.count
         while lo < hi { let mid = (lo + hi) / 2; if blocks[mid].contentEnd <= from { lo = mid + 1 } else { hi = mid } }
         var i = lo
+        // Blocks run down the page in document order, so a clip band is a
+        // contiguous run of them: skip to the first one that reaches it rather
+        // than walking the selection's whole prefix, and stop at the far edge.
+        if let clipY {
+            var blo = lo, bhi = blocks.count
+            while blo < bhi {
+                let mid = (blo + bhi) / 2
+                if blocks[mid].frame.maxY < clipY.lowerBound { blo = mid + 1 } else { bhi = mid }
+            }
+            i = max(lo, blo)
+        }
         while i < blocks.count, blocks[i].contentStart < to {
             let block = blocks[i]
             i += 1
+            if let clipY {
+                if block.frame.minY > clipY.upperBound { break }
+                if block.frame.maxY < clipY.lowerBound { continue }
+            }
             guard from < block.contentEnd, to > block.contentStart else { continue }
             let blockFrom = max(from, block.contentStart)
             let blockTo = min(to, block.contentEnd)
@@ -1431,13 +1471,39 @@ final class DocumentLayout {
                 let s = max(aFrom, lineStart)
                 let e = min(aTo, lineEnd)
                 if e <= s { continue }
+                let top = line.baselineOrigin.y - line.ascent
+                // Clipping to blocks is not enough: a block can be far taller
+                // than the screen — one paragraph of a long document runs to
+                // hundreds of lines — and a highlight covering all of it makes
+                // every one of those lines pass the character test above. The
+                // two offset lookups are what a rect costs, so skip them here
+                // rather than let the caller throw the rect away.
+                if let clipY, top > clipY.upperBound || top + line.height < clipY.lowerBound { continue }
                 let xStart = CTLineGetOffsetForStringIndex(line.ctLine, s, nil)
                 let xEnd = CTLineGetOffsetForStringIndex(line.ctLine, e, nil)
-                let top = line.baselineOrigin.y - line.ascent
                 rects.append(CGRect(x: line.baselineOrigin.x + xStart, y: top, width: xEnd - xStart, height: line.height))
             }
         }
         return rects
+    }
+
+    /// The document positions covered by the blocks that intersect `band`, or
+    /// nil if the band falls outside the document entirely.
+    ///
+    /// Marks are stored as a flat list over the whole document, so drawing one
+    /// kind of mark means walking all of them. This turns a band of the page
+    /// into a range of positions once, so that walk can reject the off-screen
+    /// ones on two integer compares instead of a geometry lookup each.
+    func positionRange(intersecting band: ClosedRange<CGFloat>) -> Range<Int>? {
+        var lo = 0, hi = blocks.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if blocks[mid].frame.maxY < band.lowerBound { lo = mid + 1 } else { hi = mid }
+        }
+        guard lo < blocks.count, blocks[lo].frame.minY <= band.upperBound else { return nil }
+        var end = lo
+        while end < blocks.count, blocks[end].frame.minY <= band.upperBound { end += 1 }
+        return blocks[lo].contentStart ..< blocks[end - 1].contentEnd
     }
 
     /// Index of the block whose [contentStart, contentEnd] contains `pos`, via
@@ -1475,6 +1541,21 @@ final class DocumentLayout {
         func visible(_ minY: CGFloat, _ maxY: CGFloat) -> Bool {
             guard let clipY else { return true }
             return maxY >= clipY.lowerBound && minY <= clipY.upperBound
+        }
+        // `highlights` and `codeBackgrounds` cover the whole document, and a
+        // document can carry one per paragraph. Asking `selectionRects` about
+        // each of them costs a pair of binary searches even when the mark is
+        // hundreds of screens away, which on a long document is most of the
+        // time this method spends. Reject those on position first.
+        var bandPos: Range<Int>?
+        var bandIsEmpty = false
+        if let clipY {
+            if let r = positionRange(intersecting: clipY) { bandPos = r } else { bandIsEmpty = true }
+        }
+        func inBand(_ from: Int, _ to: Int) -> Bool {
+            if bandIsEmpty { return false }
+            guard let bandPos else { return true }
+            return to > bandPos.lowerBound && from < bandPos.upperBound
         }
         // Decorations first (under text where they overlap, e.g. quote bars).
         for deco in decorations {
@@ -1520,8 +1601,8 @@ final class DocumentLayout {
         }
         // Inline-code background pills, behind the text. Always a flat rounded
         // fill (never routed through the host highlight renderer / ink effect).
-        for code in codeBackgrounds {
-            for rect in selectionRects(from: code.from, to: code.to) where visible(rect.minY, rect.maxY) {
+        for code in codeBackgrounds where inBand(code.from, code.to) {
+            for rect in selectionRects(from: code.from, to: code.to, clipY: clipY) where visible(rect.minY, rect.maxY) {
                 code.color.setFill()
                 UIBezierPath(roundedRect: rect.insetBy(dx: -2, dy: -1), cornerRadius: 4).fill()
             }
@@ -1530,15 +1611,15 @@ final class DocumentLayout {
         if let highlightRenderer {
             // Host-drawn (e.g. a textured "drying ink" effect): hand it the visible runs.
             var runs: [HighlightRun] = []
-            for highlight in highlights {
-                for rect in selectionRects(from: highlight.from, to: highlight.to) where visible(rect.minY, rect.maxY) {
+            for highlight in highlights where inBand(highlight.from, highlight.to) {
+                for rect in selectionRects(from: highlight.from, to: highlight.to, clipY: clipY) where visible(rect.minY, rect.maxY) {
                     runs.append(HighlightRun(from: highlight.from, to: highlight.to, rect: rect, color: highlight.color))
                 }
             }
             if !runs.isEmpty { highlightRenderer(ctx, runs) }
         } else {
-            for highlight in highlights {
-                for rect in selectionRects(from: highlight.from, to: highlight.to) where visible(rect.minY, rect.maxY) {
+            for highlight in highlights where inBand(highlight.from, highlight.to) {
+                for rect in selectionRects(from: highlight.from, to: highlight.to, clipY: clipY) where visible(rect.minY, rect.maxY) {
                     let r = rect.insetBy(dx: -1, dy: -1)
                     highlight.color.setFill()
                     UIBezierPath(roundedRect: r, cornerRadius: 3).fill()
