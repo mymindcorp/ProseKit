@@ -39,8 +39,17 @@ struct TextBlock {
             if let text = seg.text {
                 // Grapheme offset → UTF-16 index within the run.
                 let graphemeOffset = pos - seg.docStart
-                let prefix = String(text.prefix(graphemeOffset))
-                return seg.attrStart + (prefix as NSString).length
+                // Every grapheme is one UTF-16 unit exactly when the two counts
+                // agree (each is at least one, so equal totals force all ones),
+                // and then the mapping is the identity. That is ordinary text,
+                // and it is worth checking: this runs on the scroll path, where
+                // UIKit asks for character rects as you drag, and walking the
+                // run to build a prefix string made a ~500-word paragraph cost
+                // thousands of graphemes and an allocation per call.
+                if seg.docLen == seg.attrLen { return seg.attrStart + graphemeOffset }
+                let idx = text.index(text.startIndex, offsetBy: graphemeOffset,
+                                     limitedBy: text.endIndex) ?? text.endIndex
+                return seg.attrStart + text.utf16.distance(from: text.startIndex, to: idx)
             }
             return pos <= seg.docStart ? seg.attrStart : seg.attrStart + seg.attrLen
         }
@@ -50,8 +59,10 @@ struct TextBlock {
     func docPos(forAttrIndex index: Int) -> Int {
         for seg in segments where index >= seg.attrStart && index <= seg.attrStart + seg.attrLen {
             if let text = seg.text {
-                // UTF-16 index → grapheme offset within the run.
+                // UTF-16 index → grapheme offset within the run. Identity when
+                // the counts agree, as in `attrIndex(forDocPos:)`.
                 let utf16Offset = index - seg.attrStart
+                if seg.docLen == seg.attrLen { return seg.docStart + utf16Offset }
                 let ns = text as NSString
                 let prefix = ns.substring(to: min(utf16Offset, ns.length))
                 return seg.docStart + prefix.count
