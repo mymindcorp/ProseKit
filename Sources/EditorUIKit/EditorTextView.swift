@@ -918,23 +918,6 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Convert a gesture point (viewport coordinates) to document coordinates.
     func docPoint(_ point: CGPoint) -> CGPoint { CGPoint(x: point.x, y: point.y + contentOffsetY) }
 
-    /// Which side of a soft wrap the caret belongs to, and the position it was
-    /// decided for.
-    ///
-    /// A wrap is one document position with two places on screen. UIKit models
-    /// the choice as affinity; `DocTextPosition` carries an offset and nothing
-    /// else, so it is remembered here — against the position it applies to, so
-    /// that a caret which moves anywhere else simply stops matching. That
-    /// saves clearing it from every path that can move the caret, and there
-    /// are many.
-    var caretAffinity: (pos: Int, atLineEnd: Bool)?
-
-    /// Whether the caret at `pos` was placed at the end of a wrapped line.
-    func caretIsAtLineEnd(_ pos: Int) -> Bool {
-        guard let a = caretAffinity else { return false }
-        return a.pos == pos && a.atLineEnd
-    }
-
     /// The caret rect for the current (empty) selection: the usual vertical
     /// bar, or a short horizontal bar for a gap cursor (there is no text
     /// position at a gap, so the caret marks where the paragraph would go).
@@ -942,7 +925,7 @@ open class EditorTextView: UIView, UIKeyInput {
         let sel = editor.state.selection
         guard sel.empty else { return nil }
         if sel is GapCursor { return gapCaretRect(at: sel.head, in: l) }
-        return l.caretRect(at: sel.head, atLineEnd: caretIsAtLineEnd(sel.head))
+        return l.caretRect(at: sel.head)
     }
 
     /// A horizontal blink bar at the block boundary `pos` points at, centered

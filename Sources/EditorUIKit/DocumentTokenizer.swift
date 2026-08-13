@@ -232,6 +232,20 @@ final class DocumentTokenizer: NSObject, UITextInputTokenizer {
         (position as? DocTextPosition)?.offset
     }
 
+    /// Whether `pos` is the very start or the very end of a textblock.
+    ///
+    /// The tokenizer is answering about a document, not a string, and the ends
+    /// of a paragraph are word boundaries in it: no word runs from one block
+    /// into the next. `UITextInputStringTokenizer` sees only the projected
+    /// text, where a block break is a newline like any other, and so does not
+    /// know this — see `TokenizerParityTests.testABlockEdgeIsAWordBoundary` for
+    /// what it costs to agree with it.
+    private func atBlockEdge(_ pos: Int) -> Bool {
+        guard let v = textInput, pos >= 0, pos <= v.editor.doc.content.size else { return false }
+        let r = v.editor.doc.resolve(pos)
+        return r.parent.isTextblock && (r.parentOffset == 0 || r.parentOffset == r.parent.content.size)
+    }
+
     // MARK: UITextInputTokenizer
 
     func rangeEnclosingPosition(_ position: UITextPosition, with granularity: UITextGranularity,
@@ -251,6 +265,13 @@ final class DocumentTokenizer: NSObject, UITextInputTokenizer {
         guard isWord(granularity), let pos = offset(position) else {
             return fallback?.isPosition(position, atBoundary: granularity, inDirection: direction) ?? false
         }
+        // The ends of a paragraph, either way round. UIKit asks this after a tap
+        // ("is the caret somewhere sensible?") and, told no, goes looking for the
+        // next word boundary with `position(from:toBoundary:)` — which, past the
+        // end of a block, is a word in the NEXT one. Answering no at the end of a
+        // paragraph is what moved the caret into the block below and made the end
+        // of a paragraph impossible to tap.
+        if atBlockEdge(pos) { return true }
         // Not symmetric, and not the same reading of direction as the rest of
         // the protocol: a word's start counts facing backward, its end facing
         // forward. The layout directions (right/left) behave as backward here

@@ -251,9 +251,7 @@ extension EditorTextView: UITextInput {
 
     public func caretRect(for position: UITextPosition) -> CGRect {
         guard let p = position as? DocTextPosition else { return .zero }
-        let pos = clamp(p.offset)
-        return (ensureLayout().caretRect(at: pos, atLineEnd: caretIsAtLineEnd(pos)) ?? .zero)
-            .offsetBy(dx: 0, dy: -contentOffsetY)
+        return (ensureLayout().caretRect(at: clamp(p.offset)) ?? .zero).offsetBy(dx: 0, dy: -contentOffsetY)
     }
 
     /// UIKit re-queries this on every scroll tick — `notifySelectionGeometryChanged`
@@ -292,19 +290,8 @@ extension EditorTextView: UITextInput {
         let dp = docPoint(point)
         // A tap between blocks where no text position exists maps to the gap
         // boundary; setting an empty selection there produces a GapCursor.
-        if let gap = gapBoundaryPosition(at: dp) {
-            caretAffinity = nil
-            return DocTextPosition(gap)
-        }
-        // This is where a tap becomes a position, and the only place that knows
-        // which side of a soft wrap the finger was on. Record it — see
-        // `caretAffinity`.
-        guard let hit = ensureLayout().positionWithAffinity(at: dp) else {
-            caretAffinity = nil
-            return DocTextPosition(0)
-        }
-        caretAffinity = (hit.pos, hit.atLineEnd)
-        return DocTextPosition(hit.pos)
+        if let gap = gapBoundaryPosition(at: dp) { return DocTextPosition(gap) }
+        return DocTextPosition(ensureLayout().position(at: dp) ?? 0)
     }
 
     public func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? {
