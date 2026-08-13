@@ -68,6 +68,13 @@ final class TokenizerParityTests: XCTestCase {
     ]
 
     private func offset(_ p: UITextPosition?) -> Int? { (p as? DocTextPosition)?.offset }
+
+    /// The start or end of a textblock.
+    private func blockEdge(_ v: EditorTextView, _ pos: Int) -> Bool {
+        guard pos >= 0, pos <= v.editor.doc.content.size else { return false }
+        let r = v.editor.doc.resolve(pos)
+        return r.parent.isTextblock && (r.parentOffset == 0 || r.parentOffset == r.parent.content.size)
+    }
     private func bounds(_ r: UITextRange?) -> (Int, Int)? {
         guard let r = r as? DocTextRange else { return nil }
         return (r.from, r.to)
@@ -92,9 +99,13 @@ final class TokenizerParityTests: XCTestCase {
                     XCTAssertEqual(bounds(ours.rangeEnclosingPosition(p, with: g, inDirection: d)).map { [$0.0, $0.1] },
                                    bounds(system.rangeEnclosingPosition(p, with: g, inDirection: d)).map { [$0.0, $0.1] },
                                    "rangeEnclosingPosition — \(label)", file: file, line: line)
-                    XCTAssertEqual(ours.isPosition(p, atBoundary: g, inDirection: d),
-                                   system.isPosition(p, atBoundary: g, inDirection: d),
-                                   "isPosition(atBoundary) — \(label)", file: file, line: line)
+                    // The ends of a paragraph are the named disagreement — see
+                    // `testABlockEdgeIsAWordBoundary`.
+                    if !(g == .word && blockEdge(v, pos)) {
+                        XCTAssertEqual(ours.isPosition(p, atBoundary: g, inDirection: d),
+                                       system.isPosition(p, atBoundary: g, inDirection: d),
+                                       "isPosition(atBoundary) — \(label)", file: file, line: line)
+                    }
                     XCTAssertEqual(ours.isPosition(p, withinTextUnit: g, inDirection: d),
                                    system.isPosition(p, withinTextUnit: g, inDirection: d),
                                    "isPosition(withinTextUnit) — \(label)", file: file, line: line)
@@ -107,6 +118,52 @@ final class TokenizerParityTests: XCTestCase {
 
     func testParityAcrossTheCorpus() {
         for doc in corpus { assertParity(doc) }
+    }
+
+    /// The first place parity is the wrong goal.
+    ///
+    /// After a tap, UIKit asks `isPosition(_:atBoundary:.word:)` — is the caret
+    /// somewhere sensible? — and, told no, hunts for the nearest word boundary
+    /// with `position(from:toBoundary:)`. Past the end of a paragraph the
+    /// nearest word is in the NEXT paragraph, so being told no at the end of a
+    /// paragraph moves the caret out of it: tapping the end of a paragraph put
+    /// the caret at the start of the block below, every time, and the end of a
+    /// paragraph could not be reached at all.
+    ///
+    /// `UITextInputStringTokenizer` is answering about a string, where a block
+    /// break is a newline like any other and "and code." runs on into "Lists".
+    /// We are answering about a document, where it does not: a word never spans
+    /// a paragraph break, so both ends of one are word boundaries. That is the
+    /// disagreement, and it is the whole of it — `position(from:toBoundary:)`
+    /// and `rangeEnclosingPosition` still match the system everywhere.
+    func testABlockEdgeIsAWordBoundary() {
+        let v = view(["hello world", "second paragraph"])
+        let ours = DocumentTokenizer(textInput: v)
+        let system = UITextInputStringTokenizer(textInput: v)
+        // "hello world" is 1..12, "second paragraph" is 14..30.
+        XCTAssertEqual(v.projectedText(from: 1, to: 12), "hello world")
+        XCTAssertEqual(v.projectedText(from: 14, to: 30), "second paragraph")
+
+        for pos in [1, 12, 14, 30] {
+            let p = DocTextPosition(pos)
+            for d in directions {
+                XCTAssertTrue(ours.isPosition(p, atBoundary: .word, inDirection: d),
+                              "the block edge at \(pos) is a word boundary, direction \(d.rawValue)")
+            }
+        }
+        // The end of a paragraph is exactly where the system says otherwise —
+        // if this ever starts agreeing, the exception above can go.
+        XCTAssertFalse(system.isPosition(DocTextPosition(12), atBoundary: .word,
+                                         inDirection: UITextDirection(rawValue: UITextStorageDirection.backward.rawValue)),
+                       "the system tokenizer no longer disagrees")
+
+        // Only `atBoundary` moves: a block edge is still not inside a word, and
+        // word-wise movement still crosses paragraphs (⌥→ must not get stuck).
+        let forward = UITextDirection(rawValue: UITextStorageDirection.forward.rawValue)
+        XCTAssertFalse(ours.isPosition(DocTextPosition(12), withinTextUnit: .word, inDirection: forward))
+        XCTAssertEqual(offset(ours.position(from: DocTextPosition(12), toBoundary: .word, inDirection: forward)),
+                       offset(system.position(from: DocTextPosition(12), toBoundary: .word, inDirection: forward)),
+                       "word-wise movement out of a paragraph still matches the system")
     }
 
     // MARK: Past the window
@@ -154,9 +211,11 @@ final class TokenizerParityTests: XCTestCase {
                 XCTAssertEqual(bounds(ours.rangeEnclosingPosition(p, with: .word, inDirection: d)).map { [$0.0, $0.1] },
                                bounds(system.rangeEnclosingPosition(p, with: .word, inDirection: d)).map { [$0.0, $0.1] },
                                "rangeEnclosingPosition at \(pos), direction \(d.rawValue)")
-                XCTAssertEqual(ours.isPosition(p, atBoundary: .word, inDirection: d),
-                               system.isPosition(p, atBoundary: .word, inDirection: d),
-                               "isPosition(atBoundary) at \(pos), direction \(d.rawValue)")
+                if !blockEdge(v, pos) {   // see `testABlockEdgeIsAWordBoundary`
+                    XCTAssertEqual(ours.isPosition(p, atBoundary: .word, inDirection: d),
+                                   system.isPosition(p, atBoundary: .word, inDirection: d),
+                                   "isPosition(atBoundary) at \(pos), direction \(d.rawValue)")
+                }
                 XCTAssertEqual(ours.isPosition(p, withinTextUnit: .word, inDirection: d),
                                system.isPosition(p, withinTextUnit: .word, inDirection: d),
                                "isPosition(withinTextUnit) at \(pos), direction \(d.rawValue)")
