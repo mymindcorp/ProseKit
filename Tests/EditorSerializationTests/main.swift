@@ -4572,5 +4572,6 @@ test("HTML paste: a <style> block is never content") {
     try expectEqual(d.textContent, "only")
 }
 
+registerAdversarialMarkdownTests()
 registerBench()
 TestSuite.main("EditorSerializationTests", collector.all)

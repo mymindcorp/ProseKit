@@ -17,6 +17,7 @@ public struct ReplaceStep: Step {
     public var jsonID: String { "replace" }
 
     public func apply(_ doc: Node) -> StepResult {
+        if let failure = StepResult.outOfRange(doc, from, to) { return failure }
         if structure && contentBetween(doc, from, to) {
             return .fail("Structure replace would overwrite content")
         }
@@ -66,6 +67,7 @@ public struct ReplaceStep: Step {
         guard let from = json["from"]?.intValue, let to = json["to"]?.intValue else {
             throw ModelError.invalidJSON("Invalid input for ReplaceStep.fromJSON")
         }
+        try checkStepPositions("ReplaceStep", from, to)
         var sliceJSON: [String: AttributeValue]? = nil
         if case let .object(o)? = json["slice"] { sliceJSON = o }
         return ReplaceStep(from, to, try Slice.fromJSON(schema, sliceJSON),
@@ -98,6 +100,12 @@ public struct ReplaceAroundStep: Step {
     public var jsonID: String { "replaceAround" }
 
     public func apply(_ doc: Node) -> StepResult {
+        if let failure = StepResult.outOfRange(doc, from, to, gapFrom, gapTo) { return failure }
+        // `insert` indexes into the slice, not the document, and `insertAt`
+        // traps rather than returning nil when it points outside.
+        if insert < 0 || insert > slice.content.size {
+            return .fail("Insert position \(insert) outside of the step's slice (0…\(slice.content.size))")
+        }
         if structure && (contentBetween(doc, from, gapFrom) || contentBetween(doc, gapTo, to)) {
             return .fail("Structure gap-replace would overwrite content")
         }
@@ -150,6 +158,7 @@ public struct ReplaceAroundStep: Step {
               let insert = json["insert"]?.intValue else {
             throw ModelError.invalidJSON("Invalid input for ReplaceAroundStep.fromJSON")
         }
+        try checkStepPositions("ReplaceAroundStep", from, to, gapFrom, gapTo, insert)
         var sliceJSON: [String: AttributeValue]? = nil
         if case let .object(o)? = json["slice"] { sliceJSON = o }
         return ReplaceAroundStep(from, to, gapFrom, gapTo, try Slice.fromJSON(schema, sliceJSON), insert,

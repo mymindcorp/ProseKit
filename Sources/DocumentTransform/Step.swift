@@ -21,6 +21,35 @@ public struct StepResult {
             return .fail("\(error)")
         }
     }
+
+    /// A failed result if any of `positions` falls outside `doc`, else nil.
+    ///
+    /// Steps arrive from peers, stored documents and the clipboard, and a step
+    /// that no longer fits the document it is applied to is the ordinary case —
+    /// the document was edited elsewhere. `resolve` traps on a position outside
+    /// the document rather than throwing, so `fromReplace`'s `do`/`catch` never
+    /// gets the chance to turn that into a failure: the check has to happen
+    /// before the position reaches `resolve`.
+    static func outOfRange(_ doc: Node, _ positions: Int...) -> StepResult? {
+        let size = doc.content.size
+        for pos in positions where pos < 0 || pos > size {
+            return .fail("Position \(pos) outside of document (0…\(size))")
+        }
+        return nil
+    }
+}
+
+/// Reject a decoded position that no document could ever produce.
+///
+/// A document position is never negative, so a negative one is malformed JSON
+/// rather than a step for some other document — and unlike an out-of-range
+/// position, it can't wait to be caught at `apply`: `getMap()` is public, runs
+/// before any document is in hand, and its `to - from` traps on overflow when
+/// the positions span the whole integer range.
+func checkStepPositions(_ label: String, _ positions: Int...) throws(ModelError) {
+    for pos in positions where pos < 0 {
+        throw ModelError.invalidJSON("Negative position \(pos) in \(label)")
+    }
 }
 
 /// A step object represents an atomic change. It generally applies only to the
