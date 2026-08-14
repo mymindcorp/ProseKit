@@ -121,5 +121,36 @@ func registerBench() {
         let deep = try HTMLParser.parse(nested, schema: schema)
         print("\n  --- 40-deep nested list ---"); unsafe fflush(stdout)
         time("MarkdownSerializer.serialize") { _ = MarkdownSerializer.serialize(deep) }
+
+        // Markdown parsing against input size rather than against a repeat
+        // count — a payload whose own generator is quadratic will otherwise
+        // read as a quadratic parser. Doubling the size should about double the
+        // time; anything nearer four times is a scan that has gone quadratic
+        // again. The first group is prose and the shapes documents really have,
+        // the second the ones that used to hang.
+        let payloads: [(String, (Int) -> String)] = [
+            ("prose", { n in String(repeating: "word ", count: n / 5) }),
+            ("list items", { n in String(repeating: "- x\n", count: n / 4) }),
+            ("quotes, nested", { n in
+                var out = ""
+                var i = 0
+                while out.utf8.count < n { out += String(repeating: "> ", count: i % 32) + "hi\n\n"; i += 1 }
+                return out
+            }),
+            ("table rows", { n in "| a | b |\n| - | - |\n" + String(repeating: "| x | y |\n", count: n / 10) }),
+            ("unclosed brackets", { n in String(repeating: "[", count: n) }),
+            ("openers, one closer", { n in String(repeating: "[", count: n - 1) + "]" }),
+            ("unclosed wiki links", { n in String(repeating: "[[", count: n / 2) }),
+            ("unclosed destinations", { n in String(repeating: "[a](", count: n / 4) }),
+            ("emphasis runs", { n in String(repeating: "*a", count: n / 2) }),
+            ("unclosed angle brackets", { n in String(repeating: "<", count: n) }),
+        ]
+        for (name, build) in payloads {
+            print("\n  --- markdown: \(name) ---"); unsafe fflush(stdout)
+            for size in [50_000, 100_000, 200_000] {
+                let markdown = build(size)
+                time("\(markdown.utf8.count / 1024) KB", 3) { _ = try? MarkdownParser.parse(markdown, schema: schema) }
+            }
+        }
     }
 }

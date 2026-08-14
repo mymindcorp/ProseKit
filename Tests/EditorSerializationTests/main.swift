@@ -4573,5 +4573,7 @@ test("HTML paste: a <style> block is never content") {
 }
 
 registerAdversarialMarkdownTests()
+registerMarkdownInlineParityTests()
+registerMarkdownScalingTests()
 registerBench()
 TestSuite.main("EditorSerializationTests", collector.all)
