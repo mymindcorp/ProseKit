@@ -25,11 +25,25 @@ public struct Fragment: Hashable, Sendable {
         // COW fast path: when both fragments share the same backing storage
         // (e.g. an unchanged sibling copied during an edit), they're equal in
         // O(1) — which lets renderers diff documents without walking every node.
-        let shared = unsafe lhs.content.withUnsafeBufferPointer { a in
-            unsafe rhs.content.withUnsafeBufferPointer { b in unsafe a.baseAddress != nil && a.baseAddress == b.baseAddress }
-        }
-        if shared { return true }
+        if lhs.sharesStorage(with: rhs) { return true }
         return lhs.content == rhs.content
+    }
+
+    /// Whether these two fragments are backed by the same array storage.
+    ///
+    /// This is what ProseMirror's `content == this.content` actually tests: in
+    /// JavaScript a fragment is an object and `==` compares references, so the
+    /// "nothing changed, keep the node you have" checks it guards are O(1)
+    /// there. A Swift `==` on a value type compares structurally instead, so
+    /// those same checks walked the whole subtree — turning one edit into a
+    /// comparison of the document. Sharing storage proves equality; not sharing
+    /// it proves nothing, which is why this is only ever used to skip work.
+    func sharesStorage(with other: Fragment) -> Bool {
+        unsafe content.withUnsafeBufferPointer { a in
+            unsafe other.content.withUnsafeBufferPointer { b in
+                unsafe a.baseAddress == b.baseAddress && a.count == b.count
+            }
+        }
     }
 
     public func hash(into hasher: inout Hasher) {
@@ -196,7 +210,10 @@ public struct Fragment: Hashable, Sendable {
     /// by the given node.
     public func replaceChild(_ index: Int, _ node: Node) -> Fragment {
         let cur = content[index]
-        if cur == node { return self }
+        // Upstream compares references here too. Comparing the two nodes
+        // structurally walks both subtrees on every replace, to save an array
+        // copy that costs far less than the walk.
+        if cur.sameStorage(as: node) { return self }
         var copy = content
         let newSize = size + node.nodeSize - cur.nodeSize
         copy[index] = node

@@ -208,11 +208,27 @@ public struct Node: Hashable, Sendable {
     // MARK: - Markup / copying
 
     /// Create a new node with the same markup as this node, containing the
-    /// given content (or empty, if no content is given).
+    /// given content — or this node itself, when no content is given.
     public func copy(content: Fragment? = nil) -> Node {
-        let content = content ?? self.content
-        if content == self.content { return self }
+        guard let content else { return self }
+        // Storage identity, not structural equality. Upstream's `content ==
+        // this.content` is a JavaScript reference check, and this is the only
+        // thing it can tell us: whether the caller handed back the fragment we
+        // already had. Asking whether the two are structurally equal instead
+        // walks every child, and this runs once per level of every replace —
+        // marking up a document then costs a comparison of the whole document
+        // per step. When storage differs we simply build the node; the result
+        // is the same value either way, so nothing but the work changes.
+        if content.sharesStorage(with: self.content) { return self }
         return Node(type: type, attrs: attrs, content: content, marks: marks, text: text)
+    }
+
+    /// Whether this node is the one `other` was made from — same markup, and
+    /// content sharing storage. The cheap stand-in for the reference check
+    /// upstream uses to skip rebuilding a node that hasn't changed.
+    func sameStorage(as other: Node) -> Bool {
+        type === other.type && text == other.text && marks == other.marks
+            && attrs == other.attrs && content.sharesStorage(with: other.content)
     }
 
     /// Create a copy of this node, with the given set of marks instead of the

@@ -234,5 +234,6 @@ test("text positions are grapheme-cluster offsets") {
 registerBench()
 
 registerAttributeValueTests()
+registerStorageIdentityTests()
 
 TestSuite.main("DocumentModelTests", collector.all)
