@@ -2132,6 +2132,27 @@ public enum MarkdownParser {
         // integer compare rather than a string compare, and pulling a range out
         // is a copy rather than a per-character append.
         let chars = Array(text.utf8)
+        // Both of these cost a pass over the line, and prose asks them nothing —
+        // only a `[`, `<`, `~` or `=` ever reaches a scan that consults them —
+        // so neither is built until something actually needs it.
+        var lastByteCache: LastByte?
+        func lastBytes() -> LastByte {
+            if let lastByteCache { return lastByteCache }
+            let built = LastByte(chars)
+            lastByteCache = built
+            return built
+        }
+        var bracketCache: BracketMatches?
+        func bracketMatches() -> BracketMatches {
+            if let bracketCache { return bracketCache }
+            // The table is this path's only allocation, so a line that opens no
+            // bracket doesn't get one.
+            let built = lastBytes().opensBracket ? BracketMatches(chars) : .none
+            bracketCache = built
+            return built
+        }
+        // Where a two-byte delimiter search has already come up empty.
+        var pairExhausted: [Int: Int] = [:]
         var i = 0
         var buffer: [UInt8] = []
         func flush(_ marks: [Mark] = []) {
@@ -2208,7 +2229,11 @@ public enum MarkdownParser {
             // Autolink <scheme:...> — a bare URL in angle brackets — or
             // <someone@example.com>, which links to the address. The text stays
             // as written either way; only the href gains the "mailto:".
-            if c == UInt8(ascii: "<"), let close = findByte(chars, i + 1, UInt8(ascii: ">")),
+            // Both of these need a `>` to close on, and both scan forward
+            // looking for one — so on a line of bare `<`, which has none, each
+            // `<` would walk the rest of the line before failing.
+            if c == UInt8(ascii: "<"), lastBytes().has(UInt8(ascii: ">"), atOrAfter: i + 1),
+               let close = findByte(chars, i + 1, UInt8(ascii: ">")),
                case let url = slice(chars, (i + 1)..<close),
                case let target = isAutolink(url) ? url : emailAutolink(url),
                let candidate = target, let href = sanitizeURL(candidate, for: .link) {
@@ -2226,7 +2251,8 @@ public enum MarkdownParser {
             // lose content — including, before this was tightened, the whole of
             // `<javascript:alert(1)>`, which reaches here once the sanitizer has
             // refused to make it a link.
-            if c == UInt8(ascii: "<"), let tag = inlineTag(chars, i) {
+            if c == UInt8(ascii: "<"), lastBytes().has(UInt8(ascii: ">"), atOrAfter: i + 1),
+               let tag = inlineTag(chars, i) {
                 // A comment, declaration or CDATA section is left as written:
                 // dropping one changes the spacing around it, and `<!-- -->` is
                 // a real idiom for splitting two lists apart.
@@ -2298,7 +2324,7 @@ public enum MarkdownParser {
             }
             // Wiki link [[...]]
             if c == UInt8(ascii: "[") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "[") {
-                if let close = findSeq(chars, i + 2, Array("]]".utf8)) {
+                if let close = findPair(chars, i + 2, UInt8(ascii: "]"), UInt8(ascii: "]"), lastBytes(), &pairExhausted) {
                     flush()
                     let inner = slice(chars, (i + 2)..<close)
                     let parts = inner.split(separator: "|", maxSplits: 1).map(String.init)
@@ -2313,8 +2339,8 @@ public enum MarkdownParser {
             // form takes precedence, and it is checked for below, so this only
             // runs when the brackets aren't followed by a destination.
             if c == UInt8(ascii: "!") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "["),
-               !definitions.isEmpty, parseLinkLike(chars, i + 1) == nil,
-               let (alt, definition, next) = parseReference(chars, i + 1, definitions) {
+               !definitions.isEmpty, parseLinkLike(chars, i + 1, lastBytes(), bracketMatches()) == nil,
+               let (alt, definition, next) = parseReference(chars, i + 1, definitions, bracketMatches()) {
                 flush()
                 var attrs: Attrs = ["src": .null,
                                     "alt": .string(renderedText(alt, schema, definitions))]
@@ -2328,7 +2354,7 @@ public enum MarkdownParser {
             }
             // Image ![alt](src)
             if c == UInt8(ascii: "!") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "[") {
-                if let (alt, url, title, next) = parseLinkLike(chars, i + 1) {
+                if let (alt, url, title, next) = parseLinkLike(chars, i + 1, lastBytes(), bracketMatches()) {
                     flush()
                     var attrs: Attrs = ["src": .null,
                                         "alt": .string(renderedText(alt, schema, definitions))]
@@ -2342,7 +2368,7 @@ public enum MarkdownParser {
             }
             // Link [text](url)
             if c == UInt8(ascii: "[") {
-                if let (label, url, title, next) = parseLinkLike(chars, i) {
+                if let (label, url, title, next) = parseLinkLike(chars, i, lastBytes(), bracketMatches()) {
                     flush()
                     // Markdown reaches the editor from the same untrusted places
                     // HTML does, so `[x](javascript:…)` gets the same treatment:
@@ -2362,7 +2388,7 @@ public enum MarkdownParser {
             }
             // Link by reference: [text][label], [label][] or [label]. Tried
             // after the inline form, which takes precedence.
-            if c == UInt8(ascii: "["), let (label, definition, next) = parseReference(chars, i, definitions) {
+            if c == UInt8(ascii: "["), let (label, definition, next) = parseReference(chars, i, definitions, bracketMatches()) {
                 flush()
                 var linkMark: Mark?
                 if let href = definition.destination.isEmpty
@@ -2392,7 +2418,7 @@ public enum MarkdownParser {
             }
             // Strike ~~ ~~
             if c == UInt8(ascii: "~") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "~") {
-                if let close = findSeq(chars, i + 2, Array("~~".utf8)), close > i + 2 {
+                if let close = findPair(chars, i + 2, UInt8(ascii: "~"), UInt8(ascii: "~"), lastBytes(), &pairExhausted), close > i + 2 {
                     flush()
                     appendNode(schema.text(unescapeInline(slice(chars, (i + 2)..<close)), mark("strike")))
                     i = close + 2; continue
@@ -2402,7 +2428,7 @@ public enum MarkdownParser {
             // A run of "=" is a setext heading underline or a divider far more
             // often than it is an empty highlight, so require content.
             if c == UInt8(ascii: "=") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "=") {
-                if let close = findSeq(chars, i + 2, Array("==".utf8)), close > i + 2 {
+                if let close = findPair(chars, i + 2, UInt8(ascii: "="), UInt8(ascii: "="), lastBytes(), &pairExhausted), close > i + 2 {
                     flush()
                     appendNode(schema.text(unescapeInline(slice(chars, (i + 2)..<close)), mark("highlight")))
                     i = close + 2; continue
@@ -2499,16 +2525,35 @@ public enum MarkdownParser {
     /// Emphasis leaves runs of text that carry the same marks side by side —
     /// `Fragment.from` merges those, but the callers that build textblocks want
     /// them merged before schema fitting sees them.
+    /// A run is accumulated in one buffer and made into a node once, rather than
+    /// re-made on every merge. Rebuilding it each time copies the whole run to
+    /// add one piece, which is quadratic in the run's length — and a line like
+    /// `*a*a*a…`, whose delimiters mostly end up as literal text, is one long
+    /// run of tiny pieces. The buffer is only taken when a node actually merges,
+    /// so a run of one keeps the node it already had.
     private static func mergeAdjacentText(_ nodes: [Node], _ schema: Schema) -> [Node] {
         var merged: [Node] = []
-        for node in nodes {
-            if let last = merged.last, last.isText, node.isText,
-               Mark.sameSet(last.marks, node.marks) {
-                merged[merged.count - 1] = schema.text((last.text ?? "") + (node.text ?? ""), last.marks)
-            } else {
-                merged.append(node)
-            }
+        var pending: Node?
+        var buffer: String?
+
+        func flush() {
+            guard let node = pending else { return }
+            merged.append(buffer.map { schema.text($0, node.marks) } ?? node)
+            pending = nil
+            buffer = nil
         }
+
+        for node in nodes {
+            if let last = pending, last.isText, node.isText,
+               Mark.sameSet(last.marks, node.marks) {
+                if buffer == nil { buffer = last.text ?? "" }
+                buffer! += node.text ?? ""
+                continue
+            }
+            flush()
+            pending = node
+        }
+        flush()
         return merged
     }
 
@@ -2719,16 +2764,17 @@ public enum MarkdownParser {
         return end == bytes.count && matched == text
     }
 
-    private static func parseLinkLike(_ bytes: [UInt8], _ start: Int)
+    private static func parseLinkLike(_ bytes: [UInt8], _ start: Int,
+                                      _ last: LastByte, _ brackets: BracketMatches)
         -> (text: String, url: String, title: String?, next: Int)? {
         guard bytes[start] == UInt8(ascii: "[") else { return nil }
-        guard let closeBracket = matchingBracket(bytes, start + 1) else { return nil }
+        guard let closeBracket = brackets.close(openingAt: start) else { return nil }
         guard closeBracket + 1 < bytes.count,
               bytes[closeBracket + 1] == UInt8(ascii: "(") else { return nil }
         // An image's label may hold a link; a link's may not.
         if start == 0 || bytes[start - 1] != UInt8(ascii: "!"),
            labelHoldsALink(slice(bytes, (start + 1)..<closeBracket)) { return nil }
-        guard let closeParen = findLinkClose(bytes, closeBracket + 2) else { return nil }
+        guard let closeParen = findLinkClose(bytes, closeBracket + 2, last) else { return nil }
         let label = slice(bytes, (start + 1)..<closeBracket)
         let inside = slice(bytes, (closeBracket + 2)..<closeParen)
         guard let (url, title) = splitDestinationAndTitle(inside) else { return nil }
@@ -2770,38 +2816,53 @@ public enum MarkdownParser {
     /// needs an inner pair to be matched before the outer one can close past it.
     /// Working from the closers, and dropping any delimiters left stranded
     /// between a matched pair, is what gets both right.
+    /// The delimiters still available to match are held as a linked list rather
+    /// than an array, because the algorithm's whole shape is removal from the
+    /// middle: every pair drops both its ends and everything stranded between
+    /// them. `Array.remove(at:)` shifts the tail on each of those, which is one
+    /// line of code and O(n²) over a line made of delimiters — `*a*a*a…` spent
+    /// all its time there. Relinking is O(1), and the traversal order is
+    /// identical, so the pairs produced are unchanged.
     static func processEmphasis(_ delimiters: inout [Delimiter],
                                 _ positions: [Int]) -> [EmphasisPair] {
         var pairs: [EmphasisPair] = []
-        // Delimiters still available to match, as indices into `delimiters`.
-        var stack = Array(positions.indices)
-        var closerAt = 0
-        while closerAt < stack.count {
-            let closer = stack[closerAt]
+        let count = positions.count
+        guard count > 0 else { return pairs }
+        // `count` is the past-the-end sentinel; -1 is "before the first".
+        var next = (0..<count).map { $0 + 1 }
+        var prev = (0..<count).map { $0 - 1 }
+        func unlink(_ i: Int) {
+            let p = prev[i], n = next[i]
+            if p >= 0 { next[p] = n }
+            if n < count { prev[n] = p }
+        }
+
+        var closer = 0
+        while closer < count {
             guard delimiters[closer].canClose, delimiters[closer].count > 0 else {
-                closerAt += 1
+                closer = next[closer]
                 continue
             }
             // The nearest opener of the same character that may pair with it.
-            var openerAt: Int?
-            var scan = closerAt - 1
+            var opener = -1
+            var scan = prev[closer]
             while scan >= 0 {
-                let opener = stack[scan]
-                if delimiters[opener].char == delimiters[closer].char,
-                   delimiters[opener].canOpen, delimiters[opener].count > 0,
-                   canPair(delimiters[opener], delimiters[closer]) {
-                    openerAt = scan
+                if delimiters[scan].char == delimiters[closer].char,
+                   delimiters[scan].canOpen, delimiters[scan].count > 0,
+                   canPair(delimiters[scan], delimiters[closer]) {
+                    opener = scan
                     break
                 }
-                scan -= 1
+                scan = prev[scan]
             }
-            guard let openerAt else {
+            guard opener >= 0 else {
                 // A closer that can't also open is spent; anything else may
                 // still serve as an opener for a later closer.
-                if !delimiters[closer].canOpen { stack.remove(at: closerAt) } else { closerAt += 1 }
+                let after = next[closer]
+                if !delimiters[closer].canOpen { unlink(closer) }
+                closer = after
                 continue
             }
-            let opener = stack[openerAt]
             // Two characters make it strong when both runs can spare them.
             let strong = delimiters[opener].count >= 2 && delimiters[closer].count >= 2
             let used = strong ? 2 : 1
@@ -2809,15 +2870,20 @@ public enum MarkdownParser {
             delimiters[opener].count -= used
             delimiters[closer].count -= used
             // Delimiters caught between the pair can never match anything now.
-            if closerAt > openerAt + 1 {
-                stack.removeSubrange((openerAt + 1)..<closerAt)
-                closerAt = openerAt + 1
+            var stranded = next[opener]
+            while stranded != closer {
+                let after = next[stranded]
+                unlink(stranded)
+                stranded = after
             }
-            if delimiters[closer].count == 0 { stack.remove(at: closerAt) }
-            if delimiters[opener].count == 0 {
-                stack.remove(at: openerAt)
-                closerAt -= 1
+            // A closer with characters left over stays where it is and is tried
+            // again, which is how one run supplies two pairs in `***foo***`.
+            if delimiters[closer].count == 0 {
+                let after = next[closer]
+                unlink(closer)
+                closer = after
             }
+            if delimiters[opener].count == 0 { unlink(opener) }
         }
         return pairs
     }
@@ -2838,10 +2904,11 @@ public enum MarkdownParser {
     /// brackets stay literal text — which is what keeps prose like "see [1]"
     /// intact.
     private static func parseReference(_ bytes: [UInt8], _ start: Int,
-                                       _ definitions: [String: LinkDefinition])
+                                       _ definitions: [String: LinkDefinition],
+                                       _ brackets: BracketMatches)
         -> (text: String, definition: LinkDefinition, next: Int)? {
         guard !definitions.isEmpty, bytes[start] == UInt8(ascii: "[") else { return nil }
-        guard let closeBracket = matchingBracket(bytes, start + 1) else { return nil }
+        guard let closeBracket = brackets.close(openingAt: start) else { return nil }
         let first = slice(bytes, (start + 1)..<closeBracket)
         // As with an inline link: a label already holding a link keeps its
         // brackets, and a code span reaching past the label wins.
@@ -2851,7 +2918,7 @@ public enum MarkdownParser {
         var next = closeBracket + 1
         // A second bracket pair makes it a full or collapsed reference.
         if closeBracket + 1 < bytes.count, bytes[closeBracket + 1] == UInt8(ascii: "[") {
-            guard let closeSecond = matchingBracket(bytes, closeBracket + 2) else { return nil }
+            guard let closeSecond = brackets.close(openingAt: closeBracket + 1) else { return nil }
             let second = slice(bytes, (closeBracket + 2)..<closeSecond)
             // `[text][]` is collapsed: the text is its own label.
             label = second.trimmingCharacters(in: .whitespaces).isEmpty ? first : second
@@ -2881,7 +2948,19 @@ public enum MarkdownParser {
     /// The `)` that closes a link, skipping the parts that may contain one:
     /// an angle-bracketed destination, a quoted title, and balanced parentheses
     /// (which is also the `(title)` spelling).
-    private static func findLinkClose(_ bytes: [UInt8], _ from: Int) -> Int? {
+    /// How deep parentheses may nest inside a link destination.
+    ///
+    /// CommonMark lets a destination hold balanced parentheses but says nothing
+    /// about how many, and unbounded is what makes `[a](` repeated quadratic:
+    /// every bracket starts a scan whose depth only ever grows, so each one
+    /// walks to the end of the line before giving up. A destination that nests
+    /// this deep isn't one anybody wrote — every example in the specification
+    /// stays inside one pair.
+    public static let maxLinkParenDepth = 32
+
+    private static func findLinkClose(_ bytes: [UInt8], _ from: Int, _ last: LastByte) -> Int? {
+        // With no `)` left there is nothing to find, so don't go looking.
+        guard last.has(UInt8(ascii: ")"), atOrAfter: from) else { return nil }
         var i = from
         var depth = 0
         while i < bytes.count {
@@ -2891,7 +2970,12 @@ public enum MarkdownParser {
                let close = findUnescaped(bytes, i + 1, UInt8(ascii: ">")) { i = close + 1; continue }
             if b == UInt8(ascii: "\"") || b == UInt8(ascii: "'"),
                let close = findUnescaped(bytes, i + 1, b) { i = close + 1; continue }
-            if b == UInt8(ascii: "(") { depth += 1; i += 1; continue }
+            if b == UInt8(ascii: "(") {
+                depth += 1
+                if depth > maxLinkParenDepth { return nil }
+                i += 1
+                continue
+            }
             if b == UInt8(ascii: ")") {
                 if depth == 0 { return i }
                 depth -= 1
@@ -3077,19 +3161,47 @@ public enum MarkdownParser {
     /// that `[link [foo [bar]]]` closes at the last bracket rather than the
     /// first — and so an image inside a link, `[![alt](img)](url)`, holds
     /// together.
-    private static func matchingBracket(_ bytes: [UInt8], _ start: Int) -> Int? {
-        var depth = 1
-        var i = start
-        while i < bytes.count {
-            if bytes[i] == UInt8(ascii: "\\") { i += 2; continue }
-            if bytes[i] == UInt8(ascii: "[") { depth += 1 }
-            else if bytes[i] == UInt8(ascii: "]") {
-                depth -= 1
-                if depth == 0 { return i }
+    /// Every bracket's match, worked out in one pass with a stack.
+    ///
+    /// Walking forward from a bracket counting depth answers one question in
+    /// time proportional to the rest of the line, and the inline scanner asks it
+    /// at every `[` — so `[[[[…`, or a line of openers with a single `]` at the
+    /// end, costs a walk of the whole line per character. A stack pass answers
+    /// it for every bracket at once, for the cost of a single walk, and gives
+    /// exactly the same matches: the depth count and the stack agree on which
+    /// `]` closes which `[`, including which brackets go unmatched.
+    struct BracketMatches {
+        private let closes: [Int]
+
+        /// For a line with no bracket in it. `close(openingAt:)` reads an
+        /// empty table as "nothing matches", which is the right answer there,
+        /// and it costs neither a pass nor an allocation.
+        static let none = BracketMatches()
+
+        private init() { closes = [] }
+
+        init(_ bytes: [UInt8]) {
+            var closes = [Int](repeating: -1, count: bytes.count)
+            var open: [Int] = []
+            var i = 0
+            while i < bytes.count {
+                // An escaped bracket is text, exactly as the walk treated it.
+                if bytes[i] == UInt8(ascii: "\\") { i += 2; continue }
+                if bytes[i] == UInt8(ascii: "[") {
+                    open.append(i)
+                } else if bytes[i] == UInt8(ascii: "]"), let opener = open.popLast() {
+                    closes[opener] = i
+                }
+                i += 1
             }
-            i += 1
+            self.closes = closes
         }
-        return nil
+
+        /// The `]` closing the bracket that opens at `opener`, if it has one.
+        func close(openingAt opener: Int) -> Int? {
+            guard opener >= 0, opener < closes.count, closes[opener] >= 0 else { return nil }
+            return closes[opener]
+        }
     }
 
     /// Whether a label already holds a link, which means it can't become one:
@@ -3097,11 +3209,14 @@ public enum MarkdownParser {
     /// the outer brackets stay literal. An image may nest, so `!` disqualifies.
     private static func labelHoldsALink(_ label: String) -> Bool {
         let bytes = Array(label.utf8)
+        // Built once for the whole label rather than per bracket: this walks
+        // every `[` in it, and each of those would otherwise scan to the end.
+        let brackets = BracketMatches(bytes)
         var i = 0
         while i < bytes.count {
             if bytes[i] == UInt8(ascii: "\\") { i += 2; continue }
             if bytes[i] == UInt8(ascii: "["), i == 0 || bytes[i - 1] != UInt8(ascii: "!"),
-               let close = matchingBracket(bytes, i + 1), close + 1 < bytes.count,
+               let close = brackets.close(openingAt: i), close + 1 < bytes.count,
                bytes[close + 1] == UInt8(ascii: "(") || bytes[close + 1] == UInt8(ascii: "[") {
                 return true
             }
@@ -3169,11 +3284,113 @@ public enum MarkdownParser {
         return nil
     }
 
-    private static func findSeq(_ bytes: [UInt8], _ from: Int, _ seq: [UInt8]) -> Int? {
-        guard !seq.isEmpty else { return nil }
+    /// Where each byte last appears in the line being scanned.
+    ///
+    /// The inline scanner looks for a closing delimiter from every position that
+    /// could open one, and when the closer isn't in the line at all each of
+    /// those looks walks to the end of the buffer — so `[[[[…`, which closes
+    /// nothing, costs a scan of the whole line per character. One pass recording
+    /// where each byte last occurs answers "is there a closer left?" outright,
+    /// which is what keeps a line of unmatched openers linear.
+    ///
+    /// Five stored positions rather than a table indexed by byte: this is built
+    /// for every line parsed, including the short ones inside a quote or a list
+    /// item, and a table means a heap allocation each time — which cost more on
+    /// ordinary documents than the scans it saves on hostile ones.
+    struct LastByte {
+        private let bracket: Int
+        private let paren: Int
+        private let angle: Int
+        private let tilde: Int
+        private let equals: Int
+        /// Whether the line opens a bracket anywhere — the one thing worth
+        /// knowing before deciding to match brackets at all.
+        let opensBracket: Bool
+
+        init(_ bytes: [UInt8]) {
+            var bracket = -1, paren = -1, angle = -1, tilde = -1, equals = -1
+            var opensBracket = false
+            for i in bytes.indices {
+                switch bytes[i] {
+                case UInt8(ascii: "["): opensBracket = true
+                case UInt8(ascii: "]"): bracket = i
+                case UInt8(ascii: ")"): paren = i
+                case UInt8(ascii: ">"): angle = i
+                case UInt8(ascii: "~"): tilde = i
+                case UInt8(ascii: "="): equals = i
+                default: break
+                }
+            }
+            self.bracket = bracket
+            self.paren = paren
+            self.angle = angle
+            self.tilde = tilde
+            self.equals = equals
+            self.opensBracket = opensBracket
+        }
+
+        func has(_ byte: UInt8, atOrAfter from: Int) -> Bool {
+            let last: Int
+            switch byte {
+            case UInt8(ascii: "]"): last = bracket
+            case UInt8(ascii: ")"): last = paren
+            case UInt8(ascii: ">"): last = angle
+            case UInt8(ascii: "~"): last = tilde
+            case UInt8(ascii: "="): last = equals
+            // Only the closers the scanners ask about are tracked. Anything
+            // else has to be assumed present, or the caller would skip a search
+            // that might have found something.
+            default: return true
+            }
+            return last >= from
+        }
+    }
+
+    /// The next `ab` pair at or after `from`.
+    ///
+    /// The inline delimiters that come in twos — `]]`, `~~`, `==` — are looked
+    /// for at every position that could open one. Taking the two bytes rather
+    /// than a sequence keeps the caller from building an array per position, and
+    /// the `last` check answers the case that costs the most: a line that opens
+    /// the delimiter over and over and never closes it.
+    /// `exhausted` records, per pair, a position from which the search already
+    /// came up empty. A forward search that finds nothing from one position
+    /// finds nothing from any later one, so that first failure is the only one
+    /// worth paying for — which is what a line like `[[[[…]` needs: it holds a
+    /// `]`, so the "any closer left" test passes, but never a `]]`, and without
+    /// the memo every `[[` scans the rest of the line to discover that again.
+    private static func findPair(_ bytes: [UInt8], _ from: Int,
+                                 _ a: UInt8, _ b: UInt8, _ last: LastByte,
+                                 _ exhausted: inout [Int: Int]) -> Int? {
+        guard from >= 0, last.has(b, atOrAfter: from + 1) else { return nil }
+        let key = Int(a) << 8 | Int(b)
+        if let empty = exhausted[key], from >= empty { return nil }
         var i = from
-        while i + seq.count <= bytes.count {
-            if Array(bytes[i..<(i + seq.count)]) == seq { return i }
+        while i + 1 < bytes.count {
+            if bytes[i] == a && bytes[i + 1] == b { return i }
+            i += 1
+        }
+        exhausted[key] = from
+        return nil
+    }
+
+    /// Compared in place. Slicing the candidate into a fresh `Array` to compare
+    /// it allocated once per position scanned, which on a line that never
+    /// contains the sequence is an allocation per character.
+    private static func findSeq(_ bytes: [UInt8], _ from: Int, _ seq: [UInt8]) -> Int? {
+        guard !seq.isEmpty, from >= 0 else { return nil }
+        let first = seq[0]
+        var i = from
+        let last = bytes.count - seq.count
+        outer: while i <= last {
+            if bytes[i] == first {
+                var k = 1
+                while k < seq.count {
+                    if bytes[i + k] != seq[k] { i += 1; continue outer }
+                    k += 1
+                }
+                return i
+            }
             i += 1
         }
         return nil
