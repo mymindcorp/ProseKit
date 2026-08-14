@@ -728,23 +728,49 @@ public enum MarkdownParseError: Error, CustomStringConvertible, Equatable {
     /// can't express the document — a bug rather than bad input.
     case invalidDocument(String)
 
+    /// The source nests blocks deeper than the parser will recurse.
+    case nestingTooDeep(limit: Int)
+
     public var description: String {
         switch self {
         case let .invalidDocument(reason):
             return "MarkdownParseError: parsed content isn't a valid document — \(reason)"
+        case let .nestingTooDeep(limit):
+            return "MarkdownParseError: blocks nest deeper than \(limit)"
         }
     }
 }
 
 public enum MarkdownParser {
+    /// How deep blocks may nest before the source is rejected.
+    ///
+    /// Every nested block — a quote inside a quote, a list inside a list item, a
+    /// footnote's body — is a recursive call, and nothing about `> > > …` costs
+    /// the writer anything, so a kilobyte of markers is enough to run the stack
+    /// out and take the process down. That isn't recoverable: a stack overflow
+    /// isn't a Swift error, so the `try?` at the paste site can't catch it.
+    ///
+    /// Lower than `HTMLParser.maxNestingDepth`, which caps the same class of
+    /// input, because these frames are far bigger: the block parser carries a
+    /// whole document's worth of locals, about 2.5 KB per level in release, so
+    /// a limit of 256 still overflows the 512 KB a secondary thread gets by
+    /// default. At 64 the deepest legal document needs ~160 KB, which clears
+    /// every stack we parse on — and stays well above anything written on
+    /// purpose, where even a long quoted mail thread stops around 20.
+    public static let maxNestingDepth = 64
+
     public static func parse(_ markdown: String, schema: Schema) throws -> Node {
+        try parse(markdown, schema: schema, depth: 0)
+    }
+
+    static func parse(_ markdown: String, schema: Schema, depth: Int) throws -> Node {
         // A reference can appear before the definition it uses, so definitions
         // are collected — and their lines removed — before anything is parsed.
         let expanded = markdown.components(separatedBy: "\n").map { expandLeadingTabs($0) }
         let (lines, definitions) = collectDefinitions(expanded)
         // A definition inside a quote still belongs to the document.
         let all = definitions.merging(collectNestedDefinitions(expanded)) { outer, _ in outer }
-        return try parse(lines: lines, schema: schema, definitions: all)
+        return try parse(lines: lines, schema: schema, definitions: all, depth: depth)
     }
 
     /// Definitions found anywhere in a document, including inside quotes and
@@ -778,16 +804,21 @@ public enum MarkdownParser {
     /// Parse a nested run of lines — a quote's body, a list item's content —
     /// with the definitions collected so far still in scope.
     static func parseNested(_ text: String, schema: Schema,
-                            definitions: [String: LinkDefinition]) throws -> Node {
+                            definitions: [String: LinkDefinition], depth: Int) throws -> Node {
         let (lines, local) = collectDefinitions(
             text.components(separatedBy: "\n").map { expandLeadingTabs($0) })
         // An outer definition wins, matching the first-one-wins rule.
         return try parse(lines: lines, schema: schema,
-                         definitions: definitions.merging(local) { outer, _ in outer })
+                         definitions: definitions.merging(local) { outer, _ in outer },
+                         depth: depth)
     }
 
     static func parse(lines: [String], schema: Schema,
-                      definitions: [String: LinkDefinition]) throws -> Node {
+                      definitions: [String: LinkDefinition], depth: Int) throws -> Node {
+        // Every route into a nested block — quotes, list items, footnotes,
+        // details, figures — comes back through here, so one check covers all
+        // of them.
+        if depth > maxNestingDepth { throw MarkdownParseError.nestingTooDeep(limit: maxNestingDepth) }
         var blocks: [Node] = []
         var i = 0
         while i < lines.count {
@@ -875,7 +906,7 @@ public enum MarkdownParser {
                     if !trailing.isEmpty { caption = trailing }
                     i += 1  // consume the closing fence
                 }
-                if let figure = makeFigure(body, caption: caption, schema: schema) {
+                if let figure = makeFigure(body, caption: caption, schema: schema, depth: depth + 1) {
                     blocks.append(figure)
                 }
                 continue
@@ -922,7 +953,7 @@ public enum MarkdownParser {
                     }
                     inner.append(lines[i]); i += 1
                 }
-                if let section = try makeDetails(inner, open: open, schema: schema) {
+                if let section = try makeDetails(inner, open: open, schema: schema, depth: depth + 1) {
                     blocks.append(contentsOf: section)
                 }
                 continue
@@ -953,7 +984,7 @@ public enum MarkdownParser {
                     body.append(t); i += 1
                 }
                 let inner = try parseNested(body.joined(separator: "\n"), schema: schema,
-                                            definitions: definitions)
+                                            definitions: definitions, depth: depth + 1)
                 var content = (0..<inner.childCount).map { inner.child($0) }
                 // A note with nothing in it is still a note; `block+` needs a
                 // block to hold, so it gets the empty paragraph it would have
@@ -1077,15 +1108,16 @@ public enum MarkdownParser {
                     }
                     break
                 }
-                let inner = try parseNested(quote.joined(separator: "\n"), schema: schema, definitions: definitions)
+                let inner = try parseNested(quote.joined(separator: "\n"), schema: schema, definitions: definitions,
+                                            depth: depth + 1)
                 if let bq = try? schema.node("blockquote", [:], content: inner.content) { blocks.append(bq) }
                 continue
             }
             // Lists
             if let bullet = bulletMatch(trimmed) {
                 let (items, next, tight) = collectList(lines, i, ordered: false)
-                if let list = makeTaskList(items, schema: schema)
-                    ?? makeList(items, ordered: false, schema: schema, tight: tight) {
+                if let list = try makeTaskList(items, schema: schema, depth: depth + 1)
+                    ?? makeList(items, ordered: false, schema: schema, tight: tight, depth: depth + 1) {
                     blocks.append(list)
                 }
                 i = next
@@ -1094,8 +1126,8 @@ public enum MarkdownParser {
             }
             if let ordered = orderedMatch(trimmed) {
                 let (items, next, tight) = collectList(lines, i, ordered: true)
-                if let list = makeList(items, ordered: true, schema: schema,
-                                       start: ordered, tight: tight) {
+                if let list = try makeList(items, ordered: true, schema: schema,
+                                       start: ordered, tight: tight, depth: depth + 1) {
                     blocks.append(list)
                 }
                 i = next
@@ -1169,7 +1201,7 @@ public enum MarkdownParser {
     /// Build `details(detailsSummary, detailsContent)` from the lines inside a
     /// `<details>` block. Without those nodes in the schema (or without a
     /// `<summary>`), it degrades to a paragraph plus the body blocks.
-    private static func makeDetails(_ lines: [String], open: Bool, schema: Schema) throws -> [Node]? {
+    private static func makeDetails(_ lines: [String], open: Bool, schema: Schema, depth: Int) throws -> [Node]? {
         var summaryText = ""
         var body: [String] = []
         for line in lines {
@@ -1184,7 +1216,7 @@ public enum MarkdownParser {
             }
             body.append(line)
         }
-        let bodyDoc = try parse(body.joined(separator: "\n"), schema: schema)
+        let bodyDoc = try parse(body.joined(separator: "\n"), schema: schema, depth: depth)
         let parsedSummary = parseInline(summaryText, schema)
         // A summary holds inline content only, so anything block-level in it —
         // `<summary>![pic](a.jpg)</summary>` in the default schema — moves to
@@ -1841,9 +1873,9 @@ public enum MarkdownParser {
 
     /// Build a `figure` from a fence's body lines and caption. Returns nil if the
     /// schema can't hold one, so the caller leaves the text alone.
-    private static func makeFigure(_ body: [String], caption: String, schema: Schema) -> Node? {
+    private static func makeFigure(_ body: [String], caption: String, schema: Schema, depth: Int) -> Node? {
         guard let figureType = schema.nodes["figure"] else { return nil }
-        let inner = (try? parse(body.joined(separator: "\n"), schema: schema))?.content
+        let inner = (try? parse(body.joined(separator: "\n"), schema: schema, depth: depth))?.content
         var children = inner.map { frag in (0..<frag.childCount).map { frag.child($0) } } ?? []
         if !caption.isEmpty, let captionType = schema.nodes["figcaption"],
            let node = try? captionType.create([:], content: Fragment.from(parseInline(caption, schema))) {
@@ -1897,14 +1929,14 @@ public enum MarkdownParser {
     /// Build a `taskList` when every item carries a checkbox and the schema has
     /// the nodes; otherwise nil, so the caller falls back to a plain list and the
     /// brackets stay literal text.
-    private static func makeTaskList(_ items: [[String]], schema: Schema) -> Node? {
+    private static func makeTaskList(_ items: [[String]], schema: Schema, depth: Int) throws -> Node? {
         guard let listType = schema.nodes["taskList"], let itemType = schema.nodes["taskItem"],
               !items.isEmpty, items.allSatisfy({ taskMarker($0.first ?? "") != nil }) else { return nil }
         var itemNodes: [Node] = []
         for var lines in items {
             guard let marker = taskMarker(lines[0]) else { return nil }
             lines[0] = marker.rest
-            let content = fitContent(itemBlocks(lines, schema: schema), into: itemType, schema: schema)
+            let content = fitContent(try itemBlocks(lines, schema: schema, depth: depth), into: itemType, schema: schema)
             guard let item = try? itemType.create(["checked": .bool(marker.checked)],
                                                   content: Fragment.from(content)) else { return nil }
             itemNodes.append(item)
@@ -1914,13 +1946,13 @@ public enum MarkdownParser {
 
     /// The blocks of one list item. An item that carried continuation lines is
     /// parsed as a document, the way a blockquote's contents are.
-    private static func itemBlocks(_ lines: [String], schema: Schema) -> [Node] {
+    private static func itemBlocks(_ lines: [String], schema: Schema, depth: Int) throws -> [Node] {
         // Indented content is a block even on its own line: a marker followed by
         // five or more spaces leaves the content four columns in, which is code.
         if lines.count > 1 || indentWidth(lines[0]) >= 4
             || startsAnyBlock(lines[0].trimmingCharacters(in: .whitespaces)) {
-            let inner = (try? parse(lines.joined(separator: "\n"), schema: schema))?.content
-            return inner.map { frag in (0..<frag.childCount).map { frag.child($0) } } ?? []
+            let inner = try parse(lines.joined(separator: "\n"), schema: schema, depth: depth).content
+            return (0..<inner.childCount).map { inner.child($0) }
         }
         // A list item holds blocks, so a block-level image in its text becomes a
         // sibling block rather than an invalid child of the paragraph.
@@ -1932,14 +1964,14 @@ public enum MarkdownParser {
     }
 
     private static func makeList(_ items: [[String]], ordered: Bool, schema: Schema,
-                                 start: Int = 1, tight: Bool = false) -> Node? {
+                                 start: Int = 1, tight: Bool = false, depth: Int) throws -> Node? {
         guard let itemType = schema.nodes["listItem"] else { return nil }
         var itemNodes: [Node] = []
         for lines in items {
             // `itemBlocks` decides whether the content is inline or its own
             // blocks; this used to repeat that test and so never saw the
             // indented single-line case.
-            let content = fitContent(itemBlocks(lines, schema: schema), into: itemType, schema: schema)
+            let content = fitContent(try itemBlocks(lines, schema: schema, depth: depth), into: itemType, schema: schema)
             guard let item = try? itemType.create([:], content: Fragment.from(content)) else { continue }
             itemNodes.append(item)
         }

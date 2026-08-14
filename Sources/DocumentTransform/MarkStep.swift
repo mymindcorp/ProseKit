@@ -29,6 +29,7 @@ public struct AddMarkStep: Step {
     public var jsonID: String { "addMark" }
 
     public func apply(_ doc: Node) -> StepResult {
+        if let failure = StepResult.outOfRange(doc, from, to) { return failure }
         let oldSlice = doc.slice(from, to)
         let resolvedFrom = doc.resolve(from)
         let parent = resolvedFrom.node(resolvedFrom.sharedDepth(to))
@@ -63,6 +64,7 @@ public struct AddMarkStep: Step {
               case let .object(markJSON)? = json["mark"] else {
             throw ModelError.invalidJSON("Invalid input for AddMarkStep.fromJSON")
         }
+        try checkStepPositions("AddMarkStep", from, to)
         return AddMarkStep(from, to, try Mark.fromJSON(schema, markJSON))
     }
 }
@@ -80,6 +82,7 @@ public struct RemoveMarkStep: Step {
     public var jsonID: String { "removeMark" }
 
     public func apply(_ doc: Node) -> StepResult {
+        if let failure = StepResult.outOfRange(doc, from, to) { return failure }
         let oldSlice = doc.slice(from, to)
         let content = mapFragment(oldSlice.content, { node, _, _ in
             node.mark(mark.removeFromSet(node.marks))
@@ -111,6 +114,7 @@ public struct RemoveMarkStep: Step {
               case let .object(markJSON)? = json["mark"] else {
             throw ModelError.invalidJSON("Invalid input for RemoveMarkStep.fromJSON")
         }
+        try checkStepPositions("RemoveMarkStep", from, to)
         return RemoveMarkStep(from, to, try Mark.fromJSON(schema, markJSON))
     }
 }
