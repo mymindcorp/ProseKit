@@ -23,6 +23,21 @@ test("text content / textBetween") {
     try expectEqual(doc.textBetween(0, doc.content.size, blockSeparator: " "), "hello world")
 }
 
+test("textBetween: only blocks that render a line get a separator") {
+    // A wrapper contributes no text of its own, so it must not open a line.
+    // Counting one per block put a blank line in front of every nested block —
+    // which is what the plain-text copy and `plainText` paths read.
+    let quote = B.doc(B.blockquote(B.p("a"), B.p("b")))
+    try expectEqual(quote.textBetween(0, quote.content.size, blockSeparator: "\n"), "a\nb")
+
+    let list = B.doc(B.ul(B.li(B.p("x"))), B.p("y"))
+    try expectEqual(list.textBetween(0, list.content.size, blockSeparator: "\n"), "x\ny")
+
+    // A block leaf with no text of its own doesn't open a line either.
+    let rule = B.doc(B.p("a"), B.hr(), B.p("b"))
+    try expectEqual(rule.textBetween(0, rule.content.size, blockSeparator: "\n"), "a\nb")
+}
+
 test("equality and structural sharing") {
     let a = B.doc(B.p("a"), B.p("b"))
     let b = B.doc(B.p("a"), B.p("b"))
@@ -155,6 +170,19 @@ test("createAndFill fills required content") {
     // (schema definition order) rather than recursing into blockquote.
     try expect(filled!.childCount >= 1)
     try expectEqual(filled!.child(0).type.name, "paragraph")
+}
+
+test("createAndFill puts the required content in front of what it is given") {
+    // `listItem` is "paragraph block*", so a bare blockquote needs an empty
+    // paragraph ahead of it. Computing the trailing fill before that leading
+    // one made the match fail and dropped the content entirely.
+    let listItem = B.schema.nodes["listItem"]!
+    let filled = listItem.createAndFill([:], content: Fragment.from(B.blockquote(B.p("a"))))
+    try expectNotNil(filled)
+    try expectEqual(filled!.childCount, 2)
+    try expectEqual(filled!.child(0).type.name, "paragraph")
+    try expectEqual(filled!.child(1).type.name, "blockquote")
+    try filled!.check()
 }
 
 test("findWrapping: paragraph into blockquote") {
