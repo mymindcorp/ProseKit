@@ -131,14 +131,16 @@ public struct Fragment: Hashable, Sendable {
                     nodeText = lt(node)
                 }
             }
-            if node.isLeaf || node.isText {
-                if let blockSeparator, !first, node.isBlock { text += blockSeparator }
-                text += nodeText
-                first = false
-            } else if node.isBlock, let blockSeparator {
-                if !first { text += blockSeparator }
-                first = false
+            // Only a block that contributes a *line* of its own gets a
+            // separator: a textblock, or a block leaf that renders as text. A
+            // wrapper (blockquote, list, list item, table cell) contributes
+            // nothing itself, so counting it here put a blank line in front of
+            // every nested block.
+            if let blockSeparator, node.isBlock,
+               node.isTextblock || (node.isLeaf && !nodeText.isEmpty) {
+                if first { first = false } else { text += blockSeparator }
             }
+            text += nodeText
             return true
         })
         return text

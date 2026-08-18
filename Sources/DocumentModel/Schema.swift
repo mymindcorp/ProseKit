@@ -209,11 +209,16 @@ public final class NodeType: @unchecked Sendable {
     public func createAndFill(_ attrs: Attrs = [:], content: Fragment = .empty, marks: [Mark] = []) -> Node? {
         guard let computedAttrs = try? compute(attrs: attrs) else { return nil }
         var content = content
-        let matched = contentMatch.matchFragment(content)
-        guard let after = matched?.fillBefore(.empty, toEnd: true) else { return nil }
-        guard let before = contentMatch.fillBefore(content, toEnd: false) else { return nil }
-        content = before.append(content).append(after)
-        return Node(type: self, attrs: computedAttrs, content: content, marks: Mark.setFrom(marks))
+        // The leading fill has to go in *before* we ask what the tail needs:
+        // `matchFragment` on the raw content fails outright whenever something
+        // is required in front of it (a `listItem` given a bare blockquote),
+        // and the whole call would then give up on content it can accommodate.
+        if content.size > 0 {
+            guard let before = contentMatch.fillBefore(content, toEnd: false) else { return nil }
+            content = before.append(content)
+        }
+        guard let after = contentMatch.matchFragment(content)?.fillBefore(.empty, toEnd: true) else { return nil }
+        return Node(type: self, attrs: computedAttrs, content: content.append(after), marks: Mark.setFrom(marks))
     }
 
     public func validContent(_ content: Fragment) -> Bool {
