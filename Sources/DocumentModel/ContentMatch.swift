@@ -131,12 +131,17 @@ public final class ContentMatch: @unchecked Sendable {
             }
             for edge in current.match.next {
                 let type = edge.type
-                if !type.isLeaf && !type.hasRequiredAttrs,
+                // Past the first level we are already inside a wrapper, so the
+                // candidate has to finish that wrapper's content by itself —
+                // `edge.next` is where the wrapper stands once it holds this one
+                // node. Without that, a chain can be handed back that builds an
+                // invalid node: `details` is "detailsSummary detailsContent", so
+                // wrapping into its summary alone leaves the content missing.
+                if !type.isLeaf, !type.hasRequiredAttrs,
                    seen[ObjectIdentifier(type.contentMatch)] == nil,
-                   let m = type.contentMatch.matchType(type) ?? Optional(type.contentMatch) {
+                   current.type == nil || edge.next.validEnd {
                     seen[ObjectIdentifier(type.contentMatch)] = true
                     active.append(Active(match: type.contentMatch, type: type, via: head))
-                    _ = m
                 }
             }
             head += 1
