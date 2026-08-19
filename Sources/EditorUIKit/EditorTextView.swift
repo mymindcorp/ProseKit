@@ -229,7 +229,51 @@ open class EditorTextView: UIView, UIKeyInput {
         didSet { if oldValue != contentOffsetY { realizeVisibleIfNeeded(); setNeedsDisplay(); positionCaretLayer(); syncCheckboxViews(); updateSuggestionPopup(); notifySelectionGeometryChanged(); fireSelectionChange() } }
     }
     /// The full document height; the host uses it as the scroll content height.
+    ///
+    /// Past the lazy threshold this is an *approximation* until the reader has
+    /// scrolled the whole document — see `documentHeightIsExact`, and prefer
+    /// `measuredDocumentHeight()` where being short is not survivable.
     public var documentHeight: CGFloat { ensureLayout().height }
+
+    /// Whether `documentHeight` is a measurement rather than an estimate.
+    ///
+    /// False while any part of the document is still only height-estimated, so
+    /// the value will change as the reader scrolls. It can move in *either*
+    /// direction: the estimator assumes a fixed average character width and no
+    /// wrap overhead, so block types whose real layout is taller (list items
+    /// with markers and indents, quotes, code, tables) make it under-report.
+    ///
+    /// That matters to any host that sizes a scroll container to this height,
+    /// because then the extent *is* the scroll: too short cuts the tail off and
+    /// removes the means to reach it, so nothing ever scrolls it into the
+    /// realize window. Such a host should either take `measuredDocumentHeight()`
+    /// or treat this as a floor of its own.
+    public var documentHeightIsExact: Bool { !ensureLayout().hasEstimatedContent }
+
+    /// The document height with every block typeset, forcing any part that is
+    /// still estimated to be laid out.
+    ///
+    /// Equal to `documentHeight` when `documentHeightIsExact` is already true,
+    /// and cheap in that case. Otherwise it pays a full layout — but keeps the
+    /// result, so unlike measuring on a throwaway view the work is not wasted:
+    /// the document is exact from here on, and scrolling it realizes nothing.
+    public func measuredDocumentHeight() -> CGFloat {
+        let l = ensureLayout()
+        guard l.hasEstimatedContent,
+              l.realize(window: 0 ... .greatestFiniteMagnitude) else { return l.height }
+        layoutGeneration += 1
+        loadPendingImages(l.pendingImages)
+        setNeedsDisplay()
+        if l.height != lastReportedHeight {
+            lastReportedHeight = l.height
+            // Deferred for the same reason as `realizeForPaint`: the caller is
+            // typically mid-layout, and the handler resizes the scroll content.
+            let height = l.height
+            DispatchQueue.main.async { [weak self] in self?.onDocumentHeightChange?(height) }
+        }
+        return l.height
+    }
+
     /// Called when the document height changes (so the host can resize the
     /// scroll content).
     public var onDocumentHeightChange: DocumentHeightHandler?
