@@ -10,13 +10,25 @@ import SchemaKit
 /// short scroll, so the missing tail cannot be reached and never realizes.
 @MainActor
 final class DocumentHeightExactnessTests: XCTestCase {
+    /// The body text every document here is built from. It has to carry two
+    /// properties, each pinned by a test below, because losing either one
+    /// quietly empties out the test that depends on it:
+    ///
+    /// - the estimator under-counts it (`…FallsShortAndMeasuringRecoversIt`);
+    /// - its last line has almost no slack, so the list and quote indents each
+    ///   push it onto one more line (`…ActuallyDiffersFromAllParagraphs`).
+    private static let corpus: String = {
+        let vocab = ["lorem", "ipsum", "dolor", "sit", "amet",
+                     "consectetur", "adipiscing", "elit", "sed", "do"]
+        return (0 ..< 54).map { vocab[$0 % vocab.count] }.joined(separator: " ")
+    }()
+
     private func editor(_ n: Int, mixed: Bool = false) -> Editor {
         let editor = try! Editor(extensions: fullKit())
         let s = editor.schema
-        let words = Array(repeating: "lorem ipsum dolor sit amet", count: 12).joined(separator: " ")
         var blocks: [Node] = []
         for i in 0 ..< n {
-            let text = Fragment.from([s.text("Para \(i): \(words)")])
+            let text = Fragment.from([s.text("Para \(i): \(Self.corpus)")])
             // Block types the estimator under-counts: it assumes a fixed average
             // character width and no wrap overhead, so markers and indents are
             // exactly what it misses.
@@ -80,17 +92,32 @@ final class DocumentHeightExactnessTests: XCTestCase {
 
     /// The same guarantee over a document carrying lists and quotes as well as
     /// paragraphs.
-    ///
-    /// Caveat on what this covers: this document currently lays out to exactly
-    /// the height of the all-paragraph document of the same length, though an
-    /// isolated `bulletList` measures 25 pt taller than a bare paragraph at this
-    /// width. Until that is explained, read this as covering the API rather than
-    /// the block-type layout.
     func testMeasuredHeightIsExactForAMixOfBlockTypes() {
         let e = editor(300, mixed: true)
         let v = view(e)
         XCTAssertFalse(v.documentHeightIsExact)
         XCTAssertEqual(v.measuredDocumentHeight(), fullHeight(e), accuracy: 0.5)
+    }
+
+    /// The mix is load-bearing: lists and quotes indent their content, so the
+    /// same text wraps to more lines inside them than in a bare paragraph, and
+    /// this document is taller than the all-paragraph one of the same length.
+    ///
+    /// Asserted rather than assumed, because it holds only for a corpus picked
+    /// for it. Wrapping is quantised to whole lines, so an indent shows up in
+    /// the height only when it pushes the text past a line boundary; give the
+    /// last line room to spare and the narrower column costs nothing, leaving
+    /// the test above passing over a document indistinguishable in height from
+    /// 300 paragraphs. An earlier corpus did exactly that — it wrapped to nine
+    /// lines at 330 pt, at 314 pt and at 306 pt alike.
+    func testTheMixedDocumentActuallyDiffersFromAllParagraphs() {
+        // What one indent costs, measured rather than assumed, so this doesn't
+        // depend on the body font: the same two blocks, listed and not.
+        let oneIndent = fullHeight(editor(2, mixed: true)) - fullHeight(editor(2))
+        XCTAssertGreaterThan(oneIndent, 0, "the list indent has to cost a line for this to cover anything")
+        XCTAssertEqual(fullHeight(editor(300, mixed: true)) - fullHeight(editor(300)),
+                       200 * oneIndent, accuracy: 0.5,
+                       "each of the 200 lists and quotes costs a line")
     }
 
     /// Measuring keeps its work, unlike laying the document out on a throwaway
