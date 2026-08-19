@@ -192,6 +192,35 @@ test("findWrapping: paragraph into blockquote") {
     try expectNotNil(wrapping)
 }
 
+test("findWrapping: a wrapper it cannot satisfy is not offered") {
+    // Same shape as the shipped `details` node — a container whose content is a
+    // fixed two-node sequence. Wrapping into `summary` alone would leave the
+    // container missing its `body`, so it is not a wrapping at all.
+    let nodes: [(String, NodeSpec)] = [
+        ("doc", NodeSpec(content: "container+")),
+        ("container", NodeSpec(content: "summary body")),
+        ("summary", NodeSpec(content: "paragraph")),
+        ("body", NodeSpec(content: "paragraph+")),
+        ("paragraph", NodeSpec(content: "inline*")),
+        ("text", NodeSpec(group: "inline")),
+    ]
+    let schema = try Schema(nodes: nodes, marks: [], topNode: "doc")
+    let wrapping = schema.topNodeType.contentMatch.findWrapping(schema.nodes["paragraph"]!)
+    try expect(wrapping?.map(\.name) != ["container", "summary"],
+               "offered a wrapping that leaves the container incomplete")
+
+    // Whatever it does offer has to actually build a valid node.
+    if let wrapping {
+        var node = try schema.nodes["paragraph"]!.create()
+        for type in wrapping.reversed() {
+            let built = type.createAndFill([:], content: Fragment.from(node))
+            try expect(built != nil, "could not build \(type.name) around the wrapped content")
+            node = built!
+        }
+        try node.check()
+    }
+}
+
 test("schema: a document does not keep its schema alive") {
     // The back-reference from a type to its schema is non-owning on purpose:
     // the schema owns its types, so a strong reference back would be a cycle
