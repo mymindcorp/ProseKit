@@ -229,7 +229,51 @@ open class EditorTextView: UIView, UIKeyInput {
         didSet { if oldValue != contentOffsetY { realizeVisibleIfNeeded(); setNeedsDisplay(); positionCaretLayer(); syncCheckboxViews(); updateSuggestionPopup(); notifySelectionGeometryChanged(); fireSelectionChange() } }
     }
     /// The full document height; the host uses it as the scroll content height.
+    ///
+    /// Past the lazy threshold this is an *approximation* until the reader has
+    /// scrolled the whole document — see `documentHeightIsExact`, and prefer
+    /// `measuredDocumentHeight()` where being short is not survivable.
     public var documentHeight: CGFloat { ensureLayout().height }
+
+    /// Whether `documentHeight` is a measurement rather than an estimate.
+    ///
+    /// False while any part of the document is still only height-estimated, so
+    /// the value will change as the reader scrolls. It can move in *either*
+    /// direction: the estimator assumes a fixed average character width and no
+    /// wrap overhead, so block types whose real layout is taller (list items
+    /// with markers and indents, quotes, code, tables) make it under-report.
+    ///
+    /// That matters to any host that sizes a scroll container to this height,
+    /// because then the extent *is* the scroll: too short cuts the tail off and
+    /// removes the means to reach it, so nothing ever scrolls it into the
+    /// realize window. Such a host should either take `measuredDocumentHeight()`
+    /// or treat this as a floor of its own.
+    public var documentHeightIsExact: Bool { !ensureLayout().hasEstimatedContent }
+
+    /// The document height with every block typeset, forcing any part that is
+    /// still estimated to be laid out.
+    ///
+    /// Equal to `documentHeight` when `documentHeightIsExact` is already true,
+    /// and cheap in that case. Otherwise it pays a full layout — but keeps the
+    /// result, so unlike measuring on a throwaway view the work is not wasted:
+    /// the document is exact from here on, and scrolling it realizes nothing.
+    public func measuredDocumentHeight() -> CGFloat {
+        let l = ensureLayout()
+        guard l.hasEstimatedContent,
+              l.realize(window: 0 ... .greatestFiniteMagnitude) else { return l.height }
+        layoutGeneration += 1
+        loadPendingImages(l.pendingImages)
+        setNeedsDisplay()
+        if l.height != lastReportedHeight {
+            lastReportedHeight = l.height
+            // Deferred for the same reason as `realizeForPaint`: the caller is
+            // typically mid-layout, and the handler resizes the scroll content.
+            let height = l.height
+            DispatchQueue.main.async { [weak self] in self?.onDocumentHeightChange?(height) }
+        }
+        return l.height
+    }
+
     /// Called when the document height changes (so the host can resize the
     /// scroll content).
     public var onDocumentHeightChange: DocumentHeightHandler?
@@ -522,6 +566,36 @@ open class EditorTextView: UIView, UIKeyInput {
         setNeedsDisplay()
     }
 
+    /// Typeset whatever is about to be painted, so an estimated block is never
+    /// drawn as blank.
+    ///
+    /// `contentOffsetY`'s setter already realizes a generous window ahead of the
+    /// scroll, but nothing orders that pass against this one: the offset may not
+    /// have moved since the layout was built (a first frame whose bounds grew
+    /// afterwards), and a host that re-slices on hysteresis rather than every
+    /// frame can walk the viewport across estimated blocks without writing an
+    /// offset at all. This is the backstop that makes the frame in hand correct.
+    ///
+    /// Deliberately narrower than `realizeWindow()` — exactly the band being
+    /// drawn, not the ±2-viewport prefetch. The prefetch belongs on the scroll
+    /// path; the paint path should do the least that makes the frame right.
+    /// Measured on a 249-block document at a phone column: 0.32 ms for a
+    /// viewport (the prefetch window is 1.05 ms), and 0.5 µs when there is
+    /// nothing to realize — which is almost every frame.
+    private func realizeForPaint(_ layout: DocumentLayout) {
+        guard layout.hasEstimatedContent,
+              layout.realize(window: contentOffsetY ... (contentOffsetY + max(bounds.height, 1)))
+        else { return }
+        layoutGeneration += 1
+        loadPendingImages(layout.pendingImages)
+        guard layout.height != lastReportedHeight else { return }
+        lastReportedHeight = layout.height
+        // Not synchronously: the host resizes its scroll content in response,
+        // which re-enters our layout while this draw pass is reading it.
+        let height = layout.height
+        DispatchQueue.main.async { [weak self] in self?.onDocumentHeightChange?(height) }
+    }
+
     /// Typeset any estimated blocks that have scrolled near the viewport.
     private func realizeVisibleIfNeeded() {
         guard let layout, layout.hasEstimatedContent, layout.realize(window: realizeWindow()) else { return }
@@ -595,6 +669,7 @@ open class EditorTextView: UIView, UIKeyInput {
     open override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
         let l = ensureLayout()
+        realizeForPaint(l)
         // Everything is laid out in document coordinates; shift by the scroll
         // offset so we render only the visible window into a viewport-sized layer.
         ctx.saveGState()
