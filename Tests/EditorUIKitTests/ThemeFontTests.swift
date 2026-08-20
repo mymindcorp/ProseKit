@@ -37,9 +37,71 @@ final class ThemeFontTests: XCTestCase {
         XCTAssertEqual(theme.blockFont(paragraph()).familyName, "Georgia")
     }
 
+    func testHeadingFaceOverridesBodyFace() {
+        var theme = DocumentTheme()
+        theme.dynamicType = false
+        theme.fontName = "Georgia"
+        theme.heading.fontName = "Avenir Next"
+        XCTAssertEqual(theme.bodyFont.familyName, "Georgia")
+        XCTAssertEqual(theme.blockFont(heading(1)).familyName, "Avenir Next")
+        // Body blocks keep the document face.
+        XCTAssertEqual(theme.blockFont(paragraph()).familyName, "Georgia")
+    }
+
+    func testHeadingFaceAppliesOverSystemBodyFont() {
+        var theme = DocumentTheme()
+        theme.dynamicType = false
+        theme.heading.fontName = "Georgia"
+        let h2 = theme.blockFont(heading(2))
+        XCTAssertEqual(h2.familyName, "Georgia")
+        XCTAssertEqual(h2.pointSize, theme.fixedBodyFontSize * theme.heading.scale[1], accuracy: 0.01)
+    }
+
+    func testUnavailableHeadingFaceFallsBackToBodyFace() {
+        var theme = DocumentTheme()
+        theme.dynamicType = false
+        theme.fontName = "Georgia"
+        theme.heading.fontName = "ThisFontDoesNotExist-XYZ"
+        // Falls through to the document face rather than all the way to system.
+        XCTAssertEqual(theme.blockFont(heading(1)).familyName, "Georgia")
+    }
+
+    func testHeadingScaleDrivesSize() {
+        var theme = DocumentTheme()
+        theme.dynamicType = false
+        theme.fontName = "Georgia"
+        theme.heading.scale[0] = 3
+        XCTAssertEqual(theme.blockFont(heading(1)).pointSize,
+                       theme.fixedBodyFontSize * 3, accuracy: 0.01)
+    }
+
+    func testShortHeadingScaleFallsBackToBodySize() {
+        var theme = DocumentTheme()
+        theme.dynamicType = false
+        theme.fontName = "Georgia"
+        theme.heading.scale = [2]  // levels 2…6 unspecified
+        XCTAssertEqual(theme.blockFont(heading(1)).pointSize,
+                       theme.fixedBodyFontSize * 2, accuracy: 0.01)
+        XCTAssertEqual(theme.blockFont(heading(4)).pointSize,
+                       theme.fixedBodyFontSize, accuracy: 0.01)
+    }
+
+    func testHeadingLineHeightMultipliesAndBodyStillAdds() {
+        var theme = DocumentTheme()
+        theme.lineSpacing = 5
+        // Unset: a heading leads like any other block.
+        XCTAssertEqual(theme.lineHeight(for: heading(1), naturalHeight: 40), 45, accuracy: 0.01)
+        XCTAssertEqual(theme.lineHeight(for: paragraph(), naturalHeight: 20), 25, accuracy: 0.01)
+        // Set: the heading multiplies its natural height instead.
+        theme.heading.lineHeight = 0.9
+        XCTAssertEqual(theme.lineHeight(for: heading(1), naturalHeight: 40), 36, accuracy: 0.01)
+        // Body text is unaffected.
+        XCTAssertEqual(theme.lineHeight(for: paragraph(), naturalHeight: 20), 25, accuracy: 0.01)
+    }
+
     func testCustomMonoFontIsApplied() {
         var theme = DocumentTheme()
-        theme.monoFontName = "Courier New"
+        theme.code.fontName = "Courier New"
         XCTAssertEqual(theme.monoFont.familyName, "Courier New")
     }
 

@@ -20,14 +20,14 @@ final class LinkPopupView: UIView, UITextFieldDelegate {
         layer.cornerRadius = 10
         layer.cornerCurve = .continuous
         layer.borderWidth = 0.5
-        layer.borderColor = theme.quoteBarColor.withAlphaComponent(0.35).cgColor
+        layer.borderColor = theme.hairlineColor.withAlphaComponent(0.35).cgColor
         layer.shadowColor = UIColor.black.cgColor
         layer.shadowOpacity = 0.20
         layer.shadowRadius = 16
         layer.shadowOffset = CGSize(width: 0, height: 6)
 
         let globe = UIImageView(image: UIImage(systemName: "link"))
-        globe.tintColor = theme.codeColor
+        globe.tintColor = theme.code.color
         globe.contentMode = .scaleAspectFit
         globe.setContentHuggingPriority(.required, for: .horizontal)
 
@@ -45,7 +45,7 @@ final class LinkPopupView: UIView, UITextFieldDelegate {
 
         let apply = UIButton(type: .system)
         apply.setImage(UIImage(systemName: "checkmark.circle.fill"), for: .normal)
-        apply.tintColor = theme.caretColor
+        apply.tintColor = theme.selection.caret
         apply.addTarget(self, action: #selector(applyTapped), for: .touchUpInside)
         apply.setContentHuggingPriority(.required, for: .horizontal)
 

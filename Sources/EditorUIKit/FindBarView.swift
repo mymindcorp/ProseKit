@@ -20,7 +20,7 @@ final class FindBarView: UIView, UITextFieldDelegate {
         backgroundColor = theme.popupBackground
         layer.cornerRadius = 10
         layer.borderWidth = 0.5
-        layer.borderColor = theme.quoteBarColor.cgColor
+        layer.borderColor = theme.hairlineColor.cgColor
         layer.shadowColor = UIColor.black.cgColor
         layer.shadowOpacity = 0.15
         layer.shadowRadius = 8
@@ -33,7 +33,7 @@ final class FindBarView: UIView, UITextFieldDelegate {
         replaceField.delegate = self
 
         countLabel.font = .systemFont(ofSize: 12, weight: .regular)
-        countLabel.textColor = theme.codeColor
+        countLabel.textColor = theme.code.color
         countLabel.textAlignment = .center
         countLabel.setContentHuggingPriority(.required, for: .horizontal)
         setCount(current: -1, total: 0)
@@ -83,7 +83,7 @@ final class FindBarView: UIView, UITextFieldDelegate {
 
     private func separator(_ theme: DocumentTheme) -> UIView {
         let v = UIView()
-        v.backgroundColor = theme.quoteBarColor
+        v.backgroundColor = theme.hairlineColor
         v.translatesAutoresizingMaskIntoConstraints = false
         v.widthAnchor.constraint(equalToConstant: 1).isActive = true
         v.heightAnchor.constraint(equalToConstant: 22).isActive = true

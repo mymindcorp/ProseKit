@@ -30,10 +30,7 @@ final class CheckboxOverlay {
     init(host: UIView) { self.host = host }
 
     private func makeView() -> any TaskCheckboxView {
-        if let view = provider?() { return view }
-        let view = DefaultTaskCheckboxView(frame: .zero)
-        view.theme = theme
-        return view
+        provider?() ?? DefaultTaskCheckboxView(frame: .zero)
     }
 
     /// Position a recycled view over every checkbox visible in the window
@@ -57,6 +54,9 @@ final class CheckboxOverlay {
             view.isHidden = false
             view.frame = box.rect.offsetBy(dx: 0, dy: -offsetY)
             view.isChecked = box.checked // silent sync (setter is a no-op if unchanged)
+            // Themed here rather than at construction: a host can swap the theme
+            // at any time, and these views outlive any single layout.
+            view.apply(theme)
             let pos = box.pos
             view.onToggle = onToggle.map { toggle in { toggle(pos) } }
             // Read-only checkboxes (no toggle handler) ignore taps and pointer.
