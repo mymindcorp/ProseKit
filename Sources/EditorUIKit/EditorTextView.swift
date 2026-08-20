@@ -3,7 +3,7 @@ public import UIKit
 import UniformTypeIdentifiers
 import DocumentModel
 import DocumentTransform
-import EditorStateKit
+public import EditorStateKit
 import EditorCommands
 import EditorKeymap
 public import SchemaKit
@@ -179,7 +179,10 @@ open class EditorTextView: UIView, UIKeyInput {
         // host sets `editMenuItems` — so the system's native callout (with Writing
         // Tools / Rewrite) stays intact by default. See `editMenuItems`.
 
-        editor.onTransaction = { [weak self] tr in self?.mapSpellCache(through: tr) }
+        editor.onTransaction = { [weak self] tr in
+            self?.mapSpellCache(through: tr)
+            if tr.docChanged { self?.onDocumentChange?(tr) }
+        }
         editor.onChange = { [weak self] _ in self?.setNeedsRebuild(); self?.fireSelectionChange() }
         // Let async suggestion sources (e.g. a DB-backed `[[`) repaint the popup
         // when their results arrive, by re-pulling the active source.
@@ -1216,6 +1219,20 @@ open class EditorTextView: UIView, UIKeyInput {
     /// per-highlight animation) plus the on-screen rect and resolved color. Call
     /// `setNeedsDisplay()` to drive an animation. nil → default rendering.
     public var highlightRenderer: ((_ ctx: CGContext, _ runs: [HighlightRun]) -> Void)?
+
+    /// Called after every transaction that changed the document, with the
+    /// transaction itself — so a host can map its own document-keyed state
+    /// through the edit via `tr.mapping`.
+    ///
+    /// The companion to `highlightRenderer`: a renderer that animates a given
+    /// highlight keys its state to the run's `from`/`to`, and every edit above
+    /// that run renumbers them. Without mapping, state recorded before the edit
+    /// lands on whatever text now occupies those positions. Not fired for
+    /// selection-only changes, which never move anything.
+    ///
+    /// The view takes `Editor.onTransaction` for its own bookkeeping; use this
+    /// rather than reassigning that.
+    public var onDocumentChange: ((_ tr: Transaction) -> Void)?
 
     /// Whether the editor currently has keyboard focus. Redefines UIView's
     /// focus-engine `isFocused` to mean "is first responder" — the meaningful

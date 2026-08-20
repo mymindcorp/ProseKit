@@ -721,6 +721,9 @@ struct EditorContainer: UIViewRepresentable {
         // the floating bubble routes color picks through it.
         let drying = DryingInk(textView: textView)
         context.coordinator.dryingInk = drying
+        // Keep wet strokes pinned to their text across edits, so ink mid-sweep
+        // when you type elsewhere finishes drying where it was laid down.
+        textView.onDocumentChange = { [weak drying] tr in drying?.map(through: tr) }
         // NOTE: we deliberately do NOT set `textView.editMenuItems` here. Installing
         // a custom edit-menu interaction replaces the system callout (dropping the
         // OS Writing Tools / Rewrite items), so the highlighter lives in the bubble
@@ -1197,6 +1200,27 @@ final class DryingInk {
     private var strokes: [Stroke] = []
     private var link: CADisplayLink?
 
+    /// Carry wet strokes through a document change (via `onDocumentChange`).
+    ///
+    /// A stroke is a range of *text*, not of positions: ink laid on "the quick
+    /// fox" should keep drying over those words even if you type a paragraph
+    /// above them mid-sweep. Unmapped, the recorded range would stay put while
+    /// the text slid out from under it, and the tip would finish its sweep over
+    /// whatever moved in.
+    ///
+    /// Biased outward-exclusive (`1` at the start, `-1` at the end), matching how
+    /// the highlight mark itself behaves: typing at either edge falls outside the
+    /// stroke, typing inside extends it. A stroke deleted out of existence is
+    /// dropped. (Qualified: SwiftUI has a `Transaction` of its own.)
+    func map(through tr: EditorStateKit.Transaction) {
+        guard !strokes.isEmpty else { return }
+        strokes = strokes.compactMap {
+            let from = tr.mapping.map($0.from, 1), to = tr.mapping.map($0.to, -1)
+            return from < to ? Stroke(from: from, to: to, at: $0.at) : nil
+        }
+        if strokes.isEmpty { link?.invalidate(); link = nil }
+    }
+
     init(textView: EditorTextView) { self.textView = textView }
 
     /// How long the tip takes to cross a stroke: length / speed, capped at `maxSweep`.
@@ -1280,6 +1304,16 @@ final class DryingInk {
         // (the hallmark of a chisel tip).
         let slant = min(rect.height * config.slantFraction, config.slantMax)
 
+        // Every random-looking part of the stroke below is keyed to this run's
+        // *geometry*, never to its document positions. Geometry only moves when
+        // the ink itself moves: editing earlier in the document shifts a run's
+        // `from`/`to` (and its y) but not its x, so the shape a highlight dried
+        // into survives typing elsewhere instead of re-rolling each keystroke.
+        //
+        // Quantized so two layout passes that agree to within a hair still land
+        // on the same seed.
+        func seed(_ x: CGFloat) -> Int { Int((x * 4).rounded()) }
+
         // Deterministic, sub-pixel hand wobble keyed to document x: stable across
         // frames and scroll (so it doesn't shimmer) and tiny (so dried ink still
         // reads even). 1-D value noise: smooth-interpolated hashes per cell.
@@ -1334,16 +1368,18 @@ final class DryingInk {
 
         // Real highlighting rarely lands flush: each end under- or overshoots the
         // text. Bias toward undershoot (stopping a hair short) ~70% of the time,
-        // capped to ~3px under / ~2px over, keyed per end so it's stable.
+        // capped to ~3px under / ~2px over, keyed per end so it's stable. Keyed
+        // to each end's x (not `run.from`/`run.to`, which every edit above this
+        // run renumbers — that made dried ends jump on unrelated keystrokes).
         let bias = config.undershootBias
-        func shoot(_ seed: Int) -> CGFloat {          // + = undershoot (inset), − = overshoot
-            let u = hash01(seed)
+        func shoot(_ n: Int) -> CGFloat {             // + = undershoot (inset), − = overshoot
+            let u = hash01(n)
             return u < bias
                 ? 1 + (u / bias) * (config.undershoot - 1)
                 : -(1 + (u - bias) / (1 - bias) * (config.overshoot - 1))
         }
-        let leftX = run.rect.minX + shoot(run.from &* 2 &+ 1)
-        let rightX = run.rect.maxX - shoot(run.to &* 2 &+ 5)
+        let leftX = run.rect.minX + shoot(seed(run.rect.minX) &* 2 &+ 1)
+        let rightX = run.rect.maxX - shoot(seed(run.rect.maxX) &* 2 &+ 5)
         let penX = leftX + max(0, rightX - leftX) * revealed
 
         // Soft edge bleed as a ring (outer − body), even-odd so it feathers the

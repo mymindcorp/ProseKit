@@ -1,6 +1,7 @@
 #if canImport(UIKit)
 import XCTest
 import DocumentModel
+import DocumentTransform
 import EditorStateKit
 import SchemaKit
 @testable import EditorUIKit
@@ -150,6 +151,49 @@ final class HighlightRenderTests: XCTestCase {
             return false
         }
         XCTAssertFalse(hasBadge, "no badge without a codeLanguageLabel hook")
+    }
+
+    // MARK: - onDocumentChange (host-state mapping, the highlightRenderer companion)
+
+    func testDocumentChangeHookDeliversAUsableMapping() throws {
+        // A host recording "the highlighted range" before an edit above it should
+        // be able to map that range onto the same text afterwards.
+        let v = try view(highlightColor: nil)
+        let highlighted = v.ensureLayout().highlights.first.map { ($0.from, $0.to) }
+        let range = try XCTUnwrap(highlighted)
+
+        var mapped: (Int, Int)?
+        v.onDocumentChange = { tr in
+            mapped = (tr.mapping.map(range.0, 1), tr.mapping.map(range.1, -1))
+        }
+        let tr = v.editor.state.tr
+        try tr.insertText("XX", 1)
+        v.editor.dispatch(tr)
+
+        let after = try XCTUnwrap(mapped)
+        XCTAssertEqual(after.0, range.0 + 2, "start shifts by the inserted length")
+        XCTAssertEqual(after.1, range.1 + 2, "end shifts by the inserted length")
+        // And the mapped range is where the highlight actually ended up.
+        v.layoutIfNeeded()
+        let now = try XCTUnwrap(v.ensureLayout().highlights.first)
+        XCTAssertEqual(now.from, after.0)
+        XCTAssertEqual(now.to, after.1)
+    }
+
+    func testDocumentChangeHookIgnoresSelectionOnlyTransactions() throws {
+        let v = try view(highlightColor: nil)
+        var fired = 0
+        v.onDocumentChange = { _ in fired += 1 }
+
+        let move = v.editor.state.tr
+        move.setSelection(TextSelection.create(move.doc, 2))
+        v.editor.dispatch(move)
+        XCTAssertEqual(fired, 0, "moving the caret moves nothing to map")
+
+        let edit = v.editor.state.tr
+        try edit.insertText("X", 1)
+        v.editor.dispatch(edit)
+        XCTAssertEqual(fired, 1, "a document change does fire")
     }
 
     func testHighlightTracksTheWordAfterAnEditBefore() throws {
