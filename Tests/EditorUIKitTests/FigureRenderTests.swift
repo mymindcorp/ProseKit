@@ -90,7 +90,7 @@ final class FigureRenderTests: XCTestCase {
         let node = try e.schema.nodes["figcaption"]!.create(
             [:], content: Fragment.from([e.schema.text("A cat")]))
         let figure = try e.schema.nodes["paragraph"]!.create([:], content: Fragment.from([e.schema.text("x")]))
-        XCTAssertLessThan(theme.spacing(before: node, after: figure), theme.paragraphSpacing,
+        XCTAssertLessThan(theme.spacing(before: node, after: figure), theme.points(theme.paragraphSpacing),
                           "caption should tuck under its figure, not float a paragraph away")
         XCTAssertEqual(theme.spacing(before: node, after: nil), 0)
     }

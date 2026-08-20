@@ -13,12 +13,21 @@ final class ThemeGroupTests: XCTestCase {
     private lazy var editor: Editor = try! Editor(extensions: fullKit())
     private var schema: Schema { editor.schema }
 
+    /// A theme pinned to the size ems are authored against, so `.points(n)`
+    /// resolves to exactly n and geometry can be asserted in plain points.
+    private func referenceTheme() -> DocumentTheme {
+        var theme = DocumentTheme()
+        theme.dynamicType = false
+        theme.fixedBodyFontSize = DocumentTheme.referenceBodySize
+        return theme
+    }
+
     private func text(_ s: String) -> Node { schema.text(s) }
 
     // MARK: - Link
 
     func testLinkColorAndUnderline() {
-        var theme = DocumentTheme()
+        var theme = referenceTheme()
         theme.link.color = .systemPurple
         let mark = schema.marks["link"]!.create(["href": .string("https://example.com")])
         var attrs = theme.attributes(for: [mark], baseFont: theme.bodyFont)
@@ -33,7 +42,7 @@ final class ThemeGroupTests: XCTestCase {
     // MARK: - Code
 
     func testCodeFaceAndColor() {
-        var theme = DocumentTheme()
+        var theme = referenceTheme()
         theme.code.fontName = "Courier New"
         theme.code.color = .systemGreen
         XCTAssertEqual(theme.monoFont.familyName, "Courier New")
@@ -44,7 +53,7 @@ final class ThemeGroupTests: XCTestCase {
     }
 
     func testCodeBackgroundIsOptOut() throws {
-        var theme = DocumentTheme()
+        var theme = referenceTheme()
         let doc = try schema.node("doc", [:], content: Fragment.from([
             try schema.node("paragraph", [:], content: Fragment.from([
                 schema.text("x", [schema.marks["code"]!.create([:])]),
@@ -60,14 +69,15 @@ final class ThemeGroupTests: XCTestCase {
     func testCodeBlockPaddingInsetsTheTextAndSizesTheBackground() throws {
         let code = try schema.node("codeBlock", [:], content: Fragment.from([text("let x = 1")]))
         editor.setContent(try schema.node("doc", [:], content: Fragment.from([code])))
-        var theme = DocumentTheme()
+        var theme = referenceTheme()
         // Default: no background, no inset — a block sits where it always has.
         let plain = DocumentLayout(doc: editor.doc, width: 320, theme: theme)
         XCTAssertEqual(try XCTUnwrap(plain.blocks.first).frame.minX, theme.pageInsets.left, accuracy: 0.01)
         XCTAssertTrue(plain.decorations.isEmpty)
 
         theme.code.block.background = .systemFill
-        theme.code.block.padding = UIEdgeInsets(top: 10, left: 12, bottom: 14, right: 16)
+        theme.code.block.padding = EmInsets(top: .points(10), left: .points(12),
+                                            bottom: .points(14), right: .points(16))
         let padded = DocumentLayout(doc: editor.doc, width: 320, theme: theme)
         let block = try XCTUnwrap(padded.blocks.first)
         XCTAssertEqual(block.frame.minX, theme.pageInsets.left + 12, accuracy: 0.01)
@@ -88,7 +98,7 @@ final class ThemeGroupTests: XCTestCase {
         let code = try schema.node("codeBlock", ["language": .string("swift")],
                                    content: Fragment.from([text("let x = 1")]))
         editor.setContent(try schema.node("doc", [:], content: Fragment.from([code])))
-        var theme = DocumentTheme()
+        var theme = referenceTheme()
         theme.code.block.background = .systemFill
         let layout = DocumentLayout(doc: editor.doc, width: 320, theme: theme)
         // Decorations paint in order, so the block's background must come first
@@ -102,7 +112,7 @@ final class ThemeGroupTests: XCTestCase {
     func testCodeBlockTextColorFallsBackToTheDocumentColor() throws {
         let code = try schema.node("codeBlock", [:], content: Fragment.from([text("let x = 1")]))
         editor.setContent(try schema.node("doc", [:], content: Fragment.from([code])))
-        var theme = DocumentTheme()
+        var theme = referenceTheme()
         theme.textColor = .systemBrown
         theme.code.color = .systemGreen // the inline color, which a block ignores
         func rendered(_ theme: DocumentTheme) throws -> UIColor {
@@ -131,8 +141,9 @@ final class ThemeGroupTests: XCTestCase {
 
     func testCellPaddingInsetsCellContent() throws {
         editor.setContent(try schema.node("doc", [:], content: Fragment.from([try table2x2()])))
-        var theme = DocumentTheme()
-        theme.table.cellPadding = UIEdgeInsets(top: 20, left: 18, bottom: 4, right: 2)
+        var theme = referenceTheme()
+        theme.table.cellPadding = EmInsets(top: .points(20), left: .points(18),
+                                           bottom: .points(4), right: .points(2))
         let layout = DocumentLayout(doc: editor.doc, width: 320, theme: theme)
         let first = try XCTUnwrap(layout.blocks.first)
         XCTAssertEqual(first.frame.minX, theme.pageInsets.left + 18, accuracy: 0.01)
@@ -141,19 +152,21 @@ final class ThemeGroupTests: XCTestCase {
 
     func testRowGrowsPastItsMinimumForTallPadding() throws {
         editor.setContent(try schema.node("doc", [:], content: Fragment.from([try table2x2()])))
-        var theme = DocumentTheme()
+        var theme = referenceTheme()
+        let base = theme.points(theme.table.cellPadding)
         let short = DocumentLayout(doc: editor.doc, width: 320, theme: theme).height
-        theme.table.cellPadding = UIEdgeInsets(top: 30, left: 6, bottom: 30, right: 6)
+        theme.table.cellPadding = EmInsets(top: .points(30), left: .points(6),
+                                           bottom: .points(30), right: .points(6))
         let tall = DocumentLayout(doc: editor.doc, width: 320, theme: theme).height
-        XCTAssertGreaterThan(tall, short)
-        // Both rows grew, so the table gained twice the extra padding.
-        XCTAssertEqual((tall - short).truncatingRemainder(dividingBy: 2), 0, accuracy: 0.01)
+        // Two rows, each gaining the extra top and bottom padding.
+        let extra = (30 - base.top) + (30 - base.bottom)
+        XCTAssertEqual(tall - short, extra * 2, accuracy: 0.01)
     }
 
     func testMinimumRowHeightHoldsAnEmptyRowOpen() throws {
         editor.setContent(try schema.node("doc", [:], content: Fragment.from([try table2x2()])))
-        var theme = DocumentTheme()
-        theme.table.minimumRowHeight = 100
+        var theme = referenceTheme()
+        theme.table.minimumRowHeight = .points(100)
         let layout = DocumentLayout(doc: editor.doc, width: 320, theme: theme)
         let borders = layout.decorations.compactMap { item -> CGRect? in
             if case let .stroke(rect, _, _) = item { return rect }
@@ -164,7 +177,7 @@ final class ThemeGroupTests: XCTestCase {
 
     func testTableBorderColorAndWidth() throws {
         editor.setContent(try schema.node("doc", [:], content: Fragment.from([try table2x2()])))
-        var theme = DocumentTheme()
+        var theme = referenceTheme()
         theme.hairlineColor = .systemTeal
         let followed = DocumentLayout(doc: editor.doc, width: 320, theme: theme).decorations
             .compactMap { item -> (UIColor, CGFloat)? in
@@ -186,7 +199,7 @@ final class ThemeGroupTests: XCTestCase {
     // MARK: - Quote and the shared hairline
 
     func testQuoteBarFollowsTheHairlineUntilItNamesItsOwn() {
-        var theme = DocumentTheme()
+        var theme = referenceTheme()
         theme.hairlineColor = .systemTeal
         XCTAssertEqual(theme.quoteBarColor, .systemTeal, "one hairline styles the bar too")
         theme.quote.barColor = .systemPink
@@ -199,9 +212,9 @@ final class ThemeGroupTests: XCTestCase {
             try schema.node("paragraph", [:], content: Fragment.from([text("quoted")])),
         ]))
         editor.setContent(try schema.node("doc", [:], content: Fragment.from([quote])))
-        var theme = DocumentTheme()
+        var theme = referenceTheme()
         theme.quote.barWidth = 7
-        theme.quote.indent = 40
+        theme.quote.indent = .points(40)
         let layout = DocumentLayout(doc: editor.doc, width: 320, theme: theme)
         let bars = layout.decorations.compactMap { item -> CGRect? in
             if case let .fill(rect, _) = item { return rect }
@@ -227,22 +240,35 @@ final class ThemeGroupTests: XCTestCase {
         }.first)
     }
 
-    func testDefaultRuleRendersExactlyAsBefore() throws {
-        let theme = DocumentTheme()
+    func testDefaultRuleGeometryComesFromItsEms() throws {
+        let theme = referenceTheme()
         let layout = try ruleLayout(theme)
         let rect = try ruleRect(layout)
-        // 8pt above, a 1pt line, 8pt below — the 17pt the hardcoded 8/9 gave.
-        XCTAssertEqual(rect.minY, theme.pageInsets.top + 8, accuracy: 0.01)
+        let above = theme.points(theme.horizontalRule.spacingBefore)
+        let below = theme.points(theme.horizontalRule.spacingAfter)
+        XCTAssertEqual(rect.minY, theme.pageInsets.top + above, accuracy: 0.01)
+        // The line is a hairline in points: it answers to the device, not the type.
         XCTAssertEqual(rect.height, 1)
         XCTAssertEqual(rect.minX, theme.pageInsets.left, accuracy: 0.01)
         XCTAssertEqual(rect.width, 320 - theme.pageInsets.left - theme.pageInsets.right, accuracy: 0.01)
-        XCTAssertEqual(layout.height, theme.pageInsets.top + 17 + theme.pageInsets.bottom, accuracy: 0.01)
+        XCTAssertEqual(layout.height,
+                       theme.pageInsets.top + above + 1 + below + theme.pageInsets.bottom, accuracy: 0.01)
+    }
+
+    func testRuleGrowsWithTheBodySize() throws {
+        var big = referenceTheme()
+        big.fixedBodyFontSize = DocumentTheme.referenceBodySize * 2
+        let small = try ruleLayout(referenceTheme()).height - referenceTheme().pageInsets.top
+            - referenceTheme().pageInsets.bottom
+        let large = try ruleLayout(big).height - big.pageInsets.top - big.pageInsets.bottom
+        // Twice the type: the air doubles, the hairline doesn't.
+        XCTAssertEqual(large - 1, (small - 1) * 2, accuracy: 0.01)
     }
 
     func testRuleSpacingThicknessAndColorAreConfigurable() throws {
-        var theme = DocumentTheme()
-        theme.horizontalRule.spacingBefore = 20
-        theme.horizontalRule.spacingAfter = 30
+        var theme = referenceTheme()
+        theme.horizontalRule.spacingBefore = .points(20)
+        theme.horizontalRule.spacingAfter = .points(30)
         theme.horizontalRule.thickness = 4
         theme.horizontalRule.color = .systemPink
         let layout = try ruleLayout(theme)
@@ -258,15 +284,15 @@ final class ThemeGroupTests: XCTestCase {
     }
 
     func testRuleInsetShortensItFromBothEnds() throws {
-        var theme = DocumentTheme()
-        theme.horizontalRule.inset = 60
+        var theme = referenceTheme()
+        theme.horizontalRule.inset = .points(60)
         let rect = try ruleRect(try ruleLayout(theme))
         XCTAssertEqual(rect.minX, theme.pageInsets.left + 60, accuracy: 0.01)
         XCTAssertEqual(rect.width, 320 - theme.pageInsets.left - theme.pageInsets.right - 120, accuracy: 0.01)
     }
 
     func testRuleFollowsTheHairlineUnlessItNamesAColor() throws {
-        var theme = DocumentTheme()
+        var theme = referenceTheme()
         theme.hairlineColor = .systemTeal
         let color = try ruleLayout(theme).decorations.compactMap { item -> UIColor? in
             if case let .fill(_, color) = item { return color }
@@ -278,7 +304,7 @@ final class ThemeGroupTests: XCTestCase {
     // MARK: - Selection
 
     func testSelectionDefaultsAreUnchanged() {
-        let theme = DocumentTheme()
+        let theme = referenceTheme()
         XCTAssertEqual(theme.selection.caret, .tintColor)
         XCTAssertEqual(theme.selection.fill, UIColor.tintColor.withAlphaComponent(0.25))
     }

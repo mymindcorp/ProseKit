@@ -63,30 +63,45 @@ final class HeadingAndHighlighterThemeTests: XCTestCase {
 
     func testHeadingSpacingCollapsesToTheLargerSide() throws {
         var theme = DocumentTheme()
-        theme.paragraphSpacing = 10
+        theme.dynamicType = false
+        theme.fixedBodyFontSize = 20
+        theme.paragraphSpacing = 0.5
         let h = try heading(1), p = try paragraph()
-        // Neither side asks: the document's paragraph spacing.
-        XCTAssertEqual(theme.spacing(before: p, after: p), 10)
+        // Neither side asks: the document's paragraph spacing, in points.
+        XCTAssertEqual(theme.spacing(before: p, after: p), 10, accuracy: 0.01)
         // The first block in a container opens flush.
         XCTAssertEqual(theme.spacing(before: h, after: nil), 0)
         // One side asks — even for less than paragraphSpacing — and is honoured.
-        theme.heading.spacingAfter = 4
-        XCTAssertEqual(theme.spacing(before: p, after: h), 4)
-        theme.heading.spacingBefore = 30
-        XCTAssertEqual(theme.spacing(before: h, after: p), 30)
+        theme.heading.spacingAfter = 0.2
+        XCTAssertEqual(theme.spacing(before: p, after: h), 4, accuracy: 0.01)
+        theme.heading.spacingBefore = 1.5
+        XCTAssertEqual(theme.spacing(before: h, after: p), 30, accuracy: 0.01)
         // Both sides ask: the larger wins, so two gaps never stack.
-        XCTAssertEqual(theme.spacing(before: h, after: h), 30)
+        XCTAssertEqual(theme.spacing(before: h, after: h), 30, accuracy: 0.01)
+    }
+
+    func testSpacingScalesWithTheBodySize() throws {
+        var theme = DocumentTheme()
+        theme.dynamicType = false
+        let p = try paragraph()
+        theme.fixedBodyFontSize = 17
+        let atDefault = theme.spacing(before: p, after: p)
+        theme.fixedBodyFontSize = 34
+        // Twice the type, twice the gap: the ratio the reader sees holds.
+        XCTAssertEqual(theme.spacing(before: p, after: p), atDefault * 2, accuracy: 0.01)
     }
 
     func testHeadingSpacingMovesTheNextBlockDown() throws {
         try setDoc([try heading(1), try paragraph()])
         var theme = DocumentTheme()
-        theme.heading.spacingAfter = 40
+        theme.heading.spacingAfter = 2.5
         let wide = DocumentLayout(doc: editor.doc, width: 320, theme: theme)
-        let tight = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme())
+        let plain = DocumentTheme()
+        let tight = DocumentLayout(doc: editor.doc, width: 320, theme: plain)
         let wideGap = wide.blocks[1].frame.minY - wide.blocks[0].frame.maxY
         let tightGap = tight.blocks[1].frame.minY - tight.blocks[0].frame.maxY
-        XCTAssertEqual(wideGap - tightGap, 40 - DocumentTheme().paragraphSpacing, accuracy: 0.5)
+        XCTAssertEqual(wideGap - tightGap,
+                       theme.points(2.5) - plain.points(plain.paragraphSpacing), accuracy: 0.5)
     }
 
     // MARK: - Rule
@@ -94,7 +109,7 @@ final class HeadingAndHighlighterThemeTests: XCTestCase {
     func testRuleDrawsUnderTheHeadingAndTakesSpace() throws {
         try setDoc([try heading(2)])
         var theme = DocumentTheme()
-        theme.heading.rule = DocumentTheme.Heading.Rule(thickness: 2, spacing: 6)
+        theme.heading.rule = DocumentTheme.Heading.Rule(thickness: 2, spacing: .points(6))
         let ruled = DocumentLayout(doc: editor.doc, width: 320, theme: theme)
         let plain = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme())
         XCTAssertEqual(ruled.height - plain.height, 8, accuracy: 0.5, "rule occupies spacing + thickness")
@@ -104,7 +119,7 @@ final class HeadingAndHighlighterThemeTests: XCTestCase {
             return nil
         }
         let rule = try XCTUnwrap(fills.first { $0.height == 2 })
-        XCTAssertEqual(rule.minY, block.frame.maxY + 6, accuracy: 0.5)
+        XCTAssertEqual(rule.minY, block.frame.maxY + theme.points(.points(6)), accuracy: 0.5)
         XCTAssertTrue(plain.decorations.isEmpty, "no rule unless the theme asks for one")
     }
 
@@ -237,6 +252,27 @@ final class HeadingAndHighlighterThemeTests: XCTestCase {
     }
 
     // MARK: - Checkbox alignment
+
+    /// The gutter is an em, and the box inside it is derived from cap height —
+    /// so the box has to keep fitting as the type grows. It didn't: with a fixed
+    /// 24pt gutter the box reached into the page margin at 17pt and off the left
+    /// edge of the view by 34pt.
+    func testCheckboxStaysInsideTheContentColumnAtEverySize() throws {
+        let item = try schema.node("taskItem", ["checked": .bool(false)],
+                                   content: Fragment.from([try paragraph("Buy milk")]))
+        try setDoc([try schema.node("taskList", [:], content: Fragment.from([item]))])
+        for size in [13.0, 17.0, 24.0, 28.0, 34.0, 44.0] as [CGFloat] {
+            var theme = DocumentTheme()
+            theme.dynamicType = false
+            theme.fixedBodyFontSize = size
+            let layout = DocumentLayout(doc: editor.doc, width: 320, theme: theme)
+            let box = try XCTUnwrap(layout.checkboxes.first).rect.insetBy(dx: 6, dy: 6)
+            XCTAssertGreaterThanOrEqual(box.minX, theme.pageInsets.left,
+                                        "checkbox reaches into the page margin at \(size)pt")
+            let textX = try XCTUnwrap(layout.blocks.first).frame.minX
+            XCTAssertLessThanOrEqual(box.maxX, textX, "checkbox overlaps its text at \(size)pt")
+        }
+    }
 
     func testCheckboxCentresOnTheFirstLineAcrossFontSizes() throws {
         let item = try schema.node("taskItem", ["checked": .bool(false)],

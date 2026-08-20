@@ -517,5 +517,56 @@ final class KeyboardBehaviorTests: XCTestCase {
         key(view, .keyboardTab, [], "\t")
         XCTAssertGreaterThan(count(view, "bulletList"), before, "Tab should nest the item in a sublist")
     }
+
+    // MARK: - Line breaks
+
+    private func brokenView() throws -> EditorTextView {
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            try s.node("paragraph", [:], content: Fragment.from([s.text("Alpha")])),
+        ])))
+        let view = EditorTextView(editor: editor)
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 480)
+        view.layoutIfNeeded()
+        view.editor.dispatch(view.editor.state.tr.setSelection(TextSelection.create(view.editor.doc, 6)))
+        return view
+    }
+
+    func testShiftReturnInsertsAHardBreakInsideTheParagraph() throws {
+        let view = try brokenView()
+        XCTAssertTrue(view.handle(EditorTextView.KeyEvent(.keyboardReturnOrEnter, modifiers: .shift)))
+        XCTAssertEqual(view.editor.doc.childCount, 1, "the paragraph is not split")
+        let paragraph = view.editor.doc.child(0)
+        XCTAssertEqual(paragraph.child(paragraph.childCount - 1).type.name, "hardBreak")
+    }
+
+    func testReturnSplitsTheParagraph() throws {
+        let view = try brokenView()
+        _ = view.handle(EditorTextView.KeyEvent(.keyboardReturnOrEnter))
+        XCTAssertEqual(view.editor.doc.childCount, 2)
+    }
+
+    /// Shift-Return only reaches `handle` if it is claimed as a key command:
+    /// the text-input system consumes Return and re-delivers it as inserted
+    /// "\n", which carries no modifiers, so `pressesBegan` never sees a Shift.
+    /// Without this registration the binding is unreachable in a running app —
+    /// which is exactly how it shipped, passing a unit test that called
+    /// `handle` directly.
+    func testShiftReturnIsClaimedAsAKeyCommand() throws {
+        let view = try brokenView()
+        let commands = try XCTUnwrap(view.keyCommands)
+        let command = try XCTUnwrap(commands.first { $0.input == "\r" && $0.modifierFlags == .shift })
+        XCTAssertTrue(command.wantsPriorityOverSystemBehavior,
+                      "text input would otherwise win the key first")
+    }
+
+    /// The software-keyboard path: Return arrives as inserted text with no
+    /// modifiers, and means "new paragraph".
+    func testInsertedNewlineSplitsTheParagraph() throws {
+        let view = try brokenView()
+        view.insertText("\n")
+        XCTAssertEqual(view.editor.doc.childCount, 2)
+    }
 }
 #endif

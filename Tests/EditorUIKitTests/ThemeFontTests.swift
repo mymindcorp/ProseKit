@@ -88,7 +88,9 @@ final class ThemeFontTests: XCTestCase {
 
     func testHeadingLineHeightMultipliesAndBodyStillAdds() {
         var theme = DocumentTheme()
-        theme.lineSpacing = 5
+        theme.dynamicType = false
+        theme.fixedBodyFontSize = DocumentTheme.referenceBodySize
+        theme.lineSpacing = .points(5)
         // Unset: a heading leads like any other block.
         XCTAssertEqual(theme.lineHeight(for: heading(1), naturalHeight: 40), 45, accuracy: 0.01)
         XCTAssertEqual(theme.lineHeight(for: paragraph(), naturalHeight: 20), 25, accuracy: 0.01)

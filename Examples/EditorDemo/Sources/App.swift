@@ -282,9 +282,11 @@ let sampleProseJSON = """
 struct ThemeSettings: Equatable {
     // Font & spacing
     var bodyFontSize: Double = 17
-    var lineSpacing: Double = 3
-    var paragraphSpacing: Double = 10
-    var listIndent: Double = 24
+    // Spacing is in ems — a multiple of the body size — so it holds its
+    // proportion as the size slider moves.
+    var lineSpacing: Double = 0.18
+    var paragraphSpacing: Double = 1.0
+    var listIndent: Double = 1.6
     var fontName: String = systemFont
     // Text colors
     var textColor = Color(uiColor: .label)
@@ -298,8 +300,8 @@ struct ThemeSettings: Equatable {
     var headingTracking: Double = 0
     var headingWeight: String = defaultWeight
     var headingAlignment: String = "Natural"
-    var headingSpaceBefore: Double = 10
-    var headingSpaceAfter: Double = 10
+    var headingSpaceBefore: Double = 1.0
+    var headingSpaceAfter: Double = 1.0
     var headingRuleOn = false
     var headingColorOn = false
     var headingColor = Color(uiColor: .label)
@@ -312,9 +314,9 @@ struct ThemeSettings: Equatable {
     var codeBackground = Color(uiColor: .secondarySystemFill)
     var codeBlockBackgroundOn = false
     var codeBlockBackground = Color(uiColor: .secondarySystemBackground)
-    var codeBlockPadding: Double = 10
+    var codeBlockPadding: Double = 0.6
     // Tables
-    var tableCellPadding: Double = 6
+    var tableCellPadding: Double = 0.35
 
     static let systemFont = "System"
     static let fontChoices = [systemFont, "Georgia", "Charter", "Palatino", "Times New Roman", "Avenir Next"]
@@ -346,9 +348,9 @@ struct ThemeSettings: Equatable {
         var t = DocumentTheme()
         t.dynamicType = false
         t.fixedBodyFontSize = bodyFontSize
-        t.lineSpacing = lineSpacing
-        t.paragraphSpacing = paragraphSpacing
-        t.listIndent = listIndent
+        t.lineSpacing = Em(lineSpacing)
+        t.paragraphSpacing = Em(paragraphSpacing)
+        t.listIndent = Em(listIndent)
         t.fontName = (fontName == ThemeSettings.systemFont) ? nil : fontName
         t.textColor = UIColor(textColor)
         t.selection.caret = UIColor(caretColor)
@@ -359,8 +361,8 @@ struct ThemeSettings: Equatable {
         t.heading.tracking = headingTracking == 0 ? nil : headingTracking
         t.heading.weight = ThemeSettings.weightChoices.first { $0.0 == headingWeight }?.1
         t.heading.alignment = ThemeSettings.alignmentChoices.first { $0.0 == headingAlignment }?.1
-        t.heading.spacingBefore = headingSpaceBefore
-        t.heading.spacingAfter = headingSpaceAfter
+        t.heading.spacingBefore = Em(headingSpaceBefore)
+        t.heading.spacingAfter = Em(headingSpaceAfter)
         t.heading.rule = headingRuleOn ? DocumentTheme.Heading.Rule() : nil
         t.heading.color = headingColorOn ? UIColor(headingColor) : nil
         t.link.color = UIColor(linkColor)
@@ -369,12 +371,8 @@ struct ThemeSettings: Equatable {
         t.code.inline.background = codeBackgroundOn ? UIColor(codeBackground) : nil
         t.code.block.background = codeBlockBackgroundOn ? UIColor(codeBlockBackground) : nil
         // Padding without a background just indents the code, so it follows it.
-        t.code.block.padding = codeBlockBackgroundOn
-            ? UIEdgeInsets(top: codeBlockPadding, left: codeBlockPadding,
-                           bottom: codeBlockPadding, right: codeBlockPadding)
-            : .zero
-        t.table.cellPadding = UIEdgeInsets(top: tableCellPadding, left: tableCellPadding,
-                                           bottom: tableCellPadding, right: tableCellPadding)
+        t.code.block.padding = codeBlockBackgroundOn ? EmInsets(Em(codeBlockPadding)) : .zero
+        t.table.cellPadding = EmInsets(Em(tableCellPadding))
         t.highlighters = HighlighterMenu.themeHighlighters
         return t
     }
@@ -396,9 +394,9 @@ struct ThemePanel: View {
                     themeSlider("Body size", $settings.bodyFontSize, 11...28, unit: "pt")
                 }
                 Section("Spacing") {
-                    themeSlider("Line", $settings.lineSpacing, 0...16)
-                    themeSlider("Paragraph", $settings.paragraphSpacing, 0...32)
-                    themeSlider("List indent", $settings.listIndent, 8...48)
+                    themeSlider("Line", $settings.lineSpacing, 0...0.8, unit: "em", decimals: 2)
+                    themeSlider("Paragraph", $settings.paragraphSpacing, 0...2, unit: "em", decimals: 2)
+                    themeSlider("List indent", $settings.listIndent, 0.5...3, unit: "em", decimals: 2)
                 }
                 Section("Text") {
                     ColorPicker("Text", selection: $settings.textColor)
@@ -417,8 +415,8 @@ struct ThemePanel: View {
                     }
                     themeSlider("H1 size", $settings.headingH1Scale, 1.0...2.5, unit: "×", decimals: 2)
                     themeSlider("Tracking", $settings.headingTracking, -0.06...0.06, unit: "em", decimals: 3)
-                    themeSlider("Space before", $settings.headingSpaceBefore, 0...48)
-                    themeSlider("Space after", $settings.headingSpaceAfter, 0...48)
+                    themeSlider("Space before", $settings.headingSpaceBefore, 0...2.5, unit: "em", decimals: 2)
+                    themeSlider("Space after", $settings.headingSpaceAfter, 0...2.5, unit: "em", decimals: 2)
                     Toggle("Rule below", isOn: $settings.headingRuleOn)
                     Toggle("Custom line height", isOn: $settings.headingLineHeightOn)
                     if settings.headingLineHeightOn {
@@ -442,11 +440,11 @@ struct ThemePanel: View {
                     Toggle("Block background", isOn: $settings.codeBlockBackgroundOn)
                     if settings.codeBlockBackgroundOn {
                         ColorPicker("Block color", selection: $settings.codeBlockBackground)
-                        themeSlider("Block padding", $settings.codeBlockPadding, 0...32)
+                        themeSlider("Block padding", $settings.codeBlockPadding, 0...1.5, unit: "em", decimals: 2)
                     }
                 }
                 Section("Tables") {
-                    themeSlider("Cell padding", $settings.tableCellPadding, 0...24)
+                    themeSlider("Cell padding", $settings.tableCellPadding, 0...1.2, unit: "em", decimals: 2)
                 }
             }
             .navigationTitle("Theme")

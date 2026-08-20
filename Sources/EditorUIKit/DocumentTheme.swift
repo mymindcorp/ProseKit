@@ -20,6 +20,41 @@ extension UIColor {
     }
 }
 
+/// A length in ems — a multiple of the body font's size, the unit typography
+/// has always used for space around type.
+///
+/// Space authored in points freezes at the size it was chosen for: enlarge the
+/// text and the gaps stay put, so the page tightens exactly for the reader who
+/// enlarged it to read more easily. An em scales with the text by construction.
+///
+/// Written as a plain number — `theme.paragraphSpacing = 0.6` — but distinct
+/// from `CGFloat` so a point value can't be assigned to an em by accident.
+/// Hairlines and `pageInsets` stay in points: a border answers to the device's
+/// pixels and a page margin to its screen, neither to the type.
+public struct Em: Sendable, Equatable, Comparable, ExpressibleByFloatLiteral {
+    public var value: CGFloat
+    public init(_ value: CGFloat) { self.value = value }
+    public init(floatLiteral value: Double) { self.value = CGFloat(value) }
+    /// The em that renders as `points` at `DocumentTheme.referenceBodySize` —
+    /// for porting a value that was authored in points.
+    public static func points(_ points: CGFloat) -> Em {
+        Em(points / DocumentTheme.referenceBodySize)
+    }
+    public static func < (a: Em, b: Em) -> Bool { a.value < b.value }
+    public static func + (a: Em, b: Em) -> Em { Em(a.value + b.value) }
+}
+
+/// Insets in ems — `Em`'s counterpart to `UIEdgeInsets`.
+public struct EmInsets: Sendable, Equatable {
+    public var top: Em, left: Em, bottom: Em, right: Em
+    public static let zero = EmInsets(0.0)
+    public init(top: Em, left: Em, bottom: Em, right: Em) {
+        self.top = top; self.left = left; self.bottom = bottom; self.right = right
+    }
+    /// The same inset on all four sides.
+    public init(_ all: Em) { self.init(top: all, left: all, bottom: all, right: all) }
+}
+
 /// Visual styling for a rendered document: fonts, colors, and block spacing.
 /// The layout engine reads this to build attributed strings and position
 /// blocks. Shared by the editable `EditorTextView` and the read-only
@@ -63,8 +98,9 @@ public struct DocumentTheme: Sendable, Equatable {
             /// Background pill behind the run (nil = none).
             public var background: UIColor?
             /// How far the pill extends past the text it wraps.
-            public var padding = CGSize(width: 2, height: 1)
-            public var cornerRadius: CGFloat = 4
+            public var paddingX: Em = 0.12
+            public var paddingY: Em = 0.06
+            public var cornerRadius: Em = 0.25
             public init() {}
         }
         public var inline = Inline()
@@ -81,8 +117,8 @@ public struct DocumentTheme: Sendable, Equatable {
             /// Inset between the background's edge and the code. Zero by
             /// default, so a block sits where it always has; set it along with
             /// `background`, which otherwise hugs the text.
-            public var padding = UIEdgeInsets.zero
-            public var cornerRadius: CGFloat = 6
+            public var padding = EmInsets.zero
+            public var cornerRadius: Em = 0.35
             public init() {}
         }
         public var block = Block()
@@ -93,15 +129,15 @@ public struct DocumentTheme: Sendable, Equatable {
     /// Tables: how much air a cell gives its content, and the grid around it.
     public struct Table: Sendable, Equatable {
         /// Space between a cell's border and its content.
-        public var cellPadding = UIEdgeInsets(top: 6, left: 6, bottom: 6, right: 6)
+        public var cellPadding = EmInsets(0.35)
         /// The shortest a row may be, whatever it holds — an empty row still
         /// needs to be tappable.
-        public var minimumRowHeight: CGFloat = 28
+        public var minimumRowHeight: Em = 1.65
         /// nil = `hairlineColor`.
         public var borderColor: UIColor?
         public var borderWidth: CGFloat = 1
         /// Gap below the table, before whatever follows it.
-        public var spacingAfter: CGFloat = 6
+        public var spacingAfter: Em = 0.35
         public init() {}
     }
     public var table = Table()
@@ -113,7 +149,7 @@ public struct DocumentTheme: Sendable, Equatable {
         public var barColor: UIColor?
         public var barWidth: CGFloat = 3
         /// How far a quote's content is indented past the bar.
-        public var indent: CGFloat = 16
+        public var indent: Em = 0.95
         public init() {}
     }
     public var quote = Quote()
@@ -128,12 +164,12 @@ public struct DocumentTheme: Sendable, Equatable {
         /// nil = `hairlineColor`.
         public var color: UIColor?
         public var thickness: CGFloat = 1
-        public var spacingBefore: CGFloat = 8
-        public var spacingAfter: CGFloat = 8
+        public var spacingBefore: Em = 0.5
+        public var spacingAfter: Em = 0.5
         /// How far each end pulls in from the content column — 0 draws the full
         /// width, a large inset gives the short centred rule print uses to break
         /// a scene rather than a section.
-        public var inset: CGFloat = 0
+        public var inset: Em = 0.0
         public init() {}
     }
     public var horizontalRule = HorizontalRule()
@@ -164,9 +200,9 @@ public struct DocumentTheme: Sendable, Equatable {
             public var color: UIColor?
             public var thickness: CGFloat = 1
             /// Gap between the heading's last line and the rule.
-            public var spacing: CGFloat = 4
+            public var spacing: Em = 0.25
             public init() {}
-            public init(color: UIColor? = nil, thickness: CGFloat = 1, spacing: CGFloat = 4) {
+            public init(color: UIColor? = nil, thickness: CGFloat = 1, spacing: Em = 0.25) {
                 self.color = color; self.thickness = thickness; self.spacing = spacing
             }
         }
@@ -180,8 +216,8 @@ public struct DocumentTheme: Sendable, Equatable {
             public var lineHeight: CGFloat?
             public var tracking: CGFloat?
             public var alignment: NSTextAlignment?
-            public var spacingBefore: CGFloat?
-            public var spacingAfter: CGFloat?
+            public var spacingBefore: Em?
+            public var spacingAfter: Em?
             public var rule: Rule?
             public init() {}
         }
@@ -196,8 +232,8 @@ public struct DocumentTheme: Sendable, Equatable {
             public var lineHeight: CGFloat?
             public var tracking: CGFloat?
             public var alignment: NSTextAlignment?
-            public var spacingBefore: CGFloat?
-            public var spacingAfter: CGFloat?
+            public var spacingBefore: Em?
+            public var spacingAfter: Em?
             public var rule: Rule?
         }
 
@@ -226,11 +262,11 @@ public struct DocumentTheme: Sendable, Equatable {
         /// Paragraph alignment (nil = natural, following the writing direction).
         public var alignment: NSTextAlignment?
         /// Space above a heading (nil = the document's `paragraphSpacing`).
-        public var spacingBefore: CGFloat?
+        public var spacingBefore: Em?
         /// Space below a heading (nil = the document's `paragraphSpacing`).
         /// A heading usually wants more air above than below, so it binds to the
         /// text it introduces rather than floating between two blocks.
-        public var spacingAfter: CGFloat?
+        public var spacingAfter: Em?
         /// A hairline under the heading (nil = none).
         public var rule: Rule?
         /// Override color for heading text (nil = inherit `textColor`).
@@ -305,7 +341,7 @@ public struct DocumentTheme: Sendable, Equatable {
         public var scale: CGFloat = 0.85
         public var alignment: NSTextAlignment = .center
         /// Gap between a figure's content and its caption.
-        public var spacing: CGFloat = 4
+        public var spacing: Em = 0.25
         public init() {}
     }
     public var caption = Caption()
@@ -426,11 +462,37 @@ public struct DocumentTheme: Sendable, Equatable {
     /// Background of the suggestion popup (slash menu / wiki-link menu).
     public var popupBackground: UIColor = .secondarySystemBackground
     public var pageInsets = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-    public var paragraphSpacing: CGFloat = 10
-    public var lineSpacing: CGFloat = 3
-    public var listIndent: CGFloat = 24
+    /// Gap between blocks — a whole em, matching the margin every browser puts
+    /// on a `<p>`.
+    ///
+    /// CSS states that margin twice, above and below, and collapses adjacent
+    /// ones to the larger; `spacing(before:after:)` collapses the same way, so
+    /// one em stated once lands in the same place.
+    public var paragraphSpacing: Em = 1.0
+    /// Extra leading added to every line.
+    public var lineSpacing: Em = 0.18
+    /// The gutter a list's markers sit in. It has to hold the widest marker —
+    /// a task checkbox is sized from the text's cap height — plus
+    /// `listMarkerGap`, which is why 1.6 rather than the 1.4 it once was.
+    public var listIndent: Em = 1.6
+    /// Gap between a list marker (or checkbox) and the text it labels.
+    public var listMarkerGap: Em = 0.45
 
     public init() {}
+
+    /// The body size an em-authored theme reads as: `Em.points(10)` is the em
+    /// that renders as 10pt here. Only a porting aid — nothing renders at this
+    /// size unless the body happens to be it.
+    public static let referenceBodySize: CGFloat = 17
+
+    /// `em` resolved against the body size actually in use.
+    public func points(_ em: Em) -> CGFloat { em.value * bodyPointSize }
+
+    /// `insets` resolved against the body size actually in use.
+    public func points(_ insets: EmInsets) -> UIEdgeInsets {
+        UIEdgeInsets(top: points(insets.top), left: points(insets.left),
+                     bottom: points(insets.bottom), right: points(insets.right))
+    }
 
     /// The body point size (Dynamic Type scaled, or fixed).
     private var bodyPointSize: CGFloat {
@@ -512,13 +574,13 @@ public struct DocumentTheme: Sendable, Equatable {
         guard let previous else { return 0 }
         // A caption belongs to what sits above it, so it tucks up close rather
         // than floating a full paragraph away.
-        if node.type.name == "figcaption" { return caption.spacing }
+        if node.type.name == "figcaption" { return points(caption.spacing) }
         let before = heading.resolved(for: node)?.spacingBefore
         let after = heading.resolved(for: previous)?.spacingAfter
         switch (before, after) {
-        case (nil, nil): return paragraphSpacing
-        case let (value?, nil), let (nil, value?): return value
-        case let (before?, after?): return max(before, after)
+        case (nil, nil): return points(paragraphSpacing)
+        case let (value?, nil), let (nil, value?): return points(value)
+        case let (before?, after?): return points(max(before, after))
         }
     }
 
@@ -538,7 +600,7 @@ public struct DocumentTheme: Sendable, Equatable {
         if let multiple = heading.resolved(for: node)?.lineHeight {
             return naturalHeight * multiple
         }
-        return naturalHeight + lineSpacing
+        return naturalHeight + points(lineSpacing)
     }
 
     /// Apply inline marks to a font + attribute dictionary. `baseColor` overrides

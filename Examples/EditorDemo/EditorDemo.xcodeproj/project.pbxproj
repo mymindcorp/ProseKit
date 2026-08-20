@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		168E5202C5273E66DF3ACCC0 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 890F35DC9BEDEC6DE3774C82 /* Assets.xcassets */; };
 		5A3907A7CDDDBCE4D0AFEE26 /* SchemaKit in Frameworks */ = {isa = PBXBuildFile; productRef = BA5025BD668EA3CE832294E2 /* SchemaKit */; };
 		918F9546E159EEEB8E137991 /* EditorSyntax in Frameworks */ = {isa = PBXBuildFile; productRef = 5BB6AE926AA8F4D58F782925 /* EditorSyntax */; };
 		A4129D830C8EFE60706AA6DC /* EditorMath in Frameworks */ = {isa = PBXBuildFile; productRef = 05F7A8993440D3461202BB2E /* EditorMath */; };
@@ -16,9 +17,10 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		890F35DC9BEDEC6DE3774C82 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		ABCC030F750627BD1A854BD2 /* EditorDemo.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = EditorDemo.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		BA35E6E0814DABE89D6846E4 /* editor-swift */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "editor-swift"; path = ../..; sourceTree = SOURCE_ROOT; };
 		C38094E21AAF9D1B26EE9FA4 /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
+		E4CAC97F514EFFB052A288F8 /* mixed-block-test-height-a8e488 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "mixed-block-test-height-a8e488"; path = ../..; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -49,15 +51,24 @@
 			isa = PBXGroup;
 			children = (
 				C8CF421BF20D5E0465F9F80F /* Packages */,
+				B1A1B4143FD76375742B86CC /* Resources */,
 				2944F1CDBD8C2879908A328B /* Sources */,
 				D4E0D886D6CF37B7A43D3005 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
+		B1A1B4143FD76375742B86CC /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				890F35DC9BEDEC6DE3774C82 /* Assets.xcassets */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
 		C8CF421BF20D5E0465F9F80F /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				BA35E6E0814DABE89D6846E4 /* editor-swift */,
+				E4CAC97F514EFFB052A288F8 /* mixed-block-test-height-a8e488 */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -78,6 +89,7 @@
 			buildConfigurationList = 371C3457413B155DD7203FC1 /* Build configuration list for PBXNativeTarget "EditorDemo" */;
 			buildPhases = (
 				B17F0228C9534C73050D56BB /* Sources */,
+				5B3AA258D0A75AE6342DC3B9 /* Resources */,
 				6A5ED397D85243F49805AA3F /* Frameworks */,
 			);
 			buildRules = (
@@ -128,6 +140,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		5B3AA258D0A75AE6342DC3B9 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				168E5202C5273E66DF3ACCC0 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		B17F0228C9534C73050D56BB /* Sources */ = {
