@@ -447,7 +447,7 @@ final class DocumentLayout {
         // rather than guessing at text it doesn't have.
         if child.type.name == "horizontalRule" {
             let rule = theme.horizontalRule
-            return rule.spacingBefore + rule.thickness + rule.spacingAfter
+            return theme.points(rule.spacingBefore) + rule.thickness + theme.points(rule.spacingAfter)
         }
         let font = theme.blockFont(child)
         let lineHeight = theme.lineHeight(for: child, naturalHeight: font.lineHeight)
@@ -460,14 +460,15 @@ final class DocumentLayout {
             : child.textContent
         let textLength = max(visibleText.count, 1)
         let lines = Int(ceil(Double(textLength) / Double(charsPerLine)))
-        var height = CGFloat(max(lines, 1)) * lineHeight + theme.paragraphSpacing
+        var height = CGFloat(max(lines, 1)) * lineHeight + theme.points(theme.paragraphSpacing)
         // Chrome the theme adds around the text, which the estimate would
         // otherwise miss and have to correct for on realizing the block.
         if child.type.name == "codeBlock" {
-            height += theme.code.block.padding.top + theme.code.block.padding.bottom
+            let padding = theme.points(theme.code.block.padding)
+            height += padding.top + padding.bottom
         }
         if let rule = theme.heading.resolved(for: child)?.rule {
-            height += rule.spacing + rule.thickness
+            height += theme.points(rule.spacing) + rule.thickness
         }
         return height
     }
@@ -605,7 +606,7 @@ final class DocumentLayout {
         switch node.type.name {
         case "codeBlock":
             let block = theme.code.block
-            let inset = block.padding
+            let inset = theme.points(block.padding)
             let endY = layoutTextBlock(node, docPos: docPos, x: x + inset.left,
                                        width: max(width - inset.left - inset.right, 1), y: y + inset.top)
             let bottom = endY + inset.bottom
@@ -613,14 +614,14 @@ final class DocumentLayout {
                 // Prepended, not appended: decorations paint in order and this
                 // one goes under the block's own text and its language badge.
                 decorations.insert(.roundedFill(CGRect(x: x, y: y, width: width, height: bottom - y),
-                                                background, block.cornerRadius), at: decorationStart)
+                                                background, theme.points(block.cornerRadius)), at: decorationStart)
             }
             addCodeLanguageBadge(node, blockFrame: blocks.last?.frame)
             return bottom
         case "paragraph", "heading":
             let endY = layoutTextBlock(node, docPos: docPos, x: x, width: width, y: y)
             guard let rule = theme.heading.resolved(for: node)?.rule else { return endY }
-            let ruleY = endY + rule.spacing
+            let ruleY = endY + theme.points(rule.spacing)
             decorations.append(.fill(CGRect(x: x, y: ruleY, width: width, height: rule.thickness),
                                      rule.color ?? theme.hairlineColor))
             return ruleY + rule.thickness
@@ -631,9 +632,10 @@ final class DocumentLayout {
             return layoutTextBlock(node, docPos: docPos, x: x, width: width, y: y)
         case "blockquote":
             let barX = x
-            let innerX = x + theme.quote.indent
+            let quoteIndent = theme.points(theme.quote.indent)
+            let innerX = x + quoteIndent
             let startY = y
-            let endY = layoutFragment(node.content, docPos: docPos + 1, x: innerX, width: width - theme.quote.indent, y: y)
+            let endY = layoutFragment(node.content, docPos: docPos + 1, x: innerX, width: width - quoteIndent, y: y)
             decorations.append(.fill(CGRect(x: barX, y: startY, width: theme.quote.barWidth,
                                             height: endY - startY), theme.quoteBarColor))
             return endY
@@ -649,11 +651,12 @@ final class DocumentLayout {
             return layoutFootnoteDefinition(node, docPos: docPos, x: x, width: width, y: y)
         case "horizontalRule":
             let rule = theme.horizontalRule
-            let lineY = y + rule.spacingBefore
-            decorations.append(.fill(CGRect(x: x + rule.inset, y: lineY,
-                                            width: max(width - rule.inset * 2, 0), height: rule.thickness),
+            let inset = theme.points(rule.inset)
+            let lineY = y + theme.points(rule.spacingBefore)
+            decorations.append(.fill(CGRect(x: x + inset, y: lineY,
+                                            width: max(width - inset * 2, 0), height: rule.thickness),
                                      rule.color ?? theme.hairlineColor))
-            return lineY + rule.thickness + rule.spacingAfter
+            return lineY + rule.thickness + theme.points(rule.spacingAfter)
         case "image":
             let src = node.attrs["src"]?.stringValue ?? ""
             let image = imageProvider(node)
@@ -782,16 +785,19 @@ final class DocumentLayout {
         let ordered = node.type.name == "orderedList"
         let start = node.attrs["order"]?.intValue ?? 1
         let markerAttrs: [NSAttributedString.Key: Any] = [.font: theme.bodyFont, .foregroundColor: theme.textColor]
+        let indent = theme.points(theme.listIndent)
+        let gap = theme.points(theme.listMarkerGap)
         for i in 0..<node.childCount {
             let item = node.child(i)
             y += theme.spacing(before: item, after: i == 0 ? nil : node.child(i - 1))
             // The marker sits on the first line of the item's content, right-
-            // aligned in the indent gutter.
+            // aligned in the indent gutter — and clamped into the content
+            // column, since a marker can outgrow the gutter at large type.
             let marker = ordered ? "\(start + i)." : "•"
             let markerWidth = (marker as NSString).size(withAttributes: markerAttrs).width
-            let markerX = x + theme.listIndent - markerWidth - 8
+            let markerX = max(x, x + indent - markerWidth - gap)
             decorations.append(.text(marker, CGPoint(x: markerX, y: y), markerAttrs))
-            y = layoutFragment(item.content, docPos: pos + 1, x: x + theme.listIndent, width: width - theme.listIndent, y: y)
+            y = layoutFragment(item.content, docPos: pos + 1, x: x + indent, width: width - indent, y: y)
             pos += item.nodeSize
         }
         return y
@@ -801,13 +807,14 @@ final class DocumentLayout {
     /// it — the shape a note takes at the foot of a page.
     private func layoutFootnoteDefinition(_ node: Node, docPos: Int, x: CGFloat,
                                           width: CGFloat, y: CGFloat) -> CGFloat {
-        let indent = theme.listIndent
+        let indent = theme.points(theme.listIndent)
         let marker = footnoteNumber(node.attrs["label"]?.stringValue ?? "") + "."
         let markerAttrs: [NSAttributedString.Key: Any] = [
             .font: theme.bodyFont, .foregroundColor: theme.link.color,
         ]
         let markerWidth = (marker as NSString).size(withAttributes: markerAttrs).width
-        decorations.append(.text(marker, CGPoint(x: x + indent - markerWidth - 8, y: y), markerAttrs))
+        let markerX = max(x, x + indent - markerWidth - theme.points(theme.listMarkerGap))
+        decorations.append(.text(marker, CGPoint(x: markerX, y: y), markerAttrs))
         return layoutFragment(node.content, docPos: docPos + 1, x: x + indent,
                               width: width - indent, y: y)
     }
@@ -860,6 +867,8 @@ final class DocumentLayout {
     private func layoutTaskList(_ node: Node, docPos: Int, x: CGFloat, width: CGFloat, y: CGFloat) -> CGFloat {
         var y = y
         var pos = docPos + 1
+        let indent = theme.points(theme.listIndent)
+        let gap = theme.points(theme.listMarkerGap)
         for i in 0..<node.childCount {
             let item = node.child(i)
             let checked = item.attrs["checked"]?.boolValue ?? false
@@ -869,7 +878,10 @@ final class DocumentLayout {
             // tracks Dynamic Type instead of fitting one body size. The font is
             // enough; the line doesn't have to be typeset first.
             let boxSize = Self.checkboxSize(for: theme, item: item)
-            let boxRect = CGRect(x: x + theme.listIndent - boxSize - 8,
+            // Clamped into the content column: a box sized from the text can
+            // outgrow its gutter, and it must never reach into the page margin
+            // — still less off the left edge of the view.
+            let boxRect = CGRect(x: max(x, x + indent - boxSize - gap),
                                  y: y + Self.checkboxOffset(for: theme, item: item, boxSize: boxSize),
                                  width: boxSize, height: boxSize)
             // The checkbox itself is a managed UIView (see EditorTextView's
@@ -883,7 +895,7 @@ final class DocumentLayout {
             // strikes those too; this reads better.)
             let outer = inCheckedItem
             inCheckedItem = checked
-            y = layoutFragment(item.content, docPos: pos + 1, x: x + theme.listIndent, width: width - theme.listIndent, y: y)
+            y = layoutFragment(item.content, docPos: pos + 1, x: x + indent, width: width - indent, y: y)
             inCheckedItem = outer
             pos += item.nodeSize
         }
@@ -896,7 +908,7 @@ final class DocumentLayout {
     /// costs nothing to render.
     private func layoutDetails(_ node: Node, docPos: Int, x: CGFloat, width: CGFloat, y: CGFloat) -> CGFloat {
         let open = node.attrs["open"]?.boolValue ?? false
-        let indent = theme.listIndent
+        let indent = theme.points(theme.listIndent)
         let innerX = x + indent
         let innerWidth = width - indent
         var y = y
@@ -917,7 +929,7 @@ final class DocumentLayout {
         if open, node.childCount > 1 {
             let content = node.child(1)
             y = layoutFragment(content.content, docPos: pos + 1, x: innerX, width: innerWidth,
-                               y: y + theme.paragraphSpacing)
+                               y: y + theme.points(theme.paragraphSpacing))
         }
         return y
     }
@@ -976,12 +988,12 @@ final class DocumentLayout {
         var edges: [CGFloat] = [x]
         for w in widths { edges.append(edges.last! + w) }
         let style = theme.table
-        let padding = style.cellPadding
+        let padding = theme.points(style.cellPadding)
         var pos = docPos + 1 // inside the table, before the first row
         for r in 0..<rows {
             let row = node.child(r)
             var cellPos = pos + 1 // inside the row, before the first cell
-            var rowHeight = style.minimumRowHeight
+            var rowHeight = theme.points(style.minimumRowHeight)
             // Lay each cell's content out as real text blocks so the cell is
             // clickable, caret-able, and editable (top-aligned within the cell).
             for c in 0..<row.childCount {
@@ -1010,7 +1022,7 @@ final class DocumentLayout {
         }
         // Record the table geometry so the view can hit-test column borders.
         tables.append(TableInfo(tablePos: docPos, originX: x, widths: widths, top: y, bottom: y0))
-        return y0 + style.spacingAfter
+        return y0 + theme.points(style.spacingAfter)
     }
 
     /// A colwidth attribute's width: the official array-of-ints form (first
@@ -1689,9 +1701,9 @@ final class DocumentLayout {
         for code in codeBackgrounds where inBand(code.from, code.to) {
             for rect in selectionRects(from: code.from, to: code.to, clipY: clipY) where visible(rect.minY, rect.maxY) {
                 code.color.setFill()
-                UIBezierPath(roundedRect: rect.insetBy(dx: -theme.code.inline.padding.width,
-                                                       dy: -theme.code.inline.padding.height),
-                             cornerRadius: theme.code.inline.cornerRadius).fill()
+                UIBezierPath(roundedRect: rect.insetBy(dx: -theme.points(theme.code.inline.paddingX),
+                                                       dy: -theme.points(theme.code.inline.paddingY)),
+                             cornerRadius: theme.points(theme.code.inline.cornerRadius)).fill()
             }
         }
         // Highlight-mark backgrounds, behind the text (CoreText won't draw them).
