@@ -153,6 +153,56 @@ final class HighlightRenderTests: XCTestCase {
         XCTAssertFalse(hasBadge, "no badge without a codeLanguageLabel hook")
     }
 
+    // MARK: - Per-line runs
+
+    func testAWrappedHighlightYieldsOneRunPerLineEachWithItsOwnRange() throws {
+        // A highlight long enough to wrap, so the renderer sees several runs.
+        let editor = try Editor(extensions: fullKit())
+        let sc = editor.schema
+        let mark = sc.marks["highlight"]!.create([:])
+        let long = String(repeating: "wrap ", count: 40)
+        let para = try sc.node("paragraph", [:], content: Fragment.from([sc.text(long, [mark])]))
+        editor.setContent(try sc.node("doc", [:], content: Fragment.from([para])))
+        let v = EditorTextView(editor: editor)
+        v.frame = CGRect(x: 0, y: 0, width: 320, height: 600)
+        v.layoutIfNeeded()
+
+        var runs: [HighlightRun] = []
+        v.highlightRenderer = { _, r in runs.append(contentsOf: r) }
+        _ = UIGraphicsImageRenderer(bounds: v.bounds).image { _ in
+            v.layer.render(in: UIGraphicsGetCurrentContext()!)
+        }
+
+        XCTAssertGreaterThan(runs.count, 1, "a wrapped highlight is drawn as several runs")
+        // Every run reports the same whole-highlight identity...
+        XCTAssertEqual(Set(runs.map(\.from)).count, 1)
+        XCTAssertEqual(Set(runs.map(\.to)).count, 1)
+        // ...but its own distinct slice, and the slices tile the highlight in order.
+        XCTAssertEqual(Set(runs.map(\.lineFrom)).count, runs.count, "each run has its own start")
+        for run in runs {
+            XCTAssertLessThan(run.lineFrom, run.lineTo)
+            XCTAssertGreaterThanOrEqual(run.lineFrom, run.from)
+            XCTAssertLessThanOrEqual(run.lineTo, run.to)
+        }
+        let ordered = runs.sorted { $0.lineFrom < $1.lineFrom }
+        XCTAssertEqual(ordered.first?.lineFrom, ordered.first?.from, "the first run starts the highlight")
+        XCTAssertEqual(ordered.last?.lineTo, ordered.last?.to, "the last run ends it")
+        for (a, b) in zip(ordered, ordered.dropFirst()) {
+            XCTAssertLessThanOrEqual(a.lineTo, b.lineFrom, "slices advance without overlapping")
+        }
+    }
+
+    func testAHighlightOnOneLineReportsTheWholeRangeAsItsLine() throws {
+        let v = try view(highlightColor: nil)
+        var runs: [HighlightRun] = []
+        v.highlightRenderer = { _, r in runs.append(contentsOf: r) }
+        _ = render(v)
+        let run = try XCTUnwrap(runs.first)
+        XCTAssertEqual(runs.count, 1)
+        XCTAssertEqual(run.lineFrom, run.from)
+        XCTAssertEqual(run.lineTo, run.to)
+    }
+
     // MARK: - onDocumentChange (host-state mapping, the highlightRenderer companion)
 
     func testDocumentChangeHookDeliversAUsableMapping() throws {

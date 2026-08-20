@@ -10,12 +10,28 @@ public import SchemaKit
 import EditorSerialization
 
 /// One on-screen run of a highlight-mark background, passed to a custom
-/// `EditorTextView.highlightRenderer`. `from`/`to` are the run's document range —
-/// stable across scrolling, so a renderer can animate a given highlight over time
-/// — and `rect` is its position in the draw context's (content) coordinates.
+/// `EditorTextView.highlightRenderer`. `rect` is its position in the draw
+/// context's (content) coordinates.
+///
+/// A highlight is emitted as one run per line it covers, so there are two ranges
+/// and they answer different questions:
+///
+/// - `from`/`to` — the whole highlight's document range, repeated on every one
+///   of its runs. A stable identity across scrolling, for keying per-highlight
+///   state.
+/// - `lineFrom`/`lineTo` — just this line's slice of it. What a renderer wants
+///   for anything positional: where this piece sits within the highlight, and
+///   how much of it this piece is. Equal to `from`/`to` when the highlight fits
+///   on one line.
+///
+/// Animating from `from`/`to` alone makes every line of a wrapped highlight
+/// behave identically — they all start together, because they are all told the
+/// same range.
 public struct HighlightRun {
     public let from: Int
     public let to: Int
+    public let lineFrom: Int
+    public let lineTo: Int
     public let rect: CGRect
     public let color: UIColor
 }
@@ -1229,6 +1245,9 @@ open class EditorTextView: UIView, UIKeyInput {
     /// that run renumbers them. Without mapping, state recorded before the edit
     /// lands on whatever text now occupies those positions. Not fired for
     /// selection-only changes, which never move anything.
+    ///
+    /// Fired before the view rebuilds its layout, so `editor.state` is current
+    /// but geometry is not — map positions here, and ask for rects later.
     ///
     /// The view takes `Editor.onTransaction` for its own bookkeeping; use this
     /// rather than reassigning that.

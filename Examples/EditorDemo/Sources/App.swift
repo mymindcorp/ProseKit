@@ -1265,9 +1265,11 @@ final class DryingInk {
     }
 
     /// The most recent fresh stroke covering this run (nil once it has expired).
+    /// Tested against the run's own line, not the whole highlight: a stroke that
+    /// reaches only the first line of a wrapped highlight shouldn't wet the rest.
     private func freshStroke(for run: HighlightRun) -> Stroke? {
         var best: Stroke?
-        for s in strokes where run.from < s.to && run.to > s.from {
+        for s in strokes where run.lineFrom < s.to && run.lineTo > s.from {
             if best == nil || s.at > best!.at { best = s }
         }
         return best
@@ -1282,8 +1284,11 @@ final class DryingInk {
             let elapsed = CGFloat(now - s.at)
             let speed = strokeSpeed(s)
             let penChars = elapsed * speed
-            let startChar = CGFloat(run.from - s.from)
-            let runChars = max(1, CGFloat(run.to - run.from))
+            // Measured against this *line's* slice, so a wrapped highlight lays
+            // down the way a hand moves — line one, then line two — rather than
+            // every line fading up together on the whole highlight's clock.
+            let startChar = CGFloat(run.lineFrom - s.from)
+            let runChars = max(1, CGFloat(run.lineTo - run.lineFrom))
             revealed = min(1, max(0, (penChars - startChar) / runChars))
             if revealed <= 0.001 { return }                  // tip hasn't arrived yet
             let localElapsed = elapsed - startChar / speed
