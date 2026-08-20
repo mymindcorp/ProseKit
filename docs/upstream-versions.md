@@ -52,6 +52,72 @@ Use it to find what's new when re-auditing: read each package's CHANGELOG from t
   there means protocol corruption, so surfacing it (throwing variant) may be
   worth adding when a transport needs it.
 
+## Known performance gaps
+
+Places where the port matches upstream's algorithm and inherits a cost that
+matters more here than it does in JavaScript. These are *not* deviations —
+nothing to port — but they are worth recording so the next person measuring
+doesn't have to rediscover them.
+
+- **`Transform.addMark` is quadratic in the blocks it covers.** Marking a range
+  emits one `AddMarkStep` per block, because a run is extended only when the next
+  one begins exactly where the last ended and the two tokens between one block
+  and the next always break that. Every step rebuilds the document's children, so
+  N blocks cost N rebuilds of N children. Measured in release:
+
+  | blocks | time | steps |
+  |--------|------|-------|
+  | 500    | 18ms | 500   |
+  | 1,000  | 319ms | 1,000 |
+  | 2,000  | 1,377ms | 2,000 |
+  | 4,000  | 4,762ms | 4,000 |
+
+  Select-all-then-bold on a long document freezes for seconds. Upstream has the
+  same shape; the constant is worse here because copying an array of `Node`
+  *structs* retains five reference-counted fields per element where JavaScript
+  copies pointers.
+
+  **A candidate fix, tried and then backed out** (not for correctness — it
+  passed — but to keep the step stream upstream's for now): extend a run over
+  anything that isn't inline. `AddMarkStep` consults the schema for every node it
+  covers, so it leaves block structure alone and the resulting document is
+  identical. That turns the 4,000-block case into **one step and 2ms**.
+
+  Two things anyone attempting it needs to know.
+
+  *A run may not reach over inline content the range leaves alone.* The step
+  inverts to a `RemoveMarkStep` across its whole range, so a run widened over
+  text that already carried the mark strips it on undo and the document does not
+  come back. This is invisible to a forward comparison: merging unconditionally
+  produced a byte-identical document for every shape tried — code blocks that
+  forbid marks, nested quotes and lists, partial ranges — and was still wrong.
+  Only inverting the steps and comparing the undone document exposes it. Runs
+  have to break at inline content that isn't being marked (already-marked text,
+  or text whose parent forbids the mark), which is where upstream's adjacency
+  rule breaks them anyway, and resume after.
+
+  *The removal steps that accompany an excluding mark must keep strict
+  adjacency.* `RemoveMarkStep` takes a mark off everything in its range without
+  consulting the schema, so widening one strips a mark that content is entitled
+  to keep.
+
+  **What it would and wouldn't buy.** A document with nothing pre-marked goes to
+  a single step. A document already marked in places gains much less, because
+  that is exactly where runs must stop: with every third block already bold,
+  2,000 blocks go from 1,333 steps to 667 and the wall time does not move. It
+  stays quadratic in that shape. Removing that too would need a step type
+  recording which sub-ranges actually changed — a serialization and collab
+  compatibility question, not a tuning one.
+
+  **The cost of taking it** is that the step stream stops matching upstream's:
+  fewer, wider steps for the same edit. That is narrower than it sounds — mark
+  steps carry an empty `StepMap`, so no position mapping changes, and history
+  groups by transaction rather than by step, so undo granularity is unchanged.
+
+  `removeMark` does not have this problem: it counts inline nodes rather than
+  comparing positions, which already merges its runs across block boundaries by
+  the same rule.
+
 ## How to re-audit a module
 
 1. Read the upstream CHANGELOG from the "reviewed through" version onward:
