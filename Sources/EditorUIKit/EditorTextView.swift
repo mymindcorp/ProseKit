@@ -46,6 +46,7 @@ open class EditorTextView: UIView, UIKeyInput {
     private weak var imageResizeRecognizer: UIGestureRecognizer?
     private weak var disclosureTapRecognizer: UIGestureRecognizer?
     private weak var mathTapRecognizer: UIGestureRecognizer?
+    private weak var trailingTapRecognizer: UIGestureRecognizer?
 
     /// When true, each top-level block shows a drag handle in the left gutter
     /// that reorders the block by dragging. Off by default.
@@ -156,13 +157,18 @@ open class EditorTextView: UIView, UIKeyInput {
         let disclosureTap = UITapGestureRecognizer(target: self, action: #selector(handleDisclosureTap(_:)))
         // Tapping a rendered formula hands it to the host (to edit its LaTeX).
         let mathTap = UITapGestureRecognizer(target: self, action: #selector(handleMathTap(_:)))
+        // Tapping the empty space under a document that doesn't end in a
+        // paragraph gives it one — see `trailingGapTap`.
+        let trailingTap = UITapGestureRecognizer(target: self, action: #selector(handleTrailingTap(_:)))
         columnResizeRecognizer = columnResize
         linkTapRecognizer = linkTap
         blockDragRecognizer = blockDrag
         imageResizeRecognizer = imageResize
         disclosureTapRecognizer = disclosureTap
         mathTapRecognizer = mathTap
-        for recognizer in [columnResize, linkTap, blockDrag, imageResize, disclosureTap, mathTap, tripleTap] as [UIGestureRecognizer] {
+        trailingTapRecognizer = trailingTap
+        for recognizer in [columnResize, linkTap, blockDrag, imageResize, disclosureTap, mathTap, tripleTap,
+                           trailingTap] as [UIGestureRecognizer] {
             recognizer.delegate = self
             recognizer.cancelsTouchesInView = false
             addGestureRecognizer(recognizer)
@@ -1431,6 +1437,42 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Test hook: drive a disclosure toggle by document position.
     func toggleDetailsForTesting(at pos: Int) { toggleDetails(at: pos) }
 
+    /// Whether a tap at `point` (document coordinates) lands in the empty space
+    /// below the document, on a document whose last block has no caret position
+    /// the tap could have meant.
+    ///
+    /// A caret has to live in a textblock, so when a document ends in a code
+    /// block, a table, or an image, every point below it resolves to the last
+    /// position *inside* that block. A code block is the worst of these: Return
+    /// there only ever adds another line, so the tap that should have escaped it
+    /// lands back inside instead. A document already ending in a paragraph needs
+    /// none of this — the caret it offers is the one the tap wanted.
+    func trailingGapTap(at point: CGPoint) -> Bool {
+        guard isEditable, editor.schema.nodes["paragraph"] != nil else { return false }
+        guard point.y > ensureLayout().height - theme.pageInsets.bottom else { return false }
+        guard let last = editor.doc.lastChild else { return true }
+        return last.type.name != "paragraph"
+    }
+
+    @objc private func handleTrailingTap(_ gesture: UITapGestureRecognizer) {
+        guard trailingGapTap(at: docPoint(gesture.location(in: self))) else { return }
+        appendTrailingParagraph()
+    }
+
+    /// Add an empty paragraph after the last block and put the caret in it.
+    @discardableResult
+    func appendTrailingParagraph() -> Bool {
+        guard isEditable, let type = editor.schema.nodes["paragraph"],
+              let paragraph = try? type.create() else { return false }
+        let end = editor.doc.content.size
+        guard let tr = try? editor.state.tr.insert(end, paragraph) else { return false }
+        // The caret sits inside the new paragraph — one position past the
+        // opening token the insert put at `end`.
+        editor.dispatch(tr.setSelection(TextSelection.create(tr.doc, end + 1)).scrollIntoView())
+        if !isFirstResponder { becomeFirstResponder() }
+        return true
+    }
+
     /// A tap on a rendered formula: select it and hand it to the host.
     @objc private func handleMathTap(_ gesture: UITapGestureRecognizer) {
         guard let pos = ensureLayout().math(at: docPoint(gesture.location(in: self))) else { return }
@@ -1754,6 +1796,7 @@ open class EditorTextView: UIView, UIKeyInput {
             guard isCommandClick(gesture), let pos = ensureLayout().position(at: point) else { return false }
             return linkInfo(at: pos) != nil
         }
+        if gesture === trailingTapRecognizer { return trailingGapTap(at: point) }
         return super.gestureRecognizerShouldBegin(gesture)
     }
 
