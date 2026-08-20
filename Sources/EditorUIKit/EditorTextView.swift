@@ -2381,6 +2381,16 @@ open class EditorTextView: UIView, UIKeyInput {
                 commands.append(command)
             }
         }
+        // Shift-Return has to be a key command too, for a different reason: the
+        // text-input system consumes Return and re-delivers it as inserted
+        // "\n" (see `insertText`), and inserted text carries no modifiers — so
+        // `pressesBegan` never sees the Shift and the hard-break binding could
+        // never fire. Plain Return is left alone on that path, where it means
+        // "split the block" anyway.
+        let hardBreak = UIKeyCommand(input: "\r", modifierFlags: .shift,
+                                     action: #selector(handleNavigationCommand(_:)))
+        hardBreak.wantsPriorityOverSystemBehavior = true
+        commands.append(hardBreak)
         for mods in [UIKeyModifierFlags(), .shift] {
             let command = UIKeyCommand(input: "\t", modifierFlags: mods, action: #selector(handleNavigationCommand(_:)))
             command.wantsPriorityOverSystemBehavior = true
@@ -2411,6 +2421,7 @@ open class EditorTextView: UIView, UIKeyInput {
         case UIKeyCommand.inputHome: keyCode = .keyboardHome
         case UIKeyCommand.inputEnd: keyCode = .keyboardEnd
         case "\t": keyCode = .keyboardTab
+        case "\r": keyCode = .keyboardReturnOrEnter
         default: keyCode = nil
         }
         if let keyCode { _ = handle(KeyEvent(keyCode, modifiers: command.modifierFlags)) }
