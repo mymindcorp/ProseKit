@@ -7,6 +7,12 @@ public import UIKit
 /// (the editor then writes the new `checked` attribute back through a
 /// transaction, which flows back as an `isChecked` update).
 ///
+/// The frame you are given is the checkbox's *touch* rect, which is padded well
+/// past the box the reader sees — it is sized to the text beside it and then
+/// grown for the finger. Draw inside `bounds`, not to its edges;
+/// `DefaultTaskCheckboxView` centres a circle in it, which is the size the
+/// layout intends.
+///
 /// Supply your own via `EditorTextView.checkboxViewProvider`; when none is set
 /// the editor uses `DefaultTaskCheckboxView`.
 public protocol TaskCheckboxView: UIView {
@@ -17,6 +23,17 @@ public protocol TaskCheckboxView: UIView {
     /// Called when the user activates the checkbox. The editor commits the
     /// change; do not mutate `isChecked` yourself in response.
     var onToggle: (() -> Void)? { get set }
+    /// The editor hands over the current theme on every sync, so a custom
+    /// checkbox can follow `taskItem.checkboxTint`, `checkboxBorderColor`, or
+    /// anything else it wants from the theme — including after the host swaps
+    /// the theme at runtime. Called often; do nothing if nothing changed.
+    ///
+    /// Optional: the default implementation ignores it.
+    func apply(_ theme: DocumentTheme)
+}
+
+public extension TaskCheckboxView {
+    func apply(_ theme: DocumentTheme) {}
 }
 
 /// The built-in checkbox: a circle in both states (the platform task idiom) —
@@ -25,8 +42,13 @@ public protocol TaskCheckboxView: UIView {
 public final class DefaultTaskCheckboxView: UIView, TaskCheckboxView {
     public var onToggle: (() -> Void)?
 
-    /// Colors come from the editor's theme.
-    public var theme = DocumentTheme() { didSet { updateColors() } }
+    /// Colors come from the editor's theme. Re-applied on every sync, so the
+    /// setter earns its keep by ignoring an unchanged theme.
+    public var theme = DocumentTheme() {
+        didSet { guard theme != oldValue else { return }; updateColors() }
+    }
+
+    public func apply(_ theme: DocumentTheme) { self.theme = theme }
 
     public var isChecked: Bool = false {
         didSet { guard isChecked != oldValue else { return }; applyState() }
@@ -90,8 +112,8 @@ public final class DefaultTaskCheckboxView: UIView, TaskCheckboxView {
     }
 
     private func updateColors() {
-        fillLayer.fillColor = (theme.taskItem.checkboxTint ?? theme.caretColor).cgColor
-        strokeLayer.strokeColor = (theme.taskItem.checkboxBorderColor ?? theme.quoteBarColor).cgColor
+        fillLayer.fillColor = (theme.taskItem.checkboxTint ?? theme.selection.caret).cgColor
+        strokeLayer.strokeColor = (theme.taskItem.checkboxBorderColor ?? theme.hairlineColor).cgColor
     }
 
     /// Set the static (non-animated) visual state for `isChecked`.

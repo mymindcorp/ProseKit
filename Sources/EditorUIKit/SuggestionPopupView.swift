@@ -35,7 +35,7 @@ final class SuggestionPopupView: UIView {
         layer.cornerRadius = 12
         layer.cornerCurve = .continuous
         layer.borderWidth = 0.5
-        layer.borderColor = theme.quoteBarColor.withAlphaComponent(0.35).cgColor
+        layer.borderColor = theme.hairlineColor.withAlphaComponent(0.35).cgColor
         layer.shadowColor = UIColor.black.cgColor
         layer.shadowOpacity = 0.20
         layer.shadowRadius = 16
@@ -129,7 +129,7 @@ final class SuggestionPopupView: UIView {
             self.theme = theme
             super.init(frame: .zero)
 
-            highlight.backgroundColor = theme.caretColor.withAlphaComponent(0.14)
+            highlight.backgroundColor = theme.selection.caret.withAlphaComponent(0.14)
             highlight.layer.cornerRadius = 7
             highlight.layer.cornerCurve = .continuous
             highlight.isHidden = true
@@ -137,7 +137,7 @@ final class SuggestionPopupView: UIView {
             addSubview(highlight)
 
             iconView.contentMode = .scaleAspectFit
-            iconView.tintColor = theme.caretColor
+            iconView.tintColor = theme.selection.caret
             iconView.translatesAutoresizingMaskIntoConstraints = false
             iconView.image = UIImage(systemName: item.icon ?? "circle.fill")?
                 .withConfiguration(UIImage.SymbolConfiguration(pointSize: 15, weight: .regular))
@@ -150,7 +150,7 @@ final class SuggestionPopupView: UIView {
 
             subtitleLabel.text = item.subtitle
             subtitleLabel.font = .systemFont(ofSize: max(11, theme.bodyFont.pointSize - 4))
-            subtitleLabel.textColor = theme.codeColor
+            subtitleLabel.textColor = theme.code.color
             subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
             let text = UIStackView(arrangedSubviews: item.subtitle == nil ? [titleLabel] : [titleLabel, subtitleLabel])

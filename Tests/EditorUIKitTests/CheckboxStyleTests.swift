@@ -180,8 +180,8 @@ final class CheckboxStyleTests: XCTestCase {
         // The historical behaviour, kept as the default so existing hosts see
         // no change when they haven't set the new options.
         var theme = DocumentTheme()
-        theme.caretColor = .systemPurple
-        theme.quoteBarColor = .systemTeal
+        theme.selection.caret = .systemPurple
+        theme.hairlineColor = .systemTeal
         let box = DefaultTaskCheckboxView(frame: CGRect(x: 0, y: 0, width: 30, height: 30))
         box.theme = theme
         box.layoutIfNeeded()
@@ -189,6 +189,51 @@ final class CheckboxStyleTests: XCTestCase {
         let stroke = box.layer.sublayers?.compactMap { ($0 as? CAShapeLayer)?.strokeColor }
         XCTAssertEqual(fill?.contains(UIColor.systemPurple.cgColor), true)
         XCTAssertEqual(stroke?.contains(UIColor.systemTeal.cgColor), true)
+    }
+
+    /// A stand-in for a host's own checkbox: it records the themes it is given
+    /// so the test can see whether the editor hands them over at all.
+    private final class SpyCheckboxView: UIView, TaskCheckboxView {
+        var isChecked = false
+        var onToggle: (() -> Void)?
+        var applied: [DocumentTheme] = []
+        func apply(_ theme: DocumentTheme) { applied.append(theme) }
+    }
+
+    func testACustomCheckboxViewReceivesTheThemeAndLaterChanges() throws {
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        let item = try s.node("taskItem", ["checked": .bool(false)], content: Fragment.from([
+            try s.node("paragraph", [:], content: Fragment.from([s.text("Task")])),
+        ]))
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            try s.node("taskList", [:], content: Fragment.from([item])),
+        ])))
+        let spy = SpyCheckboxView()
+        let view = EditorTextView(editor: editor)
+        view.checkboxViewProvider = { spy }
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 480)
+        view.layoutIfNeeded()
+        XCTAssertFalse(spy.applied.isEmpty, "a replaced checkbox is handed the theme")
+
+        var themed = DocumentTheme()
+        themed.taskItem.checkboxTint = .systemPink
+        view.theme = themed
+        view.layoutIfNeeded()
+        XCTAssertEqual(spy.applied.last?.taskItem.checkboxTint, .systemPink,
+                       "and every later theme, since these views outlive a layout")
+    }
+
+    func testTheDefaultViewRestylesWhenTheThemeChangesUnderIt() {
+        let box = DefaultTaskCheckboxView(frame: CGRect(x: 0, y: 0, width: 30, height: 30))
+        box.isChecked = true
+        box.layoutIfNeeded()
+        var themed = DocumentTheme()
+        themed.taskItem.checkboxTint = .systemPink
+        box.apply(themed)
+        box.layoutIfNeeded()
+        let fill = box.layer.sublayers?.compactMap { ($0 as? CAShapeLayer)?.fillColor }
+        XCTAssertEqual(fill?.contains(UIColor.systemPink.cgColor), true)
     }
 
     func testDefaultViewIsCircularAndReflectsState() {

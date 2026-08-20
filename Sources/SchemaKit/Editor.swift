@@ -124,7 +124,7 @@ public final class Editor {
         return run(setColor(type, color))
     }
 
-    /// Highlight the selection with a named color (a `theme.highlightColors` key,
+    /// Highlight the selection with a named color (a `theme.highlighters` name,
     /// e.g. "yellow"); pass nil for the default highlight. No-op without the mark.
     @discardableResult
     public func setHighlight(_ color: String?) -> Bool {

@@ -125,12 +125,12 @@ open class EditorTextView: UIView, UIKeyInput {
         backgroundColor = .systemBackground
         isUserInteractionEnabled = true
         contentMode = .redraw
-        caretLayer.fillColor = theme.caretColor.cgColor
+        caretLayer.fillColor = theme.selection.caret.cgColor
         // The caret must jump instantly; suppress Core Animation's implicit
         // ~0.25s animation on geometry changes (opacity still animates to blink).
         caretLayer.actions = ["path": NSNull(), "position": NSNull(), "bounds": NSNull(), "fillColor": NSNull()]
         layer.addSublayer(caretLayer)
-        dropCursorLayer.fillColor = theme.caretColor.withAlphaComponent(0.8).cgColor
+        dropCursorLayer.fillColor = theme.selection.caret.withAlphaComponent(0.8).cgColor
         dropCursorLayer.actions = caretLayer.actions
         layer.addSublayer(dropCursorLayer)
 
@@ -679,7 +679,7 @@ open class EditorTextView: UIView, UIKeyInput {
 
         // Placeholder when the document is empty.
         if let placeholder, !placeholder.isEmpty, isDocumentEmpty {
-            let attrs: [NSAttributedString.Key: Any] = [.font: theme.bodyFont, .foregroundColor: theme.codeColor]
+            let attrs: [NSAttributedString.Key: Any] = [.font: theme.bodyFont, .foregroundColor: theme.code.color]
             NSAttributedString(string: placeholder, attributes: attrs).draw(at: CGPoint(x: theme.pageInsets.left, y: theme.pageInsets.top))
         }
         // Plugin (e.g. search highlight) backgrounds.
@@ -730,7 +730,7 @@ open class EditorTextView: UIView, UIKeyInput {
         // Selection highlight (every range — a cell selection has several).
         let sel = editor.state.selection
         if !sel.empty {
-            ctx.setFillColor(theme.selectionColor.cgColor)
+            ctx.setFillColor(theme.selection.fill.cgColor)
             for range in sel.ranges {
                 for r in l.selectionRects(from: range.from.pos, to: range.to.pos, clipY: visibleY) { ctx.fill(r) }
             }
@@ -790,7 +790,7 @@ open class EditorTextView: UIView, UIKeyInput {
             for i in entries.indices {
                 guard blockHandleVisible(i), let handle = blockHandleRect(forEntryAt: i), onScreen(handle) else { continue }
                 let active = blockDrag?.sourceIndex == i
-                ctx.setFillColor(theme.quoteBarColor.withAlphaComponent(active ? 0.9 : 0.45).cgColor)
+                ctx.setFillColor(theme.hairlineColor.withAlphaComponent(active ? 0.9 : 0.45).cgColor)
                 // Six grip dots (2 columns × 3 rows).
                 let dot: CGFloat = 2.5, gapX: CGFloat = 4, gapY: CGFloat = 5
                 let ox = handle.minX + 2, oy = handle.midY - gapY
@@ -802,7 +802,7 @@ open class EditorTextView: UIView, UIKeyInput {
                 let y: CGFloat = drag.dropIndex < entries.count
                     ? entries[drag.dropIndex].topY
                     : (entries.last.map { $0.topY + $0.height } ?? 0)
-                ctx.setFillColor(theme.caretColor.cgColor)
+                ctx.setFillColor(theme.selection.caret.cgColor)
                 ctx.fill(CGRect(x: theme.pageInsets.left, y: y - 1, width: max(bounds.width, 1) - theme.pageInsets.left * 2, height: 2))
             }
         }
@@ -817,7 +817,7 @@ open class EditorTextView: UIView, UIKeyInput {
                 let path = UIBezierPath(roundedRect: grip, cornerRadius: 2).cgPath
                 ctx.setFillColor(UIColor.systemBackground.withAlphaComponent(0.9).cgColor)
                 ctx.addPath(path); ctx.fillPath()
-                ctx.setStrokeColor(theme.caretColor.withAlphaComponent(active ? 1 : 0.7).cgColor)
+                ctx.setStrokeColor(theme.selection.caret.withAlphaComponent(active ? 1 : 0.7).cgColor)
                 ctx.setLineWidth(active ? 2 : 1.5)
                 ctx.addPath(path); ctx.strokePath()
             }
@@ -1062,7 +1062,7 @@ open class EditorTextView: UIView, UIKeyInput {
             return
         }
         caretLayer.path = UIBezierPath(rect: rect.offsetBy(dx: 0, dy: -contentOffsetY)).cgPath
-        caretLayer.fillColor = theme.caretColor.cgColor
+        caretLayer.fillColor = theme.selection.caret.cgColor
     }
 
     /// Test hook: the caret's current on-screen rect (the caret layer's path).
@@ -1082,7 +1082,7 @@ open class EditorTextView: UIView, UIKeyInput {
         // The caret layer lives in viewport coordinates; the rect is in document
         // coordinates, so shift by the scroll offset.
         caretLayer.path = UIBezierPath(rect: rect.offsetBy(dx: 0, dy: -contentOffsetY)).cgPath
-        caretLayer.fillColor = theme.caretColor.cgColor
+        caretLayer.fillColor = theme.selection.caret.cgColor
         caretLayer.opacity = 1
         revealRect(rect)
     }

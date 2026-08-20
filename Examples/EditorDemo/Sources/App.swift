@@ -291,6 +291,16 @@ struct ThemeSettings: Equatable {
     var caretColor = Color(uiColor: .tintColor)
     var selectionColor = Color(uiColor: .tintColor)
     // Headings
+    var headingFontName: String = inheritFont
+    var headingH1Scale: Double = 1.8
+    var headingLineHeightOn = false
+    var headingLineHeight: Double = 1.0
+    var headingTracking: Double = 0
+    var headingWeight: String = defaultWeight
+    var headingAlignment: String = "Natural"
+    var headingSpaceBefore: Double = 10
+    var headingSpaceAfter: Double = 10
+    var headingRuleOn = false
     var headingColorOn = false
     var headingColor = Color(uiColor: .label)
     // Links
@@ -300,9 +310,35 @@ struct ThemeSettings: Equatable {
     var codeColor = Color(uiColor: .secondaryLabel)
     var codeBackgroundOn = false
     var codeBackground = Color(uiColor: .secondarySystemFill)
+    var codeBlockBackgroundOn = false
+    var codeBlockBackground = Color(uiColor: .secondarySystemBackground)
+    var codeBlockPadding: Double = 10
+    // Tables
+    var tableCellPadding: Double = 6
 
     static let systemFont = "System"
     static let fontChoices = [systemFont, "Georgia", "Charter", "Palatino", "Times New Roman", "Avenir Next"]
+    /// Headings can take the body face or one of their own.
+    static let inheritFont = "Inherit"
+    static let headingFontChoices = [inheritFont] + fontChoices
+    /// "Bold" is the theme's own default when no weight is named.
+    static let defaultWeight = "Bold"
+    static let weightChoices: [(String, UIFont.Weight)] = [
+        ("Light", .light), ("Regular", .regular), ("Medium", .medium),
+        ("Semibold", .semibold), (defaultWeight, .bold), ("Heavy", .heavy),
+    ]
+    static let alignmentChoices: [(String, NSTextAlignment?)] = [
+        ("Natural", nil), ("Left", .left), ("Center", .center), ("Right", .right),
+    ]
+
+    /// The heading face, or nil to inherit the body face (the theme's own default).
+    private var headingFace: String? {
+        switch headingFontName {
+        case ThemeSettings.inheritFont: nil
+        case ThemeSettings.systemFont: nil
+        default: headingFontName
+        }
+    }
 
     /// Build the `DocumentTheme` these settings describe (keeping the demo's vivid
     /// highlighter palette). Dynamic Type is turned off so the size slider wins.
@@ -315,14 +351,31 @@ struct ThemeSettings: Equatable {
         t.listIndent = listIndent
         t.fontName = (fontName == ThemeSettings.systemFont) ? nil : fontName
         t.textColor = UIColor(textColor)
-        t.caretColor = UIColor(caretColor)
-        t.selectionColor = UIColor(selectionColor).withAlphaComponent(0.25)
-        t.headingColor = headingColorOn ? UIColor(headingColor) : nil
-        t.linkColor = UIColor(linkColor)
-        t.linkUnderline = linkUnderline
-        t.codeColor = UIColor(codeColor)
-        t.codeBackground = codeBackgroundOn ? UIColor(codeBackground) : nil
-        t.highlightColors = HighlighterMenu.themeColors
+        t.selection.caret = UIColor(caretColor)
+        t.selection.fill = UIColor(selectionColor).withAlphaComponent(0.25)
+        t.heading.fontName = headingFace
+        t.heading.scale[0] = headingH1Scale
+        t.heading.lineHeight = headingLineHeightOn ? headingLineHeight : nil
+        t.heading.tracking = headingTracking == 0 ? nil : headingTracking
+        t.heading.weight = ThemeSettings.weightChoices.first { $0.0 == headingWeight }?.1
+        t.heading.alignment = ThemeSettings.alignmentChoices.first { $0.0 == headingAlignment }?.1
+        t.heading.spacingBefore = headingSpaceBefore
+        t.heading.spacingAfter = headingSpaceAfter
+        t.heading.rule = headingRuleOn ? DocumentTheme.Heading.Rule() : nil
+        t.heading.color = headingColorOn ? UIColor(headingColor) : nil
+        t.link.color = UIColor(linkColor)
+        t.link.underline = linkUnderline
+        t.code.color = UIColor(codeColor)
+        t.code.inline.background = codeBackgroundOn ? UIColor(codeBackground) : nil
+        t.code.block.background = codeBlockBackgroundOn ? UIColor(codeBlockBackground) : nil
+        // Padding without a background just indents the code, so it follows it.
+        t.code.block.padding = codeBlockBackgroundOn
+            ? UIEdgeInsets(top: codeBlockPadding, left: codeBlockPadding,
+                           bottom: codeBlockPadding, right: codeBlockPadding)
+            : .zero
+        t.table.cellPadding = UIEdgeInsets(top: tableCellPadding, left: tableCellPadding,
+                                           bottom: tableCellPadding, right: tableCellPadding)
+        t.highlighters = HighlighterMenu.themeHighlighters
         return t
     }
 }
@@ -353,6 +406,24 @@ struct ThemePanel: View {
                     ColorPicker("Selection", selection: $settings.selectionColor)
                 }
                 Section("Headings") {
+                    Picker("Face", selection: $settings.headingFontName) {
+                        ForEach(ThemeSettings.headingFontChoices, id: \.self) { Text($0).tag($0) }
+                    }
+                    Picker("Weight", selection: $settings.headingWeight) {
+                        ForEach(ThemeSettings.weightChoices, id: \.0) { Text($0.0).tag($0.0) }
+                    }
+                    Picker("Alignment", selection: $settings.headingAlignment) {
+                        ForEach(ThemeSettings.alignmentChoices, id: \.0) { Text($0.0).tag($0.0) }
+                    }
+                    themeSlider("H1 size", $settings.headingH1Scale, 1.0...2.5, unit: "×", decimals: 2)
+                    themeSlider("Tracking", $settings.headingTracking, -0.06...0.06, unit: "em", decimals: 3)
+                    themeSlider("Space before", $settings.headingSpaceBefore, 0...48)
+                    themeSlider("Space after", $settings.headingSpaceAfter, 0...48)
+                    Toggle("Rule below", isOn: $settings.headingRuleOn)
+                    Toggle("Custom line height", isOn: $settings.headingLineHeightOn)
+                    if settings.headingLineHeightOn {
+                        themeSlider("Line height", $settings.headingLineHeight, 0.8...1.8, unit: "×", decimals: 2)
+                    }
                     Toggle("Custom color", isOn: $settings.headingColorOn)
                     if settings.headingColorOn {
                         ColorPicker("Heading color", selection: $settings.headingColor)
@@ -368,6 +439,14 @@ struct ThemePanel: View {
                     if settings.codeBackgroundOn {
                         ColorPicker("Pill color", selection: $settings.codeBackground)
                     }
+                    Toggle("Block background", isOn: $settings.codeBlockBackgroundOn)
+                    if settings.codeBlockBackgroundOn {
+                        ColorPicker("Block color", selection: $settings.codeBlockBackground)
+                        themeSlider("Block padding", $settings.codeBlockPadding, 0...32)
+                    }
+                }
+                Section("Tables") {
+                    themeSlider("Cell padding", $settings.tableCellPadding, 0...24)
                 }
             }
             .navigationTitle("Theme")
@@ -377,12 +456,14 @@ struct ThemePanel: View {
     }
 
     private func themeSlider(_ label: String, _ value: Binding<Double>,
-                             _ range: ClosedRange<Double>, unit: String = "") -> some View {
+                             _ range: ClosedRange<Double>, unit: String = "",
+                             decimals: Int = 0) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text(label)
                 Spacer()
-                Text("\(Int(value.wrappedValue))\(unit)").foregroundStyle(.secondary).monospacedDigit()
+                Text("\(value.wrappedValue, specifier: "%.\(decimals)f")\(unit)")
+                    .foregroundStyle(.secondary).monospacedDigit()
             }
             Slider(value: value, in: range)
         }
@@ -601,7 +682,7 @@ struct EditorContainer: UIViewRepresentable {
         // highlighter palette below; the bubble/menu swatches use the same set).
         textView.theme = themeSettings.makeTheme()
         context.coordinator.lastThemeSettings = themeSettings
-        textView.theme.highlightColors = HighlighterMenu.themeColors
+        textView.theme.highlighters = HighlighterMenu.themeHighlighters
         // Opt into code-block syntax highlighting + language badges. Highlighting
         // only affects code blocks; detection only switches when confident.
         textView.syntaxHighlighter = makeSyntaxHighlighter()
@@ -1027,28 +1108,31 @@ enum HighlighterMenu {
         }
     }
 
-    /// (name — a `theme.highlightColors` key, display title, the swatch hue.)
-    static let colors: [(name: String, title: String, swatch: UIColor)] = [
-        ("yellow", "Yellow", ink((1.00, 0.95, 0.10), (0.95, 0.85, 0.28))),
-        ("green",  "Green",  ink((0.40, 1.00, 0.20), (0.45, 0.92, 0.40))),
-        ("blue",   "Blue",   ink((0.20, 0.80, 1.00), (0.35, 0.78, 1.00))),
-        ("pink",   "Pink",   ink((1.00, 0.30, 0.65), (1.00, 0.45, 0.72))),
-        ("orange", "Orange", ink((1.00, 0.55, 0.10), (1.00, 0.62, 0.28))),
+    /// (name — a `theme.highlighters` name, the swatch hue). The menu label is
+    /// the highlighter's own `displayTitle`.
+    static let colors: [(name: String, swatch: UIColor)] = [
+        ("yellow", ink((1.00, 0.95, 0.10), (0.95, 0.85, 0.28))),
+        ("green",  ink((0.40, 1.00, 0.20), (0.45, 0.92, 0.40))),
+        ("blue",   ink((0.20, 0.80, 1.00), (0.35, 0.78, 1.00))),
+        ("pink",   ink((1.00, 0.30, 0.65), (1.00, 0.45, 0.72))),
+        ("orange", ink((1.00, 0.55, 0.10), (1.00, 0.62, 0.28))),
     ]
 
-    /// The highlight-mark colors for `theme.highlightColors` — the (dynamic)
-    /// swatch hues at a translucent alpha, so flat highlights and the drying ink
-    /// read as vivid in both light and dark.
-    static var themeColors: [String: UIColor] {
-        Dictionary(uniqueKeysWithValues: colors.map { ($0.name, $0.swatch.withAlphaComponent(0.55)) })
+    /// The highlighters for `theme.highlighters` — the (dynamic) swatch hues at
+    /// a translucent alpha, so flat highlights and the drying ink read as vivid
+    /// in both light and dark. Menu order is `colors`' order.
+    static var themeHighlighters: [DocumentTheme.Highlighter] {
+        colors.map { .init(name: $0.name, background: $0.swatch.withAlphaComponent(0.55)) }
     }
 
     /// Builds the submenu, routing each choice through `apply` (a highlight color
     /// name, or nil to remove) so the host can also record it (e.g. drying ink).
     @MainActor
     static func items(apply: @escaping @MainActor (String?) -> Void) -> [UIMenuElement] {
-        let colorActions: [UIMenuElement] = colors.map { color in
-            UIAction(title: color.title, image: swatch(color.swatch)) { _ in apply(color.name) }
+        // Labels come from the highlighters themselves, so the menu and the
+        // document can't drift apart; the swatch stays the vivid full-alpha hue.
+        let colorActions: [UIMenuElement] = zip(colors, themeHighlighters).map { color, highlighter in
+            UIAction(title: highlighter.displayTitle, image: swatch(color.swatch)) { _ in apply(color.name) }
         }
         let remove = UIAction(title: "Remove", image: UIImage(systemName: "xmark.circle")) { _ in apply(nil) }
         return [UIMenu(title: "Highlight",
@@ -1391,9 +1475,13 @@ final class FormatBubble: UIView, FloatingBubble {
         return v
     }
 
-    private func swatchButton(_ color: (name: String, title: String, swatch: UIColor)) -> UIButton {
+    private func swatchButton(_ color: (name: String, swatch: UIColor),
+                              _ highlighter: DocumentTheme.Highlighter) -> UIButton {
         let dot = UIButton(type: .system)
         dot.backgroundColor = color.swatch
+        // A bare colored dot says nothing out loud, so the highlighter's own
+        // label names it.
+        dot.accessibilityLabel = highlighter.displayTitle
         dot.layer.cornerRadius = 11
         dot.layer.borderColor = UIColor.separator.cgColor
         dot.layer.borderWidth = 0.5
@@ -1416,7 +1504,8 @@ final class FormatBubble: UIView, FloatingBubble {
             ]
         case .colors:
             var views: [UIView] = [toolButton("chevron.left") { [weak self] in self?.show(.buttons) }, separator()]
-            views += HighlighterMenu.colors.map { swatchButton($0) }
+            views += zip(HighlighterMenu.colors, HighlighterMenu.themeHighlighters)
+                .map { swatchButton($0, $1) }
             views.append(toolButton("xmark", tint: .secondaryLabel) { [weak self] in
                 self?.onHighlight?(nil); self?.show(.buttons)
             })
