@@ -51,10 +51,16 @@ final class ThemeGroupTests: XCTestCase {
             ])),
         ]))
         editor.setContent(doc)
-        XCTAssertTrue(DocumentLayout(doc: editor.doc, width: 320, theme: theme).codeBackgrounds.isEmpty,
-                      "no pill unless the theme asks for one")
+        // On by default: an inline run is set at prose size, so without a pill
+        // it reads as ordinary text in a slightly different face.
+        XCTAssertEqual(DocumentLayout(doc: editor.doc, width: 320, theme: theme).codeBackgrounds.count, 1,
+                       "a pill unless the theme opts out")
         theme.code.inline.background = .systemFill
-        XCTAssertEqual(DocumentLayout(doc: editor.doc, width: 320, theme: theme).codeBackgrounds.count, 1)
+        XCTAssertEqual(DocumentLayout(doc: editor.doc, width: 320, theme: theme).codeBackgrounds.count, 1,
+                       "a custom colour is honoured")
+        theme.code.inline.background = nil
+        XCTAssertTrue(DocumentLayout(doc: editor.doc, width: 320, theme: theme).codeBackgrounds.isEmpty,
+                      "nil opts out")
     }
 
     func testCodeBlockPaddingInsetsTheTextAndSizesTheBackground() throws {

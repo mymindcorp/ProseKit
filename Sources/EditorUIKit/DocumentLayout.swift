@@ -89,8 +89,16 @@ enum DecorationItem {
 /// A text block typeset in local coordinates (block top at y = 0), cached and
 /// reused across layouts so unchanged blocks don't re-run CoreText line breaking
 /// — the expensive per-keystroke cost on large documents.
+///
+/// This is cached by (node, width) and reused wherever that node next sits, so
+/// **nothing here may be absolute** — not a y coordinate, and not a document
+/// position. `layoutTextBlock` rebases all of it onto the block's actual origin
+/// and content start. Deleting a list item is what punishes a field that forgets
+/// this: every item below it keeps its exact paragraph node, so it hits this
+/// cache, but has moved to a lower document position.
 struct LocalTextBlock {
     let lines: [LineLayout]   // baselineOrigin relative to (0, 0)
+    /// `docStart` relative to the block's content start.
     let segments: [Segment]
     let attributed: NSAttributedString
     let height: CGFloat
@@ -98,10 +106,14 @@ struct LocalTextBlock {
     /// Inline formulas, drawn at their run position once line breaking has
     /// placed them. Unlike an image atom these carry their own baseline, so the
     /// formula lines up with the text rather than sitting on top of it.
-    /// `docOffset` is relative to the block's content start — this struct is
-    /// cached by (node, width) and reused wherever that node sits, so it must
-    /// hold nothing absolute.
+    /// `docOffset` is relative to the block's content start.
     let mathAtoms: [(attrIndex: Int, docOffset: Int, rendering: MathRendering)]
+    /// Highlight-mark and inline-code backgrounds, as ranges relative to the
+    /// block's content start. Carried here rather than emitted while typesetting
+    /// because a block served from the cache is never typeset again — and would
+    /// otherwise lose its backgrounds entirely.
+    let highlights: [(from: Int, to: Int, color: UIColor)]
+    let codeBackgrounds: [(from: Int, to: Int, color: UIColor)]
 }
 
 /// Caches typeset blocks by (node, width). Mark-and-sweep keeps it bounded to
@@ -242,6 +254,11 @@ final class DocumentLayout {
     /// cached — the view loads these and rebuilds.
     /// Image nodes whose drawable couldn't be resolved from a cache — the host
     /// resolves each (it sees all the node's attrs, not just `src`) and loads it.
+    /// Unlike every other output here this is a work list, not something keyed
+    /// by position — so `TopEntry` doesn't carry it and reused entries don't
+    /// re-emit it. That is safe because `loadPendingImages` is idempotent and a
+    /// finished load clears the block cache, which re-emits from scratch. A load
+    /// that *fails* is not retried while its block stays cached.
     private(set) var pendingImages: [Node] = []
     /// Resolves an image node to a drawable image (host data hook, cache, or a
     /// decoded `data:` URL). Returns nil to draw a placeholder.
@@ -329,6 +346,17 @@ final class DocumentLayout {
         var back = 0
         while back < (newCount - front), back < (prev.count - front),
               doc.child(newCount - 1 - back) == prev[prev.count - 1 - back].node { back += 1 }
+        // An entry's height starts with the spacing before it, and that spacing
+        // is a function of the block *and the one above it*. So the suffix's
+        // first entry is only reusable when its predecessor is unchanged too —
+        // otherwise it carries the old gap, and everything below it (the caret
+        // included) sits a spacing's worth off. Re-lay that one entry.
+        if back > 0 {
+            let newPrev = newCount - back - 1, oldPrev = prev.count - back - 1
+            let samePredecessor = newPrev < 0 && oldPrev < 0
+                || newPrev >= 0 && oldPrev >= 0 && doc.child(newPrev) == prev[oldPrev].node
+            if !samePredecessor { back -= 1 }
+        }
         return (front, back)
     }
 
@@ -1043,7 +1071,7 @@ final class DocumentLayout {
         // is what keeps per-keystroke cost off the whole document.
         let local = blockCache?.lookup(node, width: width, checked: inCheckedItem,
                                        align: inCellAlignment) ?? {
-            let built = typesetBlock(node, contentStart: contentStart, width: width)
+            let built = typesetBlock(node, width: width)
             blockCache?.store(node, width: width, checked: inCheckedItem, align: inCellAlignment, built)
             return built
         }()
@@ -1071,21 +1099,36 @@ final class DocumentLayout {
             mathTargets.append((rect: rect, pos: contentStart + atom.docOffset))
         }
 
+        // Rebase the cached ranges onto where this block actually sits.
+        for h in local.highlights {
+            highlights.append((from: contentStart + h.from, to: contentStart + h.to, color: h.color))
+        }
+        for c in local.codeBackgrounds {
+            codeBackgrounds.append((from: contentStart + c.from, to: contentStart + c.to, color: c.color))
+        }
+
         let frame = CGRect(x: x, y: y, width: width, height: local.height)
         blocks.append(TextBlock(
             contentStart: contentStart,
             contentEnd: contentStart + node.content.size,
             frame: frame,
             lines: lines,
-            segments: local.segments.isEmpty ? [Segment(docStart: contentStart, docLen: 0, attrStart: 0, attrLen: 0, text: "")] : local.segments,
+            segments: local.segments.isEmpty
+                ? [Segment(docStart: contentStart, docLen: 0, attrStart: 0, attrLen: 0, text: "")]
+                : local.segments.map {
+                    Segment(docStart: contentStart + $0.docStart, docLen: $0.docLen,
+                            attrStart: $0.attrStart, attrLen: $0.attrLen, text: $0.text)
+                },
             attributed: local.attributed))
         return y + local.height
     }
 
-    /// Typeset a text block in LOCAL coordinates (top at y = 0), independent of
-    /// its eventual position — cacheable by (node, width).
-    private func typesetBlock(_ node: Node, contentStart: Int, width: CGFloat) -> LocalTextBlock {
-        let (attr, segments, imageAtoms, mathAtoms) = buildAttributed(node, contentStart: contentStart, width: width)
+    /// Typeset a text block in LOCAL coordinates (top at y = 0) and with
+    /// block-relative document offsets, independent of its eventual position —
+    /// cacheable by (node, width).
+    private func typesetBlock(_ node: Node, width: CGFloat) -> LocalTextBlock {
+        let (attr, segments, imageAtoms, mathAtoms, highlights, codeBackgrounds) =
+            buildAttributed(node, width: width)
         let rtl = isRightToLeft(attr.string)
         let base = NSMutableAttributedString(attributedString:
             attr.length == 0 ? NSAttributedString(string: " ", attributes: [.font: theme.blockFont(node)]) : attr)
@@ -1153,19 +1196,30 @@ final class DocumentLayout {
             lineY += lineHeight
         }
         return LocalTextBlock(lines: lines, segments: segments, attributed: base, height: lineY,
-                              imageAtoms: imageAtoms, mathAtoms: mathAtoms)
+                              imageAtoms: imageAtoms, mathAtoms: mathAtoms,
+                              highlights: highlights, codeBackgrounds: codeBackgrounds)
     }
 
-    private func buildAttributed(_ node: Node, contentStart: Int, width: CGFloat)
+    /// Every document offset it produces is relative to the block's content
+    /// start, so the result can be cached and reused at any position.
+    private func buildAttributed(_ node: Node, width: CGFloat)
         -> (NSMutableAttributedString, [Segment],
             [(attrIndex: Int, image: UIImage, size: CGSize)],
-            [(attrIndex: Int, docOffset: Int, rendering: MathRendering)]) {
+            [(attrIndex: Int, docOffset: Int, rendering: MathRendering)],
+            [(from: Int, to: Int, color: UIColor)],
+            [(from: Int, to: Int, color: UIColor)]) {
         let result = NSMutableAttributedString()
         var segments: [Segment] = []
         var imageAtoms: [(attrIndex: Int, image: UIImage, size: CGSize)] = []
         var mathAtoms: [(attrIndex: Int, docOffset: Int, rendering: MathRendering)] = []
+        // Block-relative, and deliberately not the layout-wide `highlights` /
+        // `codeBackgrounds` they used to append straight to — a block served
+        // from the cache is never typeset again, so collecting them here and
+        // rebasing at the call site is what keeps them.
+        var blockHighlights: [(from: Int, to: Int, color: UIColor)] = []
+        var blockCodeBackgrounds: [(from: Int, to: Int, color: UIColor)] = []
         let blockFont = theme.blockFont(node)
-        var docPos = contentStart
+        var docPos = 0
 
         // A heading's settled style — which level's color applies, and whether
         // the h1 title takes one at all, is the theme's policy, not ours.
@@ -1191,15 +1245,15 @@ final class DocumentLayout {
             // run (drawn separately since CoreText ignores `.backgroundColor`).
             if !text.isEmpty {
                 if let mark = marks.first(where: { $0.type.name == "highlight" }) {
-                    highlights.append((from: docPos, to: docPos + text.count,
-                                       color: theme.highlightColor(mark.attrs["color"]?.stringValue)))
+                    blockHighlights.append((from: docPos, to: docPos + text.count,
+                                            color: theme.highlightColor(mark.attrs["color"]?.stringValue)))
                 } else if let mark = marks.first(where: { $0.type.name == "backgroundColor" }),
                           let color = DocumentTheme.parseColor(mark.attrs["color"]?.stringValue) {
-                    highlights.append((from: docPos, to: docPos + text.count, color: color))
+                    blockHighlights.append((from: docPos, to: docPos + text.count, color: color))
                 }
                 // Inline `code` runs get a themed background pill (if configured).
                 if let codeBg = theme.code.inline.background, marks.contains(where: { $0.type.name == "code" }) {
-                    codeBackgrounds.append((from: docPos, to: docPos + text.count, color: codeBg))
+                    blockCodeBackgrounds.append((from: docPos, to: docPos + text.count, color: codeBg))
                 }
             }
             let attrStart = result.length
@@ -1227,7 +1281,7 @@ final class DocumentLayout {
                 let delegate = makeBoxRunDelegate(width: rendering.size.width, ascent: ascent, descent: descent)
                 let attrStart = result.length
                 result.append(NSAttributedString(string: "\u{fffc}", attributes: [kCTRunDelegateAttributeName as NSAttributedString.Key: delegate]))
-                mathAtoms.append((attrIndex: attrStart, docOffset: docPos - contentStart, rendering: rendering))
+                mathAtoms.append((attrIndex: attrStart, docOffset: docPos, rendering: rendering))
                 segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: 1, text: nil))
                 docPos += 1
             } else if child.type.name == "image", let image = imageProvider(child) {
@@ -1316,7 +1370,7 @@ final class DocumentLayout {
                 }
             }
         }
-        return (result, segments, imageAtoms, mathAtoms)
+        return (result, segments, imageAtoms, mathAtoms, blockHighlights, blockCodeBackgrounds)
     }
 
     // MARK: - Geometry queries
