@@ -95,8 +95,13 @@ public struct DocumentTheme: Sendable, Equatable {
 
         /// A `code` run inside a line of prose: the pill drawn behind it.
         public struct Inline: Sendable, Equatable {
-            /// Background pill behind the run (nil = none).
-            public var background: UIColor?
+            /// Background pill behind the run. On by default — an inline code
+            /// run is set in the same size as the prose around it, so without a
+            /// pill it reads as ordinary text in a slightly different face.
+            /// A fill rather than a fixed grey, so it adapts to light and dark
+            /// and sits on whatever the document's background is. Set nil for
+            /// no pill.
+            public var background: UIColor? = .secondarySystemFill
             /// How far the pill extends past the text it wraps.
             public var paddingX: Em = 0.12
             public var paddingY: Em = 0.06
