@@ -460,7 +460,9 @@ final class DocumentLayout {
             : child.textContent
         let textLength = max(visibleText.count, 1)
         let lines = Int(ceil(Double(textLength) / Double(charsPerLine)))
-        var height = CGFloat(max(lines, 1)) * lineHeight + theme.points(theme.paragraphSpacing)
+        // The block's own height only: its caller adds the gap above it, and
+        // adding one here as well counted every block's spacing twice.
+        var height = CGFloat(max(lines, 1)) * lineHeight
         // Chrome the theme adds around the text, which the estimate would
         // otherwise miss and have to correct for on realizing the block.
         if child.type.name == "codeBlock" {

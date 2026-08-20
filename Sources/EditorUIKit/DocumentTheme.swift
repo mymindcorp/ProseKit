@@ -462,8 +462,13 @@ public struct DocumentTheme: Sendable, Equatable {
     /// Background of the suggestion popup (slash menu / wiki-link menu).
     public var popupBackground: UIColor = .secondarySystemBackground
     public var pageInsets = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-    /// Gap between blocks.
-    public var paragraphSpacing: Em = 0.6
+    /// Gap between blocks — a whole em, matching the margin every browser puts
+    /// on a `<p>`.
+    ///
+    /// CSS states that margin twice, above and below, and collapses adjacent
+    /// ones to the larger; `spacing(before:after:)` collapses the same way, so
+    /// one em stated once lands in the same place.
+    public var paragraphSpacing: Em = 1.0
     /// Extra leading added to every line.
     public var lineSpacing: Em = 0.18
     /// The gutter a list's markers sit in. It has to hold the widest marker —

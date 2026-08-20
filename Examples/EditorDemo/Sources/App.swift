@@ -285,7 +285,7 @@ struct ThemeSettings: Equatable {
     // Spacing is in ems — a multiple of the body size — so it holds its
     // proportion as the size slider moves.
     var lineSpacing: Double = 0.18
-    var paragraphSpacing: Double = 0.6
+    var paragraphSpacing: Double = 1.0
     var listIndent: Double = 1.6
     var fontName: String = systemFont
     // Text colors
@@ -300,8 +300,8 @@ struct ThemeSettings: Equatable {
     var headingTracking: Double = 0
     var headingWeight: String = defaultWeight
     var headingAlignment: String = "Natural"
-    var headingSpaceBefore: Double = 0.6
-    var headingSpaceAfter: Double = 0.6
+    var headingSpaceBefore: Double = 1.0
+    var headingSpaceAfter: Double = 1.0
     var headingRuleOn = false
     var headingColorOn = false
     var headingColor = Color(uiColor: .label)
