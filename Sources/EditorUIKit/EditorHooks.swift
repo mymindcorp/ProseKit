@@ -14,8 +14,8 @@ public typealias ImageDataProvider = (_ node: Node) -> Data?
 /// scroll view's content.
 public typealias DocumentHeightHandler = (_ height: CGFloat) -> Void
 
-/// Activates a link (Cmd-click / menu). Defaults to opening the URL with the
-/// system when unset.
+/// Activates a link (a click/tap where the view opts into that, Cmd-click
+/// otherwise). Defaults to opening the URL with the system when unset.
 public typealias LinkActivationHandler = (_ url: URL) -> Void
 
 /// Returns a badge label for a code block (e.g. its detected/explicit language)

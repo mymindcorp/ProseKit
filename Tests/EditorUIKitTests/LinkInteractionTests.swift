@@ -24,6 +24,38 @@ final class LinkInteractionTests: XCTestCase {
         return view
     }
 
+    /// A point (DOCUMENT coordinates) inside the linked word, and one in the
+    /// plain text before it.
+    private func points(in view: EditorTextView) throws -> (onLink: CGPoint, offLink: CGPoint) {
+        let l = view.ensureLayout()
+        let link = try XCTUnwrap(l.selectionRects(from: 8, to: 12).first)
+        let plain = try XCTUnwrap(l.selectionRects(from: 1, to: 3).first)
+        return (CGPoint(x: link.midX, y: link.midY), CGPoint(x: plain.midX, y: plain.midY))
+    }
+
+    func testPlainClickOpensALinkOnlyWhenTheHostOptsIn() throws {
+        let view = try linkedView()
+        let p = try points(in: view)
+        XCTAssertFalse(view.shouldActivateLink(at: p.onLink, commandHeld: false),
+                       "opensLinksOnClick defaults off — a plain click places the caret")
+        view.opensLinksOnClick = true
+        XCTAssertTrue(view.shouldActivateLink(at: p.onLink, commandHeld: false))
+    }
+
+    func testCommandClickOpensALinkWithoutOptingIn() throws {
+        let view = try linkedView()
+        let p = try points(in: view)
+        XCTAssertTrue(view.shouldActivateLink(at: p.onLink, commandHeld: true))
+    }
+
+    func testAClickOffAnyLinkNeverActivates() throws {
+        let view = try linkedView()
+        let p = try points(in: view)
+        view.opensLinksOnClick = true
+        XCTAssertFalse(view.shouldActivateLink(at: p.offLink, commandHeld: false))
+        XCTAssertFalse(view.shouldActivateLink(at: p.offLink, commandHeld: true))
+    }
+
     func testLinkInfoFindsTheFullRangeAndHref() throws {
         let view = try linkedView()
         // "before " is 7 chars at doc pos 1..8; "site" is 8..12.

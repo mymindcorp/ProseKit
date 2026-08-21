@@ -96,10 +96,21 @@ open class EditorTextView: UIView, UIKeyInput {
         return overlay
     }()
 
-    /// Called when a link is activated (Cmd-click on macOS / iPad). Defaults to
-    /// opening the URL with the system; set it to handle links yourself (e.g.
-    /// follow a wiki-link in-app, or confirm before leaving).
+    /// Called when a link is activated (a click/tap when `opensLinksOnClick`,
+    /// Cmd-click otherwise). Defaults to opening the URL with the system; set it
+    /// to handle links yourself (e.g. follow a wiki-link in-app, confirm before
+    /// leaving, or refuse a scheme you don't want handed to another app).
     public var onOpenLink: LinkActivationHandler?
+
+    /// Whether an ordinary click or tap on a link activates it — Tiptap's
+    /// `Link.openOnClick`. Off by default, because the same click is also how a
+    /// caret is placed inside link text; a host that would rather follow the
+    /// link (a notes editor, say) opts in. The caret still lands where it was
+    /// clicked — the link opens as well as, not instead of.
+    ///
+    /// Cmd-click activates a link whatever this is set to, so the pointer chord
+    /// stays available where there is a modifier key to hold.
+    public var opensLinksOnClick = false
     /// The document range being dragged (set while a local drag we started is in
     /// flight), so a drop back into this document moves rather than copies.
     private var dragSourceRange: (from: Int, to: Int)?
@@ -1463,12 +1474,22 @@ open class EditorTextView: UIView, UIKeyInput {
         editor.dispatch(tr)
     }
 
-    /// Open a link the pointer activated. Gated to begin only on a Cmd-held
-    /// click over a link (so ordinary taps still place the caret natively).
+    /// Open the link the click landed on. Gated by `opensLinksOnClick` — see
+    /// `shouldActivateLink(at:commandHeld:)` for when the recognizer begins.
     @objc private func handleLinkTap(_ gesture: UITapGestureRecognizer) {
         let point = docPoint(gesture.location(in: self))
         guard let pos = ensureLayout().position(at: point) else { return }
         activateLink(at: pos)
+    }
+
+    /// Whether a click at `point` (DOCUMENT coordinates) should open a link:
+    /// there has to be one under it, and either the host opted into plain
+    /// clicks or the pointer is holding Cmd.
+    func shouldActivateLink(at point: CGPoint, commandHeld: Bool) -> Bool {
+        guard opensLinksOnClick || commandHeld,
+              let pos = ensureLayout().position(at: point)
+        else { return false }
+        return linkInfo(at: pos) != nil
     }
 
     /// Open the link at `docPos`, via `onOpenLink` if set, else the system.
@@ -1751,8 +1772,7 @@ open class EditorTextView: UIView, UIKeyInput {
             return onActivateMath != nil && ensureLayout().math(at: point) != nil
         }
         if gesture === linkTapRecognizer {
-            guard isCommandClick(gesture), let pos = ensureLayout().position(at: point) else { return false }
-            return linkInfo(at: pos) != nil
+            return shouldActivateLink(at: point, commandHeld: isCommandClick(gesture))
         }
         return super.gestureRecognizerShouldBegin(gesture)
     }
@@ -3041,9 +3061,10 @@ extension EditorTextView: UIPointerInteractionDelegate {
         case "columnBorder":
             return UIPointerStyle(shape: .path(Self.columnResizeCursorPath()))
         case "link":
-            // A rounded highlight over the link text — its "Cmd-click to open"
-            // affordance (the I-beam still serves caret placement on a plain
-            // click). The region rect is in view coordinates.
+            // A rounded highlight over the link text — its "click to open"
+            // affordance (with `opensLinksOnClick` off that means Cmd-click, and
+            // the I-beam still serves caret placement). The region rect is in
+            // view coordinates.
             return UIPointerStyle(shape: .roundedRect(region.rect.insetBy(dx: -2, dy: -1), radius: 4))
         case "blockHandle":
             // A highlight over the grip — its "drag to reorder" affordance.
