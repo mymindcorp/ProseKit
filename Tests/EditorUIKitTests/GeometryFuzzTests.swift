@@ -163,6 +163,37 @@ final class GeometryFuzzTests: XCTestCase {
         }
     }
 
+    func testTheEdgesOfALineBelongToTheCaretsDrawnThere() throws {
+        // Direction-agnostic, and the reason it has to be: the position a line
+        // *starts* with is drawn on the left only when the line reads that way.
+        // On an Arabic line the logical first position is drawn at the right
+        // edge, so answering a tap on the left with "the line's first position"
+        // sends the caret to the other end of the line.
+        try FuzzViews.forEachView { name, v in
+            let layout = v.ensureLayout()
+            for block in layout.blocks {
+                for line in block.lines {
+                    let top = line.baselineOrigin.y - line.ascent
+                    let y = top + line.height / 2
+                    var carets: [(pos: Int, x: CGFloat)] = []
+                    for p in block.contentStart ... block.contentEnd {
+                        guard let r = layout.caretRect(at: p), abs(r.minY - top) < 0.5 else { continue }
+                        carets.append((p, r.minX))
+                    }
+                    guard let leftmost = carets.min(by: { $0.x < $1.x }),
+                          let rightmost = carets.max(by: { $0.x < $1.x }),
+                          leftmost.pos != rightmost.pos else { continue }
+                    let atLeft = layout.position(at: CGPoint(x: leftmost.x, y: y))
+                    let atRight = layout.position(at: CGPoint(x: rightmost.x, y: y))
+                    XCTAssertEqual(atLeft.flatMap { layout.caretRect(at: $0)?.minX } ?? .nan, leftmost.x, accuracy: 1,
+                                   "the left edge of the line at y=\(Int(top)) answers \(atLeft.map(String.init) ?? "-"), but \(leftmost.pos) is drawn there, in \(name)")
+                    XCTAssertEqual(atRight.flatMap { layout.caretRect(at: $0)?.minX } ?? .nan, rightmost.x, accuracy: 1,
+                                   "the right edge of the line at y=\(Int(top)) answers \(atRight.map(String.init) ?? "-"), but \(rightmost.pos) is drawn there, in \(name)")
+                }
+            }
+        }
+    }
+
     // MARK: - Selection geometry
 
     func testSelectionRectsAreSaneAndClippingOnlyDropsWhatIsOutsideTheBand() throws {
