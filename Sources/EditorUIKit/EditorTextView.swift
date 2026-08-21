@@ -219,6 +219,11 @@ open class EditorTextView: UIView, UIKeyInput {
             source.onChange = { [weak self] in self?.updateSuggestionPopup() }
         }
         registerForDynamicTypeChanges()
+        // The selector form deliberately: its registration is zeroing-weak, so
+        // there is no token to unregister and nothing to leak.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleMemoryWarning),
+            name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
     }
 
     /// The editor's document revision — bumped only when the document actually
@@ -359,21 +364,36 @@ open class EditorTextView: UIView, UIKeyInput {
     /// built-in. See `ImageURLResolver`.
     public var imageURLResolver: ImageURLResolver?
 
-    private var imageCache: [String: UIImage] = [:]
-    private var imageTasks: [String: Task<Void, Never>] = [:]
-    /// Decoded host-provided images, keyed by the image node (avoids re-decoding).
-    private var hostImageCache: [Node: UIImage] = [:]
+    /// In-flight image loads. Held separately from the store so `deinit` — which
+    /// is not main-actor isolated — can cancel them.
+    private let imageLoads = ImageLoadTasks()
+    /// Decoded, display-sized images. See `DocumentImageStore`.
+    private lazy var imageStore: DocumentImageStore = {
+        let store = DocumentImageStore(loads: imageLoads)
+        store.onLoaded = { [weak self] srcs, inline in self?.adoptLoadedImages(srcs, inline: inline) }
+        return store
+    }()
 
-    /// Resolve an image node to a drawable image: the host data hook first (decoded
-    /// + cached), then any image already loaded from its `src` URL. Returns nil to
-    /// draw a placeholder (and, for a non-empty `src`, kick off an async load).
-    private func resolveImage(_ node: Node) -> UIImage? {
-        if let cached = hostImageCache[node] { return cached }
-        if let data = imageData?(node), let image = UIImage(data: data) {
-            hostImageCache[node] = image
-            return image
+    /// Adopt images that have just become drawable, re-laying only the blocks
+    /// that show them.
+    private func adoptLoadedImages(_ srcs: Set<String>, inline: Bool) {
+        guard let layout else { return }
+        let arrived: (Node) -> Bool = { srcs.contains($0.attrs["src"]?.stringValue ?? "") }
+        // An inline image is typeset *into* its paragraph's cached block, so the
+        // block holding it has to go before the relayout can pick it up. Only
+        // those blocks, though — not the whole cache.
+        if inline {
+            blockCache.evict { DocumentLayout.containsImage($0, matching: arrived) }
         }
-        return imageCache[node.attrs["src"]?.stringValue ?? ""]
+        guard layout.relayoutImages(matching: arrived) else { return }
+        layoutGeneration += 1
+        setNeedsDisplay()
+        invalidateIntrinsicContentSize()
+        syncCheckboxViews()
+        updateCaret()
+        guard layout.height != lastReportedHeight else { return }
+        lastReportedHeight = layout.height
+        onDocumentHeightChange?(layout.height)
     }
 
     /// Force a full relayout on the next draw (for theme / Dynamic Type changes
@@ -397,7 +417,7 @@ open class EditorTextView: UIView, UIKeyInput {
     public func reloadImages() {
         // Decoded host bytes are cached per node, so a stale decode would
         // survive the relayout and defeat the point of the call.
-        hostImageCache.removeAll()
+        imageStore.reloadHostImages()
         invalidateImageLayout()
     }
 
@@ -408,12 +428,31 @@ open class EditorTextView: UIView, UIKeyInput {
     /// the width, neither of which changed when the bytes arrived. Without
     /// clearing that cache the paragraph comes back with the placeholder still in
     /// it, however thoroughly the document layout is discarded.
-    private func invalidateImageLayout(clearingTypesetBlocks: Bool = true) {
-        // Only inline images live inside a typeset block; a block-level one is
-        // resolved fresh each pass, so its arrival needn't cost a re-typeset of
-        // every paragraph on screen.
-        if clearingTypesetBlocks { blockCache.clear() }
+    ///
+    /// Wholesale, because `reloadImages()` says nothing about *which* images
+    /// changed. Images that simply finish loading take the targeted path in
+    /// `adoptLoadedImages` instead.
+    private func invalidateImageLayout() {
+        blockCache.clear()
         invalidateLayout()
+    }
+
+    /// Release decoded bitmaps and stop loading for a view nobody is looking at.
+    ///
+    /// What is currently laid out survives — a decoration holds its own
+    /// reference to the image it draws — so this reclaims exactly the pictures
+    /// that aren't being presented, and nothing on screen changes.
+    private func releaseOffscreenImages() {
+        imageStore.purge()
+    }
+
+    @objc private func handleMemoryWarning() {
+        releaseOffscreenImages()
+    }
+
+    open override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { releaseOffscreenImages() }
     }
 
     // A flat text projection with exactly one character per document position
@@ -516,8 +555,12 @@ open class EditorTextView: UIView, UIKeyInput {
 
     func ensureLayout() -> DocumentLayout {
         if let layout, lastLayoutWidth == bounds.width, layoutVersion == docVersion { return layout }
+        // An image the document no longer holds is one nobody will look at
+        // again: drop its bitmap and cancel its load before laying out again.
+        if layoutVersion != docVersion { imageStore.prune(keeping: editor.doc) }
+        prepareImageStore()
         let l = DocumentLayout(doc: editor.doc, width: max(bounds.width, 1), theme: theme,
-                               imageProvider: { [weak self] node in self?.resolveImage(node) },
+                               imageProvider: { [weak self] node in self?.imageStore.image(for: node) },
                                blockCache: blockCache, previous: layout, realizeWindow: realizeWindow(),
                                syntaxHighlighter: syntaxHighlighter, codeLanguageLabel: codeLanguageLabel,
                                mathRenderer: mathRenderer)
@@ -640,31 +683,24 @@ open class EditorTextView: UIView, UIKeyInput {
         setNeedsDisplay()
     }
 
-    /// Asynchronously load any images the layout couldn't find in the cache,
-    /// then rebuild so they draw at their intrinsic size. Each node is resolved
-    /// to a URL by the host (seeing all its attrs); the cache is keyed by `src`.
+    /// Hand the image store the hooks and the geometry it decodes against.
+    ///
+    /// The width is the content column, which is the widest box layout will ever
+    /// draw an image in — so it fixes the most pixels any of them can need.
+    private func prepareImageStore() {
+        imageStore.dataProvider = imageData
+        imageStore.urlResolver = imageURLResolver
+        imageStore.maxPointWidth = max(bounds.width - theme.pageInsets.left - theme.pageInsets.right, 1)
+        let scale = traitCollection.displayScale
+        imageStore.displayScale = scale > 0 ? scale : UIScreen.main.scale
+    }
+
+    /// Asynchronously load any images the layout couldn't find in the cache.
+    /// The store calls back (coalesced) when they land, and only the blocks
+    /// showing them are re-laid.
     private func loadPendingImages(_ nodes: [Node]) {
-        for node in nodes {
-            let src = node.attrs["src"]?.stringValue ?? ""
-            let isInline = node.type.spec.inline
-            guard !src.isEmpty, imageCache[src] == nil, imageTasks[src] == nil,
-                  let url = resolveImageURL(node, resolver: imageURLResolver) else { continue }
-            imageTasks[src] = Task { [weak self] in
-                let image = await loadImage(from: url)
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    guard let self else { return }
-                    self.imageTasks[src] = nil
-                    if let image {
-                        self.imageCache[src] = image
-                        // `setNeedsRebuild` only redraws — `ensureLayout` keys on
-                        // the document revision, which a finished download
-                        // doesn't move, so the placeholder would stand.
-                        self.invalidateImageLayout(clearingTypesetBlocks: isInline)
-                    }
-                }
-            }
-        }
+        prepareImageStore()
+        imageStore.load(nodes)
     }
 
     /// Test hook: the resolved load URL for an image with the given `src`.
@@ -2857,7 +2893,7 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     deinit {
-        imageTasks.values.forEach { $0.cancel() }
+        imageLoads.cancelAll()
     }
 }
 
@@ -2912,9 +2948,21 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
         draggingImage = img
         dragSourceRange = nil
         let provider = NSItemProvider()
-        if let image = resolveImage(img.node), let data = image.pngData() {
+        // What leaves the app is the *original*, not the downsampled bitmap the
+        // renderer draws: the host's own bytes when it has them, else the file
+        // behind the node, and only failing both a re-encode of what is drawn.
+        let hostBytes = imageData?(img.node)
+        let sourceURL = hostBytes == nil ? resolveImageURL(img.node, resolver: imageURLResolver) : nil
+        let drawn = imageStore.image(for: img.node)
+        if hostBytes != nil || sourceURL != nil || drawn != nil {
             provider.registerDataRepresentation(forTypeIdentifier: UTType.png.identifier, visibility: .all) { completion in
-                completion(data, nil)
+                if let hostBytes {
+                    completion(hostBytes, nil)
+                } else if let sourceURL, let data = try? Data(contentsOf: sourceURL) {
+                    completion(data, nil)
+                } else {
+                    completion(drawn?.pngData(), nil)
+                }
                 return nil
             }
         }
@@ -3202,25 +3250,4 @@ func resolveImageURL(_ node: Node, resolver: ImageURLResolver?) -> URL? {
     return nil
 }
 
-/// Load an image from a data:, file:, or http(s) URL. Nonisolated so it can run
-/// off the main actor.
-func loadImage(from url: URL) async -> UIImage? {
-    if url.scheme == "data" {
-        let string = url.absoluteString
-        guard let comma = string.firstIndex(of: ",") else { return nil }
-        let meta = string[..<comma]
-        let payload = String(string[string.index(after: comma)...])
-        if meta.contains("base64"), let data = Data(base64Encoded: payload) { return UIImage(data: data) }
-        return payload.removingPercentEncoding.flatMap { UIImage(data: Data($0.utf8)) }
-    }
-    if url.isFileURL {
-        return (try? Data(contentsOf: url)).flatMap(UIImage.init(data:))
-    }
-    do {
-        let (data, _) = try await URLSession.shared.data(from: url)
-        return UIImage(data: data)
-    } catch {
-        return nil
-    }
-}
 #endif

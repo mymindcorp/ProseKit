@@ -14,7 +14,13 @@ import EditorSerialization
 public final class DocumentView: UIView {
     /// The document to render. Setting it rebuilds the layout (incrementally,
     /// reusing unchanged blocks from the previous layout).
-    public var document: Node? { didSet { invalidateLayout() } }
+    public var document: Node? {
+        didSet {
+            // Bitmaps for images the new document doesn't hold are dead weight.
+            if let document { imageStore.prune(keeping: document) } else { imageStore.purge() }
+            invalidateLayout()
+        }
+    }
     /// Visual styling (fonts, colors, spacing).
     public var theme: DocumentTheme { didSet { invalidateLayout() } }
     /// The enclosing viewport's vertical scroll offset. Only the slice
@@ -79,45 +85,68 @@ public final class DocumentView: UIView {
     private var layoutWidth: CGFloat = 0
     private let blockCache = TextBlockLayoutCache()
     private var lastReportedHeight: CGFloat = -1
-    private var hostImageCache: [Node: UIImage] = [:]
-    private var imageCache: [String: UIImage] = [:]
-    private var imageTasks: [String: Task<Void, Never>] = [:]
+    /// In-flight image loads. Held separately from the store so `deinit` — which
+    /// is not main-actor isolated — can cancel them.
+    private let imageLoads = ImageLoadTasks()
+    /// Decoded, display-sized images. See `DocumentImageStore`.
+    private lazy var imageStore: DocumentImageStore = {
+        let store = DocumentImageStore(loads: imageLoads)
+        store.onLoaded = { [weak self] srcs, inline in self?.adoptLoadedImages(srcs, inline: inline) }
+        return store
+    }()
 
-    /// Resolve an image node to a drawable image: the host data hook first
-    /// (decoded + cached), then any image already loaded from its `src` URL.
-    /// Returns nil to draw a placeholder (the layout records the node so
-    /// `ensureLayout` kicks off an async load).
-    private func resolveImage(_ node: Node) -> UIImage? {
-        if let cached = hostImageCache[node] { return cached }
-        if let data = imageData?(node), let image = UIImage(data: data) {
-            hostImageCache[node] = image
-            return image
-        }
-        return imageCache[node.attrs["src"]?.stringValue ?? ""]
+    /// Hand the image store the hooks and the geometry it decodes against — the
+    /// content column, which is the widest box an image is ever drawn in.
+    private func prepareImageStore() {
+        imageStore.dataProvider = imageData
+        imageStore.urlResolver = imageURLResolver
+        imageStore.maxPointWidth = max(bounds.width - theme.pageInsets.left - theme.pageInsets.right, 1)
+        let scale = traitCollection.displayScale
+        imageStore.displayScale = scale > 0 ? scale : UIScreen.main.scale
     }
 
-    /// Asynchronously load any images the layout couldn't resolve from a cache,
-    /// then rebuild so they draw. Each node is resolved to a URL by the host
-    /// (seeing all its attrs); the cache is keyed by `src`.
+    /// Asynchronously load any images the layout couldn't resolve. The store
+    /// calls back (coalesced) when they land.
     private func loadPendingImages(_ nodes: [Node]) {
-        for node in nodes {
-            let src = node.attrs["src"]?.stringValue ?? ""
-            let isInline = node.type.spec.inline
-            guard !src.isEmpty, imageCache[src] == nil, imageTasks[src] == nil,
-                  let url = resolveImageURL(node, resolver: imageURLResolver) else { continue }
-            imageTasks[src] = Task { [weak self] in
-                let image = await loadImage(from: url)
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    guard let self else { return }
-                    self.imageTasks[src] = nil
-                    if let image {
-                        self.imageCache[src] = image
-                        self.invalidateImageLayout(clearingTypesetBlocks: isInline)
-                    }
-                }
-            }
+        prepareImageStore()
+        imageStore.load(nodes)
+    }
+
+    /// Adopt images that have just become drawable, re-laying only the blocks
+    /// that show them rather than the whole document.
+    private func adoptLoadedImages(_ srcs: Set<String>, inline: Bool) {
+        guard let layout else { return }
+        let arrived: (Node) -> Bool = { srcs.contains($0.attrs["src"]?.stringValue ?? "") }
+        // An inline image is typeset into its paragraph's cached block, so that
+        // block has to go before the relayout can pick it up — that block only.
+        if inline {
+            blockCache.evict { DocumentLayout.containsImage($0, matching: arrived) }
         }
+        guard layout.relayoutImages(matching: arrived) else { return }
+        setNeedsDisplay()
+        guard layout.height != lastReportedHeight else { return }
+        lastReportedHeight = layout.height
+        onDocumentHeightChange?(layout.height)
+    }
+
+    /// Release decoded bitmaps and stop loading for a view nobody is looking at.
+    /// What is laid out survives (a decoration holds its own reference), so this
+    /// reclaims exactly the pictures that aren't being presented.
+    private func releaseOffscreenImages() {
+        imageStore.purge()
+    }
+
+    @objc private func handleMemoryWarning() {
+        releaseOffscreenImages()
+    }
+
+    public override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { releaseOffscreenImages() }
+    }
+
+    deinit {
+        imageLoads.cancelAll()
     }
 
     public init(document: Node? = nil, theme: DocumentTheme = DocumentTheme()) {
@@ -127,6 +156,11 @@ public final class DocumentView: UIView {
         backgroundColor = .clear
         isOpaque = false
         contentMode = .redraw
+        // The selector form deliberately: its registration is zeroing-weak, so
+        // there is no token to unregister and nothing to leak.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleMemoryWarning),
+            name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
     }
     public required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
@@ -148,7 +182,7 @@ public final class DocumentView: UIView {
     /// arrived. Call this when `imageData` can answer for a node it previously
     /// couldn't, or when the bytes behind a node have changed.
     public func reloadImages() {
-        hostImageCache.removeAll()
+        imageStore.reloadHostImages()
         invalidateImageLayout()
     }
 
@@ -156,11 +190,12 @@ public final class DocumentView: UIView {
     /// is typeset into its paragraph's cached block, which is keyed by node and
     /// width — neither of which changed when the bytes arrived — so discarding
     /// the document layout alone leaves the placeholder in place.
-    private func invalidateImageLayout(clearingTypesetBlocks: Bool = true) {
-        // Only inline images live inside a typeset block; a block-level one is
-        // resolved fresh each pass, so its arrival needn't cost a re-typeset of
-        // every paragraph on screen.
-        if clearingTypesetBlocks { blockCache.clear() }
+    ///
+    /// Wholesale, because `reloadImages()` says nothing about *which* images
+    /// changed. Images that simply finish loading take the targeted path in
+    /// `adoptLoadedImages` instead.
+    private func invalidateImageLayout() {
+        blockCache.clear()
         invalidateLayout()
     }
 
@@ -174,8 +209,9 @@ public final class DocumentView: UIView {
     func ensureLayout() -> DocumentLayout? {
         guard let document else { return nil }
         if let layout, layoutWidth == bounds.width { return layout }
+        prepareImageStore()
         let l = DocumentLayout(doc: document, width: max(bounds.width, 1), theme: theme,
-                               imageProvider: { [weak self] node in self?.resolveImage(node) },
+                               imageProvider: { [weak self] node in self?.imageStore.image(for: node) },
                                blockCache: blockCache, previous: layout,
                                syntaxHighlighter: syntaxHighlighter,
                                codeLanguageLabel: codeLanguageLabel,
