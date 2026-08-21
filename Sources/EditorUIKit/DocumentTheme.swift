@@ -351,6 +351,25 @@ public struct DocumentTheme: Sendable, Equatable {
     }
     public var caption = Caption()
 
+    /// Pictures: how an `image` is drawn, wherever it sits — as a block, inline
+    /// in a paragraph, or inside a figure.
+    public struct Image: Sendable, Equatable {
+        /// Corner radius of the drawn picture, in points. 0 (the default) draws
+        /// the square corners the bytes came with.
+        ///
+        /// Points rather than ems: a picture's box is measured in points and
+        /// doesn't grow with the type, so a radius in ems would round harder
+        /// every time the reader enlarged the text. Clamped at draw time to half
+        /// the shorter side, so a large value gives a capsule rather than an
+        /// undefined path.
+        ///
+        /// The placeholder box drawn while the bytes load takes the same radius,
+        /// so nothing changes shape when the picture arrives.
+        public var cornerRadius: CGFloat = 0
+        public init() {}
+    }
+    public var image = Image()
+
     /// Task items: how a *checked* item's text reads, and the checkbox's own
     /// colors. Both text options are off by default, so a checked item looks
     /// like any other line until a host opts in.
