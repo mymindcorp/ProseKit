@@ -1632,15 +1632,18 @@ final class DocumentLayout {
         let line = block.lines.first { point.y >= $0.baselineOrigin.y - $0.ascent && point.y < $0.baselineOrigin.y - $0.ascent + $0.height }
             ?? block.lines.min(by: { abs($0.baselineOrigin.y - point.y) < abs($1.baselineOrigin.y - point.y) })
         guard let line else { return block.contentStart }
-        let relative = CGPoint(x: point.x - line.baselineOrigin.x, y: 0)
-        // At or left of the leading edge the answer is the line's first
-        // position. CoreText is asked for the *nearest* index, and when a line
-        // opens with an inline atom the nearest one to x=0 came back as the
-        // index after it — so a tap on the left edge of such a line landed
-        // after the atom, and moving right then moved the caret backwards.
-        var attrIndex = relative.x <= 0
-            ? line.stringRange.location
-            : CTLineGetStringIndexForPosition(line.ctLine, relative)
+        // Ask about a point just *inside* the line rather than one exactly on
+        // its leading edge. CoreText is asked for the nearest index, and at the
+        // edge itself a line opening with an inline atom answered with the index
+        // after the atom — so a tap there landed one position on, and moving
+        // right moved the caret backwards.
+        //
+        // Nudging the point rather than naming an index is what keeps this
+        // right in both directions: the position a line begins with is drawn on
+        // the left only when the line reads that way, and on an Arabic line it
+        // is the *last* position that sits at the left edge.
+        let relative = CGPoint(x: Swift.max(point.x - line.baselineOrigin.x, 0.5), y: 0)
+        var attrIndex = CTLineGetStringIndexForPosition(line.ctLine, relative)
         // A line that ends in a hard break owns the break, so the index after it
         // is the NEXT line's start. Without this a tap at the end of the line
         // lands past the break, one position on from the caret we drew there —

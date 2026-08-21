@@ -29,96 +29,12 @@ import TestDocGen
 ///       SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ' 
 @MainActor
 final class GeometryFuzzTests: XCTestCase {
-    // MARK: - Corpus
-
-    /// The documents to sweep, with the width to lay each one out at:
-    /// generated documents (schema coverage) plus prose long enough to wrap —
-    /// most geometry bugs are wrapping bugs.
-    ///
-    /// One editor for all of them, and the view built after its content is set.
-    /// A document only belongs to the schema instance that made it: hand a
-    /// second editor's node to `setContent` and the replace fails its content
-    /// check, which `setContent` swallows, leaving an empty paragraph that
-    /// passes every property here without testing one.
-    private func forEachView(_ body: (String, EditorTextView) throws -> Void) throws {
-        let editor = try Editor(extensions: fullKit())
-        let schema = editor.schema
-        var specs: [(name: String, doc: Node, width: CGFloat)] = []
-        for (seed, doc) in generatedCorpus(schema, count: 8) {
-            specs.append(("\(seed)@320", doc, 320))
-        }
-        for (i, doc) in wrappingDocs(schema).enumerated() {
-            // 140pt is the interesting one: at a phone width a line holds a
-            // phrase, at a third of it a line holds a word, and the degenerate
-            // shapes (a line with one glyph on it, a word wider than the column)
-            // only show up down there.
-            for width in [CGFloat(140), 320, 390] {
-                specs.append(("wrap\(i)@\(Int(width))", doc, width))
-            }
-        }
-        for spec in specs {
-            editor.setContent(spec.doc)
-            XCTAssertEqual(editor.doc, spec.doc, "the editor didn't take the document for \(spec.name)")
-            let v = EditorTextView(editor: editor)
-            v.frame = CGRect(x: 0, y: 0, width: spec.width, height: 900)
-            v.layoutIfNeeded()
-            try body(spec.name, v)
-        }
-    }
-
-    /// Documents whose text is long enough to wrap several times, mixed with the
-    /// block kinds that sit next to prose and change the vertical rhythm.
-    private func wrappingDocs(_ s: Schema) -> [Node] {
-        func n(_ t: String, _ c: [Node] = [], _ a: Attrs = [:]) -> Node {
-            try! s.node(t, a, content: Fragment.from(c))
-        }
-        let long = Array(repeating: "lorem ipsum dolor sit amet consectetur adipiscing elit", count: 4)
-            .joined(separator: " ")
-        let short = "a short line"
-        return [
-            n("doc", [n("paragraph", [s.text(long)])]),
-            n("doc", [
-                n("heading", [s.text(long)], ["level": .int(1)]),
-                n("paragraph", [s.text(long)]),
-                n("paragraph", [s.text(short)]),
-            ]),
-            n("doc", [
-                n("paragraph", [s.text(long)]),
-                n("horizontalRule"),
-                n("blockquote", [n("paragraph", [s.text(long)])]),
-                n("codeBlock", [s.text("let x = 1\nlet y = 2\n")]),
-            ]),
-            n("doc", [
-                n("bulletList", [
-                    n("listItem", [n("paragraph", [s.text(long)])]),
-                    n("listItem", [n("paragraph", [s.text(short)])]),
-                ]),
-                n("paragraph", [s.text(long)]),
-            ]),
-            n("doc", [
-                n("paragraph", [s.text(short), n("hardBreak"), s.text(long)]),
-                n("paragraph", []),
-                n("paragraph", [s.text(long)]),
-            ]),
-        ]
-    }
-
-    /// Every document position a caret can occupy.
-    private func caretPositions(_ v: EditorTextView) -> [Int] {
-        let doc = v.editor.doc
-        return (0 ... doc.content.size).filter { doc.resolve($0).parent.inlineContent }
-    }
-
-    private func isFinite(_ r: CGRect) -> Bool {
-        r.origin.x.isFinite && r.origin.y.isFinite && r.width.isFinite && r.height.isFinite
-    }
-
     // MARK: - The caret and the tap agree
 
     func testTheCorpusIsWorthSweeping() throws {
         // A fuzzer that quietly lays out nothing passes every property it has.
-        var views = 0, blocks = 0, lines = 0, positions = 0, wrapped = 0
-        try forEachView { name, v in
+        var views = 0, blocks = 0, lines = 0, positions = 0, wrapped = 0, rtl = 0
+        try FuzzViews.forEachView { name, v in
             // Not every document has text in it — one that is nothing but an
             // image or a rule lays out no text blocks at all, which is correct.
             let layout = v.ensureLayout()
@@ -127,14 +43,16 @@ final class GeometryFuzzTests: XCTestCase {
             for b in layout.blocks {
                 lines += b.lines.count
                 if b.lines.count > 1 { wrapped += 1 }
+                rtl += b.lines.filter { !FuzzViews.lineIsLTR($0) }.count
             }
-            positions += caretPositions(v).count
+            positions += FuzzViews.caretPositions(v).count
         }
         XCTAssertGreaterThanOrEqual(views, 20, "the corpus is too small to mean anything")
         XCTAssertGreaterThan(blocks, 50, "only \(blocks) blocks laid out")
         XCTAssertGreaterThan(lines, blocks, "only \(lines) lines for \(blocks) blocks")
         XCTAssertGreaterThan(wrapped, 10, "only \(wrapped) blocks wrapped — the sweep isn't seeing soft wraps")
         XCTAssertGreaterThan(positions, 2000, "only \(positions) caret positions to sweep")
+        XCTAssertGreaterThan(rtl, 20, "only \(rtl) right-to-left lines — the bidi corpus isn't reaching the layout")
     }
 
     func testTappingTheDrawnCaretLeavesItWhereItIs() throws {
@@ -142,14 +60,14 @@ final class GeometryFuzzTests: XCTestCase {
         // and it must not move. Stated as rects rather than positions because a
         // soft wrap gives one screen place to two ways of naming it.
         var checked = 0
-        try forEachView { name, v in
+        try FuzzViews.forEachView { name, v in
             let layout = v.ensureLayout()
-            for pos in caretPositions(v) {
+            for pos in FuzzViews.caretPositions(v) {
                 guard let rect = layout.caretRect(at: pos) else { continue }
                 checked += 1
-                XCTAssertTrue(isFinite(rect), "caret rect isn't finite at \(pos) in \(name)")
+                XCTAssertTrue(FuzzViews.isFinite(rect), "caret rect isn't finite at \(pos) in \(name)")
                 XCTAssertGreaterThan(rect.height, 0, "caret rect has no height at \(pos) in \(name)")
-                let point = CGPoint(x: rect.minX + 0.5, y: rect.midY)
+                let point = CGPoint(x: rect.midX, y: rect.midY)
                 guard let hit = layout.position(at: point) else {
                     XCTFail("tapping the caret at \(pos) hit nothing in \(name)")
                     continue
@@ -158,10 +76,13 @@ final class GeometryFuzzTests: XCTestCase {
                     XCTFail("tapping the caret at \(pos) gave \(hit), which has no caret rect, in \(name)")
                     continue
                 }
-                XCTAssertEqual(hitRect.minX, rect.minX, accuracy: 0.5,
-                               "tapping the caret at \(pos) moved it to \(hit) in \(name)")
                 XCTAssertEqual(hitRect.midY, rect.midY, accuracy: 0.5,
                                "tapping the caret at \(pos) moved it to another line (\(hit)) in \(name)")
+                // Where the text runs one way, the caret must not move at all.
+                if FuzzViews.line(of: rect, in: layout).map(FuzzViews.lineIsLTR) ?? true {
+                    XCTAssertEqual(hitRect.minX, rect.minX, accuracy: 0.5,
+                                   "tapping the caret at \(pos) moved it to \(hit) in \(name)")
+                }
             }
         }
         XCTAssertGreaterThan(checked, 2000, "only \(checked) carets were tapped")
@@ -170,7 +91,7 @@ final class GeometryFuzzTests: XCTestCase {
     func testATapAnywhereLandsSomewhereACaretCanGo() throws {
         // Including the margins and the gaps between blocks: every point in the
         // view has to answer with a position that can actually hold a cursor.
-        try forEachView { name, v in
+        try FuzzViews.forEachView { name, v in
             let layout = v.ensureLayout()
             let doc = v.editor.doc
             let size = doc.content.size
@@ -193,8 +114,11 @@ final class GeometryFuzzTests: XCTestCase {
 
     func testHitTestingRunsLeftToRightAlongALine() throws {
         // Sweeping a finger rightwards across a line can only ever move the
-        // position forwards.
-        try forEachView { name, v in
+        // position forwards — in text that runs that way. Under bidi the screen
+        // order and the document order genuinely disagree, which is the point of
+        // bidi, so this one asks only of the left-to-right corpus.
+        try FuzzViews.forEachView { name, v, ltr in
+            guard ltr else { return }
             let layout = v.ensureLayout()
             for (bi, block) in layout.blocks.enumerated() {
                 for (li, line) in block.lines.enumerated() {
@@ -219,8 +143,9 @@ final class GeometryFuzzTests: XCTestCase {
         // Consecutive *document positions* on one line are drawn left to right.
         // Document positions, not attributed-string indices: one position can
         // span several UTF-16 units, and an index inside a grapheme cluster
-        // isn't a place a caret goes.
-        try forEachView { name, v in
+        // isn't a place a caret goes. Left-to-right corpus only, as above.
+        try FuzzViews.forEachView { name, v, ltr in
+            guard ltr else { return }
             let layout = v.ensureLayout()
             for block in layout.blocks {
                 var byLine: [CGFloat: [(pos: Int, x: CGFloat)]] = [:]
@@ -238,13 +163,44 @@ final class GeometryFuzzTests: XCTestCase {
         }
     }
 
+    func testTheEdgesOfALineBelongToTheCaretsDrawnThere() throws {
+        // Direction-agnostic, and the reason it has to be: the position a line
+        // *starts* with is drawn on the left only when the line reads that way.
+        // On an Arabic line the logical first position is drawn at the right
+        // edge, so answering a tap on the left with "the line's first position"
+        // sends the caret to the other end of the line.
+        try FuzzViews.forEachView { name, v in
+            let layout = v.ensureLayout()
+            for block in layout.blocks {
+                for line in block.lines {
+                    let top = line.baselineOrigin.y - line.ascent
+                    let y = top + line.height / 2
+                    var carets: [(pos: Int, x: CGFloat)] = []
+                    for p in block.contentStart ... block.contentEnd {
+                        guard let r = layout.caretRect(at: p), abs(r.minY - top) < 0.5 else { continue }
+                        carets.append((p, r.minX))
+                    }
+                    guard let leftmost = carets.min(by: { $0.x < $1.x }),
+                          let rightmost = carets.max(by: { $0.x < $1.x }),
+                          leftmost.pos != rightmost.pos else { continue }
+                    let atLeft = layout.position(at: CGPoint(x: leftmost.x, y: y))
+                    let atRight = layout.position(at: CGPoint(x: rightmost.x, y: y))
+                    XCTAssertEqual(atLeft.flatMap { layout.caretRect(at: $0)?.minX } ?? .nan, leftmost.x, accuracy: 1,
+                                   "the left edge of the line at y=\(Int(top)) answers \(atLeft.map(String.init) ?? "-"), but \(leftmost.pos) is drawn there, in \(name)")
+                    XCTAssertEqual(atRight.flatMap { layout.caretRect(at: $0)?.minX } ?? .nan, rightmost.x, accuracy: 1,
+                                   "the right edge of the line at y=\(Int(top)) answers \(atRight.map(String.init) ?? "-"), but \(rightmost.pos) is drawn there, in \(name)")
+                }
+            }
+        }
+    }
+
     // MARK: - Selection geometry
 
     func testSelectionRectsAreSaneAndClippingOnlyDropsWhatIsOutsideTheBand() throws {
         // The source promises clipping "changes the cost, never the drawing".
-        try forEachView { name, v in
+        try FuzzViews.forEachView { name, v in
             let layout = v.ensureLayout()
-            let positions = caretPositions(v)
+            let positions = FuzzViews.caretPositions(v)
             guard positions.count >= 2 else { return }
             var rng = SeededRNG(9)
             for _ in 0 ..< 40 {
@@ -253,7 +209,7 @@ final class GeometryFuzzTests: XCTestCase {
                 let (from, to) = (min(a, b), max(a, b))
                 let rects = layout.selectionRects(from: from, to: to)
                 for r in rects {
-                    XCTAssertTrue(isFinite(r), "selection rect isn't finite for \(from)..\(to) in \(name)")
+                    XCTAssertTrue(FuzzViews.isFinite(r), "selection rect isn't finite for \(from)..\(to) in \(name)")
                     XCTAssertGreaterThan(r.height, 0, "a zero-height selection rect for \(from)..\(to) in \(name)")
                 }
                 guard !rects.isEmpty else { continue }
@@ -282,7 +238,7 @@ final class GeometryFuzzTests: XCTestCase {
         let schema = editor.schema
         var rng = SeededRNG(77)
         var compared = 0
-        for (seed, doc) in generatedCorpus(schema, count: 6) + wrappingDocs(schema).enumerated().map({ ("wrap\($0.offset)", $0.element) }) {
+        for (seed, doc) in generatedCorpus(schema, count: 6) + FuzzViews.wrappingDocs(schema).enumerated().map({ ("wrap\($0.offset)", $0.element) }) {
             for width in [CGFloat(140), 320] {
                 editor.setContent(doc)
                 let warmView = EditorTextView(editor: editor)
@@ -328,9 +284,9 @@ final class GeometryFuzzTests: XCTestCase {
     // MARK: - Line edges and vertical movement
 
     func testLineEdgesBracketThePositionAndAreFixedPoints() throws {
-        try forEachView { name, v in
+        try FuzzViews.forEachView { name, v in
             let layout = v.ensureLayout()
-            for pos in caretPositions(v) {
+            for pos in FuzzViews.caretPositions(v) {
                 guard let start = layout.lineBoundary(from: pos, toEnd: false),
                       let end = layout.lineBoundary(from: pos, toEnd: true) else { continue }
                 XCTAssertLessThanOrEqual(start, pos, "the line start is after \(pos) in \(name)")
@@ -357,9 +313,9 @@ final class GeometryFuzzTests: XCTestCase {
     }
 
     func testMovingDownThenUpReturnsToTheSameLine() throws {
-        try forEachView { name, v in
+        try FuzzViews.forEachView { name, v in
             let layout = v.ensureLayout()
-            for pos in caretPositions(v) {
+            for pos in FuzzViews.caretPositions(v) {
                 guard let here = layout.caretRect(at: pos) else { continue }
                 let x = here.midX
                 guard let down = layout.verticalPosition(from: pos, up: false, preferredX: x),
@@ -377,9 +333,9 @@ final class GeometryFuzzTests: XCTestCase {
     func testMovingDownAlwaysMakesProgressAndTerminates() throws {
         // The "stuck arrow" the layout guards against: a down move that returns
         // the line it started on loops forever under a held key.
-        try forEachView { name, v in
+        try FuzzViews.forEachView { name, v in
             let layout = v.ensureLayout()
-            guard let first = caretPositions(v).first, let start = layout.caretRect(at: first) else { return }
+            guard let first = FuzzViews.caretPositions(v).first, let start = layout.caretRect(at: first) else { return }
             var pos = first
             var y = start.minY
             var steps = 0
