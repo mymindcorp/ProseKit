@@ -199,6 +199,15 @@ final class TextBlockLayoutCache {
     func beginPass() { generation += 1 }
     /// Drop everything (e.g. when the syntax highlighter changes).
     func clear() { entries.removeAll() }
+    /// Drop the blocks whose node matches — the paragraphs holding an inline
+    /// image whose bytes have just arrived, say. The block is keyed by its node
+    /// and width, neither of which changed when the bytes turned up, so without
+    /// this the placeholder is what comes back out of the cache. Targeted
+    /// because the alternative is re-typesetting every paragraph on screen for
+    /// each picture that loads.
+    func evict(where matches: (Node) -> Bool) {
+        entries = entries.filter { !matches($0.value.node) }
+    }
     /// Eviction is deliberately rare: a keystroke pass touches one block and
     /// must not churn the rest of the cache (incremental layout reuses whole
     /// entries without consulting it, so "unused this pass" means nothing).
@@ -547,6 +556,59 @@ final class DocumentLayout {
         }
         height = y + theme.pageInsets.bottom
         return true
+    }
+
+    /// Re-lay only the top-level children holding an image the predicate
+    /// accepts, shifting everything below them by whatever they gained or lost.
+    /// Returns true if anything moved.
+    ///
+    /// Image bytes arriving is the one change that alters the layout without
+    /// altering the document, so none of the usual triggers fire — and a rebuild
+    /// that reuses the previous layout would faithfully reproduce the
+    /// placeholder. Rebuilding from scratch instead is correct but re-flows a
+    /// whole document to adopt one picture, once per picture, while the reader
+    /// is scrolling through them. This touches only the entries that actually
+    /// reference it.
+    func relayoutImages(matching predicate: (Node) -> Bool) -> Bool {
+        func affected(_ e: TopEntry) -> Bool {
+            !e.estimated && Self.containsImage(e.node, matching: predicate)
+        }
+        guard entries.contains(where: affected) else { return false }
+
+        let old = entries
+        entries = []; blocks = []; decorations = []; checkboxes = []; disclosures = []; mathTargets = []
+        highlights = []; codeBackgrounds = []; tables = []; pendingImages = []
+        let x = theme.pageInsets.left
+        let contentWidth = width - theme.pageInsets.left - theme.pageInsets.right
+        var y = theme.pageInsets.top
+        for (i, e) in old.enumerated() {
+            if affected(e) {
+                entries.append(layoutTopChild(e.node, docPos: e.docStart, x: x, width: contentWidth, y: &y,
+                                              previous: i == 0 ? nil : old[i - 1].node))
+            } else if e.estimated {
+                entries.append(TopEntry(node: e.node, docStart: e.docStart, topY: y, height: e.height,
+                                        blocks: [], decorations: [], checkboxes: [], highlights: [], tables: [], estimated: true))
+                y += e.height
+            } else {
+                let shifted = shiftEntry(e, dPos: 0, dy: y - e.topY)
+                append(shifted); entries.append(shifted)
+                y = shifted.topY + shifted.height
+            }
+        }
+        height = y + theme.pageInsets.bottom
+        return true
+    }
+
+    /// Whether `node` is, or contains, an image the predicate accepts.
+    static func containsImage(_ node: Node, matching predicate: (Node) -> Bool) -> Bool {
+        if node.type.name == "image" { return predicate(node) }
+        var found = false
+        node.descendants { child, _, _, _ in
+            if found { return false }
+            if child.type.name == "image", predicate(child) { found = true; return false }
+            return true
+        }
+        return found
     }
 
     /// Whether any part of the document is still only estimated.
