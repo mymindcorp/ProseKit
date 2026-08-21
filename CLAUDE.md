@@ -43,6 +43,33 @@ Claim a suite passes only from something that actually reports pass/fail.
 
 - Build with `PROSEKIT_STRICT=1` to enforce warnings-as-errors, as CI does.
 
+## Fuzzers
+
+Both fuzz suites are opt-in — they sweep every position of hundreds of generated
+documents, which costs more than the rest of their suite put together.
+
+Model and state (selections, commands, history, mapping):
+
+```sh
+PROSEKIT_FUZZ=1 swift run SchemaKitTests
+PROSEKIT_FUZZ=1 PROSEKIT_FUZZ_DOCS=1000 swift run SchemaKitTests   # a deeper hunt
+```
+
+Layout geometry (caret rects, hit testing, vertical movement) is iOS-only, and
+gated by a *compilation condition* rather than an environment variable —
+xcodebuild's `TEST_RUNNER_` prefix doesn't reach an SPM scheme's test runner:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests/GeometryFuzzTests -destination 'platform=iOS Simulator,name=iPhone 17 Pro' SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ'
+```
+
+`PROSEKIT_TEST_FILTER=<substring>` narrows any headless suite to matching cases.
+
+Both generate documents from the schema's own content expressions
+(`Sources/TestDocGen`), so coverage follows the schema as extensions are added.
+When adding a property, check it fails against a deliberately broken source —
+an invariant no mutation can break is asserting nothing.
+
 ## Benchmarks
 
 The serialization benchmark is off by default so CI output stays quiet:
