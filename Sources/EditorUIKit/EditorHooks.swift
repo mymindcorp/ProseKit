@@ -14,9 +14,50 @@ public typealias ImageDataProvider = (_ node: Node) -> Data?
 /// scroll view's content.
 public typealias DocumentHeightHandler = (_ height: CGFloat) -> Void
 
-/// Activates a link (a click/tap where the view opts into that, Cmd-click
-/// otherwise). Defaults to opening the URL with the system when unset.
-public typealias LinkActivationHandler = (_ url: URL) -> Void
+/// A link the reader activated: the node it lives on, and what that node
+/// carries.
+///
+/// `node` is the inline node under the click — a text node for a `link` mark, or
+/// the atom itself for a link-like atom (`wikiLink`, `mention`). A mark run can
+/// cover several text nodes (adjacent children sharing an href are one link, but
+/// stay separate nodes if their other marks differ), so `from`/`to` give the
+/// whole run; re-slice the document from those when the one node isn't enough.
+public struct LinkClick: Sendable {
+    /// The inline node under the click.
+    public let node: Node
+    /// The link mark's attributes (`href`, `title`) — or, for a link-like atom,
+    /// the node's own.
+    public let attrs: Attrs
+    /// Start of the whole link run, in document positions.
+    public let from: Int
+    /// End of the whole link run, in document positions.
+    public let to: Int
+    /// Whether the pointer was holding Cmd. A plain click and a Cmd-click both
+    /// arrive here; branch on this if you want them to differ.
+    public let commandHeld: Bool
+
+    /// The `href` attribute, if the node has one. A `mention` typically won't.
+    public var href: String? { attrs["href"]?.stringValue }
+    /// The `title` attribute, if set.
+    public var title: String? { attrs["title"]?.stringValue }
+    /// `href` parsed as a URL, when it parses. Nothing is validated beyond
+    /// that — decide for yourself whether a scheme is one you want to follow.
+    public var url: URL? { href.flatMap(URL.init(string:)) }
+
+    public init(node: Node, attrs: Attrs, from: Int, to: Int, commandHeld: Bool) {
+        self.node = node
+        self.attrs = attrs
+        self.from = from
+        self.to = to
+        self.commandHeld = commandHeld
+    }
+}
+
+/// Called when a click or tap activates a link. Setting it is what makes links
+/// clickable at all: unset, a click just places the caret, the same as any other
+/// text. Nothing is opened for you — follow the URL, refuse a scheme, resolve a
+/// wiki-link in-app, whatever the host wants.
+public typealias LinkClickHandler = (_ link: LinkClick) -> Void
 
 /// Returns a badge label for a code block (e.g. its detected/explicit language)
 /// given the block's text and `language` attribute; nil draws no badge.

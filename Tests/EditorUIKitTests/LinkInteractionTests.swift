@@ -7,11 +7,13 @@ import SchemaKit
 
 @MainActor
 final class LinkInteractionTests: XCTestCase {
-    /// "before " + linked "site" + " after", link href https://example.com.
+    /// "before " + linked "site" + " after", link href https://example.com,
+    /// title "Example" (so the tests can see attrs beyond the URL).
     private func linkedView() throws -> EditorTextView {
         let editor = try Editor(extensions: fullKit())
         let s = editor.schema
-        let link = s.marks["link"]!.create(["href": .string("https://example.com")])
+        let link = s.marks["link"]!.create(["href": .string("https://example.com"),
+                                            "title": .string("Example")])
         let para = try s.node("paragraph", [:], content: Fragment.from([
             s.text("before "),
             s.text("site", [link]),
@@ -33,27 +35,20 @@ final class LinkInteractionTests: XCTestCase {
         return (CGPoint(x: link.midX, y: link.midY), CGPoint(x: plain.midX, y: plain.midY))
     }
 
-    func testPlainClickOpensALinkOnlyWhenTheHostOptsIn() throws {
+    func testAClickActivatesALinkOnlyWhenAHostIsListening() throws {
         let view = try linkedView()
         let p = try points(in: view)
-        XCTAssertFalse(view.shouldActivateLink(at: p.onLink, commandHeld: false),
-                       "opensLinksOnClick defaults off — a plain click places the caret")
-        view.opensLinksOnClick = true
-        XCTAssertTrue(view.shouldActivateLink(at: p.onLink, commandHeld: false))
-    }
-
-    func testCommandClickOpensALinkWithoutOptingIn() throws {
-        let view = try linkedView()
-        let p = try points(in: view)
-        XCTAssertTrue(view.shouldActivateLink(at: p.onLink, commandHeld: true))
+        XCTAssertFalse(view.shouldActivateLink(at: p.onLink),
+                       "no onLinkClick — the click places the caret instead")
+        view.onLinkClick = { _ in }
+        XCTAssertTrue(view.shouldActivateLink(at: p.onLink))
     }
 
     func testAClickOffAnyLinkNeverActivates() throws {
         let view = try linkedView()
         let p = try points(in: view)
-        view.opensLinksOnClick = true
-        XCTAssertFalse(view.shouldActivateLink(at: p.offLink, commandHeld: false))
-        XCTAssertFalse(view.shouldActivateLink(at: p.offLink, commandHeld: true))
+        view.onLinkClick = { _ in }
+        XCTAssertFalse(view.shouldActivateLink(at: p.offLink))
     }
 
     func testLinkInfoFindsTheFullRangeAndHref() throws {
@@ -71,9 +66,14 @@ final class LinkInteractionTests: XCTestCase {
         XCTAssertNil(view.linkInfo(at: 14), "plain text after the link")
     }
 
-    func testPointerOverLinkIsALinkTarget() throws {
+    func testPointerOverLinkIsALinkTargetOnlyWhenClickable() throws {
         let view = try linkedView()
         let l = view.ensureLayout()
+        let linkRect = try XCTUnwrap(l.selectionRects(from: 8, to: 12).first)
+        let onLink = CGPoint(x: linkRect.midX, y: linkRect.midY - view.contentOffsetY)
+        XCTAssertEqual(view.pointerTarget(at: onLink), .text,
+                       "inert without a handler — no highlight promising a click")
+        view.onLinkClick = { _ in }
         let rect = try XCTUnwrap(l.selectionRects(from: 8, to: 12).first)
         let mid = CGPoint(x: rect.midX, y: rect.midY - view.contentOffsetY)
         guard case .link = view.pointerTarget(at: mid) else {
@@ -84,13 +84,26 @@ final class LinkInteractionTests: XCTestCase {
         XCTAssertEqual(view.pointerTarget(at: CGPoint(x: before.midX, y: before.midY - view.contentOffsetY)), .text)
     }
 
-    func testOnOpenLinkCallbackFiresOnActivation() throws {
+    func testTheHandlerGetsTheNodeAndEveryLinkAttribute() throws {
         let view = try linkedView()
-        var opened: URL?
-        view.onOpenLink = { opened = $0 }
+        var click: LinkClick?
+        view.onLinkClick = { click = $0 }
         // Drive the handler the way the gated recognizer would.
-        view.activateLinkForTesting(at: 9)
-        XCTAssertEqual(opened?.absoluteString, "https://example.com")
+        view.activateLink(at: 9, commandHeld: true)
+        let got = try XCTUnwrap(click)
+        XCTAssertEqual(got.node.text, "site", "the node clicked, not just its URL")
+        XCTAssertEqual(got.url?.absoluteString, "https://example.com")
+        XCTAssertEqual(got.title, "Example", "attrs beyond href reach the host")
+        XCTAssertEqual(got.from, 8)
+        XCTAssertEqual(got.to, 12)
+        XCTAssertTrue(got.commandHeld)
+    }
+
+    func testNothingIsActivatedWithoutAHandler() throws {
+        let view = try linkedView()
+        // No onLinkClick: the view opens nothing itself, so this is a no-op
+        // rather than a system open.
+        view.activateLink(at: 9, commandHeld: false)
     }
 }
 #endif

@@ -96,21 +96,17 @@ open class EditorTextView: UIView, UIKeyInput {
         return overlay
     }()
 
-    /// Called when a link is activated (a click/tap when `opensLinksOnClick`,
-    /// Cmd-click otherwise). Defaults to opening the URL with the system; set it
-    /// to handle links yourself (e.g. follow a wiki-link in-app, confirm before
-    /// leaving, or refuse a scheme you don't want handed to another app).
-    public var onOpenLink: LinkActivationHandler?
-
-    /// Whether an ordinary click or tap on a link activates it — Tiptap's
-    /// `Link.openOnClick`. Off by default, because the same click is also how a
-    /// caret is placed inside link text; a host that would rather follow the
-    /// link (a notes editor, say) opts in. The caret still lands where it was
-    /// clicked — the link opens as well as, not instead of.
+    /// Called when a click or tap activates a link — a `link` mark run, or a
+    /// link-like atom (`wikiLink`, `mention`). Setting it is what makes links
+    /// clickable at all: unset, a click just places the caret and the pointer
+    /// keeps its I-beam, because nothing would come of clicking. The caret still
+    /// lands where it was clicked — activation happens as well as, not instead of.
     ///
-    /// Cmd-click activates a link whatever this is set to, so the pointer chord
-    /// stays available where there is a modifier key to hold.
-    public var opensLinksOnClick = false
+    /// The view opens nothing by itself. The handler decides what a link means:
+    /// follow the URL, refuse a scheme, resolve a wiki-link in-app, confirm
+    /// before leaving. `LinkClick.commandHeld` separates a plain click from a
+    /// Cmd-click for hosts that want them to differ.
+    public var onLinkClick: LinkClickHandler?
     /// The document range being dragged (set while a local drag we started is in
     /// flight), so a drop back into this document moves rather than copies.
     private var dragSourceRange: (from: Int, to: Int)?
@@ -1474,36 +1470,42 @@ open class EditorTextView: UIView, UIKeyInput {
         editor.dispatch(tr)
     }
 
-    /// Open the link the click landed on. Gated by `opensLinksOnClick` — see
-    /// `shouldActivateLink(at:commandHeld:)` for when the recognizer begins.
+    /// Hand the link the click landed on to the host. See
+    /// `shouldActivateLink(at:)` for when the recognizer begins at all.
     @objc private func handleLinkTap(_ gesture: UITapGestureRecognizer) {
         let point = docPoint(gesture.location(in: self))
         guard let pos = ensureLayout().position(at: point) else { return }
-        activateLink(at: pos)
+        activateLink(at: pos, commandHeld: isCommandClick(gesture))
     }
 
-    /// Whether a click at `point` (DOCUMENT coordinates) should open a link:
-    /// there has to be one under it, and either the host opted into plain
-    /// clicks or the pointer is holding Cmd.
-    func shouldActivateLink(at point: CGPoint, commandHeld: Bool) -> Bool {
-        guard opensLinksOnClick || commandHeld,
-              let pos = ensureLayout().position(at: point)
-        else { return false }
-        return linkInfo(at: pos) != nil
+    /// Whether a click at `point` (DOCUMENT coordinates) activates a link: a
+    /// host has to want them (`onLinkClick`), and there has to be one under the
+    /// point. Without a handler nothing would happen, so the tap is left to
+    /// place the caret like any other.
+    func shouldActivateLink(at point: CGPoint) -> Bool {
+        guard onLinkClick != nil, let pos = ensureLayout().position(at: point) else { return false }
+        return linkClick(at: pos, commandHeld: false) != nil
     }
 
-    /// Open the link at `docPos`, via `onOpenLink` if set, else the system.
-    func activateLink(at docPos: Int) {
-        guard let link = linkInfo(at: docPos), let url = URL(string: link.href) else { return }
-        if let onOpenLink {
-            onOpenLink(url)
-        } else if UIApplication.shared.canOpenURL(url) {
-            UIApplication.shared.open(url)
+    /// The link at `docPos`, as the host sees it — a `link` mark run, or a
+    /// link-like atom, which is why the pointer treats both as links.
+    func linkClick(at docPos: Int, commandHeld: Bool) -> LinkClick? {
+        if let link = linkInfo(at: docPos) {
+            return LinkClick(node: link.node, attrs: link.attrs,
+                             from: link.from, to: link.to, commandHeld: commandHeld)
         }
+        if let atom = linkAtom(at: docPos) {
+            return LinkClick(node: atom.node, attrs: atom.node.attrs,
+                             from: atom.from, to: atom.to, commandHeld: commandHeld)
+        }
+        return nil
     }
 
-    /// Test hook: drive link activation by document position.
-    func activateLinkForTesting(at docPos: Int) { activateLink(at: docPos) }
+    /// Activate the link at `docPos`, if a host is listening and one is there.
+    func activateLink(at docPos: Int, commandHeld: Bool = false) {
+        guard let onLinkClick, let click = linkClick(at: docPos, commandHeld: commandHeld) else { return }
+        onLinkClick(click)
+    }
 
     /// Triple-tap → select the whole paragraph (the text block under the point).
     @objc private func handleTripleTap(_ gesture: UITapGestureRecognizer) {
@@ -1771,9 +1773,7 @@ open class EditorTextView: UIView, UIKeyInput {
         if gesture === mathTapRecognizer {
             return onActivateMath != nil && ensureLayout().math(at: point) != nil
         }
-        if gesture === linkTapRecognizer {
-            return shouldActivateLink(at: point, commandHeld: isCommandClick(gesture))
-        }
+        if gesture === linkTapRecognizer { return shouldActivateLink(at: point) }
         return super.gestureRecognizerShouldBegin(gesture)
     }
 
@@ -1857,7 +1857,7 @@ open class EditorTextView: UIView, UIKeyInput {
     /// The link mark covering `docPos`: its full contiguous range and href, or
     /// nil if no link is there. The range spans adjacent inline children that
     /// share the same href within the textblock.
-    func linkInfo(at docPos: Int) -> (from: Int, to: Int, href: String)? {
+    func linkInfo(at docPos: Int) -> (from: Int, to: Int, href: String, node: Node, attrs: Attrs)? {
         guard let linkType = editor.schema.marks["link"] else { return nil }
         let size = editor.doc.content.size
         let pos = min(max(docPos, 0), size)
@@ -1866,15 +1866,18 @@ open class EditorTextView: UIView, UIKeyInput {
         guard parent.isTextblock else { return nil }
         let blockStart = resolved.start()
 
-        // The href of each inline child, indexed by child, with its doc range.
-        func href(_ child: Node) -> String? {
-            child.marks.first(where: { $0.type === linkType })?.attrs["href"]?.stringValue
+        // The link mark of each inline child, indexed by child, with its doc
+        // range. The mark carries `title` as well as `href`, so the whole thing
+        // is kept — the host gets every attribute, not just the URL.
+        func link(_ child: Node) -> Mark? {
+            child.marks.first(where: { $0.type === linkType })
         }
-        var ranges: [(from: Int, to: Int, href: String?)] = []
+        func href(_ child: Node) -> String? { link(child)?.attrs["href"]?.stringValue }
+        var ranges: [(from: Int, to: Int, href: String?, node: Node)] = []
         var offset = 0
         for i in 0..<parent.childCount {
             let child = parent.child(i)
-            ranges.append((blockStart + offset, blockStart + offset + child.nodeSize, href(child)))
+            ranges.append((blockStart + offset, blockStart + offset + child.nodeSize, href(child), child))
             offset += child.nodeSize
         }
         // The child the position falls in (prefer the one ending at pos when
@@ -1886,21 +1889,32 @@ open class EditorTextView: UIView, UIKeyInput {
         var lo = idx, hi = idx
         while lo > 0, ranges[lo - 1].href == target { lo -= 1 }
         while hi + 1 < ranges.count, ranges[hi + 1].href == target { hi += 1 }
-        return (ranges[lo].from, ranges[hi].to, target)
+        // The run can cover several children (same href, different other marks),
+        // so the range spans them all while the node is the one clicked.
+        let node = ranges[idx].node
+        return (ranges[lo].from, ranges[hi].to, target, node, link(node)?.attrs ?? [:])
     }
 
-    /// The document range of any link-like thing at `docPos` — a `link` mark run
-    /// or a link-style inline atom (wikiLink / mention) — for pointer hovering.
-    /// Atoms occupy a single position, so `position(at:)` can land on either side
-    /// of one; check both the node starting at `docPos` and the one before it.
-    func linkHoverRange(at docPos: Int) -> (from: Int, to: Int)? {
-        if let link = linkInfo(at: docPos) { return (link.from, link.to) }
+    /// A link-style inline atom (wikiLink / mention) at `docPos`. Atoms occupy a
+    /// single position, so `position(at:)` can land on either side of one; check
+    /// both the node starting at `docPos` and the one before it.
+    func linkAtom(at docPos: Int) -> (node: Node, from: Int, to: Int)? {
         let linkAtoms: Set<String> = ["wikiLink", "mention"]
         for p in [docPos, docPos - 1] where p >= 0 && p < editor.doc.content.size {
             if let node = editor.doc.nodeAt(p), node.isAtom, linkAtoms.contains(node.type.name) {
-                return (p, p + node.nodeSize)
+                return (node, p, p + node.nodeSize)
             }
         }
+        return nil
+    }
+
+    /// The document range of any link-like thing at `docPos`, for pointer
+    /// hovering. Gated on `onLinkClick`: with no handler a link is inert, and a
+    /// pointer highlight would promise an interaction that never comes.
+    func linkHoverRange(at docPos: Int) -> (from: Int, to: Int)? {
+        guard onLinkClick != nil else { return nil }
+        if let link = linkInfo(at: docPos) { return (link.from, link.to) }
+        if let atom = linkAtom(at: docPos) { return (atom.from, atom.to) }
         return nil
     }
 
@@ -3061,10 +3075,9 @@ extension EditorTextView: UIPointerInteractionDelegate {
         case "columnBorder":
             return UIPointerStyle(shape: .path(Self.columnResizeCursorPath()))
         case "link":
-            // A rounded highlight over the link text — its "click to open"
-            // affordance (with `opensLinksOnClick` off that means Cmd-click, and
-            // the I-beam still serves caret placement). The region rect is in
-            // view coordinates.
+            // A rounded highlight over the link text — its "click me"
+            // affordance, shown only when a host is listening (see
+            // `linkHoverRange`). The region rect is in view coordinates.
             return UIPointerStyle(shape: .roundedRect(region.rect.insetBy(dx: -2, dy: -1), radius: 4))
         case "blockHandle":
             // A highlight over the grip — its "drag to reorder" affordance.

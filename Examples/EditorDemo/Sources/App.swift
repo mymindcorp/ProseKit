@@ -86,8 +86,9 @@ struct ContentView: View {
     @State private var bubbleOn = false
     /// Whether misspelled words are underlined (the editor's built-in checker).
     @State private var spellCheckOn = true
-    /// Whether a plain click/tap on a link opens it, rather than only placing the
-    /// caret (`EditorTextView.opensLinksOnClick`). Cmd-click opens it either way.
+    /// Whether the demo installs an `onLinkClick` handler. Without one a link is
+    /// inert — the click just places the caret — since the editor opens nothing
+    /// on its own.
     @State private var linkClickOpensOn = false
     /// When on, swap the editable editor for the read-only `DocumentView` (the
     /// shared `DocumentLayout` renderer), seeded from the current document.
@@ -131,7 +132,7 @@ struct ContentView: View {
                 Button("🎨 Theme") { showThemePanel = true }
                     .buttonStyle(.bordered)
                     .popover(isPresented: $showThemePanel) {
-                        ThemePanel(settings: $themeSettings, opensLinksOnClick: $linkClickOpensOn,
+                        ThemePanel(settings: $themeSettings, handleLinkClicks: $linkClickOpensOn,
                                    onReset: { themeSettings = ThemeSettings() })
                     }
                 Spacer()
@@ -157,7 +158,7 @@ struct ContentView: View {
             } else {
                 EditorContainer(docIndex: docIndex, proseLoad: proseLoad, agentOn: agentOn,
                                 reorder: reorderOn, useDryingInk: dryingInkOn, bubbleOn: bubbleOn,
-                                spellCheck: spellCheckOn, opensLinksOnClick: linkClickOpensOn,
+                                spellCheck: spellCheckOn, handleLinkClicks: linkClickOpensOn,
                                 themeSettings: themeSettings,
                                 onReady: { editorRef = $0 }) { message in
                     loadError = message
@@ -389,7 +390,7 @@ struct ThemePanel: View {
     @Binding var settings: ThemeSettings
     /// Not a theme value — a view behaviour — so it rides alongside `settings`
     /// rather than inside it, and `onReset` leaves it alone.
-    @Binding var opensLinksOnClick: Bool
+    @Binding var handleLinkClicks: Bool
     let onReset: () -> Void
 
     var body: some View {
@@ -438,7 +439,7 @@ struct ThemePanel: View {
                 Section("Links") {
                     ColorPicker("Link color", selection: $settings.linkColor)
                     Toggle("Underline", isOn: $settings.linkUnderline)
-                    Toggle("Open on click", isOn: $opensLinksOnClick)
+                    Toggle("Open on click", isOn: $handleLinkClicks)
                 }
                 Section("Code") {
                     ColorPicker("Inline code", selection: $settings.codeColor)
@@ -495,8 +496,9 @@ struct EditorContainer: UIViewRepresentable {
     var bubbleOn: Bool = false
     /// Whether the editor underlines misspellings.
     var spellCheck: Bool = true
-    /// Whether a plain click/tap on a link opens it as well as placing the caret.
-    var opensLinksOnClick: Bool = false
+    /// Whether clicking a link opens it — i.e. whether an `onLinkClick` handler
+    /// is installed at all.
+    var handleLinkClicks: Bool = false
     /// The live, user-editable theme from the 🎨 Theme panel.
     var themeSettings: ThemeSettings = ThemeSettings()
     /// Hands the live editor up to the host once it's created (for the toolbar's
@@ -796,7 +798,16 @@ struct EditorContainer: UIViewRepresentable {
         }
         textView.blockReorderingEnabled = reorder
         textView.spellCheckingEnabled = spellCheck
-        textView.opensLinksOnClick = opensLinksOnClick
+        // The editor opens nothing itself: a click is only a link click because
+        // the host says what one means. This one honours https and refuses the
+        // rest, and reports a wiki-link/mention by name rather than as a URL.
+        textView.onLinkClick = handleLinkClicks ? { link in
+            guard let url = link.url, url.scheme == "https" || url.scheme == "http" else {
+                print("EditorDemo: ignoring link \(link.node.type.name) \(link.attrs)")
+                return
+            }
+            UIApplication.shared.open(url)
+        } : nil
         // Drying-ink highlight rendering (demo-only effect via highlightRenderer).
         coordinator.dryingInk?.enabled = useDryingInk
         textView.highlightRenderer = useDryingInk
