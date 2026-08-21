@@ -3,19 +3,35 @@ public import UIKit
 import UniformTypeIdentifiers
 import DocumentModel
 import DocumentTransform
-import EditorStateKit
+public import EditorStateKit
 import EditorCommands
 import EditorKeymap
 public import SchemaKit
 import EditorSerialization
 
 /// One on-screen run of a highlight-mark background, passed to a custom
-/// `EditorTextView.highlightRenderer`. `from`/`to` are the run's document range —
-/// stable across scrolling, so a renderer can animate a given highlight over time
-/// — and `rect` is its position in the draw context's (content) coordinates.
+/// `EditorTextView.highlightRenderer`. `rect` is its position in the draw
+/// context's (content) coordinates.
+///
+/// A highlight is emitted as one run per line it covers, so there are two ranges
+/// and they answer different questions:
+///
+/// - `from`/`to` — the whole highlight's document range, repeated on every one
+///   of its runs. A stable identity across scrolling, for keying per-highlight
+///   state.
+/// - `lineFrom`/`lineTo` — just this line's slice of it. What a renderer wants
+///   for anything positional: where this piece sits within the highlight, and
+///   how much of it this piece is. Equal to `from`/`to` when the highlight fits
+///   on one line.
+///
+/// Animating from `from`/`to` alone makes every line of a wrapped highlight
+/// behave identically — they all start together, because they are all told the
+/// same range.
 public struct HighlightRun {
     public let from: Int
     public let to: Int
+    public let lineFrom: Int
+    public let lineTo: Int
     public let rect: CGRect
     public let color: UIColor
 }
@@ -46,6 +62,7 @@ open class EditorTextView: UIView, UIKeyInput {
     private weak var imageResizeRecognizer: UIGestureRecognizer?
     private weak var disclosureTapRecognizer: UIGestureRecognizer?
     private weak var mathTapRecognizer: UIGestureRecognizer?
+    private weak var trailingTapRecognizer: UIGestureRecognizer?
 
     /// When true, each top-level block shows a drag handle in the left gutter
     /// that reorders the block by dragging. Off by default.
@@ -163,13 +180,18 @@ open class EditorTextView: UIView, UIKeyInput {
         let disclosureTap = UITapGestureRecognizer(target: self, action: #selector(handleDisclosureTap(_:)))
         // Tapping a rendered formula hands it to the host (to edit its LaTeX).
         let mathTap = UITapGestureRecognizer(target: self, action: #selector(handleMathTap(_:)))
+        // Tapping the empty space under a document that doesn't end in a
+        // paragraph gives it one — see `trailingGapTap`.
+        let trailingTap = UITapGestureRecognizer(target: self, action: #selector(handleTrailingTap(_:)))
         columnResizeRecognizer = columnResize
         linkTapRecognizer = linkTap
         blockDragRecognizer = blockDrag
         imageResizeRecognizer = imageResize
         disclosureTapRecognizer = disclosureTap
         mathTapRecognizer = mathTap
-        for recognizer in [columnResize, linkTap, blockDrag, imageResize, disclosureTap, mathTap, tripleTap] as [UIGestureRecognizer] {
+        trailingTapRecognizer = trailingTap
+        for recognizer in [columnResize, linkTap, blockDrag, imageResize, disclosureTap, mathTap, tripleTap,
+                           trailingTap] as [UIGestureRecognizer] {
             recognizer.delegate = self
             recognizer.cancelsTouchesInView = false
             addGestureRecognizer(recognizer)
@@ -186,7 +208,10 @@ open class EditorTextView: UIView, UIKeyInput {
         // host sets `editMenuItems` — so the system's native callout (with Writing
         // Tools / Rewrite) stays intact by default. See `editMenuItems`.
 
-        editor.onTransaction = { [weak self] tr in self?.mapSpellCache(through: tr) }
+        editor.onTransaction = { [weak self] tr in
+            self?.mapSpellCache(through: tr)
+            if tr.docChanged { self?.onDocumentChange?(tr) }
+        }
         editor.onChange = { [weak self] _ in self?.setNeedsRebuild(); self?.fireSelectionChange() }
         // Let async suggestion sources (e.g. a DB-backed `[[`) repaint the popup
         // when their results arrive, by re-pulling the active source.
@@ -1224,6 +1249,23 @@ open class EditorTextView: UIView, UIKeyInput {
     /// `setNeedsDisplay()` to drive an animation. nil → default rendering.
     public var highlightRenderer: ((_ ctx: CGContext, _ runs: [HighlightRun]) -> Void)?
 
+    /// Called after every transaction that changed the document, with the
+    /// transaction itself — so a host can map its own document-keyed state
+    /// through the edit via `tr.mapping`.
+    ///
+    /// The companion to `highlightRenderer`: a renderer that animates a given
+    /// highlight keys its state to the run's `from`/`to`, and every edit above
+    /// that run renumbers them. Without mapping, state recorded before the edit
+    /// lands on whatever text now occupies those positions. Not fired for
+    /// selection-only changes, which never move anything.
+    ///
+    /// Fired before the view rebuilds its layout, so `editor.state` is current
+    /// but geometry is not — map positions here, and ask for rects later.
+    ///
+    /// The view takes `Editor.onTransaction` for its own bookkeeping; use this
+    /// rather than reassigning that.
+    public var onDocumentChange: ((_ tr: Transaction) -> Void)?
+
     /// Whether the editor currently has keyboard focus. Redefines UIView's
     /// focus-engine `isFocused` to mean "is first responder" — the meaningful
     /// notion of focus for a text editor.
@@ -1437,6 +1479,42 @@ open class EditorTextView: UIView, UIKeyInput {
 
     /// Test hook: drive a disclosure toggle by document position.
     func toggleDetailsForTesting(at pos: Int) { toggleDetails(at: pos) }
+
+    /// Whether a tap at `point` (document coordinates) lands in the empty space
+    /// below the document, on a document whose last block has no caret position
+    /// the tap could have meant.
+    ///
+    /// A caret has to live in a textblock, so when a document ends in a code
+    /// block, a table, or an image, every point below it resolves to the last
+    /// position *inside* that block. A code block is the worst of these: Return
+    /// there only ever adds another line, so the tap that should have escaped it
+    /// lands back inside instead. A document already ending in a paragraph needs
+    /// none of this — the caret it offers is the one the tap wanted.
+    func trailingGapTap(at point: CGPoint) -> Bool {
+        guard isEditable, editor.schema.nodes["paragraph"] != nil else { return false }
+        guard point.y > ensureLayout().height - theme.pageInsets.bottom else { return false }
+        guard let last = editor.doc.lastChild else { return true }
+        return last.type.name != "paragraph"
+    }
+
+    @objc private func handleTrailingTap(_ gesture: UITapGestureRecognizer) {
+        guard trailingGapTap(at: docPoint(gesture.location(in: self))) else { return }
+        appendTrailingParagraph()
+    }
+
+    /// Add an empty paragraph after the last block and put the caret in it.
+    @discardableResult
+    func appendTrailingParagraph() -> Bool {
+        guard isEditable, let type = editor.schema.nodes["paragraph"],
+              let paragraph = try? type.create() else { return false }
+        let end = editor.doc.content.size
+        guard let tr = try? editor.state.tr.insert(end, paragraph) else { return false }
+        // The caret sits inside the new paragraph — one position past the
+        // opening token the insert put at `end`.
+        editor.dispatch(tr.setSelection(TextSelection.create(tr.doc, end + 1)).scrollIntoView())
+        if !isFirstResponder { becomeFirstResponder() }
+        return true
+    }
 
     /// A tap on a rendered formula: select it and hand it to the host.
     @objc private func handleMathTap(_ gesture: UITapGestureRecognizer) {
@@ -1774,6 +1852,7 @@ open class EditorTextView: UIView, UIKeyInput {
             return onActivateMath != nil && ensureLayout().math(at: point) != nil
         }
         if gesture === linkTapRecognizer { return shouldActivateLink(at: point) }
+        if gesture === trailingTapRecognizer { return trailingGapTap(at: point) }
         return super.gestureRecognizerShouldBegin(gesture)
     }
 

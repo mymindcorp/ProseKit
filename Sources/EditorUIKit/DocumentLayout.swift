@@ -1589,8 +1589,21 @@ final class DocumentLayout {
     /// Nil means all of them, which is what UIKit wants when it asks for the
     /// selection's geometry — it is placing handles and a loupe, not drawing.
     func selectionRects(from: Int, to: Int, clipY: ClosedRange<CGFloat>? = nil) -> [CGRect] {
-        guard to > from, !blocks.isEmpty else { return [] }
         var rects: [CGRect] = []
+        forEachLineFragment(from: from, to: to, clipY: clipY) { rect, _, _, _ in rects.append(rect) }
+        return rects
+    }
+
+    /// The line fragments covering `from..<to`, in document order: each one's
+    /// rect, plus the block and the attr-index span it was cut from.
+    ///
+    /// Callers that want a fragment's *document* range convert the span
+    /// themselves via `block.docPos(forAttrIndex:)`. That is a segment walk per
+    /// call, and this runs on the scroll path, so the conversion is the caller's
+    /// to pay — `selectionRects`, which only ever wanted geometry, pays nothing.
+    private func forEachLineFragment(from: Int, to: Int, clipY: ClosedRange<CGFloat>?,
+                                     _ body: (CGRect, TextBlock, Int, Int) -> Void) {
+        guard to > from, !blocks.isEmpty else { return }
         // First block overlapping [from, to): smallest index with contentEnd > from.
         var lo = 0, hi = blocks.count
         while lo < hi { let mid = (lo + hi) / 2; if blocks[mid].contentEnd <= from { lo = mid + 1 } else { hi = mid } }
@@ -1634,10 +1647,10 @@ final class DocumentLayout {
                 if let clipY, top > clipY.upperBound || top + line.height < clipY.lowerBound { continue }
                 let xStart = CTLineGetOffsetForStringIndex(line.ctLine, s, nil)
                 let xEnd = CTLineGetOffsetForStringIndex(line.ctLine, e, nil)
-                rects.append(CGRect(x: line.baselineOrigin.x + xStart, y: top, width: xEnd - xStart, height: line.height))
+                body(CGRect(x: line.baselineOrigin.x + xStart, y: top, width: xEnd - xStart, height: line.height),
+                     block, s, e)
             }
         }
-        return rects
     }
 
     /// The document positions covered by the blocks that intersect `band`, or
@@ -1767,8 +1780,12 @@ final class DocumentLayout {
             // Host-drawn (e.g. a textured "drying ink" effect): hand it the visible runs.
             var runs: [HighlightRun] = []
             for highlight in highlights where inBand(highlight.from, highlight.to) {
-                for rect in selectionRects(from: highlight.from, to: highlight.to, clipY: clipY) where visible(rect.minY, rect.maxY) {
-                    runs.append(HighlightRun(from: highlight.from, to: highlight.to, rect: rect, color: highlight.color))
+                forEachLineFragment(from: highlight.from, to: highlight.to, clipY: clipY) { rect, block, s, e in
+                    guard visible(rect.minY, rect.maxY) else { return }
+                    runs.append(HighlightRun(from: highlight.from, to: highlight.to,
+                                             lineFrom: block.docPos(forAttrIndex: s),
+                                             lineTo: block.docPos(forAttrIndex: e),
+                                             rect: rect, color: highlight.color))
                 }
             }
             if !runs.isEmpty { highlightRenderer(ctx, runs) }
