@@ -60,6 +60,9 @@ let package = Package(
 
         // Minimal test harness (no XCTest/swift-testing in this CLT-only env).
         .target(name: "TestHarness"),
+        // A schema-driven random document generator, shared by the fuzz suites
+        // in more than one test target.
+        .target(name: "TestDocGen", dependencies: ["DocumentModel"]),
 
         // Runnable test suites (invoke with `swift run <Target>`).
         .executableTarget(
@@ -82,7 +85,7 @@ let package = Package(
             name: "SchemaKitTests",
             // EditorMath so the MathML import can be checked against the very
             // parser that has to render its output.
-            dependencies: ["SchemaKit", "EditorHistory", "EditorMath", "TestHarness"],
+            dependencies: ["SchemaKit", "EditorHistory", "EditorMath", "TestHarness", "TestDocGen"],
             path: "Tests/SchemaKitTests",
             resources: [.copy("highlight-doc.json")]),
         .executableTarget(
@@ -111,7 +114,7 @@ let package = Package(
         // simulator). Source is #if canImport(UIKit) so it's empty on macOS.
         .testTarget(
             name: "EditorUIKitTests",
-            dependencies: ["EditorUIKit", "SchemaKit", "EditorSyntax", "EditorMath"],
+            dependencies: ["EditorUIKit", "SchemaKit", "EditorSyntax", "EditorMath", "TestDocGen"],
             path: "Tests/EditorUIKitTests"),
     ]
 )

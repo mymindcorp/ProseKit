@@ -65,7 +65,14 @@ struct TextBlock {
                 if seg.docLen == seg.attrLen { return seg.docStart + utf16Offset }
                 let ns = text as NSString
                 let prefix = ns.substring(to: min(utf16Offset, ns.length))
-                return seg.docStart + prefix.count
+                // Clamped: an index *inside* a grapheme cluster cuts the run
+                // mid-sequence, and the broken tail counts as a cluster of its
+                // own — so a split inside a ZWJ emoji counts one more grapheme
+                // than the whole run has, and the position lands past the end of
+                // the block. CoreText only ever hands back cluster boundaries,
+                // but the arithmetic ones (a line's last index, say) can land
+                // anywhere.
+                return seg.docStart + min(prefix.count, seg.docLen)
             }
             return index < seg.attrStart + (seg.attrLen + 1) / 2 ? seg.docStart : seg.docStart + seg.docLen
         }
@@ -953,7 +960,14 @@ final class DocumentLayout {
                             pos: docPos, open: open))
         if node.childCount > 0 {
             let summary = node.child(0)
-            y = layoutTextBlock(summary, docPos: pos + 1, x: innerX, width: innerWidth, y: y)
+            // `pos` is already the position before the summary, which is what
+            // `layoutTextBlock` wants — it adds the one for the opening token
+            // itself. Passing `pos + 1` put the summary's whole block one
+            // position late, so a tap in it answered with a position inside the
+            // `details` rather than inside the summary; with an empty summary
+            // that was the only block on screen, and every tap in the document
+            // landed somewhere no caret could go.
+            y = layoutTextBlock(summary, docPos: pos, x: innerX, width: innerWidth, y: y)
             pos += summary.nodeSize
         }
         if open, node.childCount > 1 {
@@ -1451,14 +1465,23 @@ final class DocumentLayout {
         guard let target else { return nil }
         let relative = CGPoint(x: preferredX - target.line.baselineOrigin.x, y: 0)
         var attr = CTLineGetStringIndexForPosition(target.line.ctLine, relative)
-        // The target line's range includes a trailing hard break ("\n"); the
-        // index AFTER it is the NEXT line's start, which would bounce the caret
-        // straight back (the "stuck" arrow). Clamp to before that break.
+        // The index at the end of the target line is the NEXT line's start, and
+        // the caret for it is drawn there — so landing on it bounces the caret
+        // straight past the line we aimed at (the "stuck" arrow). Clamp to the
+        // last index the target line actually owns.
+        //
+        // Two ways to arrive there. A trailing hard break: the line owns the
+        // "\n" and the index after it starts the next line. And a soft wrap
+        // onto a shorter line: a column beyond the short line's width answers
+        // with its end, which is the next line's start — ↓ from a long line
+        // then skips the short one, and ↑ from where it lands comes back to the
+        // same place forever.
         let lineEnd = target.line.stringRange.location + target.line.stringRange.length
-        if attr >= lineEnd, lineEnd > target.line.stringRange.location,
-           let scalar = Unicode.Scalar((target.block.attributed.string as NSString).character(at: lineEnd - 1)),
-           CharacterSet(charactersIn: "\n\r\u{2028}\u{2029}").contains(scalar) {
-            attr = lineEnd - 1
+        if attr >= lineEnd, lineEnd > target.line.stringRange.location {
+            let endsInBreak = Unicode.Scalar((target.block.attributed.string as NSString).character(at: lineEnd - 1))
+                .map { CharacterSet(charactersIn: "\n\r\u{2028}\u{2029}").contains($0) } ?? false
+            let isLastLine = target.line.stringRange.location == target.block.lines.last?.stringRange.location
+            if endsInBreak || !isLastLine { attr = lineEnd - 1 }
         }
         return target.block.docPos(forAttrIndex: attr)
     }
@@ -1531,7 +1554,27 @@ final class DocumentLayout {
             ?? block.lines.min(by: { abs($0.baselineOrigin.y - point.y) < abs($1.baselineOrigin.y - point.y) })
         guard let line else { return block.contentStart }
         let relative = CGPoint(x: point.x - line.baselineOrigin.x, y: 0)
-        let attrIndex = CTLineGetStringIndexForPosition(line.ctLine, relative)
+        // At or left of the leading edge the answer is the line's first
+        // position. CoreText is asked for the *nearest* index, and when a line
+        // opens with an inline atom the nearest one to x=0 came back as the
+        // index after it — so a tap on the left edge of such a line landed
+        // after the atom, and moving right then moved the caret backwards.
+        var attrIndex = relative.x <= 0
+            ? line.stringRange.location
+            : CTLineGetStringIndexForPosition(line.ctLine, relative)
+        // A line that ends in a hard break owns the break, so the index after it
+        // is the NEXT line's start. Without this a tap at the end of the line
+        // lands past the break, one position on from the caret we drew there —
+        // tap the caret and it moves. `lineBoundary` and `verticalPosition`
+        // clamp the same way, for the same reason. A soft wrap is unaffected:
+        // its line ends in a space, and the position either side of it is the
+        // same one.
+        let lineEnd = line.stringRange.location + line.stringRange.length
+        if attrIndex >= lineEnd, lineEnd > line.stringRange.location,
+           let scalar = Unicode.Scalar((block.attributed.string as NSString).character(at: lineEnd - 1)),
+           CharacterSet(charactersIn: "\n\r\u{2028}\u{2029}").contains(scalar) {
+            attrIndex = lineEnd - 1
+        }
         return block.docPos(forAttrIndex: attrIndex)
     }
 

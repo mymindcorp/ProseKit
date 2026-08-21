@@ -65,6 +65,15 @@ public final class TestCollector: @unchecked Sendable {
 public enum TestSuite {
     /// Run the given cases, print a report, and exit the process.
     public static func main(_ name: String, _ cases: [TestCase]) -> Never {
+        // `PROSEKIT_TEST_FILTER=substring` narrows a run to the cases whose name
+        // contains it — for iterating on one suite without paying for the rest.
+        // A filter that matches nothing is a failure, not a silent pass.
+        let filter = ProcessInfo.processInfo.environment["PROSEKIT_TEST_FILTER"]
+        let cases = filter.map { f in cases.filter { $0.name.localizedCaseInsensitiveContains(f) } } ?? cases
+        if let filter, cases.isEmpty {
+            print("\n\(name): no test matches PROSEKIT_TEST_FILTER=\(filter)")
+            exit(1)
+        }
         var failures: [(String, any Error)] = []
         for c in cases {
             // Flush before each test so a fatal trap localizes to this case.

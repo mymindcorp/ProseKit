@@ -227,6 +227,8 @@ registerWikiLinkAsyncTests()
 registerCollabCursorTests()
 registerUniqueIDTests()
 registerFuzzTests()
+registerSelectionFuzzTests()
+registerSelectionCommandFuzzTests()
 
 registerPMListTests(); registerPMTableMapTests(); registerPMTableCommandsTests(); registerPMCellCopyPasteTests(); registerPMTableExtraTests()
 registerPMTableMoveTests()
