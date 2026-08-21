@@ -697,8 +697,14 @@ final class DocumentLayout {
             }
             // The placeholder reserves the box the image will occupy, so a
             // document whose images carry a size doesn't move when they load.
-            decorations.append(.stroke(CGRect(x: x, y: y, width: size.width, height: size.height),
-                                       theme.hairlineColor, 1))
+            // It borrows the picture's corner radius too, so the shape doesn't
+            // change either.
+            let box = CGRect(x: x, y: y, width: size.width, height: size.height)
+            if let radius = Self.imageCornerRadius(theme, in: box) {
+                decorations.append(.roundedStroke(box, theme.hairlineColor, 1, radius))
+            } else {
+                decorations.append(.stroke(box, theme.hairlineColor, 1))
+            }
             let alt = node.attrs["alt"]?.stringValue ?? src
             decorations.append(.text("🖼 \(alt)", CGPoint(x: x + 8, y: y + 8), [.font: theme.bodyFont, .foregroundColor: theme.code.color]))
             if !src.isEmpty { pendingImages.append(node) }
@@ -792,6 +798,17 @@ final class DocumentLayout {
 
     /// The box an image with neither a size nor bytes yet falls back to.
     static let placeholderSize = CGSize(width: 200, height: 120)
+
+    /// The corner radius to round a picture drawn in `rect` by, or nil when the
+    /// theme asks for square corners — the caller then takes the cheaper path.
+    ///
+    /// Capped at half the shorter side: past that a rounded rect is no longer a
+    /// well-defined path, and a host that writes a very large radius is asking
+    /// for a capsule (or a circle on a square picture), which is what it gets.
+    static func imageCornerRadius(_ theme: DocumentTheme, in rect: CGRect) -> CGFloat? {
+        let radius = min(theme.image.cornerRadius, min(rect.width, rect.height) / 2)
+        return radius > 0 ? radius : nil
+    }
 
     /// The intrinsic size recorded in the node's `model` attribute — the
     /// original image behind the one being drawn. Read structurally rather than
@@ -1741,7 +1758,18 @@ final class DocumentLayout {
                 ns.draw(at: point)
             case let .image(image, rect):
                 guard visible(rect.minY, rect.maxY) else { continue }
-                image.draw(in: rect)
+                // A rounded picture is clipped rather than masked: the bytes are
+                // drawn as they are and the corners simply aren't painted, which
+                // costs nothing when the radius is 0 (the common case).
+                if let radius = Self.imageCornerRadius(theme, in: rect) {
+                    ctx.saveGState()
+                    ctx.addPath(UIBezierPath(roundedRect: rect, cornerRadius: radius).cgPath)
+                    ctx.clip()
+                    image.draw(in: rect)
+                    ctx.restoreGState()
+                } else {
+                    image.draw(in: rect)
+                }
             case let .math(rendering, rect):
                 guard visible(rect.minY, rect.maxY) else { continue }
                 rendering.draw(ctx, rect.origin)
