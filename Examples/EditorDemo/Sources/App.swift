@@ -86,6 +86,9 @@ struct ContentView: View {
     @State private var bubbleOn = false
     /// Whether misspelled words are underlined (the editor's built-in checker).
     @State private var spellCheckOn = true
+    /// Whether a plain click/tap on a link opens it, rather than only placing the
+    /// caret (`EditorTextView.opensLinksOnClick`). Cmd-click opens it either way.
+    @State private var linkClickOpensOn = false
     /// When on, swap the editable editor for the read-only `DocumentView` (the
     /// shared `DocumentLayout` renderer), seeded from the current document.
     @State private var readOnly = false
@@ -128,7 +131,8 @@ struct ContentView: View {
                 Button("🎨 Theme") { showThemePanel = true }
                     .buttonStyle(.bordered)
                     .popover(isPresented: $showThemePanel) {
-                        ThemePanel(settings: $themeSettings, onReset: { themeSettings = ThemeSettings() })
+                        ThemePanel(settings: $themeSettings, opensLinksOnClick: $linkClickOpensOn,
+                                   onReset: { themeSettings = ThemeSettings() })
                     }
                 Spacer()
                 // Dump the live document's prose (ProseMirror JSON) so you can
@@ -153,7 +157,8 @@ struct ContentView: View {
             } else {
                 EditorContainer(docIndex: docIndex, proseLoad: proseLoad, agentOn: agentOn,
                                 reorder: reorderOn, useDryingInk: dryingInkOn, bubbleOn: bubbleOn,
-                                spellCheck: spellCheckOn, themeSettings: themeSettings,
+                                spellCheck: spellCheckOn, opensLinksOnClick: linkClickOpensOn,
+                                themeSettings: themeSettings,
                                 onReady: { editorRef = $0 }) { message in
                     loadError = message
                 }
@@ -382,6 +387,9 @@ struct ThemeSettings: Equatable {
 /// editor repaint. Bound to a `ThemeSettings` the host feeds to the editor view.
 struct ThemePanel: View {
     @Binding var settings: ThemeSettings
+    /// Not a theme value — a view behaviour — so it rides alongside `settings`
+    /// rather than inside it, and `onReset` leaves it alone.
+    @Binding var opensLinksOnClick: Bool
     let onReset: () -> Void
 
     var body: some View {
@@ -430,6 +438,7 @@ struct ThemePanel: View {
                 Section("Links") {
                     ColorPicker("Link color", selection: $settings.linkColor)
                     Toggle("Underline", isOn: $settings.linkUnderline)
+                    Toggle("Open on click", isOn: $opensLinksOnClick)
                 }
                 Section("Code") {
                     ColorPicker("Inline code", selection: $settings.codeColor)
@@ -486,6 +495,8 @@ struct EditorContainer: UIViewRepresentable {
     var bubbleOn: Bool = false
     /// Whether the editor underlines misspellings.
     var spellCheck: Bool = true
+    /// Whether a plain click/tap on a link opens it as well as placing the caret.
+    var opensLinksOnClick: Bool = false
     /// The live, user-editable theme from the 🎨 Theme panel.
     var themeSettings: ThemeSettings = ThemeSettings()
     /// Hands the live editor up to the host once it's created (for the toolbar's
@@ -785,6 +796,7 @@ struct EditorContainer: UIViewRepresentable {
         }
         textView.blockReorderingEnabled = reorder
         textView.spellCheckingEnabled = spellCheck
+        textView.opensLinksOnClick = opensLinksOnClick
         // Drying-ink highlight rendering (demo-only effect via highlightRenderer).
         coordinator.dryingInk?.enabled = useDryingInk
         textView.highlightRenderer = useDryingInk
