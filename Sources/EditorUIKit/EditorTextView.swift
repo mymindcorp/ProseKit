@@ -3,19 +3,35 @@ public import UIKit
 import UniformTypeIdentifiers
 import DocumentModel
 import DocumentTransform
-import EditorStateKit
+public import EditorStateKit
 import EditorCommands
 import EditorKeymap
 public import SchemaKit
 import EditorSerialization
 
 /// One on-screen run of a highlight-mark background, passed to a custom
-/// `EditorTextView.highlightRenderer`. `from`/`to` are the run's document range —
-/// stable across scrolling, so a renderer can animate a given highlight over time
-/// — and `rect` is its position in the draw context's (content) coordinates.
+/// `EditorTextView.highlightRenderer`. `rect` is its position in the draw
+/// context's (content) coordinates.
+///
+/// A highlight is emitted as one run per line it covers, so there are two ranges
+/// and they answer different questions:
+///
+/// - `from`/`to` — the whole highlight's document range, repeated on every one
+///   of its runs. A stable identity across scrolling, for keying per-highlight
+///   state.
+/// - `lineFrom`/`lineTo` — just this line's slice of it. What a renderer wants
+///   for anything positional: where this piece sits within the highlight, and
+///   how much of it this piece is. Equal to `from`/`to` when the highlight fits
+///   on one line.
+///
+/// Animating from `from`/`to` alone makes every line of a wrapped highlight
+/// behave identically — they all start together, because they are all told the
+/// same range.
 public struct HighlightRun {
     public let from: Int
     public let to: Int
+    public let lineFrom: Int
+    public let lineTo: Int
     public let rect: CGRect
     public let color: UIColor
 }
@@ -179,7 +195,10 @@ open class EditorTextView: UIView, UIKeyInput {
         // host sets `editMenuItems` — so the system's native callout (with Writing
         // Tools / Rewrite) stays intact by default. See `editMenuItems`.
 
-        editor.onTransaction = { [weak self] tr in self?.mapSpellCache(through: tr) }
+        editor.onTransaction = { [weak self] tr in
+            self?.mapSpellCache(through: tr)
+            if tr.docChanged { self?.onDocumentChange?(tr) }
+        }
         editor.onChange = { [weak self] _ in self?.setNeedsRebuild(); self?.fireSelectionChange() }
         // Let async suggestion sources (e.g. a DB-backed `[[`) repaint the popup
         // when their results arrive, by re-pulling the active source.
@@ -1216,6 +1235,23 @@ open class EditorTextView: UIView, UIKeyInput {
     /// per-highlight animation) plus the on-screen rect and resolved color. Call
     /// `setNeedsDisplay()` to drive an animation. nil → default rendering.
     public var highlightRenderer: ((_ ctx: CGContext, _ runs: [HighlightRun]) -> Void)?
+
+    /// Called after every transaction that changed the document, with the
+    /// transaction itself — so a host can map its own document-keyed state
+    /// through the edit via `tr.mapping`.
+    ///
+    /// The companion to `highlightRenderer`: a renderer that animates a given
+    /// highlight keys its state to the run's `from`/`to`, and every edit above
+    /// that run renumbers them. Without mapping, state recorded before the edit
+    /// lands on whatever text now occupies those positions. Not fired for
+    /// selection-only changes, which never move anything.
+    ///
+    /// Fired before the view rebuilds its layout, so `editor.state` is current
+    /// but geometry is not — map positions here, and ask for rects later.
+    ///
+    /// The view takes `Editor.onTransaction` for its own bookkeeping; use this
+    /// rather than reassigning that.
+    public var onDocumentChange: ((_ tr: Transaction) -> Void)?
 
     /// Whether the editor currently has keyboard focus. Redefines UIView's
     /// focus-engine `isFocused` to mean "is first responder" — the meaningful

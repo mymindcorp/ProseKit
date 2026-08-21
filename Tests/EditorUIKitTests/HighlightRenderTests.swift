@@ -1,6 +1,7 @@
 #if canImport(UIKit)
 import XCTest
 import DocumentModel
+import DocumentTransform
 import EditorStateKit
 import SchemaKit
 @testable import EditorUIKit
@@ -150,6 +151,99 @@ final class HighlightRenderTests: XCTestCase {
             return false
         }
         XCTAssertFalse(hasBadge, "no badge without a codeLanguageLabel hook")
+    }
+
+    // MARK: - Per-line runs
+
+    func testAWrappedHighlightYieldsOneRunPerLineEachWithItsOwnRange() throws {
+        // A highlight long enough to wrap, so the renderer sees several runs.
+        let editor = try Editor(extensions: fullKit())
+        let sc = editor.schema
+        let mark = sc.marks["highlight"]!.create([:])
+        let long = String(repeating: "wrap ", count: 40)
+        let para = try sc.node("paragraph", [:], content: Fragment.from([sc.text(long, [mark])]))
+        editor.setContent(try sc.node("doc", [:], content: Fragment.from([para])))
+        let v = EditorTextView(editor: editor)
+        v.frame = CGRect(x: 0, y: 0, width: 320, height: 600)
+        v.layoutIfNeeded()
+
+        var runs: [HighlightRun] = []
+        v.highlightRenderer = { _, r in runs.append(contentsOf: r) }
+        _ = UIGraphicsImageRenderer(bounds: v.bounds).image { _ in
+            v.layer.render(in: UIGraphicsGetCurrentContext()!)
+        }
+
+        XCTAssertGreaterThan(runs.count, 1, "a wrapped highlight is drawn as several runs")
+        // Every run reports the same whole-highlight identity...
+        XCTAssertEqual(Set(runs.map(\.from)).count, 1)
+        XCTAssertEqual(Set(runs.map(\.to)).count, 1)
+        // ...but its own distinct slice, and the slices tile the highlight in order.
+        XCTAssertEqual(Set(runs.map(\.lineFrom)).count, runs.count, "each run has its own start")
+        for run in runs {
+            XCTAssertLessThan(run.lineFrom, run.lineTo)
+            XCTAssertGreaterThanOrEqual(run.lineFrom, run.from)
+            XCTAssertLessThanOrEqual(run.lineTo, run.to)
+        }
+        let ordered = runs.sorted { $0.lineFrom < $1.lineFrom }
+        XCTAssertEqual(ordered.first?.lineFrom, ordered.first?.from, "the first run starts the highlight")
+        XCTAssertEqual(ordered.last?.lineTo, ordered.last?.to, "the last run ends it")
+        for (a, b) in zip(ordered, ordered.dropFirst()) {
+            XCTAssertLessThanOrEqual(a.lineTo, b.lineFrom, "slices advance without overlapping")
+        }
+    }
+
+    func testAHighlightOnOneLineReportsTheWholeRangeAsItsLine() throws {
+        let v = try view(highlightColor: nil)
+        var runs: [HighlightRun] = []
+        v.highlightRenderer = { _, r in runs.append(contentsOf: r) }
+        _ = render(v)
+        let run = try XCTUnwrap(runs.first)
+        XCTAssertEqual(runs.count, 1)
+        XCTAssertEqual(run.lineFrom, run.from)
+        XCTAssertEqual(run.lineTo, run.to)
+    }
+
+    // MARK: - onDocumentChange (host-state mapping, the highlightRenderer companion)
+
+    func testDocumentChangeHookDeliversAUsableMapping() throws {
+        // A host recording "the highlighted range" before an edit above it should
+        // be able to map that range onto the same text afterwards.
+        let v = try view(highlightColor: nil)
+        let highlighted = v.ensureLayout().highlights.first.map { ($0.from, $0.to) }
+        let range = try XCTUnwrap(highlighted)
+
+        var mapped: (Int, Int)?
+        v.onDocumentChange = { tr in
+            mapped = (tr.mapping.map(range.0, 1), tr.mapping.map(range.1, -1))
+        }
+        let tr = v.editor.state.tr
+        try tr.insertText("XX", 1)
+        v.editor.dispatch(tr)
+
+        let after = try XCTUnwrap(mapped)
+        XCTAssertEqual(after.0, range.0 + 2, "start shifts by the inserted length")
+        XCTAssertEqual(after.1, range.1 + 2, "end shifts by the inserted length")
+        // And the mapped range is where the highlight actually ended up.
+        v.layoutIfNeeded()
+        let now = try XCTUnwrap(v.ensureLayout().highlights.first)
+        XCTAssertEqual(now.from, after.0)
+        XCTAssertEqual(now.to, after.1)
+    }
+
+    func testDocumentChangeHookIgnoresSelectionOnlyTransactions() throws {
+        let v = try view(highlightColor: nil)
+        var fired = 0
+        v.onDocumentChange = { _ in fired += 1 }
+
+        let move = v.editor.state.tr
+        move.setSelection(TextSelection.create(move.doc, 2))
+        v.editor.dispatch(move)
+        XCTAssertEqual(fired, 0, "moving the caret moves nothing to map")
+
+        let edit = v.editor.state.tr
+        try edit.insertText("X", 1)
+        v.editor.dispatch(edit)
+        XCTAssertEqual(fired, 1, "a document change does fire")
     }
 
     func testHighlightTracksTheWordAfterAnEditBefore() throws {
