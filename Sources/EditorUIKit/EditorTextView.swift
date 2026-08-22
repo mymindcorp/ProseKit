@@ -1,7 +1,7 @@
 #if canImport(UIKit)
 public import UIKit
 import UniformTypeIdentifiers
-import DocumentModel
+public import DocumentModel
 import DocumentTransform
 public import EditorStateKit
 import EditorCommands
@@ -63,6 +63,7 @@ open class EditorTextView: UIView, UIKeyInput {
     private weak var disclosureTapRecognizer: UIGestureRecognizer?
     private weak var mathTapRecognizer: UIGestureRecognizer?
     private weak var trailingTapRecognizer: UIGestureRecognizer?
+    private weak var imageLongPressRecognizer: UIGestureRecognizer?
 
     /// When true, each top-level block shows a drag handle in the left gutter
     /// that reorders the block by dragging. Off by default.
@@ -183,6 +184,10 @@ open class EditorTextView: UIView, UIKeyInput {
         // Tapping the empty space under a document that doesn't end in a
         // paragraph gives it one — see `trailingGapTap`.
         let trailingTap = UITapGestureRecognizer(target: self, action: #selector(handleTrailingTap(_:)))
+        // Long-pressing a rendered image hands it to the host. Only installed in
+        // the sense that it begins at all when `onActivateImage` is set — see
+        // that property for how it and the image drag divide the gesture.
+        let imageLongPress = UILongPressGestureRecognizer(target: self, action: #selector(handleImageLongPress(_:)))
         columnResizeRecognizer = columnResize
         linkTapRecognizer = linkTap
         blockDragRecognizer = blockDrag
@@ -190,8 +195,9 @@ open class EditorTextView: UIView, UIKeyInput {
         disclosureTapRecognizer = disclosureTap
         mathTapRecognizer = mathTap
         trailingTapRecognizer = trailingTap
+        imageLongPressRecognizer = imageLongPress
         for recognizer in [columnResize, linkTap, blockDrag, imageResize, disclosureTap, mathTap, tripleTap,
-                           trailingTap] as [UIGestureRecognizer] {
+                           trailingTap, imageLongPress] as [UIGestureRecognizer] {
             recognizer.delegate = self
             recognizer.cancelsTouchesInView = false
             addGestureRecognizer(recognizer)
@@ -257,6 +263,23 @@ open class EditorTextView: UIView, UIKeyInput {
     /// back with `updateInlineMath` / `updateBlockMath`. Unset (the default),
     /// a tap just places the caret as usual.
     public var onActivateMath: MathActivationHandler?
+
+    /// Called when the reader long-presses a rendered image — the image
+    /// counterpart of `onActivateMath`. Unset (the default), a long press
+    /// behaves exactly as it does today.
+    ///
+    /// Setting it takes the long press on an image away from the drag: the
+    /// always-installed `UIDragInteraction` checks `imageNode(at:)` first and
+    /// lifts the image, and its lift gesture is the same press ours would want.
+    /// Rather than race it — `require(toFail:)` on the drag's failure-relationship
+    /// recognizer would make activation wait for a lift that succeeds, and a
+    /// duration split just makes which one you get depend on how long you held —
+    /// a set handler opts the image out of `itemsForBeginning`. With a handler,
+    /// long-pressing an image activates it and never drags it out; dragging text
+    /// (and dropping images in) is untouched. A host that wants both can leave
+    /// this nil, own the gesture itself, and resolve it through the public
+    /// `imageNode(at:)`.
+    public var onActivateImage: ImageActivationHandler?
 
     /// Vertical scroll offset; the host feeds the enclosing scroll view's offset
     /// so the view renders only the visible window (bounded layer + culling).
@@ -1578,6 +1601,47 @@ open class EditorTextView: UIView, UIKeyInput {
         ensureLayout().math(at: docPoint(point))
     }
 
+    /// A long press on a rendered image: select it and hand it to the host.
+    @objc private func handleImageLongPress(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began,
+              let img = imageAt(docPoint(gesture.location(in: self))) else { return }
+        activateImage(img)
+    }
+
+    /// Hand `img` to `onActivateImage`, selecting the node first so a handler
+    /// that addresses the selection (as the math one does) targets the image the
+    /// user actually pressed. Returns whether a handler took it.
+    @discardableResult
+    private func activateImage(_ img: (node: Node, from: Int, to: Int)) -> Bool {
+        guard let onActivateImage else { return false }
+        if !isFirstResponder { becomeFirstResponder() }
+        editor.dispatch(editor.state.tr.setSelection(NodeSelection(editor.doc.resolve(img.from))))
+        onActivateImage(img.node, img.from)
+        return true
+    }
+
+    /// Whether a long press at `point` (DOCUMENT coordinates) activates an
+    /// image: a host has to want them (`onActivateImage`), and there has to be
+    /// one under the press. Without a handler the press is left to the drag.
+    func shouldActivateImage(at point: CGPoint) -> Bool {
+        onActivateImage != nil && imageAt(point) != nil
+    }
+
+    /// Test hook: drive image activation by point (view coordinates). Returns
+    /// whether an image was there and a handler took it.
+    @discardableResult
+    func activateImageForTesting(at point: CGPoint) -> Bool {
+        guard let img = imageNode(at: point) else { return false }
+        return activateImage(img)
+    }
+
+    /// The image node drawn at a point in view coordinates, with its document
+    /// range — for hosts driving their own hit-testing. Covers both block images
+    /// (their own row) and inline images (within a line of text).
+    public func imageNode(at point: CGPoint) -> (node: Node, from: Int, to: Int)? {
+        imageAt(docPoint(point))
+    }
+
     private func toggleDetails(at pos: Int) {
         let open = editor.doc.nodeAt(pos)?.attrs["open"]?.boolValue ?? false
         guard let tr = setDetailsOpen(editor.state, pos: pos, open: !open) else { return }
@@ -1887,6 +1951,7 @@ open class EditorTextView: UIView, UIKeyInput {
         if gesture === mathTapRecognizer {
             return onActivateMath != nil && ensureLayout().math(at: point) != nil
         }
+        if gesture === imageLongPressRecognizer { return shouldActivateImage(at: point) }
         if gesture === linkTapRecognizer { return shouldActivateLink(at: point) }
         if gesture === trailingTapRecognizer { return trailingGapTap(at: point) }
         return super.gestureRecognizerShouldBegin(gesture)
@@ -2951,7 +3016,9 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
         if imageResizeHit(at: session.location(in: self)) != nil { return [] }
         // Grabbing an existing image starts a drag of that node (move within the
         // document; its bytes are offered to other apps).
-        if let img = imageAt(start) { return [imageDragItem(for: img)] }
+        // ...unless a host claimed the long press for activation instead; see
+        // `onActivateImage`.
+        if onActivateImage == nil, let img = imageAt(start) { return [imageDragItem(for: img)] }
         // Otherwise, only drag when the gesture starts on the (non-empty) selection.
         let sel = editor.state.selection
         guard !sel.empty, let pos = ensureLayout().position(at: start),

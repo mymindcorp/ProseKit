@@ -75,6 +75,14 @@ public typealias CheckboxViewProvider = () -> any TaskCheckboxView
 /// position, so the handler can address it without re-deriving either.
 public typealias MathActivationHandler = (_ node: Node, _ pos: Int) -> Void
 
+/// Handles a long press on a rendered image — the image counterpart of
+/// `MathActivationHandler`. The host typically opens a viewer, or an editor for
+/// the node's `src`/`alt`/`width` attributes.
+///
+/// `node` is the `image` node (block or inline) and `pos` its document position,
+/// so the handler can address it without re-deriving either.
+public typealias ImageActivationHandler = (_ node: Node, _ pos: Int) -> Void
+
 /// An image that arrived by drop or paste, with its raw bytes and (when known)
 /// its uniform type identifier and a suggested file name.
 public struct DroppedImage: Sendable {
