@@ -15,12 +15,12 @@ public struct Decoration: Sendable, Equatable {
         case node
     }
 
-    public var from: Int
-    public var to: Int
-    public var kind: Kind
+    public let from: Int
+    public let to: Int
+    public let kind: Kind
     /// Style hints the renderer understands: `background`, `underline`,
     /// `color` (hex), and `class` (an identifying tag, e.g. "search").
-    public var attributes: [String: String]
+    public let attributes: [String: String]
 
     public init(from: Int, to: Int, kind: Kind = .inline, attributes: [String: String] = [:]) {
         self.from = from
@@ -49,7 +49,7 @@ public struct Decoration: Sendable, Equatable {
 /// document changes. (A simple flat implementation, not ProseMirror's optimized
 /// tree — fine for the document sizes this editor targets.)
 public struct DecorationSet: Sendable, Equatable {
-    public private(set) var decorations: [Decoration]
+    public let decorations: [Decoration]
 
     public init(_ decorations: [Decoration] = []) {
         self.decorations = decorations
