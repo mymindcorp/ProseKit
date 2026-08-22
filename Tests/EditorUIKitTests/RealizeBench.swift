@@ -84,7 +84,7 @@ final class RealizeBench: XCTestCase {
             let doc = bigDoc(n)
             let probe = lazyLayout(doc)
             let height = probe.height
-            unsafe print("\n  --- \(n) blocks, \(Int(height)) pt tall, \(Int(Self.width)) pt column ---")
+            print("\n  --- \(n) blocks, \(Int(height)) pt tall, \(Int(Self.width)) pt column ---")
             unsafe fflush(stdout)
 
             // 1. Steady state while scrolling inside already-realized content.

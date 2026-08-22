@@ -4,13 +4,21 @@ public import DocumentModel
 import EditorSerialization
 
 /// A lightweight, **read-only** view that renders a document with the shared
-/// layout engine and **only draws the visible window**.
+/// layout engine and **only lays out and draws the visible window**.
 ///
 /// Pin it to a scroll view's viewport and feed `contentOffsetY` to virtualize an
 /// arbitrarily tall document (the same technique the editable `EditorTextView`
-/// uses), or drop it in at its full `documentHeight` for short documents. Either
-/// way, `draw(_:)` only paints the slice `[contentOffsetY, contentOffsetY +
-/// bounds.height]`, so cost is independent of document length.
+/// uses), or size it from `sizeThatFits` and drop it in at its full height.
+///
+/// `draw(_:)` only paints the slice `[contentOffsetY, contentOffsetY +
+/// bounds.height]`. Typesetting is virtualized to match: past
+/// `DocumentLayout.lazyThreshold` top-level children, only the blocks near the
+/// viewport are laid out and the rest carry estimated heights until they are
+/// scrolled near. So neither painting *nor* the layout behind it costs what the
+/// whole document would — opening a long document does not typeset it.
+///
+/// The estimate is what `documentHeight` reports until the blocks behind it are
+/// realized; `sizeThatFits` never estimates. See both for which to size from.
 public final class DocumentView: UIView {
     /// The document to render. Setting it rebuilds the layout (incrementally,
     /// reusing unchanged blocks from the previous layout).
@@ -25,7 +33,13 @@ public final class DocumentView: UIView {
     public var theme: DocumentTheme { didSet { invalidateLayout() } }
     /// The enclosing viewport's vertical scroll offset. Only the slice
     /// `[contentOffsetY, contentOffsetY + bounds.height]` is drawn.
-    public var contentOffsetY: CGFloat = 0 { didSet { if oldValue != contentOffsetY { setNeedsDisplay() } } }
+    public var contentOffsetY: CGFloat = 0 {
+        didSet {
+            guard oldValue != contentOffsetY else { return }
+            realizeVisibleIfNeeded()
+            setNeedsDisplay()
+        }
+    }
     /// Reports the rendered document height when it changes (size the scroll content from this).
     public var onDocumentHeightChange: DocumentHeightHandler?
     /// Supplies raw image bytes for an image node; nil draws a placeholder.
@@ -213,6 +227,7 @@ public final class DocumentView: UIView {
         let l = DocumentLayout(doc: document, width: max(bounds.width, 1), theme: theme,
                                imageProvider: { [weak self] node in self?.imageStore.image(for: node) },
                                blockCache: blockCache, previous: layout,
+                               realizeWindow: realizeWindow(),
                                syntaxHighlighter: syntaxHighlighter,
                                codeLanguageLabel: codeLanguageLabel,
                                mathRenderer: mathRenderer)
@@ -226,11 +241,73 @@ public final class DocumentView: UIView {
         return l
     }
 
-    /// The full height of the rendered document (use it to size scroll content).
+    /// The document y-window to typeset exactly: the visible slice plus a
+    /// generous margin, so a block is laid out before it scrolls into view.
+    /// On a document long enough for lazy layout, children outside it are
+    /// height-estimated on the cold build and realized as they approach.
+    private func realizeWindow() -> ClosedRange<CGFloat> {
+        let margin = max(bounds.height * 2, 600)
+        return (contentOffsetY - margin) ... (contentOffsetY + max(bounds.height, 1) + margin)
+    }
+
+    /// Typeset whatever is about to be painted, so an estimated block is never
+    /// drawn blank.
+    ///
+    /// The window comes from the arguments rather than from `bounds`, because
+    /// `render(into:height:offsetY:)` paints a slice that need not be this
+    /// view's own viewport — a bitmap or a PDF page asks for its own band.
+    ///
+    /// Deliberately exactly the band being drawn, not the prefetch
+    /// `realizeWindow()` asks for: the prefetch belongs on the scroll path, and
+    /// the paint path should do the least that makes the frame in hand correct.
+    private func realizeForPaint(_ layout: DocumentLayout, height: CGFloat, offsetY: CGFloat) {
+        guard layout.hasEstimatedContent,
+              layout.realize(window: offsetY ... (offsetY + max(height, 1)))
+        else { return }
+        loadPendingImages(layout.pendingImages)
+        guard layout.height != lastReportedHeight else { return }
+        lastReportedHeight = layout.height
+        // Not synchronously: the host resizes its scroll content in response,
+        // which re-enters our layout while this draw pass is reading it.
+        let corrected = layout.height
+        DispatchQueue.main.async { [weak self] in self?.onDocumentHeightChange?(corrected) }
+    }
+
+    /// Typeset any estimated blocks that have scrolled near the viewport, ahead
+    /// of the frame that needs them.
+    private func realizeVisibleIfNeeded() {
+        guard let layout, layout.hasEstimatedContent,
+              layout.realize(window: realizeWindow()) else { return }
+        loadPendingImages(layout.pendingImages)
+        setNeedsDisplay()
+        guard layout.height != lastReportedHeight else { return }
+        lastReportedHeight = layout.height
+        onDocumentHeightChange?(layout.height)
+    }
+
+    /// The height of the rendered document (use it to size scroll content).
+    ///
+    /// On a document long enough to be laid out lazily this starts as an
+    /// *estimate* of the parts not yet typeset. It converges as the reader
+    /// scrolls, and every correction is reported to `onDocumentHeightChange` —
+    /// so a virtualized host should size its scroll content from that handler
+    /// rather than from a single read of this.
     public var documentHeight: CGFloat { ensureLayout()?.height ?? 0 }
 
+    /// The exact size needed to show the whole document.
+    ///
+    /// Unlike `documentHeight` this never estimates. A host sizing a view from
+    /// `sizeThatFits` is dropping it in at its full height and will never feed
+    /// `contentOffsetY`, so no later scroll would correct an estimate — it pays
+    /// for the whole document to be typeset, which is what asking for an exact
+    /// answer costs.
     public override func sizeThatFits(_ size: CGSize) -> CGSize {
-        CGSize(width: size.width, height: documentHeight)
+        guard let l = ensureLayout() else { return CGSize(width: size.width, height: 0) }
+        if l.hasEstimatedContent, l.realize(window: 0 ... .greatestFiniteMagnitude) {
+            loadPendingImages(l.pendingImages)
+            lastReportedHeight = l.height
+        }
+        return CGSize(width: size.width, height: l.height)
     }
 
     public override func draw(_ rect: CGRect) {
@@ -255,6 +332,7 @@ public final class DocumentView: UIView {
     /// intersecting `[offsetY, offsetY + height]` are drawn (the rest is culled).
     public func render(into ctx: CGContext, height: CGFloat, offsetY: CGFloat) {
         guard let l = ensureLayout() else { return }
+        realizeForPaint(l, height: height, offsetY: offsetY)
         ctx.saveGState()
         ctx.translateBy(x: 0, y: -offsetY)
         l.draw(in: ctx, clipY: offsetY ... (offsetY + max(height, 1)))
