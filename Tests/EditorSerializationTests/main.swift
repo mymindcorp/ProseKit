@@ -3584,6 +3584,7 @@ registerProseTests()
 
 registerPMMarkdownTests()
 registerAppleNotesDocTests()
+registerRTFTests()
 
 // MARK: - CommonMark long tail, second batch
 

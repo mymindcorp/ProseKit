@@ -2,7 +2,7 @@
 
 A native Swift rich-text editor, heavily based on [Tiptap](https://tiptap.dev) (and the [ProseMirror](https://prosemirror.net) model beneath it): a value-typed document, transactional editing, and a Tiptap-style extension system, plus a CoreText-based renderer for UIKit / Mac Catalyst.
 
-Everything except the renderer is pure, cross-platform Swift (value-typed document, invertible/mappable transaction steps, schema + extensions, JSON/HTML/Markdown). Only `EditorUIKit` touches UIKit. Minimum deployment targets: **iOS 18 / macOS 15**.
+Everything except the renderer is pure, cross-platform Swift (value-typed document, invertible/mappable transaction steps, schema + extensions, JSON/HTML/Markdown/RTF). Only `EditorUIKit` touches UIKit. Minimum deployment targets: **iOS 18 / macOS 15**.
 
 ## Modules
 
@@ -13,7 +13,7 @@ Everything except the renderer is pure, cross-platform Swift (value-typed docume
 | `EditorStateKit` | EditorState / Transaction / Selection / Plugin |
 | `EditorCommands`, `EditorHistory`, `EditorInputRules`, `EditorKeymap` | commands, undo/redo, input rules, keymap |
 | `SchemaKit` | the Tiptap-style `Extension` layer + the `Editor` facade |
-| `EditorSerialization` | ProseMirror-JSON, HTML, Markdown |
+| `EditorSerialization` | ProseMirror-JSON, HTML, Markdown, RTF (import) |
 | `EditorUIKit` | the CoreText renderer: `EditorTextView` (editable) + `DocumentView` (read-only) |
 | `EditorCollab` | rebaseable collaborative steps |
 | `EditorSyntax` | optional: code-block syntax highlighting for the renderer's hook |
@@ -71,7 +71,18 @@ editor.setContent(try MarkdownParser.parse(markdown, schema: editor.schema))
 // ProseMirror-shaped JSON (the canonical persistence format)
 let json = try editor.doc.toJSONString(pretty: true)           // → String
 editor.setContent(try Node.fromJSON(json, schema: editor.schema))
+
+// RTF, in (the pasteboard's format, read without NSAttributedString)
+editor.setContent(try Node.fromRTF(rtfData, schema: editor.schema))
 ```
+
+RTF is import-only, and the editor reads it on paste: when the pasteboard offers
+`public.rtf` and nothing richer — the TextEdit/Mail/Pages/Windows case — the RTF
+is parsed directly instead of going through `NSAttributedString` → Cocoa's HTML
+writer. Pasteboards carrying HTML, Apple Notes' proto, an archived attributed
+string, or RTFD keep their existing, better-informed paths.
+[docs/rtf-conversion.md](docs/rtf-conversion.md) records what survives, what is
+approximated, and what is dropped.
 
 ## Rendering to a surface
 

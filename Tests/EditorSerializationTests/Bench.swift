@@ -76,6 +76,37 @@ func registerBench() {
             time("Node.toJSON (to AttributeValue)") { _ = parsed.toJSON() }
         }
 
+        // RTF the size of a pasted document: prose with formatting runs and
+        // escapes, plus the lists and tables real documents carry.
+        func rtfArticle(_ paragraphs: Int) -> String {
+            var out = #"{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier;}}"#
+            out += #"{\colortbl;\red255\green0\blue0;}"#
+            out += #"{\*\listtable{\list\listtemplateid1{\listlevel\levelnfc23{\leveltext\'01\'b7;}}\listid1}}"#
+            out += #"{\*\listoverridetable{\listoverride\listid1\listoverridecount0\ls1}}"#
+            for i in 0..<paragraphs {
+                out += #"\pard Paragraph \#(i) with \b bold\b0 , \i italic\i0 , \cf1 colour\cf0 , "#
+                out += #"caf\'e9 and \u8212? a dash, plus {\field{\*\fldinst{HYPERLINK "https://example.test/\#(i)"}}"#
+                out += #"{\fldrslt\ul a link}} and text that runs on a while.\par"#
+                if i % 10 == 0 {
+                    out += #"\pard\ls1\ilvl0{\listtext\'b7\tab}item one\par"#
+                    out += #"\pard\ls1\ilvl1{\listtext\'b7\tab}item two\par"#
+                }
+                if i % 25 == 0 {
+                    out += #"\trowd\cellx2880\cellx5760\pard\intbl a\cell\pard\intbl b\cell\row"#
+                    out += #"\trowd\cellx2880\cellx5760\pard\intbl c\cell\pard\intbl d\cell\row"#
+                }
+            }
+            return out + "}"
+        }
+
+        for n in [200, 1000] {
+            let source = rtfArticle(n)
+            print("\n  --- \(n) paragraphs, \(source.count / 1024) KB of RTF ---"); unsafe fflush(stdout)
+            try time("RTFParser.parse (String)") { _ = try RTFParser.parse(source, schema: schema) }
+            let data = Data(source.utf8)
+            try time("RTFParser.parse (Data)") { _ = try RTFParser.parse(data, schema: schema) }
+        }
+
         // Prose dense with character references — smart quotes, dashes, nbsp,
         // the accented letters. Decoding them is a different path from the
         // markup around them, and an article's worth of markup barely uses it.
