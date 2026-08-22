@@ -7,14 +7,14 @@ public import DocumentModel
 
 /// A rectangle of cells, in column/row coordinates.
 public struct TableRect: Equatable {
-    public var left: Int, top: Int, right: Int, bottom: Int
+    public let left: Int, top: Int, right: Int, bottom: Int
     public init(left: Int, top: Int, right: Int, bottom: Int) {
         self.left = left; self.top = top; self.right = right; self.bottom = bottom
     }
 }
 
 /// A structural problem found while computing a table map (used by the normalizer).
-public enum TableProblem {
+public enum TableProblem: Sendable {
     case colwidthMismatch(pos: Int, colwidth: [Int])
     case collision(pos: Int, row: Int, n: Int)
     case missing(row: Int, n: Int)
@@ -32,7 +32,7 @@ func cellColwidth(_ node: Node) -> [Int]? {
     return nil
 }
 
-public final class TableMap: @unchecked Sendable {
+public final class TableMap: Sendable {
     /// Number of columns.
     public let width: Int
     /// Number of rows.
@@ -40,7 +40,7 @@ public final class TableMap: @unchecked Sendable {
     /// A width*height array with the start position (table-relative) of the cell
     /// covering each slot.
     public let map: [Int]
-    public var problems: [TableProblem]?
+    public let problems: [TableProblem]?
 
     init(width: Int, height: Int, map: [Int], problems: [TableProblem]?) {
         self.width = width; self.height = height; self.map = map; self.problems = problems
@@ -187,15 +187,16 @@ private func computeMap(_ table: Node) -> TableMap {
 
     if width == 0 || height == 0 { problems = (problems ?? []) + [.zeroSized] }
 
-    let tableMap = TableMap(width: width, height: height, map: map, problems: problems)
     var badWidths = false
     var i = 0
     while !badWidths && i < colWidths.count {
         if colWidths[i] != nil && (colWidths[i + 1] ?? 0) < height { badWidths = true }
         i += 2
     }
-    if badWidths { findBadColWidths(tableMap, colWidths, table) }
-    return tableMap
+    if badWidths {
+        problems = badColWidthProblems(map, width, colWidths, table) + (problems ?? [])
+    }
+    return TableMap(width: width, height: height, map: map, problems: problems)
 }
 
 private func findWidth(_ table: Node) -> Int {
@@ -224,18 +225,21 @@ private func findWidth(_ table: Node) -> Int {
     return width
 }
 
-private func findBadColWidths(_ map: TableMap, _ colWidths: [Int?], _ table: Node) {
-    if map.problems == nil { map.problems = [] }
+/// The colwidth mismatches in a table whose cells disagree about a column's
+/// width, in the order the normalizer expects them — ahead of any structural
+/// problems found while walking the table, and each new one ahead of the last.
+private func badColWidthProblems(_ map: [Int], _ width: Int, _ colWidths: [Int?], _ table: Node) -> [TableProblem] {
+    var found: [TableProblem] = []
     var seen = Set<Int>()
-    for i in map.map.indices {
-        let pos = map.map[i]
+    for i in map.indices {
+        let pos = map[i]
         if seen.contains(pos) { continue }
         seen.insert(pos)
         guard let node = table.nodeAt(pos) else { fatalError("No cell with offset \(pos) found") }
         var updated: [Int]?
         let colspan = cellColspan(node)
         for j in 0..<colspan {
-            let col = (i + j) % map.width
+            let col = (i + j) % width
             let widthIndex = col * 2
             let colWidth = widthIndex < colWidths.count ? colWidths[widthIndex] : nil
             if let colWidth {
@@ -247,9 +251,10 @@ private func findBadColWidths(_ map: TableMap, _ colWidths: [Int?], _ table: Nod
             }
         }
         if let updated {
-            map.problems!.insert(.colwidthMismatch(pos: pos, colwidth: updated), at: 0)
+            found.insert(.colwidthMismatch(pos: pos, colwidth: updated), at: 0)
         }
     }
+    return found
 }
 
 private func freshColWidth(_ node: Node) -> [Int] {

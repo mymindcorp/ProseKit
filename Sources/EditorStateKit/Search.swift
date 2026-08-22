@@ -383,8 +383,8 @@ private func parseReplacement(_ text: String) -> [ReplPart] {
 
 /// A searched sub-range of the document.
 public struct SearchRange: Equatable, Sendable {
-    public var from: Int
-    public var to: Int
+    public let from: Int
+    public let to: Int
     public init(from: Int, to: Int) {
         self.from = from
         self.to = to

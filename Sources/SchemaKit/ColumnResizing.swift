@@ -12,8 +12,8 @@ public import EditorStateKit
 
 /// An in-progress column drag: where it started and the column's start width.
 public struct ColumnDragging: Equatable, Sendable {
-    public var startX: Double
-    public var startWidth: Double
+    public let startX: Double
+    public let startWidth: Double
     public init(startX: Double, startWidth: Double) {
         self.startX = startX
         self.startWidth = startWidth
