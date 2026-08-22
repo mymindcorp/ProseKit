@@ -2284,6 +2284,10 @@ open class EditorTextView: UIView, UIKeyInput {
             // Sources can flatten checklists in their HTML while carrying the
             // state in the Notes proto — recover here too, not just on the RTF path.
             insertContent(recoverChecklists(in: doc, from: pb, attributedString: nil).content)
+        } else if let doc = nativeRTFPasteDoc(pb) {
+            // Plain RTF and nothing else: read it directly, no text system in
+            // the middle.
+            insertContent(doc.content)
         } else if let doc = richTextPasteDoc(pb) {
             // Rich text without public.html (e.g. Apple Notes / Pages, which are
             // RTF-first) — bridge via NSAttributedString → HTML so tables, lists,
@@ -2324,6 +2328,45 @@ open class EditorTextView: UIView, UIKeyInput {
         // Bare domain like "example.com/x": a dot, no scheme, looks host-ish.
         return string.hasPrefix("www.") || (string.contains(".") && !string.contains("://"))
             && string.range(of: "^[A-Za-z0-9.-]+\\.[A-Za-z]{2,}(/.*)?$", options: .regularExpression) != nil
+    }
+
+    /// The pasteboard flavors that describe the content better than plain RTF
+    /// does, or that plain RTF can't stand in for: HTML has its own parser,
+    /// Apple Notes' proto carries checklist state that RTF flattens, an
+    /// archived attributed string skips a lossy conversion, and RTFD's
+    /// attachments live outside the RTF itself.
+    static let richerThanRTFPasteboardTypes = [
+        "public.html", "com.apple.notes.richtext", "com.apple.uikit.attributedstring",
+        "public.rtfd", "com.apple.flat-rtfd",
+    ]
+
+    /// A document read straight out of `public.rtf` by `RTFParser`, for a
+    /// pasteboard that offers nothing richer.
+    ///
+    /// This is deliberately the narrow case. When any of the flavors above is
+    /// present, the established paths still handle the paste — they know things
+    /// the RTF doesn't say. But TextEdit, Mail, Pages and most Windows apps put
+    /// RTF on the pasteboard and nothing else rich, and that content used to
+    /// reach the document only through `NSAttributedString` → Cocoa's HTML
+    /// writer, which flattens what it can't express. Reading the RTF itself
+    /// keeps the headings, lists, tables, colours and links it states.
+    ///
+    /// Returns nil — falling through to the bridge — when the RTF won't parse,
+    /// or parses to nothing, so no paste is worse off than before.
+    func nativeRTFPasteDoc(_ pb: UIPasteboard) -> Node? {
+        guard !pb.contains(pasteboardTypes: Self.richerThanRTFPasteboardTypes),
+              let data = pb.data(forPasteboardType: "public.rtf"),
+              let doc = try? RTFParser.parse(data, schema: editor.schema),
+              !isEmptyDocument(doc)
+        else { return nil }
+        return doc
+    }
+
+    /// A document holding nothing: one empty paragraph, which is what an
+    /// unreadable RTF parses to.
+    private func isEmptyDocument(_ doc: Node) -> Bool {
+        doc.childCount == 0
+            || (doc.childCount == 1 && doc.child(0).type.name == "paragraph" && doc.child(0).childCount == 0)
     }
 
     /// Build a document from the pasteboard's rich-text flavors. Best case:
@@ -2491,7 +2534,9 @@ open class EditorTextView: UIView, UIKeyInput {
         ]]
     }
 
-    private func insertContent(_ content: Fragment) {
+    // Internal rather than private so tests can paste a parsed document
+    // without going through the pasteboard privacy gate.
+    func insertContent(_ content: Fragment) {
         editor.dispatch(editor.state.tr.replaceSelection(Slice.maxOpen(content)))
     }
 
