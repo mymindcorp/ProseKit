@@ -78,6 +78,19 @@ public final class DocumentView: UIView {
     public var codeLanguageLabel: CodeLanguageLabelProvider? {
         didSet { invalidateLayout() }
     }
+
+    /// Optional hook supplying the leading glyph on a wiki-link chip — the
+    /// host's own icon for whatever kind of object the node's `target` names.
+    /// Nil (the default), or a nil return, draws the label alone.
+    ///
+    /// Only visible once the chip is styled: see `DocumentTheme.WikiLink`,
+    /// which sets the glyph's size and the space it keeps from the label.
+    /// Like the syntax highlighter, setting it drops the typeset-block cache —
+    /// the glyph's box is reserved inside its paragraph's cached block, which
+    /// would otherwise keep serving the version laid out without one.
+    public var wikiLinkIcon: WikiLinkIconProvider? {
+        didSet { blockCache.clear(); invalidateLayout() }
+    }
     /// Supplies the view used for each task-item checkbox — the same hook as the
     /// editable `EditorTextView`. When nil, `DefaultTaskCheckboxView` is used.
     /// Checkboxes here are read-only: they render and reflect the document's
@@ -230,7 +243,7 @@ public final class DocumentView: UIView {
                                realizeWindow: realizeWindow(),
                                syntaxHighlighter: syntaxHighlighter,
                                codeLanguageLabel: codeLanguageLabel,
-                               mathRenderer: mathRenderer)
+                               mathRenderer: mathRenderer, wikiLinkIcon: wikiLinkIcon)
         layout = l
         layoutWidth = bounds.width
         loadPendingImages(l.pendingImages)

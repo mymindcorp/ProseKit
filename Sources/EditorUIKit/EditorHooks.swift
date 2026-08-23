@@ -59,6 +59,17 @@ public struct LinkClick: Sendable {
 /// wiki-link in-app, whatever the host wants.
 public typealias LinkClickHandler = (_ link: LinkClick) -> Void
 
+/// Supplies a leading glyph for a wiki-link atom. The host reads the node's
+/// `target` and answers with its own icon for that object's type — "what kind
+/// of thing is this" is the app's concept, not the document's. Return nil (or
+/// leave the hook unset) for a label-only chip.
+///
+/// Drawn as a template: tinted with the chip's own colour
+/// (`DocumentTheme.WikiLink.color`, falling back to the link colour) and sized
+/// by `DocumentTheme.WikiLink.iconSize`, so one icon set works in light and
+/// dark and at any Dynamic Type size.
+public typealias WikiLinkIconProvider = (_ node: Node) -> UIImage?
+
 /// Returns a badge label for a code block (e.g. its detected/explicit language)
 /// given the block's text and `language` attribute; nil draws no badge.
 public typealias CodeLanguageLabelProvider = (_ code: String, _ language: String?) -> String?

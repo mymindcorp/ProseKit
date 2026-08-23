@@ -251,6 +251,44 @@ open class EditorTextView: UIView, UIKeyInput {
         didSet { invalidateLayout() }
     }
 
+    /// Optional hook supplying the leading glyph on a wiki-link chip — the
+    /// host's own icon for whatever kind of object the node's `target` names.
+    /// Nil (the default), or a nil return, draws the label alone.
+    ///
+    /// Only visible once the chip is styled: see `DocumentTheme.WikiLink`,
+    /// which sets the glyph's size and the space it keeps from the label.
+    /// Like the syntax highlighter, setting it drops the typeset-block cache —
+    /// the glyph's box is reserved inside its paragraph's cached block, which
+    /// would otherwise keep serving the version laid out without one.
+    public var wikiLinkIcon: WikiLinkIconProvider? {
+        didSet { blockCache.clear(); invalidateLayout() }
+    }
+
+    /// The `[[` being typed, as the layout wants it: nil unless the theme
+    /// actually sets a trigger apart or completes it, so a default theme costs
+    /// nothing and keeps every block cacheable.
+    private var wikiLinkTrigger: WikiLinkTrigger? {
+        let style = theme.wikiLink.trigger
+        let styled = style.color != nil || style.opacity < 1
+        guard styled || style.showsClosingBrackets,
+              let suggestion = editor.wikiLinkSuggestion else { return nil }
+        // Empty when only the brackets are being completed: an empty range
+        // styles nothing, which is the point.
+        let range = styled
+            ? (style.includesQuery ? suggestion.from..<suggestion.to
+                                   : suggestion.from..<min(suggestion.from + 2, suggestion.to))
+            : suggestion.from..<suggestion.from
+        return WikiLinkTrigger(range: range, cursor: suggestion.to,
+                               closing: style.showsClosingBrackets ? Self.closingBrackets(suggestion.query) : nil)
+    }
+
+    /// The ghost closing brackets for a query — `" ]]"` when the reader put a
+    /// space after the opening ones and hasn't already typed its mirror, so the
+    /// two ends of the link match while it's being written.
+    private static func closingBrackets(_ query: String) -> String {
+        query.hasPrefix(" ") && !query.hasSuffix(" ") ? " ]]" : "]]"
+    }
+
     /// Optional hook to typeset `inlineMath` / `blockMath` nodes — assign
     /// `EditorMath.makeMathRenderer()`. Nil (the default) draws each formula's
     /// LaTeX source as monospaced text instead.
@@ -575,21 +613,32 @@ open class EditorTextView: UIView, UIKeyInput {
     private(set) var layoutGeneration = 0
 
     private var layoutVersion = -1
+    /// The trigger the current layout was built for. It moves with the cursor
+    /// rather than with the document, so a layout can go stale without an edit.
+    private var layoutTrigger: WikiLinkTrigger?
 
     func ensureLayout() -> DocumentLayout {
-        if let layout, lastLayoutWidth == bounds.width, layoutVersion == docVersion { return layout }
+        let trigger = wikiLinkTrigger
+        if let layout, lastLayoutWidth == bounds.width, layoutVersion == docVersion,
+           layoutTrigger == trigger { return layout }
         // An image the document no longer holds is one nobody will look at
         // again: drop its bitmap and cancel its load before laying out again.
         if layoutVersion != docVersion { imageStore.prune(keeping: editor.doc) }
         prepareImageStore()
         let l = DocumentLayout(doc: editor.doc, width: max(bounds.width, 1), theme: theme,
                                imageProvider: { [weak self] node in self?.imageStore.image(for: node) },
-                               blockCache: blockCache, previous: layout, realizeWindow: realizeWindow(),
+                               blockCache: blockCache,
+                               // A trigger that moved without an edit would be
+                               // reused verbatim out of the previous layout.
+                               previous: layoutTrigger == trigger ? layout : nil,
+                               realizeWindow: realizeWindow(),
                                syntaxHighlighter: syntaxHighlighter, codeLanguageLabel: codeLanguageLabel,
-                               mathRenderer: mathRenderer)
+                               mathRenderer: mathRenderer, wikiLinkIcon: wikiLinkIcon,
+                               wikiLinkTrigger: trigger)
         layout = l
         lastLayoutWidth = bounds.width
         layoutVersion = docVersion
+        layoutTrigger = trigger
         layoutGeneration += 1
         loadPendingImages(l.pendingImages)
         if l.height != lastReportedHeight {

@@ -85,6 +85,71 @@ public struct DocumentTheme: Sendable, Equatable {
     }
     public var link = Link()
 
+    /// A wiki-link atom — `[[Page]]` — as a chip: a filled pill around the
+    /// label, optionally with a leading glyph for what the target *is*.
+    ///
+    /// Off by default (`background` nil), which leaves a wiki-link set as the
+    /// plain coloured text it has always been. The glyph itself isn't the
+    /// theme's business — what type of object a target is, is the host's
+    /// concept — so it comes from `DocumentView.wikiLinkIcon` /
+    /// `EditorTextView.wikiLinkIcon`. This decides only how big it is drawn and
+    /// how far it sits from the label.
+    public struct WikiLink: Sendable, Equatable {
+        /// The label's colour. nil = `link.color`, so a theme that sets one
+        /// link colour gets matching wiki-links without naming it twice.
+        public var color: UIColor?
+        /// The chip behind the label. nil (the default) draws no chip at all,
+        /// and the padding below then reserves nothing.
+        public var background: UIColor?
+        /// How far the chip extends past the label — horizontally as real
+        /// advance, so the text after a chip clears it rather than touching it.
+        public var paddingX: Em = 0.35
+        public var paddingY: Em = 0.12
+        public var cornerRadius: Em = 0.4
+        /// The square box the host's glyph is drawn in, before the label.
+        /// Reserved only when a glyph is actually supplied.
+        public var iconSize: Em = 0.9
+        /// Space between that box and the label.
+        public var iconGap: Em = 0.2
+        /// Whether the label is underlined. nil (the default) follows
+        /// `link.underline`, which is what a wiki-link has always done. Set it
+        /// `false` alongside a `background`: a chip and an underline is one
+        /// decoration too many.
+        public var underline: Bool?
+
+        /// The `[[…` still being typed, before the input rule turns it into a
+        /// chip. It is ordinary text in the document until then — this is what
+        /// sets it apart from the prose it sits in while it's open.
+        ///
+        /// Only the editable `EditorTextView` has one: a read-only document
+        /// holds no half-typed link.
+        public struct Trigger: Sendable, Equatable {
+            /// The brackets' colour. nil (the default) leaves them the colour
+            /// of the text they're part of.
+            public var color: UIColor?
+            /// Multiplied into whichever colour applies, so "the same colour,
+            /// only quieter" doesn't mean pinning the colour. 1 (the default)
+            /// leaves the trigger set exactly as the text around it, which is
+            /// what it has always been.
+            public var opacity: CGFloat = 1
+            /// Whether the query typed after the brackets is styled too. Off by
+            /// default: the brackets are syntax, but the query is the thing
+            /// you're reading while you type it.
+            public var includesQuery = false
+            /// Whether the closing `]]` is drawn after the cursor while the
+            /// suggestion is open. They are never put in the document — the
+            /// input rule still wants them typed (or the popup accepted) — so
+            /// this only completes the shape of what's being written. A space
+            /// typed after the opening brackets is mirrored before them, so
+            /// `[[ Page` reads as `[[ Page ]]`.
+            public var showsClosingBrackets = false
+            public init() {}
+        }
+        public var trigger = Trigger()
+        public init() {}
+    }
+    public var wikiLink = WikiLink()
+
     /// Code: the face and color both forms share, then what distinguishes a
     /// run inside a sentence from a block standing on its own.
     public struct Code: Sendable, Equatable {

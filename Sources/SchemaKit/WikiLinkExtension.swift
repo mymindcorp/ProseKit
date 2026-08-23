@@ -133,7 +133,12 @@ final class WikiLinkSuggestionSource: SuggestionSource {
 private func computeSuggestion(_ state: EditorState) -> WikiLinkSuggestion? {
     guard let cursor = (state.selection as? TextSelection)?.cursor else { return nil }
     let parent = cursor.parent
-    let textBefore = parent.textBetween(0, cursor.parentOffset)
+    // One character per inline leaf, so a character offset into this string is
+    // a document offset. Without the override a leaf expands to its `leafText`
+    // — a wiki-link renders as its whole label — and every offset past it
+    // overstates the position by the label's length, which puts `from` beyond
+    // the cursor and traps in `resolve`.
+    let textBefore = parent.textBetween(0, cursor.parentOffset, blockSeparator: nil, leafText: "\u{fffc}")
     // Find the last unmatched "[[".
     guard let openRange = textBefore.range(of: "[[", options: .backwards) else { return nil }
     let afterOpen = textBefore[openRange.upperBound...]

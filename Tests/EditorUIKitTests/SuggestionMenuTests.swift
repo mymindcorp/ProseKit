@@ -86,6 +86,30 @@ final class SuggestionMenuTests: XCTestCase {
         XCTAssertEqual(wikiTarget, "Architecture")
     }
 
+    /// The second link in a paragraph. An atom renders as its whole label but
+    /// occupies one position, so a trigger located by character offsets landed
+    /// past the cursor once one was already there — and resolving it trapped.
+    /// The first link worked, which is exactly why it took a second to find.
+    func testWikiLinkPopupAfterAnExistingLink() throws {
+        let view = try makeView(wikiLinks: { q in
+            ["Soccer Training Session", "Architecture"].filter { q.isEmpty || $0.range(of: q, options: .caseInsensitive) != nil }
+        })
+        type(view, "[[Soccer")
+        _ = view.handle(EditorTextView.KeyEvent(.keyboardReturnOrEnter))
+        type(view, " then [[Arch")
+        XCTAssertEqual(view.suggestionTitles, ["Architecture"], "the popup should reopen after an atom")
+        _ = view.handle(EditorTextView.KeyEvent(.keyboardReturnOrEnter))
+        var targets: [String] = []
+        view.editor.doc.descendants { n, _, _, _ in
+            if n.type.name == "wikiLink" { targets.append(n.attrs["target"]?.stringValue ?? "") }
+            return true
+        }
+        XCTAssertEqual(targets, ["Soccer Training Session", "Architecture"])
+        XCTAssertEqual(view.editor.doc.textBetween(0, view.editor.doc.content.size,
+                                                   blockSeparator: nil, leafText: "*"), "* then *",
+                       "the accepted query replaced the trigger and nothing else")
+    }
+
     func testNoWikiPopupWithoutProvider() throws {
         let view = try makeView() // no wiki provider configured
         type(view, "[[Arch")

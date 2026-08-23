@@ -13,7 +13,12 @@ targets:
     deploymentTarget: "18.0"
     sources:
       - Sources
-      - Resources
+      # `icon.swift` is a standalone AppKit script that renders the app icon
+      # PNG — it is top-level code, and compiling it into the app fails the
+      # build the moment the project is regenerated.
+      - path: Resources
+        excludes:
+          - icon.swift
     dependencies:
       - package: ProseKit
         product: EditorUIKit
