@@ -5,6 +5,15 @@ public import DocumentModel
 /// collaboration format; `Node`/`Mark`/`Slice` already encode to the documented
 /// shape via `AttributeValue`'s `Codable` conformance.
 public enum DocumentJSON {
+    /// Encode a document.
+    ///
+    /// **Dense by default, and it stays that way for performance.** This is the
+    /// persistence and collaboration format: it is written on every save and on
+    /// every step sent to a peer, and read back by machines. Indentation would
+    /// add a newline and up to a dozen spaces per value — most of a document's
+    /// JSON is small values nested deep — for output nothing in the hot path
+    /// looks at. Ask for `pretty: true` where a person reads it: fixtures,
+    /// test expectations, the demo's inspector.
     public static func encode(_ node: Node, pretty: Bool = false) throws -> Data {
         var out: [UInt8] = []
         // Documents measure about four JSON bytes per position; overshooting a
@@ -14,6 +23,7 @@ public enum DocumentJSON {
         return Data(out)
     }
 
+    /// Encode a document to a string. Dense by default, as `encode` is.
     public static func string(_ node: Node, pretty: Bool = false) throws -> String {
         String(decoding: try encode(node, pretty: pretty), as: UTF8.self)
     }
@@ -173,7 +183,9 @@ public extension Node {
         try DocumentJSON.decode(schema, json)
     }
 
-    /// Serialize this node to a ProseMirror-shaped JSON string.
+    /// Serialize this node to a ProseMirror-shaped JSON string. Dense by
+    /// default, as `DocumentJSON.encode` is — pass `pretty: true` for output a
+    /// person reads.
     func toJSONString(pretty: Bool = false) throws -> String {
         try DocumentJSON.string(self, pretty: pretty)
     }

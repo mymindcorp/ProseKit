@@ -414,7 +414,7 @@ public let splitBlock: Command = splitBlockAs(nil)
 public func splitBlockAs(_ splitNode: (@Sendable (_ node: Node, _ atEnd: Bool) -> NodeTypeWithAttrs?)?) -> Command {
     { state, dispatch, _ in
         let sel = state.selection
-        let from = sel.resolvedFrom, to = sel.resolvedTo
+        let from = sel.resolvedFrom
         if sel is NodeSelection, (sel as! NodeSelection).node.isBlock {
             guard from.parentOffset > 0, canSplit(state.doc, from.pos) else { return false }
             if let dispatch, let tr = try? state.tr.split(from.pos) { dispatch(tr.scrollIntoView()) }
@@ -422,32 +422,28 @@ public func splitBlockAs(_ splitNode: (@Sendable (_ node: Node, _ atEnd: Bool) -
         }
         if !from.parent.isBlock { return false }
         if let dispatch {
-            let atEnd = to.parentOffset == to.parent.content.size
             let tr = state.tr
-            if sel is TextSelection || sel is AllSelection { tr.deleteSelection() }
-            let deflt = from.depth == 0 ? nil : defaultBlockAt(from.node(-1).contentMatchAt(from.indexAfter(-1)))
-            var splitType = splitNode?(to.parent, atEnd)
+            if !sel.empty, sel is TextSelection || sel is AllSelection { tr.deleteSelection() }
+            // Everything below is measured on the document the split actually
+            // lands in, and on the block the cursor ends up in. A selection
+            // running from a heading into a paragraph leaves the cursor in the
+            // heading, so that — not the paragraph the selection happened to
+            // end in — is the block whose split type is being chosen.
+            let at = tr.selection.resolvedFrom
+            let atEnd = at.parentOffset == at.parent.content.size
+            let deflt = at.depth == 0 ? nil : defaultBlockAt(at.node(-1).contentMatchAt(at.indexAfter(-1)))
+            let splitType = splitNode?(at.parent, atEnd)
             var typesAfter: [NodeTypeWithAttrs?]? = splitType.map { [$0] }
-            if typesAfter == nil && atEnd && deflt != nil {
-                typesAfter = [NodeTypeWithAttrs(deflt!)]
+            if typesAfter == nil, atEnd, let deflt {
+                typesAfter = [NodeTypeWithAttrs(deflt)]
             }
-            let realFrom = tr.mapping.map(from.pos)
-            var can = canSplit(tr.doc, realFrom, 1, typesAfter)
-            if !can {
-                if typesAfter == nil, let deflt {
-                    typesAfter = [NodeTypeWithAttrs(deflt)]
-                    can = canSplit(tr.doc, realFrom, 1, typesAfter)
-                }
+            var can = canSplit(tr.doc, at.pos, 1, typesAfter)
+            if !can, typesAfter == nil, let deflt {
+                typesAfter = [NodeTypeWithAttrs(deflt)]
+                can = canSplit(tr.doc, at.pos, 1, typesAfter)
             }
-            if can {
-                _ = try? tr.split(realFrom, 1, typesAfter)
-                if !atEnd, from.parentOffset == 0, from.depth > 0 {
-                    // nothing extra
-                }
-            }
+            if can { _ = try? tr.split(at.pos, 1, typesAfter) }
             dispatch(tr.scrollIntoView())
-            _ = (deflt, splitType)
-            splitType = nil
         }
         return true
     }

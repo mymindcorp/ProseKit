@@ -328,7 +328,11 @@ public struct Fragment: Hashable, Sendable {
             }
             return try Node.fromJSON(schema, o)
         }
-        return Fragment(nodes)
+        // `from`, not the raw initializer: JSON is allowed to spell a run of
+        // text as several adjacent nodes that share markup, and a document
+        // that keeps them apart is not in the canonical joined form the rest
+        // of the model assumes.
+        return Fragment.from(nodes)
     }
 
     public static func from(_ nodes: [Node]) -> Fragment {

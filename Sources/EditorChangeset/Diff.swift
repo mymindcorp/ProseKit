@@ -67,7 +67,7 @@ private func tokens(_ frag: Fragment, _ encoder: ChangesetTokenEncoder,
 }
 
 /// Refuse to compute diffs bigger than this (a runaway-computation guard).
-private let maxDiffSize = 5000
+private let maxDiffSize = 2500
 
 /// The minimum length of an unchanged range not at the start/end of the
 /// compared content: higher for bigger replacements, so a paragraph rewrite
@@ -95,6 +95,23 @@ public func computeDiff<Data>(_ fragA: Fragment, _ fragB: Fragment, _ range: Cha
     }
     // Simple, or too big to cheaply compute: the remaining region is the diff.
     if endA == start || endB == start || (endA == endB && endA == start + 1) {
+        return [range.slice(start, endA, start, endB)]
+    }
+
+    // Myers' search below never looks further than `maxDiffSize` edits, so a
+    // region still that long after the scan above cannot be solved within the
+    // bound. Running it anyway costs the full quadratic search to arrive at the
+    // same coarse answer this returns immediately — same output, less time.
+    //
+    // Measured *here*, after the trim, not on the range as it arrived. Upstream
+    // checks before tokenizing, and spells the comparison
+    // `max(toA - fromA, toB, fromB)` — two absolute positions where it means a
+    // length. Either way the check lands on a range nothing has trimmed yet,
+    // and a changed range is conservative: a paragraph rewritten in one word
+    // arrives thousands of positions wide and scans down to the word. Ask about
+    // what is actually left to solve and that case keeps its precise diff; ask
+    // earlier and the whole paragraph reads as changed.
+    if max(endA - start, endB - start) > maxDiffSize {
         return [range.slice(start, endA, start, endB)]
     }
 
@@ -165,6 +182,10 @@ public func computeDiff<Data>(_ fragA: Fragment, _ fragB: Fragment, _ range: Cha
         if size % 2 == 0 { history.append(frontier) }
         size += 1
     }
-    // Maximum work done; return a change spanning the entire range.
+    // Maximum work done; return a change spanning the whole searched region.
+    //
+    // Upstream returns the untrimmed `range` here, to match the early bail
+    // above. Keeping the trimmed span costs nothing — the common prefix and
+    // suffix were already measured — and reports a smaller change.
     return [range.slice(start, endA, start, endB)]
 }

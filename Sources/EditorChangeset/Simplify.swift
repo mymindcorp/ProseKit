@@ -4,13 +4,13 @@ public import DocumentModel
 // change lists — replacements inside a word expand to cover the whole word,
 // and nearby changes merge (single-character replacements excepted).
 
-/// Faithful to upstream's `isLetter`, including its quirky ASCII range
-/// (79...122 counts `O…z` plus `[\]^_`` as word characters).
+/// Whether a character counts as part of a word, which is what decides where a
+/// change may be widened to a word boundary.
 private func isLetterChar(_ ch: Character?) -> Bool {
     guard let ch, let scalar = ch.unicodeScalars.first else { return false }
     let code = scalar.value
     if code < 128 {
-        return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 79 && code <= 122)
+        return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122)
     }
     return ch.isLetter || ch.isNumber
 }

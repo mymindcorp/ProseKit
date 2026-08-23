@@ -122,6 +122,19 @@ func registerPMCommandsTests() {
     c("splitBlock: splits a parent block when a node is selected") { try run(doc(ol(li(p("a")), "<a>", li(p("b")), li(p("c")))), splitBlock, doc(ol(li(p("a"))), ol(li(p("b")), li(p("c"))))) }
     c("splitBlock: doesn't split the parent block when at the start") { try run(doc(ol("<a>", li(p("a")), li(p("b")), li(p("c")))), splitBlock, nil) }
 
+    // The block being split is the one the cursor lands in once the selection
+    // has been deleted. For a selection running from a heading into a
+    // paragraph that is the heading — reading the parent before the deletion
+    // asks the callback about the paragraph, which is gone by the time the
+    // split happens.
+    c("splitBlockAs: asks about the block the cursor ends up in") {
+        let splitAs = splitBlockAs { node, _ in
+            node.type.name == "heading" ? NodeTypeWithAttrs(bq("heading"), ["level": .int(2)])
+                                        : NodeTypeWithAttrs(bq("code_block"))
+        }
+        try run(doc(h1("Ti<a>tle"), p("bo<b>dy")), splitAs, doc(h1("Ti"), h2("dy")))
+    }
+
     // MARK: liftEmptyBlock
     c("liftEmptyBlock: splits the parent block when there are siblings before") { try run(doc(blockquote(p("foo"), p("<a>"), p("bar"))), liftEmptyBlock, doc(blockquote(p("foo")), blockquote(p(), p("bar")))) }
     c("liftEmptyBlock: lifts the last child out of its parent") { try run(doc(blockquote(p("foo"), p("<a>"))), liftEmptyBlock, doc(blockquote(p("foo")), p())) }

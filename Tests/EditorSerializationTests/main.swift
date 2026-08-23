@@ -85,9 +85,12 @@ func em(_ s: String) -> Node { schema.text(s, [schema.mark("italic")]) }
 
 test("JSON round-trip") {
     let d = doc(h(2, "Title"), p(t("Hello "), strong("world")), node("bulletList", tightList, [node("listItem", [:], [p("item")])]))
-    let json = try DocumentJSON.string(d)
-    let back = try DocumentJSON.decode(schema, json)
-    try expectEqual(d, back)
+    // Both spellings: the dense one is what gets written, and the laid-out one
+    // is what a person pastes back in.
+    for pretty in [false, true] {
+        let json = try DocumentJSON.string(d, pretty: pretty)
+        try expectEqual(d, try DocumentJSON.decode(schema, json), "pretty=\(pretty)")
+    }
 }
 
 test("JSON decodes every attribute value type") {
@@ -116,8 +119,10 @@ test("JSON round-trips escapes, unicode and attribute types") {
         h(2, "Quote \" backslash \\ newline \n tab \t"),
         p(t("emoji 👨‍👩‍👧 accents éü CJK 日本語 math ∑∫")),
         p(node("image", ["src": .string("https://example.test/a?b=1&c=2"), "alt": .null])))
-    let back = try DocumentJSON.decode(schema, try DocumentJSON.string(d))
-    try expectEqual(d, back)
+    for pretty in [false, true] {
+        let back = try DocumentJSON.decode(schema, try DocumentJSON.string(d, pretty: pretty))
+        try expectEqual(d, back, "pretty=\(pretty)")
+    }
 }
 
 test("JSON decode rejects malformed input") {
@@ -153,6 +158,42 @@ test("JSON encoder matches JSONEncoder byte for byte") {
         }
     }
     try expect(mismatches.isEmpty, "\(mismatches.count) mismatch(es):\n" + mismatches.joined(separator: "\n"))
+}
+
+test("JSON encoder lays a document out on request") {
+    // The default stays dense — see the note on `DocumentJSON.encode`. This is
+    // the shape a person gets when they ask for it: a newline per value, two
+    // spaces per level.
+    let json = try DocumentJSON.string(doc(p(t("hi"), strong("!"))), pretty: true)
+    try expectEqual(json, """
+    {
+      "content" : [
+        {
+          "content" : [
+            {
+              "text" : "hi",
+              "type" : "text"
+            },
+            {
+              "marks" : [
+                {
+                  "type" : "bold"
+                }
+              ],
+              "text" : "!",
+              "type" : "text"
+            }
+          ],
+          "type" : "paragraph"
+        }
+      ],
+      "type" : "doc"
+    }
+    """)
+    // Both spellings decode to the same document, and the default is the
+    // dense one.
+    try expectEqual(try DocumentJSON.decode(schema, json), doc(p(t("hi"), strong("!"))))
+    try expect(!(try DocumentJSON.string(doc(p("hi")))).contains("\n"))
 }
 
 test("JSON encoder writes empty containers compactly") {
@@ -4576,5 +4617,6 @@ test("HTML paste: a <style> block is never content") {
 registerAdversarialMarkdownTests()
 registerMarkdownInlineParityTests()
 registerMarkdownScalingTests()
+registerMarkdownDelimiterWhitespaceTests()
 registerBench()
 TestSuite.main("EditorSerializationTests", collector.all)

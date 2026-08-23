@@ -37,14 +37,21 @@ This codebase is a Swift port of ProseMirror/Tiptap. When porting algorithms or
 test suites, port from the **official ProseMirror sources** at
 <https://github.com/ProseMirror> (`prosemirror-model`, `-transform`, `-state`,
 `-commands`, `-history`, `-collab`, `-tables`, `-inputrules`, `-keymap`,
-`-schema-list`, `-markdown`, `-test-builder`). Fetch files raw, e.g.:
+`-schema-list`, `-markdown`, `-test-builder`).
+
+**Fetch sources from npm, not from GitHub.** ProseMirror development moved to
+`code.haverbeke.berlin`, and the GitHub mirror's `master` no longer tracks
+releases — in August 2026 it was seven patch versions behind on
+`prosemirror-model`. The npm tarball ships `src/` and `CHANGELOG.md`:
 
 ```sh
-curl -s https://raw.githubusercontent.com/ProseMirror/prosemirror-history/master/src/history.ts
+curl -sL https://registry.npmjs.org/prosemirror-history/-/prosemirror-history-1.5.0.tgz | tar -xz
+cat package/src/history.ts
 ```
 
-(WebFetch-style summarizer tools tend to refuse verbatim source; plain `curl` of
-`raw.githubusercontent.com` works.)
+(WebFetch-style summarizer tools tend to refuse verbatim source; plain `curl`
+works. `curl -s https://registry.npmjs.org/<pkg>/latest` gives the current
+version.)
 
 **Which upstream version is each module at?** See
 [docs/upstream-versions.md](docs/upstream-versions.md) — it records the release

@@ -67,15 +67,20 @@ final class DocumentViewTests: XCTestCase {
 
     func testDocumentViewFromJSONStringRenders() throws {
         let s = schema()
-        let json = try s.node("doc", [:], content: Fragment.from([
+        let document = try s.node("doc", [:], content: Fragment.from([
             try s.node("heading", ["level": .int(1)], content: Fragment.from([s.text("Title")])),
             try s.node("paragraph", [:], content: Fragment.from([s.text("Loaded from JSON")])),
-        ])).toJSONString()
-        let view = try DocumentView(json: json, schema: s)
-        view.frame = CGRect(x: 0, y: 0, width: 300, height: 200)
-        view.layoutIfNeeded()
-        XCTAssertGreaterThan(view.documentHeight, 0)
-        XCTAssertGreaterThan(inkPixels(rgba(of: view).bytes), 100, "the JSON document renders")
+        ]))
+        // Both spellings: dense is what gets written, laid out is what someone
+        // pastes in by hand.
+        for pretty in [false, true] {
+            let view = try DocumentView(json: document.toJSONString(pretty: pretty), schema: s)
+            view.frame = CGRect(x: 0, y: 0, width: 300, height: 200)
+            view.layoutIfNeeded()
+            XCTAssertGreaterThan(view.documentHeight, 0, "pretty=\(pretty)")
+            XCTAssertGreaterThan(inkPixels(rgba(of: view).bytes), 100,
+                                 "the JSON document renders (pretty=\(pretty))")
+        }
     }
 
     func testRenderIntoArbitraryContext() {

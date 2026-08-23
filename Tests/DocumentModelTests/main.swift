@@ -63,6 +63,47 @@ test("rangeHasMark") {
     try expect(!doc.rangeHasMark(1, 7, B.schema.marks["bold"]!))
 }
 
+// JSON is allowed to spell one run of text as several adjacent nodes sharing
+// markup — hand-written documents and other editors' exports both do it. Loading
+// one has to produce the joined form the rest of the model assumes, or positions
+// resolve into a node boundary that shouldn't exist.
+test("fromJSON joins adjacent text nodes") {
+    let json: [String: AttributeValue] = [
+        "type": .string("doc"),
+        "content": .array([
+            .object([
+                "type": .string("paragraph"),
+                "content": .array([
+                    .object(["type": .string("text"), "text": .string("foo")]),
+                    .object(["type": .string("text"), "text": .string("bar")]),
+                ]),
+            ]),
+        ]),
+    ]
+    let doc = try Node.fromJSON(B.schema, json)
+    try expectEqual(doc.child(0).childCount, 1)
+    try expectEqual(doc.child(0).child(0).text, "foobar")
+    try expectEqual(doc, B.doc(B.p("foobar")))
+}
+
+test("fromJSON keeps text nodes with different marks apart") {
+    let json: [String: AttributeValue] = [
+        "type": .string("doc"),
+        "content": .array([
+            .object([
+                "type": .string("paragraph"),
+                "content": .array([
+                    .object(["type": .string("text"), "text": .string("foo")]),
+                    .object(["type": .string("text"), "text": .string("bar"),
+                             "marks": .array([.object(["type": .string("bold")])])]),
+                ]),
+            ]),
+        ]),
+    ]
+    let doc = try Node.fromJSON(B.schema, json)
+    try expectEqual(doc.child(0).childCount, 2)
+}
+
 test("JSON round-trip") {
     let doc = B.doc(B.h(2, B.t("Title")),
                     B.p(B.t("Hello "), B.strong("world")),
