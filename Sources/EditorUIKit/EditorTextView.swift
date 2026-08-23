@@ -2983,8 +2983,9 @@ open class EditorTextView: UIView, UIKeyInput {
 
     // MARK: - Accessibility
 
-    // Basic exposure for VoiceOver. (Full per-element text navigation / rotor
-    // would come with a UITextInput conformance.)
+    // Basic exposure for VoiceOver: the document reads as one element. Full
+    // per-element text navigation and rotors are still to do — the position
+    // model the UITextInput conformance already provides is what they'd sit on.
     open override var isAccessibilityElement: Bool {
         get { true }
         set {}
