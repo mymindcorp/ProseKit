@@ -240,8 +240,8 @@ public final class CellSelection: Selection {
 }
 
 public struct CellBookmark: SelectionBookmark {
-    public var anchor: Int
-    public var head: Int
+    public let anchor: Int
+    public let head: Int
     public init(anchor: Int, head: Int) { self.anchor = anchor; self.head = head }
 
     public func map(_ mapping: any Mappable) -> any SelectionBookmark {

@@ -383,11 +383,11 @@ private struct RTFReader {
 
     /// The body state a footnote interrupted, to be restored when it ends.
     struct FootnoteFrame {
-        var blocks: [Block]
-        var inline: [Inline]
-        var listMarker: String?
-        var tables: [TableBuilder]
-        var label: String
+        let blocks: [Block]
+        let inline: [Inline]
+        let listMarker: String?
+        let tables: [TableBuilder]
+        let label: String
     }
 
     var footnoteStack: [FootnoteFrame] = []

@@ -9,11 +9,11 @@ import EditorInputRules
 /// the cursor is currently typing one. The view reads this to show a popup.
 public struct MentionSuggestion: Equatable {
     /// The text typed after `@` up to the cursor.
-    public var query: String
+    public let query: String
     /// The document position of the `@` trigger.
-    public var from: Int
+    public let from: Int
     /// The cursor position.
-    public var to: Int
+    public let to: Int
 }
 
 public let mentionSuggestionKey = PluginKey<MentionSuggestion?>("mentionSuggestion")

@@ -9,9 +9,9 @@ public import EditorStateKit
 
 /// A rectangular block of pasted cells (one Fragment of cells per row).
 public struct CellArea {
-    public var width: Int
-    public var height: Int
-    public var rows: [Fragment]
+    public let width: Int
+    public let height: Int
+    public let rows: [Fragment]
 }
 
 /// Extract a rectangular area of cells from a slice, or nil if its outer nodes

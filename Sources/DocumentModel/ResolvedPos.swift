@@ -13,9 +13,9 @@ public struct ResolvedPos: Sendable {
     /// the position descends into, and the absolute position just before that
     /// child.
     struct PathEntry: Sendable {
-        var node: Node
-        var index: Int
-        var pos: Int
+        let node: Node
+        let index: Int
+        let pos: Int
     }
     let path: [PathEntry]
 

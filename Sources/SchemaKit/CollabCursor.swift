@@ -7,11 +7,11 @@ public import EditorStateKit
 /// mapped through every transaction so they stay correct as the document changes
 /// — whether the change came from the local user or another participant.
 public struct CollabCursor: Equatable, Sendable {
-    public var id: String
-    public var anchor: Int
-    public var head: Int
-    public var color: String   // "#RRGGBB" — the renderer converts to a UIColor
-    public var label: String
+    public let id: String
+    public let anchor: Int
+    public let head: Int
+    public let color: String   // "#RRGGBB" — the renderer converts to a UIColor
+    public let label: String
     public init(id: String, anchor: Int, head: Int, color: String, label: String) {
         self.id = id
         self.anchor = anchor

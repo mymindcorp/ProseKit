@@ -3,8 +3,8 @@ public import DocumentModel
 /// A pair of a node type and the attributes to create it with, used by the
 /// structural transform helpers.
 public struct NodeTypeWithAttrs {
-    public var type: NodeType
-    public var attrs: Attrs
+    public let type: NodeType
+    public let attrs: Attrs
     public init(_ type: NodeType, _ attrs: Attrs = [:]) {
         self.type = type
         self.attrs = attrs

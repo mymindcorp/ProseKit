@@ -135,8 +135,8 @@ public final class MathTypesetter {
     /// for positions with no room above — a denominator, the body of a radical —
     /// where superscripts are set lower.
     private struct Context {
-        var style: MathStyle
-        var cramped: Bool
+        let style: MathStyle
+        let cramped: Bool
 
         func with(style: MathStyle) -> Context { Context(style: style, cramped: cramped) }
         func with(style: MathStyle, cramped: Bool) -> Context { Context(style: style, cramped: cramped) }
