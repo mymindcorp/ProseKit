@@ -26,17 +26,41 @@ public struct Slice: Hashable, Sendable {
     /// Insert the given fragment at the given (slice-relative) position,
     /// returning a new slice, or `nil` if it doesn't fit.
     public func insertAt(_ pos: Int, _ fragment: Fragment) -> Slice? {
-        guard let newContent = Slice.insertInto(content, pos + openStart, fragment) else { return nil }
+        guard let newContent = Slice.insertInto(content, pos + openStart, fragment,
+                                                openStart + 1, openEnd + 1) else { return nil }
         return Slice(content: newContent, openStart: openStart, openEnd: openEnd)
     }
 
-    private static func insertInto(_ content: Fragment, _ dist: Int, _ insert: Fragment) -> Fragment? {
+    /// Splice `insert` into `content` at `dist`, or `nil` when the node it would
+    /// land in cannot hold it.
+    ///
+    /// The parent is only asked about content it will actually own. A cut edge
+    /// holds a partial node — a paragraph the slice starts halfway through, a
+    /// list the slice ends inside — and the rest of it arrives from the document
+    /// when the slice is placed, so what sits there in the slice is not what the
+    /// node ends up with. `openStart`/`openEnd` count the depths still on such an
+    /// edge; the check applies once both have run out, which is upstream's rule
+    /// (prosemirror-model 1.25.3, narrowed in 1.25.5).
+    private static func insertInto(
+        _ content: Fragment,
+        _ dist: Int,
+        _ insert: Fragment,
+        _ openStart: Int,
+        _ openEnd: Int,
+        _ parent: Node? = nil
+    ) -> Fragment? {
         let (index, offset) = content.findIndex(dist)
         let child = content.maybeChild(index)
         if offset == dist || (child?.isText ?? false) {
+            if let parent, openStart <= 0, openEnd <= 0,
+               !parent.canReplace(index, index, replacement: insert) { return nil }
             return content.cut(0, dist).append(insert).append(content.cut(dist))
         }
-        guard let child, let inner = insertInto(child.content, dist - offset - 1, insert) else { return nil }
+        guard let child,
+              let inner = insertInto(child.content, dist - offset - 1, insert,
+                                     index == 0 ? openStart - 1 : 0,
+                                     index == content.childCount - 1 ? openEnd - 1 : 0,
+                                     child) else { return nil }
         return content.replaceChild(index, child.copy(content: inner))
     }
 
