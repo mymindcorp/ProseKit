@@ -15,18 +15,18 @@ Use it to find what's new when re-auditing: read each package's CHANGELOG from t
 
 | Swift module | Upstream package | Reviewed through | Date | Notes |
 | --- | --- | --- | --- | --- |
-| `DocumentModel` | `prosemirror-model` | **1.25.4** | 2025-10-21 | Slice invalid-`ReplaceAroundStep` guard (1.25.3) confirmed present. DOM-parser fixes (1.24.1/1.25.1/1.25.4) live in our hand-written `HTMLParser`, not a 1:1 port. |
+| `DocumentModel` | `prosemirror-model` | **1.25.11** | 2026-08-22 | `Fragment.fromJSON` adjacent-text-node join **ported** this pass. Slice invalid-`ReplaceAroundStep` guard (1.25.3) confirmed present. The surrogate-pair fix in `findDiffStart`/`End` (1.25.8) is N/A — positions here are grapheme clusters. `ReplaceError` vs `checkContent` (1.25.9) is free: `StepResult.fromReplace` catches any error. `DOMOutputSpec` typing (1.25.5/1.25.7/1.25.10) is TypeScript-only, and `body` in `blockTags` (1.25.11) is already how our `HTMLParser` treats it. See "Known gaps". |
 | `DocumentTransform` | `prosemirror-transform` | **1.12.0** | 2026-03-30 | `ReplaceStep.map` structure-flag fix (1.10.4) **ported** this pass. `liftTarget` split-constraint (1.10.5), `Mapping.appendMap` aliasing (1.10.3, free via Swift value semantics), and `deleteRange` start-to-start (1.12.0) confirmed present. See "Known gaps". |
 | `EditorStateKit` | `prosemirror-state` | **1.4.4** | 2025-10-23 | `insertText` selection-mapping fix (1.4.4) confirmed present. |
-| `EditorCommands` | `prosemirror-commands` | **1.7.1** | 2025-04-13 | `splitBlock` no-crash regression (1.7.1) and `joinBackward`/`splitBlock` fixes (1.6.x) confirmed present. |
+| `EditorCommands` | `prosemirror-commands` | **1.7.2** | 2026-08-22 | `splitBlock` measuring its split against the post-deletion selection (1.7.2) **ported** this pass. `splitBlock` no-crash regression (1.7.1) and `joinBackward`/`splitBlock` fixes (1.6.x) confirmed present. |
 | `SchemaKit` (tables) | `prosemirror-tables` | **1.8.5** | 2025-12-24 | `fixTables` zero-sized removal (1.6.4), colwidth validation (1.7.1), and keep-cell-type-on-row-move (1.8.1) confirmed present. Newer row/col *move* helpers track the same source. |
 | `EditorHistory` | `prosemirror-history` | **1.5.0** | 2026-07-04 | Mark-step adjacency (1.4.1) and closed-event append guard (1.1.3) confirmed present. Composition grouping (1.3.1) and 1.5.0's beforeinput check N/A (no browser IME/DOM); `isHistoryTransaction` (1.5.0) is a feature, add on demand. |
 | `EditorKeymap` | `prosemirror-keymap` | _not yet pinned_ | — | Upstream fixes are DOM `KeyboardEvent`-specific; the UIKit key handling is hand-written. Audit deferred. |
 | `EditorInputRules` | `prosemirror-inputrules` | **1.5.1** | 2026-07-04 | Multi-char-input guard + `inCodeMark` code-mark suppression (1.5.0/1.5.1) **ported** this pass, with `MarkSpec.code` (model 1.25.0) added to support them; undo-without-text guard (1.1.3) confirmed present. `inCode: "only"` and the `undoable` option are unported features. |
 | `EditorCollab` | `prosemirror-collab` | **1.3.1** | 2026-07-04 | `mapSelectionBackward` fixes (1.1.1/1.1.2) confirmed present; upstream's clearing of the selection-updated flag after mapping **ported** this pass (`Transaction.clearSelectionSet`). See "Known gaps" re remote-step application. |
-| `EditorChangeset` | `prosemirror-changeset` | **2.3.1** | 2026-07-04 | Typed close tokens (2.3.1) and multi-range steps (2.0.4) confirmed present, regression tests already ported. `Change` JSON serialization (2.4.0) is a feature, add on demand. |
+| `EditorChangeset` | `prosemirror-changeset` | **2.4.2** | 2026-08-22 | Word-character range fix (2.4.1) and the too-big-to-diff guard (2.4.2) **ported** this pass, both with a correction — see the log. Typed close tokens (2.3.1) and multi-range steps (2.0.4) confirmed present. `Change` JSON serialization (2.4.0) is a feature, add on demand. |
 | `SchemaKit` (lists) | `prosemirror-schema-list` | **1.5.1** | 2026-07-04 | `liftListItem` type-guarded join (1.5.1), adjacent-sublists join (1.2.2), and `splitListItem` sublist fix (1.1.5) confirmed present. See "Known gaps" re attr validation (1.4.1). |
-| `EditorSerialization` | `prosemirror-markdown` + custom HTML | n/a | — | HTML/Markdown serializers are hand-written for this editor's shapes, not direct ports; no upstream version to track. |
+| `EditorSerialization` | `prosemirror-markdown` + custom HTML | n/a | 2026-08-22 | HTML/Markdown serializers are hand-written for this editor's shapes, not direct ports; no upstream version to track. Upstream's `expelEnclosingWhitespace` behaviour (the subject of markdown 1.13.3/1.13.4/1.13.6) had no equivalent here and was **written this pass** — see the log. Trailing `order` handling (1.13.5) was already correct. |
 | `EditorMath` | none (TeX/KaTeX box model) | n/a | 2026-07-27 | Not a ProseMirror port. The typesetter implements the algorithms and font parameters from *The TeXbook* Appendix G — the same ones KaTeX implements — written from the published specification, not translated from KaTeX's source. The `SchemaKit` extension follows Tiptap's *documented* Mathematics API (node names, `latex` attribute, `data-type` HTML, command set); see the note in `MathematicsExtension.swift`. |
 
 ## Known gaps / intentional deviations
@@ -46,6 +46,12 @@ Use it to find what's new when re-auditing: read each package's CHANGELOG from t
   attribute. `SchemaKit`'s `DetailsExtension` always stores `open` in the
   document — there is no node view here to hold view-only state, and the
   CoreText renderer reads the attribute to decide whether to lay out the body.
+- **`Slice.insertAt` content check** (prosemirror-model): upstream's `insertInto`
+  refuses an insertion the parent's content expression rejects. The Swift
+  `insertAt` never had that check, so it accepts insertions upstream would turn
+  into a failed step. Narrower than it was — 1.25.5 dropped the check for open
+  nodes, which is most of the cases — and the invalid slice still fails in
+  `doc.replace`, which is what `ReplaceAroundStep` goes on to call.
 - **Remote steps via `maybeStep`** (prosemirror-collab): upstream's
   `receiveTransaction` uses `tr.step` and throws when an authority-confirmed step
   fails to apply; the Swift port uses `maybeStep`, silently skipping it. A failure
@@ -120,12 +126,24 @@ doesn't have to rediscover them.
 
 ## How to re-audit a module
 
-1. Read the upstream CHANGELOG from the "reviewed through" version onward:
+1. Read the upstream CHANGELOG from the "reviewed through" version onward.
+   **Take it from npm, not GitHub.** ProseMirror development moved to
+   `code.haverbeke.berlin` and the GitHub mirror's `master` has stopped
+   tracking releases — in August 2026 it showed `prosemirror-model` at 1.25.4
+   while npm had 1.25.11, so following the old procedure reported "nothing
+   new" for four packages that had shipped eleven bug fixes between them. The
+   npm tarball carries both the changelog and `src/`:
+
    ```sh
-   curl -s https://raw.githubusercontent.com/ProseMirror/prosemirror-transform/master/CHANGELOG.md
+   curl -s https://registry.npmjs.org/prosemirror-transform/latest | \
+     sed -n 's/.*"version":"\([^"]*\)".*/\1/p' | head -1
+   curl -sL https://registry.npmjs.org/prosemirror-transform/-/prosemirror-transform-1.12.0.tgz | \
+     tar -xzO package/CHANGELOG.md
    ```
-   (Plain `curl` of `raw.githubusercontent.com` returns verbatim source;
-   summarizer tools may refuse it.)
+
+   Diffing `src/` between the reviewed-through tarball and the current one
+   shows what each entry actually changed, which the changelog prose often
+   doesn't.
 2. For each **bug fix** entry, find the corresponding Swift function and decide:
    already-ported, genuine gap, or N/A (e.g. a DOM/browser-only fix). Swift value
    semantics make some aliasing bugs not-applicable for free.
@@ -133,6 +151,42 @@ doesn't have to rediscover them.
 4. Bump the "reviewed through" version + date in the table above.
 
 ## Ported-fix log
+
+- **2026-08-22** — `prosemirror-markdown` 1.13.3/1.13.4/1.13.6 (in kind, not as a
+  port): CommonMark will not open a delimiter run followed by whitespace or close
+  one preceded by it, so `**foo **bar` spells no mark at all and the bold is gone
+  the next time the document is read. The serializer now moves that whitespace
+  outside the delimiters, holds hard breaks the same way — Markdown cannot spell
+  one at the end of a block, where a trailing `\` reads back as a literal
+  backslash — and drops whatever is still held at the end. Upstream predicts where
+  a run ends (`isMarkAhead`); this works at the point the delimiters are written,
+  which needs no prediction. `Sources/EditorSerialization/Markdown.swift`;
+  regression tests, including a sweep over every three-piece paragraph these
+  shapes can make, in
+  `Tests/EditorSerializationTests/MarkdownDelimiterWhitespace.swift`.
+- **2026-08-22** — `prosemirror-changeset` 2.4.1/2.4.2: `isLetter`'s ASCII range
+  starts the lowercase block at 97 rather than 79, so ``[ \ ] ^ _ ` `` stop
+  counting as word characters and a change stops growing across them — the typo
+  had been ported faithfully, comment and all. `computeDiff` gives up before
+  tokenizing a range longer than `maxDiffSize` (now 2500), which Myers' search
+  could never solve anyway. Upstream's guard compares `max(toA - fromA, toB,
+  fromB)`, reading two absolute positions where it means a length; ported as a
+  comparison of lengths, or every edit past position 2500 in a long document
+  would bail. `Sources/EditorChangeset/{Simplify,Diff}.swift`; regression tests
+  in `Tests/EditorChangesetTests/main.swift`.
+- **2026-08-22** — `prosemirror-model` 1.25.x: `Fragment.fromJSON` builds through
+  `Fragment.from` rather than the raw initializer, so JSON that spells one run of
+  text as several adjacent nodes sharing markup loads in the canonical joined
+  form. `Sources/DocumentModel/Fragment.swift`; regression tests in
+  `Tests/DocumentModelTests/main.swift`.
+- **2026-08-22** — `prosemirror-commands` 1.7.2: `splitBlock` deletes the
+  selection first and measures everything against the selection that leaves
+  behind, rather than against positions resolved in the document before it. For
+  a selection running from a heading into a paragraph, the block being split is
+  the heading — `splitBlockAs`'s callback was being asked about the paragraph,
+  which no longer exists by the time the split happens.
+  `Sources/EditorCommands/Commands.swift`; regression test in
+  `Tests/EditorCommandsTests/PMCommands.swift`.
 
 - **2026-06-21** — `prosemirror-transform` 1.10.4: `ReplaceStep.map` now preserves
   the `structure` flag (`Sources/DocumentTransform/ReplaceStep.swift`); regression

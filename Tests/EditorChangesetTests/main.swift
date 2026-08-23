@@ -384,6 +384,37 @@ private func diffTest(_ doc1: TaggedNode, _ doc2: TaggedNode, _ ranges: [[Int]])
 }
 
 func registerPMDiffTests() {
+    // Myers' search never looks further than `maxDiffSize`, so a range longer
+    // than that on either side cannot produce a solution — tokenizing it and
+    // running to exhaustion only spends time to reach the answer the guard
+    // gives immediately. The signature of the guard firing is that the range
+    // comes back exactly as passed, without the common prefix and suffix
+    // trimmed off it.
+    test("changeset diff: gives up immediately on a range too long to diff") {
+        let d1 = doc(p(String(repeating: "a", count: 3000)))
+        let d2 = doc(p(String(repeating: "b", count: 3000)))
+        let range = Change(0, d1.node.content.size, 0, d2.node.content.size,
+                           [Span(d1.node.content.size, 0)], [Span(d2.node.content.size, 0)])
+        let diff = computeDiff(d1.node.content, d2.node.content, range)
+        try expectEqual(diff.count, 1)
+        try expectEqual("\([diff[0].fromA, diff[0].toA, diff[0].fromB, diff[0].toB])",
+                        "\([range.fromA, range.toA, range.fromB, range.toB])")
+    }
+
+    // The guard compares lengths. Comparing the absolute end position instead
+    // would make every edit past `maxDiffSize` in a long document bail, which
+    // is most edits in a document long enough to care.
+    test("changeset diff: still diffs a small change late in a long document") {
+        let long = String(repeating: "a", count: 4000)
+        let d1 = doc(p(long), p("foo"))
+        let d2 = doc(p(long), p("fao"))
+        let start = long.count + 3
+        let range = Change(start, start + 3, start, start + 3, [Span(3, 0)], [Span(3, 0)])
+        let diff = computeDiff(d1.node.content, d2.node.content, range)
+            .map { [$0.fromA, $0.toA, $0.fromB, $0.toB] }
+        try expectEqual("\(diff)", "\([[start + 1, start + 2, start + 1, start + 2]])")
+    }
+
     test("PM changeset diff: returns an empty diff for identical documents") {
         try diffTest(doc(p("foo"), p("bar")), doc(p("foo"), p("bar")), [])
     }
@@ -475,6 +506,16 @@ func registerPMSimplifyTests() {
     test("PM changeset simplify: doesn't expand across non-word text") {
         try simplifyTest([[7, 10]], doc(p("one two ----- four")), [[5, 10]])
     }
+    // `_ ^ [ \ ] `` sit between the ASCII uppercase and lowercase blocks.
+    // Upstream's range check used to start the lowercase block at 79 rather
+    // than 97, sweeping them in as word characters, so a change would grow
+    // across them as if they were letters.
+    test("changeset simplify: doesn't expand across punctuation between the ASCII letter blocks") {
+        for filler in ["_____", "^^^^^", "[[[[[", "`````"] {
+            try simplifyTest([[7, 10]], doc(p("one two \(filler) four")), [[5, 10]])
+        }
+    }
+
     test("PM changeset simplify: treats leaf nodes as non-words") {
         try simplifyTest([[2, 3], [6, 7]], doc(p("one", img(), "two")), [[2, 3], [6, 7]])
     }

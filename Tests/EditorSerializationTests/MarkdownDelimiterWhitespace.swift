@@ -1,0 +1,163 @@
+import Foundation
+import DocumentModel
+import EditorSerialization
+import TestHarness
+
+// CommonMark will not open a delimiter run that is followed by whitespace, or
+// close one that is preceded by it. A serializer that writes `**foo **bar`
+// therefore doesn't write bold text — it writes eleven literal characters, and
+// the mark is gone the next time the document is read. The whitespace has to
+// move outside the delimiters.
+//
+// Same shape as the fixes in prosemirror-markdown 1.13.3/1.13.4/1.13.6, though
+// this serializer is hand-written rather than a port of theirs.
+
+private func brk() -> Node { node("hardBreak", [:]) }
+private func strike(_ s: String) -> Node { schema.text(s, [schema.mark("strike")]) }
+private func highlight(_ s: String) -> Node { schema.text(s, [schema.mark("highlight")]) }
+private func boldBrk() -> Node {
+    try! schema.nodes["hardBreak"]!.create(marks: [schema.mark("bold")])
+}
+
+/// Every non-whitespace character of a document paired with the marks on it.
+/// Whitespace is left out because moving it across a delimiter is exactly what
+/// the serializer is allowed to do.
+private func markedText(_ node: Node) -> String {
+    var out: [String] = []
+    func walk(_ n: Node) {
+        if n.isText, let text = n.text {
+            let marks = n.marks.map(\.type.name).sorted().joined(separator: "+")
+            for ch in text where !ch.isWhitespace { out.append("\(ch)[\(marks)]") }
+            return
+        }
+        for i in 0..<n.childCount { walk(n.child(i)) }
+    }
+    walk(node)
+    return out.joined(separator: " ")
+}
+
+func registerMarkdownDelimiterWhitespaceTests() {
+    /// Serialize, check the exact Markdown, and check that reading it back
+    /// gives the document named — which is the part that actually matters.
+    func writes(_ name: String, _ d: Node, _ markdown: String, reads back: Node) {
+        test("md whitespace: \(name)") {
+            let md = d.toMarkdown().trimmingCharacters(in: .newlines)
+            try expectEqual(md, markdown)
+            try expectEqual(try MarkdownParser.parse(md, schema: schema), back)
+        }
+    }
+
+    writes("a mark ending in a space closes before it",
+           doc(p(strong("foo "), t("bar"))),
+           "**foo** bar",
+           reads: doc(p(strong("foo"), t(" bar"))))
+
+    writes("a mark starting with a space opens after it",
+           doc(p(t("bar"), strong(" foo"))),
+           "bar **foo**",
+           reads: doc(p(t("bar "), strong("foo"))))
+
+    writes("a mark padded on both sides",
+           doc(p(t("a"), em(" b "), t("c"))),
+           "a *b* c",
+           reads: doc(p(t("a "), em("b"), t(" c"))))
+
+    writes("a mark spelled with a longer delimiter run",
+           doc(p(strike("gone "), t("here"))),
+           "~~gone~~ here",
+           reads: doc(p(strike("gone"), t(" here"))))
+
+    // The space is between two bold runs, so the run doesn't end and there is
+    // nothing to expel.
+    writes("no expulsion when the mark continues past the space",
+           doc(p(strong("foo bar"))),
+           "**foo bar**",
+           reads: doc(p(strong("foo bar"))))
+
+    // A hard break inside a marked run carries the mark like any other inline
+    // node, so the run doesn't close at it and there is no delimiter for the
+    // space to be stranded against.
+    writes("a mark spanning a hard break keeps its space inside",
+           doc(p(strong("foo "), boldBrk(), strong("bar"))),
+           "**foo \\\nbar**",
+           reads: doc(p(strong("foo "), boldBrk(), strong("bar"))))
+
+    // A break that doesn't carry the mark ends the run, and the closing
+    // delimiter would land right after the space.
+    writes("a mark ending at a hard break expels its space",
+           doc(p(strong("foo "), brk(), t("bar"))),
+           "**foo** \\\nbar",
+           reads: doc(p(strong("foo"), t(" "), brk(), t("bar"))))
+
+    // Markdown has no way to spell a break at the end of a block: a trailing
+    // backslash reads back as a literal backslash.
+    writes("a hard break at the end of a block is dropped",
+           doc(p(t("foo"), brk())),
+           "foo",
+           reads: doc(p("foo")))
+
+    writes("a run of hard breaks at the end of a block is dropped",
+           doc(p(t("foo"), brk(), brk())),
+           "foo",
+           reads: doc(p("foo")))
+
+    writes("a hard break in the middle survives",
+           doc(p(t("foo"), brk(), t("bar"))),
+           "foo\\\nbar",
+           reads: doc(p(t("foo"), brk(), t("bar"))))
+
+    // Every character of the node is expelled, so there is nothing left to wrap
+    // in delimiters — writing `x** **y` would spell no mark at all.
+    writes("a mark covering nothing but whitespace writes no delimiters",
+           doc(p(t("x"), strong(" "), t("y"))),
+           "x y",
+           reads: doc(p("x y")))
+
+    // Whitespace held back at the end of a block is dropped rather than
+    // written: no parser keeps trailing spaces on a line, and two of them would
+    // read back as a hard break.
+    writes("trailing whitespace at the end of a block is dropped",
+           doc(p(strong("foo  "))),
+           "**foo**",
+           reads: doc(p(strong("foo"))))
+
+    // A link is written as `[text](url)`, which has no flanking rule, so its
+    // whitespace stays where the document put it.
+    test("md whitespace: a link keeps its own whitespace") {
+        let d = doc(p(schema.text("foo ", [schema.mark("link", ["href": .string("u")])]), t("bar")))
+        try expectEqual(d.toMarkdown().trimmingCharacters(in: .newlines), "[foo ](u)bar")
+    }
+
+    // The whole point, swept over every three-piece paragraph these shapes can
+    // make: a delimiter run that dies takes its mark with it, and the mark is
+    // gone the next time the document is read. Whitespace is allowed to move
+    // across a delimiter — that is the fix — so what has to match is the marks
+    // over the text that isn't whitespace.
+    func sweep(_ name: String, _ pieces: [Node]) {
+        test("md whitespace: no shape of paragraph loses a mark (\(name))") {
+            for first in pieces {
+                for second in pieces {
+                    for third in pieces {
+                        let d = doc(p(first, second, third))
+                        let md = d.toMarkdown()
+                        let back = try MarkdownParser.parse(md, schema: schema)
+                        try expectEqual(markedText(back), markedText(d),
+                                        "marks changed, written as \(md.debugDescription)")
+                    }
+                }
+            }
+        }
+    }
+
+    sweep("emphasis", [strong("a "), strong(" a"), strong(" "), strong("a"),
+                       em("b "), em(" b"), em(" "),
+                       t("x"), t(" x"), t("x "), t(" "), brk(), boldBrk()])
+
+    // Without hard breaks: `~~ ~~` and `== ==` are parsed as one flat run of
+    // text, so nothing nested inside one survives a round trip — a limitation
+    // of the inline parser that predates any of this and is not about
+    // whitespace.
+    sweep("other delimiter runs", [strike("c "), strike(" c"), strike(" "), strike("c"),
+                                   highlight("d "), highlight(" d"), highlight("d"),
+                                   t("x"), t(" x"), t("x "), t(" ")])
+}

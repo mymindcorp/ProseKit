@@ -67,7 +67,7 @@ private func tokens(_ frag: Fragment, _ encoder: ChangesetTokenEncoder,
 }
 
 /// Refuse to compute diffs bigger than this (a runaway-computation guard).
-private let maxDiffSize = 5000
+private let maxDiffSize = 2500
 
 /// The minimum length of an unchanged range not at the start/end of the
 /// compared content: higher for bigger replacements, so a paragraph rewrite
@@ -78,6 +78,17 @@ private func minUnchanged(_ sizeA: Int, _ sizeB: Int) -> Int {
 
 public func computeDiff<Data>(_ fragA: Fragment, _ fragB: Fragment, _ range: Change<Data>,
                               _ encoder: ChangesetTokenEncoder = .default) -> [Change<Data>] {
+    // Myers' diff below never searches further than `maxDiffSize`, so a range
+    // longer than that on either side cannot produce a solution — tokenizing it
+    // and running the search to exhaustion only spends time to arrive at the
+    // answer this line gives for free.
+    //
+    // Upstream writes this comparison as `max(toA - fromA, toB, fromB)`, which
+    // reads two absolute positions where it means a length: every change past
+    // position `maxDiffSize` in a long document would bail here. Compare the
+    // lengths, which is what the guard is for.
+    if max(range.toA - range.fromA, range.toB - range.fromB) > maxDiffSize { return [range] }
+
     var tokA: [ChangeToken] = []
     tokens(fragA, encoder, range.fromA, range.toA, &tokA)
     var tokB: [ChangeToken] = []
@@ -165,6 +176,10 @@ public func computeDiff<Data>(_ fragA: Fragment, _ fragB: Fragment, _ range: Cha
         if size % 2 == 0 { history.append(frontier) }
         size += 1
     }
-    // Maximum work done; return a change spanning the entire range.
+    // Maximum work done; return a change spanning the whole searched region.
+    //
+    // Upstream returns the untrimmed `range` here, to match the early bail
+    // above. Keeping the trimmed span costs nothing — the common prefix and
+    // suffix were already measured — and reports a smaller change.
     return [range.slice(start, endA, start, endB)]
 }

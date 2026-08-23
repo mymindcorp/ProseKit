@@ -396,12 +396,51 @@ public enum MarkdownSerializer {
         // Marks currently open, outermost first.
         var active: [Mark] = []
         func closeDown(to keep: Int) {
+            guard active.count > keep else { return }
+            // A closing delimiter run preceded by whitespace closes nothing —
+            // the whitespace has to end up on the outside of it. Only spaces
+            // and tabs: a newline here is the one a hard break just wrote.
+            if active[keep...].contains(where: expelsWhitespace) {
+                var held = ""
+                while true {
+                    // Only spaces and tabs — and the newline of a hard break,
+                    // which closes nothing either and has to move out with
+                    // whatever whitespace surrounds it.
+                    let before = held.count
+                    while let last = out.last, last == " " || last == "\t" {
+                        held.insert(last, at: held.startIndex)
+                        out.removeLast()
+                    }
+                    if out.hasSuffix("\\\n") {
+                        out.removeLast(2)
+                        held = "\\\n" + held
+                    }
+                    if held.count == before { break }
+                }
+                // `held` came before whatever is already pending.
+                pending = held + pending
+            }
             while active.count > keep { out += markClose(active.removeLast()) }
         }
         func same(_ a: Mark, _ b: Mark) -> Bool { a.type === b.type && a.attrs == b.attrs }
         func carries(_ node: Node, _ mark: Mark) -> Bool {
             node.marks.contains { same($0, mark) }
         }
+        // Marks written as a delimiter run. CommonMark will not open one that
+        // is followed by whitespace, or close one that is preceded by it, so
+        // `**foo **bar` is not bold — it is those eleven characters. The
+        // whitespace has to move outside the delimiters.
+        func expelsWhitespace(_ mark: Mark) -> Bool {
+            switch mark.type.name {
+            case "italic", "bold", "strike", "highlight": return true
+            default: return false
+            }
+        }
+        // Written-but-not-yet-placed output: whitespace taken out of a closing
+        // delimiter run, and hard breaks. Both have to end up outside the
+        // delimiters, and both are dropped if nothing follows them — a `\` at
+        // the end of a block reads back as a literal backslash.
+        var pending = ""
         // Where each mark's current run ends, remembered across the loop below.
         //
         // A run that ends at `e` ends at `e` from every position inside it, so
@@ -426,9 +465,18 @@ public enum MarkdownSerializer {
         var wanted: [Mark] = []
         for i in children.indices {
             let node = children[i]
+            // A hard break is held rather than written. Markdown has no
+            // spelling for one at the end of a block, and a closing delimiter
+            // run written directly after one would not close — so it waits
+            // until there is something after it, and the marks it interrupts
+            // close before it rather than after.
+            if node.type.name == "hardBreak" {
+                pending += "\\\n"
+                continue
+            }
             // Plain text between marked runs — the bulk of most paragraphs —
             // has nothing to open or close.
-            if node.marks.isEmpty, active.isEmpty {
+            if node.marks.isEmpty, active.isEmpty, pending.isEmpty {
                 inlineBody(node, into: &out)
                 continue
             }
@@ -445,6 +493,8 @@ public enum MarkdownSerializer {
                i == 0 || !carries(children[i - 1], link),
                runEnd(link, from: i) == i + 1 {
                 closeDown(to: 0)
+                out += pending
+                pending = ""
                 out += text
                 continue
             }
@@ -484,7 +534,32 @@ public enum MarkdownSerializer {
             var shared = 0
             while shared < active.count, shared < wanted.count,
                   same(active[shared], wanted[shared]) { shared += 1 }
+            // A text node that is nothing but whitespace gives the delimiters
+            // nothing to wrap, so none are opened around it. It still closes
+            // the marks that end here; the whitespace itself is held, because
+            // whether it belongs inside or outside the marks around it is
+            // decided by what comes next — and if nothing does, it is dropped.
+            if node.isText, let text = node.text, !text.isEmpty,
+               text.allSatisfy({ $0 == " " || $0 == "\t" }) {
+                closeDown(to: shared)
+                pending += text
+                continue
+            }
+            // An opening delimiter run followed by whitespace opens nothing,
+            // so whitespace at the front of the text moves out ahead of it.
+            var body = node
+            var leading = ""
+            if wanted[shared...].contains(where: expelsWhitespace), node.isText, let text = node.text {
+                let lead = text.prefix { $0 == " " || $0 == "\t" }
+                if !lead.isEmpty {
+                    leading = String(lead)
+                    body = node.withText(String(text.dropFirst(lead.count)))
+                }
+            }
             closeDown(to: shared)
+            out += pending
+            pending = ""
+            out += leading
             for mark in wanted[shared...] {
                 // A "!" directly before a link's bracket would read back as an
                 // image, so escape it. Only there — escaping every exclamation
@@ -496,9 +571,12 @@ public enum MarkdownSerializer {
                 out += markOpen(mark)
                 active.append(mark)
             }
-            inlineBody(node, into: &out)
+            inlineBody(body, into: &out)
         }
         closeDown(to: 0)
+        // Whatever is still held at the end is dropped rather than written: no
+        // parser keeps trailing spaces on a line, and two of them would read
+        // back as a hard break.
     }
 
     /// A node's own text, with the marks that don't wrap a run — currently only
