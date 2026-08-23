@@ -325,7 +325,7 @@ public enum HTMLSerializer {
             }
             out += ">"
         case "wikiLink":
-            let target = node.attrs["target"]?.stringValue ?? ""
+            let target = node.type.spec.leafText?(node) ?? ""
             out += "<a href=\""
             escapeAttribute(target, into: &out)
             out += "\" data-wikilink=\""
@@ -335,8 +335,12 @@ public enum HTMLSerializer {
                 out += "\" data-wikilink-id=\""
                 escapeAttribute(id, into: &out)
             }
+            if let type = node.attrs["targetType"]?.stringValue {
+                out += "\" data-wikilink-type=\""
+                escapeAttribute(type, into: &out)
+            }
             out += "\">"
-            escape(node.attrs["label"]?.stringValue ?? target, into: &out)
+            escape(target, into: &out)
             out += "</a>"
         case "mention":
             let id = node.attrs["id"]?.stringValue ?? ""
@@ -1301,8 +1305,9 @@ public enum HTMLParser {
                         if !label.isEmpty { result.append(schema.text(label, currentMarks)) }
                         i = close + 1; continue
                     }
-                    var wikiAttrs: Attrs = ["target": .string(target), "label": .string(label)]
+                    var wikiAttrs: Attrs = ["text": .string(label.isEmpty ? target : label)]
                     if let id = attrs["data-wikilink-id"] { wikiAttrs["targetId"] = .string(id) }
+                    if let type = attrs["data-wikilink-type"] { wikiAttrs["targetType"] = .string(type) }
                     if let wl = try? schema.nodes["wikiLink"]?.create(wikiAttrs) {
                         result.append(wl); i = close + 1; continue
                     }

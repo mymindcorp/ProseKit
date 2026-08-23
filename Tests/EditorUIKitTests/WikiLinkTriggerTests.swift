@@ -218,7 +218,7 @@ final class WikiLinkTriggerTests: XCTestCase {
     func testAcceptingLeavesNoGhostBehind() throws {
         let view = try makeView { $0.wikiLink.trigger.showsClosingBrackets = true }
         type(view, "[[Page")
-        XCTAssertTrue(view.editor.acceptWikiLinkSuggestion(target: "Page"))
+        XCTAssertTrue(view.editor.acceptWikiLinkSuggestion(text: "Page"))
         XCTAssertNil(view.editor.wikiLinkSuggestion)
         XCTAssertEqual(try rendered(view).string, "Page", "the chip's label, and nothing else")
     }

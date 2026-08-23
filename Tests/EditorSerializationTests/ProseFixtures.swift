@@ -49,7 +49,7 @@ private func everythingDocument() -> Node {
         node("codeBlock", [:], [t("let x = 1\nprint(x)")]),
         node("horizontalRule"),
         p(t("An image "), node("image", ["src": .string("cat.png"), "alt": .string("a cat")]), t(" inline.")),
-        p(t("A wiki link "), node("wikiLink", ["target": .string("Home"), "label": .string("home page")]), t(".")),
+        p(t("A wiki link "), node("wikiLink", ["text": .string("home page")]), t(".")),
         p(t("Line one"), node("hardBreak"), t("line two")),
         node("table", [:], [
             node("tableRow", [:], [node("tableHeader", [:], [p("Feature")]), node("tableHeader", [:], [p("State")])]),
@@ -155,7 +155,7 @@ func registerProseTests() {
     // A wiki-link's `targetId` — the host's own id for the page — is not part of
     // the `[[target|label]]` text, so HTML is where it has to survive.
     test("prose: a wiki-link's targetId round-trips through HTML") {
-        let original = doc(p(t("see "), node("wikiLink", ["target": .string("Page"),
+        let original = doc(p(t("see "), node("wikiLink", ["text": .string("Page"),
                                                          "targetId": .string("3xK9")])))
         let html = HTMLSerializer.serialize(original)
         try expect(html.contains("data-wikilink-id=\"3xK9\""), "id is written: \(html)")
@@ -168,7 +168,7 @@ func registerProseTests() {
         let original = doc(
             h(3, "Notes"),
             p(t("see "), linkMark("PM", "https://prosemirror.net"), t(" and "),
-              node("wikiLink", ["target": .string("Page")])),
+              node("wikiLink", ["text": .string("Page")])),
             node("blockquote", [:], [p("quote")]),
             node("orderedList", ["order": .int(1)], [node("listItem", [:], [p("one")]), node("listItem", [:], [p("two")])]),
             node("codeBlock", [:], [t("x = 1")]))

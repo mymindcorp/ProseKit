@@ -19,7 +19,7 @@ private func paragraphAfterALink(_ editor: Editor, _ tail: String) throws {
     let s = editor.schema
     editor.setContent(try s.node("doc", [:], content: Fragment.from([
         try s.node("paragraph", [:], content: Fragment.from([
-            try s.node("wikiLink", ["target": .string("Soccer Training Session")], content: Fragment.empty),
+            try s.node("wikiLink", ["text": .string("Soccer Training Session")], content: Fragment.empty),
             s.text(tail),
         ])),
     ])))
@@ -53,10 +53,10 @@ func registerSuggestionOffsetTests() {
         let editor = try Editor(extensions: fullKit())
         try paragraphAfterALink(editor, " see ")
         try typeAtEnd(editor, "[[Ar")
-        try expect(editor.acceptWikiLinkSuggestion(target: "Architecture"))
+        try expect(editor.acceptWikiLinkSuggestion(text: "Architecture"))
         var links: [String] = []
         editor.doc.descendants { node, _, _, _ in
-            if node.type.name == "wikiLink" { links.append(node.attrs["target"]?.stringValue ?? "") }
+            if node.type.name == "wikiLink" { links.append(node.attrs["text"]?.stringValue ?? "") }
             return true
         }
         try expectEqual(links, ["Soccer Training Session", "Architecture"])

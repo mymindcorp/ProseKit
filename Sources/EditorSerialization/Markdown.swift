@@ -651,12 +651,7 @@ public enum MarkdownSerializer {
                 out += "![\(alt)](\(destination(src)))"
             }
         case "wikiLink":
-            let target = node.attrs["target"]?.stringValue ?? ""
-            if let label = node.attrs["label"]?.stringValue {
-                out += "[[\(target)|\(label)]]"
-            } else {
-                out += "[[\(target)]]"
-            }
+            out += "[[\(node.type.spec.leafText?(node) ?? "")]]"
         case "footnoteReference":
             out += "[^\(node.attrs["label"]?.stringValue ?? "")]"
         case "inlineMath":
@@ -2433,8 +2428,8 @@ public enum MarkdownParser {
                     flush()
                     let inner = slice(chars, (i + 2)..<close)
                     let parts = inner.split(separator: "|", maxSplits: 1).map(String.init)
-                    var attrs: Attrs = ["target": .string(parts[0])]
-                    if parts.count > 1 { attrs["label"] = .string(parts[1]) }
+                    // `[[Page|shown]]` reads as "shown".
+                    let attrs: Attrs = ["text": .string(parts.count > 1 ? parts[1] : parts[0])]
                     if let wl = try? schema.nodes["wikiLink"]?.create(attrs) { appendNode(wl) }
                     i = close + 2
                     continue

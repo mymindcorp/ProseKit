@@ -55,26 +55,27 @@ func registerM5Tests() {
         try expectEqual(count(editor.doc, "wikiLink"), 1)
         var target: String? = nil
         editor.doc.descendants { node, _, _, _ in
-            if node.type.name == "wikiLink" { target = node.attrs["target"]?.stringValue }
+            if node.type.name == "wikiLink" { target = node.attrs["text"]?.stringValue }
             return true
         }
         try expectEqual(target, "Page")
     }
 
-    test("wikiLink: [[Target|Label]] keeps a distinct label") {
+    test("wikiLink: [[Target|Label]] reads as the label") {
         let editor = try makeFullEditor()
         try type(editor, "[[Home|Start]")
         try expect(textInput(editor, at: editor.doc.content.size - 1, "]"))
         var node: Node? = nil
         editor.doc.descendants { n, _, _, _ in if n.type.name == "wikiLink" { node = n }; return true }
-        try expectEqual(node?.attrs["target"]?.stringValue, "Home")
-        try expectEqual(node?.attrs["label"]?.stringValue, "Start")
+        // The words a reader sees are the link's text; the page name they were
+        // written against isn't kept, because nothing resolves by name.
+        try expectEqual(node?.attrs["text"]?.stringValue, "Start")
         try expectEqual(node?.textContent, "Start")
     }
 
     test("wikiLink: insert via Editor + suggestion tracking") {
         let editor = try makeFullEditor()
-        try expect(editor.insertWikiLink(target: "Index"))
+        try expect(editor.insertWikiLink(text: "Index"))
         try expectEqual(count(editor.doc, "wikiLink"), 1)
 
         // Suggestion state: typing "[[Ho" should expose a query.

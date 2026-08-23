@@ -30,7 +30,7 @@ let schema: Schema = {
         ("text", NodeSpec(group: "inline")),
         ("hardBreak", NodeSpec(group: "inline", inline: true)),
         ("image", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["src": AttributeSpec(), "alt": AttributeSpec(default: .null), "title": AttributeSpec(default: .null), "width": AttributeSpec(default: .null), "height": AttributeSpec(default: .null), "model": AttributeSpec(default: .null)])),
-        ("wikiLink", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["target": AttributeSpec(), "label": AttributeSpec(default: .null), "targetId": AttributeSpec(default: .null)], leafText: { $0.attrs["label"]?.stringValue ?? $0.attrs["target"]?.stringValue ?? "" })),
+        ("wikiLink", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["text": AttributeSpec(default: .null), "targetId": AttributeSpec(default: .null), "targetType": AttributeSpec(default: .null)], leafText: { $0.attrs["text"]?.stringValue ?? "" })),
         ("mention", NodeSpec(group: "inline", inline: true, atom: true, attrs: ["id": AttributeSpec(), "label": AttributeSpec(default: .null)], leafText: { "@" + ($0.attrs["label"]?.stringValue ?? $0.attrs["id"]?.stringValue ?? "") })),
         ("bulletList", NodeSpec(content: "listItem+", group: "block", attrs: ["tight": AttributeSpec(default: .bool(false))])),
         ("orderedList", NodeSpec(content: "listItem+", group: "block", attrs: ["order": AttributeSpec(default: .int(1)), "tight": AttributeSpec(default: .bool(false))])),
@@ -515,7 +515,7 @@ test("HTML mention round-trip (span data-mention)") {
 }
 
 test("HTML wikiLink round-trip") {
-    let wl = node("wikiLink", ["target": .string("Home"), "label": .string("Start")])
+    let wl = node("wikiLink", ["text": .string("Start")])
     let d = doc(p(t("go "), wl))
     let html = HTMLSerializer.serialize(d)
     let back = try HTMLParser.parse(html, schema: schema)
@@ -1512,7 +1512,7 @@ test("Markdown round-trip (blockquote, list, hr)") {
 
 test("Markdown link + wikiLink round-trip") {
     let link = schema.text("PM", [schema.mark("link", ["href": .string("https://prosemirror.net")])])
-    let wl = node("wikiLink", ["target": .string("Page")])
+    let wl = node("wikiLink", ["text": .string("Page")])
     let d = doc(p(t("see "), link, t(" and "), wl))
     let md = MarkdownSerializer.serialize(d)
     let back = try MarkdownParser.parse(md, schema: schema)
@@ -3577,7 +3577,7 @@ test("property: random docs round-trip through HTML and JSON") {
         for _ in 0...rnd(2) {
             switch rnd(8) {
             case 0: out.append(node("image", ["src": .string("img\(rnd(9)).png"), "alt": .string("alt")]))
-            case 1: out.append(node("wikiLink", ["target": .string("Page\(rnd(9))"), "label": .string("L\(rnd(9))")]))
+            case 1: out.append(node("wikiLink", ["text": .string("L\(rnd(9))")]))
             case 2: out.append(node("mention", ["id": .string("id\(rnd(9))"), "label": .string("M\(rnd(9))")]))
             case 3: out.append(node("hardBreak"))
             default: out.append(schema.text(rndText(), rndMarks()))
