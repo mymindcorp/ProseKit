@@ -130,9 +130,28 @@ final class WikiLinkSuggestionSource: SuggestionSource {
     }
 }
 
+/// Where `[[` may open the popup: running prose — a paragraph, including the
+/// ones inside list items, quotes, and table cells — and nothing else. A
+/// heading is a title rather than prose, and code is literal text where `[[`
+/// means brackets; neither should autocomplete. The schema has the last word:
+/// a textblock that can't hold a wiki-link can't be offered one.
+private func isSuggestionContext(_ parent: Node, state: EditorState, cursor: ResolvedPos,
+                                 wikiLink: NodeType) -> Bool {
+    guard parent.isTextblock, !parent.type.spec.code,
+          parent.type.name != "heading",
+          parent.type.contentMatch.matchType(wikiLink) != nil else { return false }
+    // An inline code span is code too, even in a paragraph. `storedMarks` is
+    // what the next character would take on, which is what matters at a
+    // boundary where the cursor's own marks haven't caught up yet.
+    let marks = state.storedMarks ?? cursor.marks()
+    return !marks.contains { $0.type.spec.code }
+}
+
 private func computeSuggestion(_ state: EditorState) -> WikiLinkSuggestion? {
-    guard let cursor = (state.selection as? TextSelection)?.cursor else { return nil }
+    guard let cursor = (state.selection as? TextSelection)?.cursor,
+          let type = state.schema.nodes["wikiLink"] else { return nil }
     let parent = cursor.parent
+    guard isSuggestionContext(parent, state: state, cursor: cursor, wikiLink: type) else { return nil }
     // One character per inline leaf, so a character offset into this string is
     // a document offset. Without the override a leaf expands to its `leafText`
     // — a wiki-link renders as its whole label — and every offset past it
