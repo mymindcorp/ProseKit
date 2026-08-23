@@ -13,9 +13,10 @@ Everything except the renderer is pure, cross-platform Swift (value-typed docume
 | `EditorStateKit` | EditorState / Transaction / Selection / Plugin |
 | `EditorCommands`, `EditorHistory`, `EditorInputRules`, `EditorKeymap` | commands, undo/redo, input rules, keymap |
 | `SchemaKit` | the Tiptap-style `Extension` layer + the `Editor` facade |
-| `EditorSerialization` | ProseMirror-JSON, HTML, Markdown, RTF (import) |
+| `EditorSerialization` | ProseMirror-JSON, HTML, Markdown, and RTF + Apple Notes (import) |
 | `EditorUIKit` | the CoreText renderer: `EditorTextView` (editable) + `DocumentView` (read-only) |
 | `EditorCollab` | rebaseable collaborative steps |
+| `EditorChangeset` | condensing a run of steps into a minimal set of changes (who changed what) |
 | `EditorSyntax` | optional: code-block syntax highlighting for the renderer's hook |
 | `EditorMath` | optional: a native TeX typesetter for the renderer's math hook |
 
@@ -33,7 +34,8 @@ import SchemaKit
 // Build an editor from a set of extensions.
 //   starterKit() — paragraphs, headings, lists, marks, blockquote, code, …
 //   fullKit()    — starterKit + tables, task lists, collapsible details, math,
-//                  images, wiki links, slash menu, collab cursors
+//                  images, wiki links, @-mentions, slash menu, find/replace,
+//                  gap cursor, collab cursors
 let editor = try Editor(extensions: starterKit())
 
 // Set the document: any node built against the editor's schema.
@@ -115,11 +117,20 @@ func scrollViewDidScroll(_ s: UIScrollView) { textView.contentOffsetY = s.conten
 textView.becomeFirstResponder()
 ```
 
+On a long document the height that arrives is at first an **estimate**: past an
+internal threshold only the blocks near the viewport are typeset and the rest are
+approximated, so opening a large document doesn't lay all of it out. The estimate
+is replaced by measurements as the reader scrolls, and `onDocumentHeightChange`
+fires again each time — feeding it straight into `contentSize`, as above, is the
+right thing to do. Where being short is not survivable (paging, export,
+scroll-to-end), `documentHeightIsExact` says whether the number is a measurement
+and `measuredDocumentHeight()` lays the whole document out to get one.
+
 A complete SwiftUI host (document picker, virtualized scroll, prose loader, agent demo) lives in [Examples/EditorDemo](Examples/EditorDemo).
 
 ### Plain (read-only) renderer
 
-`DocumentView` is the **plain, non-editable renderer**: it draws a document with the same layout engine but has no caret, no input, no spell-check, and no gestures. It **only draws the visible window**, so it's cheap even for huge documents. Use it for previews, thumbnails, feeds, or read-only displays. Pin it to a scroll viewport and feed `contentOffsetY` exactly like above, or use it at `documentHeight` for short content.
+`DocumentView` is the **plain, non-editable renderer**: it draws a document with the same layout engine but has no caret, no input, no spell-check, and no gestures. It **only draws the visible window**, so it's cheap even for huge documents. Use it for previews, thumbnails, feeds, or read-only displays. Pin it to a scroll viewport and feed `contentOffsetY` exactly like above, or drop it in at its full height — from `sizeThatFits`, which (unlike `documentHeight`) never estimates.
 
 ```swift
 let view = DocumentView(document: myDocument)            // also: DocumentView(document:theme:)
@@ -137,8 +148,8 @@ override func draw(_ rect: CGRect) {
 
 ## Customizing
 
-- **Images** — `imageData` supplies bytes for an image node, `imageURLResolver` maps a node to a loadable URL, and `onImageDrop` persists dropped/pasted bytes. Images resolve *during* layout, so if the bytes weren't available yet the node laid out at a placeholder's size; call `reloadImages()` once they are and the document re-lays out around them. Images the renderer loads from a `src` URL adopt themselves.
-- **Images** — the `image` node carries `src` plus an optional display size, `width` and `height` in points. Both are optional and independent: pin one and the other follows the image's aspect ratio, pin both for an exact box, pin neither for the natural size. `editor.insertImage(src:width:height:)` and `editor.setImageSize(width:height:)` set them. Supplying the size when it's known lets the placeholder reserve the right box, so the document doesn't reflow once the bytes load.
+- **Image loading** — `imageData` supplies bytes for an image node, `imageURLResolver` maps a node to a loadable URL, and `onImageDrop` persists dropped/pasted bytes. Images resolve *during* layout, so if the bytes weren't available yet the node laid out at a placeholder's size; call `reloadImages()` once they are and the document re-lays out around them. Images the renderer loads from a `src` URL adopt themselves. Set `onActivateImage` to hear that the reader long-pressed one — the image counterpart of `onActivateMath`; setting it opts that image out of drag-out, since the two want the same press.
+- **Image nodes** — the `image` node carries `src` plus an optional display size, `width` and `height` in points. Both are optional and independent: pin one and the other follows the image's aspect ratio, pin both for an exact box, pin neither for the natural size. `editor.insertImage(src:width:height:)` and `editor.setImageSize(width:height:)` set them. Supplying the size when it's known lets the placeholder reserve the right box, so the document doesn't reflow once the bytes load.
 
   An image can also record the **original** it was made from, separately from what's drawn: `model` is an `ImageModel` — a `path` plus the original's intrinsic `width`/`height`. `src` is often a downscaled rendition; this keeps track of what it came from, so the original can be exported or re-derived, and its dimensions give the renderer a correct aspect ratio before any bytes have loaded.
 
@@ -148,7 +159,7 @@ override func draw(_ rect: CGRect) {
   image.imageModel?.path   // reading it back
   ```
 - **Theme & fonts** — `EditorTextView.theme` / `DocumentView.theme` (a `DocumentTheme`): colors, spacing, and a custom typeface via `theme.fontName` and `theme.code.fontName`. Spacing, indents, and padding are in ems, so they hold their proportion as Dynamic Type scales; hairlines and `pageInsets` stay in points. Styling is grouped by what it styles — `theme.heading`, `theme.link`, `theme.code`, `theme.quote`, `theme.selection`, `theme.caption`, `theme.taskItem`, `theme.highlighters`. Dynamic Type is honored by default.
-- **Suggestion menus** — any extension can provide a `SuggestionSource` and the renderer shows a popup for it. The `/` slash menu (`SlashMenuExtension`, `atLineStart` by default) and `[[` wiki links (`WikiLinkExtension(suggestions:)`) ship in `fullKit`; use `fullKit(wikiLinkSuggestions:)` to supply the candidate list.
+- **Suggestion menus** — any extension can provide a `SuggestionSource` and the renderer shows a popup for it. Three ship in `fullKit`: the `/` slash menu (`SlashMenuExtension`, `atLineStart` by default), `[[` wiki links (`WikiLinkExtension`), and `@` mentions (`MentionExtension`). Supply the candidates through `fullKit(wikiLinkSuggestions:)` / `fullKit(mentionSuggestions:)`, or their `*AsyncSuggestions:` variants for a DB- or index-backed lookup (the async one wins where both are given).
 - **Collapsible sections** — Tiptap's Details extension (`details` / `detailsSummary` / `detailsContent`, in `fullKit`): `editor.run("toggleDetails")` (also `Mod-Alt-d`, or `/details`) wraps the selected blocks in a section, and `toggleDetailsOpen` folds it. The renderer draws a disclosure triangle, and a closed section's body isn't laid out at all. Serializes to `<details><summary>…</summary>…</details>` in both HTML and Markdown.
 - **Mathematics** — Tiptap's Mathematics extension (`inlineMath` / `blockMath`, in `fullKit`). See below.
 - **Collaboration cursors** — `editor.setCollabCursor(id:anchor:head:color:label:)` draws another participant's caret (and selection); its position maps through every transaction. See the demo's "🤖 Agent" toggle for a worked example.

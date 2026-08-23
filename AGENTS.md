@@ -4,11 +4,19 @@ Notes for coding agents working in this repo.
 
 ## Toolchain / building
 
-- **Package (library + tests):** the active CLI toolchain is **Command Line Tools** (`xcode-select -p` → `/Library/Developer/CommandLineTools`), so `xcodebuild` is unavailable by default. Build and test the SwiftPM package with:
+- **Package (library + tests):** build and test the SwiftPM package with:
   - `swift build`
-  - `swift run <Module>Tests` (the test suites are executable targets, not XCTest/Swift Testing — see `Tests/`).
+  - `swift run <Module>Tests` — the headless suites are *executable* targets, not
+    XCTest/Swift Testing (see `Tests/` and `Sources/TestHarness`), so they run
+    under Command Line Tools alone.
+  - The one exception is `EditorUIKitTests`, a real XCTest target for the
+    renderer. It needs `xcodebuild` and a simulator; see [CLAUDE.md](CLAUDE.md).
 
-- **Xcode IS installed** at `/Applications/Xcode.app` (currently Xcode 26.3). It is just not the selected toolchain. To build the Mac Catalyst demo app — or anything needing `xcodebuild` — drive Xcode's tools via a `DEVELOPER_DIR` override (no `sudo xcode-select` needed):
+- **Xcode is installed** at `/Applications/Xcode.app` and is currently the
+  selected toolchain (`xcode-select -p` → `/Applications/Xcode.app/Contents/Developer`),
+  so `xcodebuild` works directly. If a machine has Command Line Tools selected
+  instead, prefix any `xcodebuild` invocation with a `DEVELOPER_DIR` override
+  rather than `sudo xcode-select`:
 
   ```sh
   DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
