@@ -1579,14 +1579,22 @@ final class DocumentLayout {
             } else {
                 // wikiLink, an image still loading, or math with no renderer
                 // wired up: show a text placeholder.
+                let wikiStyle = theme.wikiLink
+                let wikiColor = wikiStyle.color ?? theme.link.color
+                // The host's glyph, looked up before the label is built: a chip
+                // with one is a chip even without a pill behind it.
+                let chipIcon: UIImage? = child.type.name == "wikiLink"
+                    ? wikiLinkIcon?(child)?.withTintColor(wikiColor, renderingMode: .alwaysTemplate)
+                    : nil
+                let isChip = child.type.name == "wikiLink"
+                    && (wikiStyle.background != nil || chipIcon != nil)
                 let display: String
                 switch child.type.name {
                 case "wikiLink":
                     let label = child.attrs["label"]?.stringValue ?? child.attrs["target"]?.stringValue ?? "link"
                     // A chip is one object: it may not break in half at the end
                     // of a line, so its spaces stop being break opportunities.
-                    display = theme.wikiLink.background == nil
-                        ? label : label.replacingOccurrences(of: " ", with: "\u{00a0}")
+                    display = isChip ? label.replacingOccurrences(of: " ", with: "\u{00a0}") : label
                 case "inlineMath":
                     display = "$" + (child.attrs["latex"]?.stringValue ?? "") + "$"
                 case "footnoteReference":
@@ -1596,8 +1604,6 @@ final class DocumentLayout {
                 default:
                     display = "🖼"
                 }
-                let wikiStyle = theme.wikiLink
-                let wikiColor = wikiStyle.color ?? theme.link.color
                 var atomAttrs: [NSAttributedString.Key: Any] = child.type.name == "wikiLink"
                     ? [.font: blockFont, .foregroundColor: wikiColor]
                     : [.font: child.type.name == "inlineMath" ? theme.monoFont : blockFont,
@@ -1616,9 +1622,7 @@ final class DocumentLayout {
                 // A wiki-link chip: reserve the pill's leading padding and the
                 // host glyph's box as real advance, so the words around the
                 // chip clear it instead of tucking underneath.
-                var chipIcon: UIImage?
                 if child.type.name == "wikiLink" {
-                    chipIcon = wikiLinkIcon?(child)?.withTintColor(wikiColor, renderingMode: .alwaysTemplate)
                     let padX = wikiStyle.background != nil ? theme.points(wikiStyle.paddingX) : 0
                     let iconBox = chipIcon != nil ? theme.points(wikiStyle.iconSize) : 0
                     let gap = chipIcon != nil ? theme.points(wikiStyle.iconGap) : 0
@@ -1626,10 +1630,18 @@ final class DocumentLayout {
                     if leading > 0 {
                         let delegate = makeBoxRunDelegate(width: leading, ascent: blockFont.ascender,
                                                           descent: -blockFont.descender)
+                        // The box's own character is U+FFFC, whose line-breaking
+                        // class allows a break on either side of it — which put
+                        // a chip's glyph at the end of one line and its label at
+                        // the start of the next. The word joiner after it
+                        // forbids that break without taking any width.
                         result.append(NSAttributedString(string: "\u{fffc}", attributes: [
                             kCTRunDelegateAttributeName as NSAttributedString.Key: delegate,
                             .font: blockFont,
                         ]))
+                        // Its own run, so the delegate still governs exactly one
+                        // character and reserves exactly one box.
+                        result.append(NSAttributedString(string: "\u{2060}", attributes: [.font: blockFont]))
                     }
                 }
                 result.append(NSAttributedString(string: display, attributes: atomAttrs))
