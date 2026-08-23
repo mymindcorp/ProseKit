@@ -551,8 +551,23 @@ public enum MarkdownSerializer {
             // the marks that end here; the whitespace itself is held, because
             // whether it belongs inside or outside the marks around it is
             // decided by what comes next — and if nothing does, it is dropped.
+            //
+            // Only for the marks that can't hold whitespace against a delimiter
+            // — the same test the leading-whitespace expulsion below uses. A
+            // mark paired without the flanking rules keeps whitespace perfectly
+            // well, so suppressing its delimiters doesn't move the whitespace
+            // outside the mark, it deletes the mark.
+            //
+            // `code` has to be asked for separately: it isn't a spanning mark,
+            // so it never reaches `wanted` — `inlineBody` writes it around the
+            // node's own text. It is also the case that matters most, since
+            // `` ` ` `` is a code span holding a space, and CommonMark's "strip
+            // one space from each end" rule explicitly spares a span that is
+            // all spaces.
             if node.isText, let text = node.text, !text.isEmpty,
-               text.allSatisfy({ $0 == " " || $0 == "\t" }) {
+               text.allSatisfy({ $0 == " " || $0 == "\t" }),
+               wanted[shared...].allSatisfy(expelsWhitespace),
+               !node.marks.contains(where: { $0.type.name == "code" }) {
                 closeDown(to: shared)
                 pending += text
                 continue
