@@ -121,6 +121,50 @@ func registerMarkdownDelimiterWhitespaceTests() {
            "**foo**",
            reads: doc(p(strong("foo"))))
 
+    // Everything above is a paragraph, and `out` is empty when its inline
+    // content starts being written. Every other block writes a prefix first —
+    // `> `, `- `, `## ` — and pulling whitespace back out of a closing
+    // delimiter walks backwards through that same buffer. It must not reach
+    // into the prefix. (It cannot: a mark only becomes active once its opening
+    // delimiter has been written, and none of `*`, `**`, `~~`, `==` is
+    // whitespace, so the walk always stops there. These check it.)
+    func inBlock(_ name: String, _ d: Node, _ markdown: String) {
+        test("md whitespace: \(name)") {
+            let md = d.toMarkdown().trimmingCharacters(in: .newlines)
+            try expectEqual(md, markdown)
+            try expectEqual(markedText(try MarkdownParser.parse(md, schema: schema)),
+                            markedText(d), "marks changed")
+        }
+    }
+    func quote(_ c: Node...) -> Node { node("blockquote", [:], c) }
+    func item(_ c: Node...) -> Node { node("bulletList", ["tight": .bool(true)],
+                                          [node("listItem", [:], c)]) }
+
+    inBlock("expelled out of a heading, not out of its marker",
+            doc(node("heading", ["level": .int(2)], [strong("Ti "), t("tle")])),
+            "## **Ti** tle")
+    inBlock("expelled out of a quoted paragraph, not out of its marker",
+            doc(quote(p(strong("foo "), t("bar")))),
+            "> **foo** bar")
+    inBlock("expelled out of a list item, not out of its bullet",
+            doc(item(p(strong("foo "), t("bar")))),
+            "- **foo** bar")
+    inBlock("expelled through two levels of block prefix",
+            doc(item(quote(p(strong("a "), t("b"))))),
+            "- > **a** b")
+    inBlock("a whitespace-only mark inside a quote writes no delimiters",
+            doc(quote(p(t("x"), strong(" "), t("y")))),
+            "> x y")
+    inBlock("a trailing hard break inside a quote is dropped",
+            doc(quote(p(t("foo"), brk()))),
+            "> foo")
+    inBlock("a trailing hard break inside a list item is dropped",
+            doc(item(p(t("foo"), brk()))),
+            "- foo")
+    inBlock("a heading of nothing but marked whitespace keeps its marker",
+            doc(node("heading", ["level": .int(1)], [strong(" ")])),
+            "# ")
+
     // A link is written as `[text](url)`, which has no flanking rule, so its
     // whitespace stays where the document put it.
     test("md whitespace: a link keeps its own whitespace") {

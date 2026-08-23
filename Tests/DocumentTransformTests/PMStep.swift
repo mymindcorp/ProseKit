@@ -52,6 +52,37 @@ func registerPMStepTests() {
     yes("merges removing overlapping styles", 1, 3, "-em", 2, 4, "-em")
     no("doesn't merge removing separate styles", 1, 2, "-em", 3, 4, "-em")
 
+
+    // A step whose slice the destination cannot hold has to come back as a
+    // failed result, not take the process down. Steps arrive from peers, stored
+    // documents and the clipboard, so one that no longer fits the document it
+    // meets is the ordinary case, not a programming error.
+    //
+    // Upstream needed a fix for this (prosemirror-model 1.25.9): their content
+    // check threw a `RangeError` where only a `ReplaceError` was caught. Swift's
+    // untyped `catch` in `StepResult.fromReplace` covers both, and this pins
+    // that it does.
+    test("PM step: an invalid replacement fails instead of crashing") {
+        // A code block holds text and nothing else.
+        let target = pre("code").node
+        let paragraph = Slice(content: Fragment.from(try basicSchema.node("paragraph")),
+                              openStart: 0, openEnd: 0)
+        let result = ReplaceStep(1, 1, paragraph).apply(target)
+        try expect(result.doc == nil, "the step should not have applied")
+        try expect(result.failed?.contains("Invalid content for node code_block") == true,
+                   "expected the content check to be what refused it, got: \(result.failed ?? "nil")")
+    }
+
+    // The same thing one level down: the slice fits where it lands, but closing
+    // the node around it doesn't validate.
+    test("PM step: an invalid replacement through a gap fails instead of crashing") {
+        let target = doc(pre("code")).node
+        let paragraph = Slice(content: Fragment.from(try basicSchema.node("paragraph")),
+                              openStart: 0, openEnd: 0)
+        let result = ReplaceStep(2, 2, paragraph).apply(target)
+        try expect(result.doc == nil, "the step should not have applied")
+    }
+
     test("PM Step map: ReplaceStep preserves the structure flag") {
         // A structural replace, mapped through an insertion earlier in the doc,
         // must stay structural (prosemirror-transform 1.10.4) — otherwise it can
