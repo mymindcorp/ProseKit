@@ -122,6 +122,29 @@ func registerWikiLinkAsyncTests() {
         }
     }
 
+    test("wiki: the query hands the provider a trimmed page name") {
+        MainActor.assumeIsolated {
+            // `[[ Arc` names the same page as `[[Arc` — the spacing after the
+            // brackets is spacing (the input rule trims the target too). Handing
+            // " Arc" to a substring-matching provider finds nothing, and the
+            // popup blinks out mid-word.
+            let (editor, source, log) = try! asyncWikiSetup(typing: "[[ Arc") { q, _ in
+                ["Architecture", "Archive"].filter { $0.hasPrefix(q) }
+            }
+            let context = source.context(editor)!
+            try! expectEqual(context.query, "Arc")
+            // The range still covers the space, so accepting replaces it.
+            try! expectEqual(editor.doc.textBetween(context.from, context.to), "[[ Arc")
+            var ready = false
+            source.onChange = { ready = true }
+            _ = source.entries(context.query, editor)
+            pumpMain { ready }
+            try! expectEqual(source.entries(context.query, editor).map(\.title),
+                             ["Architecture", "Archive"])
+            try! expectEqual(log.all, ["Arc"], "the provider never sees the spacing")
+        }
+    }
+
     // MARK: - Synchronous sources (only covered by the iOS view tests otherwise)
 
     test("wiki sync: provider results become entries whose apply inserts a wikiLink") {
@@ -142,6 +165,23 @@ func registerWikiLinkAsyncTests() {
             }
             try! expectEqual(target, "Architecture")
             try! expect(editor.wikiLinkSuggestion == nil, "applying consumes the `[[` query")
+        }
+    }
+
+    test("wiki sync: a spaced query is trimmed too, and accepting eats the space") {
+        MainActor.assumeIsolated {
+            let editor = try! Editor(extensions: fullKit(wikiLinkSuggestions: { q in
+                ["Home", "Architecture"].filter { q.isEmpty || $0.hasPrefix(q) }
+            }))
+            try! type(editor, "[[  Arch")
+            let source = editor.suggestionSources.first { $0.context(editor) != nil }!
+            let context = source.context(editor)!
+            try! expectEqual(context.query, "Arch")
+            let entries = source.entries(context.query, editor)
+            try! expectEqual(entries.map(\.title), ["Architecture"])
+            entries[0].apply(editor)
+            try! expectEqual(editor.doc.textContent, "Architecture",
+                             "the brackets and the spacing go with the query")
         }
     }
 

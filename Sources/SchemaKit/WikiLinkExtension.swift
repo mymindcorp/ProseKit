@@ -101,9 +101,23 @@ public final class WikiLinkExtension: NodeExtension {
 }
 
 /// The active `[[` query for this editor as a generic SuggestionContext, or nil.
+///
+/// The query is trimmed: the spacing after `[[` is spacing, not part of the page
+/// name — `[[ Getting` names the same page as `[[Getting`, which is what the
+/// `[[…]]` input rule's trimmed target and the ghost brackets' mirrored spaces
+/// both already assume. A provider that substring-matches would find nothing for
+/// " Getting" and the popup would blink out mid-word. The range stays untrimmed,
+/// so accepting still replaces the spaces along with the query.
 @MainActor
 private func wikiLinkContext(_ editor: Editor) -> SuggestionContext? {
-    editor.wikiLinkSuggestion.map { SuggestionContext(from: $0.from, to: $0.to, query: $0.query) }
+    editor.wikiLinkSuggestion.map {
+        SuggestionContext(from: $0.from, to: $0.to, query: trimmedQuery($0.query))
+    }
+}
+
+/// A `[[` query as a provider should see it (see `wikiLinkContext`).
+private func trimmedQuery(_ query: String) -> String {
+    query.trimmingCharacters(in: .whitespaces)
 }
 
 /// Maps a list of target page ids to popup entries for a `[[` range. The range is
@@ -126,7 +140,7 @@ final class WikiLinkSuggestionSource: SuggestionSource {
     func context(_ editor: Editor) -> SuggestionContext? { wikiLinkContext(editor) }
     func entries(_ query: String, _ editor: Editor) -> [SuggestionEntry] {
         guard let suggestion = editor.wikiLinkSuggestion else { return [] }
-        return wikiLinkEntries(provider(query), from: suggestion.from, to: suggestion.to)
+        return wikiLinkEntries(provider(trimmedQuery(query)), from: suggestion.from, to: suggestion.to)
     }
 }
 

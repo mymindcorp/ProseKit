@@ -750,7 +750,7 @@ struct EditorContainer: UIViewRepresentable {
         // superseded queries, and repaints the popup when results arrive; the `/`
         // slash menu stays synchronous (included by `fullKit`).
         let editor = try! Editor(extensions: fullKit(wikiLinkAsyncSuggestions: { query in
-            try? await Task.sleep(for: .milliseconds(250)) // pretend to hit the index
+            try? await Task.sleep(for: .milliseconds(50)) // pretend to hit the index
             let pages = ["Home", "Getting Started", "Architecture", "ProseMirror", "Tiptap",
                          "Document Model", "Commands", "Keymap", "Schema", "Releases", "Roadmap"]
             guard !query.isEmpty else { return pages }
