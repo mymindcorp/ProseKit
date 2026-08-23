@@ -72,6 +72,17 @@ public final class DocumentView: UIView {
         didSet { blockCache.clear(); invalidateLayout() }
     }
 
+    /// The host's glyph for what a `[[wiki-link]]` points at — its own icon for
+    /// that target's kind. Nil, or a nil answer, leaves the chip iconless.
+    ///
+    /// Answer synchronously: the glyph is baked into the typeset block, so like
+    /// the syntax highlighter, setting this drops the cache. `theme.wikiLink`
+    /// reserves the box either way, so a later answer repaints rather than
+    /// re-measures.
+    public var wikiLinkIcon: ((Node) -> UIImage?)? {
+        didSet { blockCache.clear(); invalidateLayout() }
+    }
+
     /// Optional hook returning a badge label for a code block (e.g. its detected
     /// or explicit language) — assign `EditorSyntax.makeCodeLanguageLabel()`.
     /// Nil, or a nil return, draws no badge.
@@ -230,7 +241,7 @@ public final class DocumentView: UIView {
                                realizeWindow: realizeWindow(),
                                syntaxHighlighter: syntaxHighlighter,
                                codeLanguageLabel: codeLanguageLabel,
-                               mathRenderer: mathRenderer)
+                               mathRenderer: mathRenderer, wikiLinkIcon: wikiLinkIcon)
         layout = l
         layoutWidth = bounds.width
         loadPendingImages(l.pendingImages)

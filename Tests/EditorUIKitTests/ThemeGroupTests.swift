@@ -72,6 +72,67 @@ final class ThemeGroupTests: XCTestCase {
                       "nil opts out")
     }
 
+    // MARK: - Wiki-link chips
+
+    private func wikiDoc() throws -> Node {
+        try schema.node("doc", [:], content: Fragment.from([
+            try schema.node("paragraph", [:], content: Fragment.from([
+                text("see "),
+                try schema.node("wikiLink", ["target": .string("Soccer Training Session")]),
+            ])),
+        ]))
+    }
+
+    func testWikiLinkChipIsOptIn() throws {
+        var theme = referenceTheme()
+        editor.setContent(try wikiDoc())
+        XCTAssertTrue(DocumentLayout(doc: editor.doc, width: 320, theme: theme).linkChips.isEmpty,
+                      "plain text until a theme asks for a chip")
+        theme.wikiLink.background = .systemFill
+        let chips = DocumentLayout(doc: editor.doc, width: 320, theme: theme).linkChips
+        XCTAssertEqual(chips.count, 1, "one chip per atom")
+        XCTAssertEqual(chips.first.map { $0.to - $0.from }, 1, "an atom is one position wide")
+    }
+
+    func testWikiLinkReservesItsPaddingAndIconInsideTheAtom() throws {
+        var theme = referenceTheme()
+        editor.setContent(try wikiDoc())
+        let bare = DocumentLayout(doc: editor.doc, width: 320, theme: theme)
+        let bareWidth = bare.selectionRects(from: 5, to: 6, clipY: nil).first?.width ?? 0
+        XCTAssertGreaterThan(bareWidth, 0, "the atom draws something to measure")
+
+        // Padding widens the atom itself, so neighbouring text can't sit under
+        // the chip drawn behind it.
+        theme.wikiLink.paddingX = 0.5
+        let padded = DocumentLayout(doc: editor.doc, width: 320, theme: theme)
+        let paddedWidth = padded.selectionRects(from: 5, to: 6, clipY: nil).first?.width ?? 0
+        XCTAssertGreaterThan(paddedWidth, bareWidth, "padding is part of the advance")
+
+        // The icon's box is reserved when a provider exists, whatever it answers.
+        let iconless = DocumentLayout(doc: editor.doc, width: 320, theme: theme,
+                                      wikiLinkIcon: { _ in nil })
+        let reserved = iconless.selectionRects(from: 5, to: 6, clipY: nil).first?.width ?? 0
+        XCTAssertGreaterThan(reserved, paddedWidth, "a nil glyph still reserves its box")
+    }
+
+    func testWikiLinkIconDrawsInsideTheChip() throws {
+        var theme = referenceTheme()
+        theme.wikiLink.background = .systemFill
+        editor.setContent(try wikiDoc())
+        let glyph = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).image { _ in }
+        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: theme,
+                                    wikiLinkIcon: { $0.type.name == "wikiLink" ? glyph : nil })
+
+        let icons = layout.decorations.compactMap { decoration -> CGRect? in
+            if case let .image(image, rect) = decoration, image === glyph { return rect }
+            return nil
+        }
+        XCTAssertEqual(icons.count, 1, "the glyph is drawn once")
+        let chip = try XCTUnwrap(layout.selectionRects(from: 5, to: 6, clipY: nil).first)
+        XCTAssertTrue(chip.insetBy(dx: -1, dy: -8).contains(try XCTUnwrap(icons.first)),
+                      "the glyph sits inside the atom it belongs to")
+    }
+
     func testCodeBlockPaddingInsetsTheTextAndSizesTheBackground() throws {
         let code = try schema.node("codeBlock", [:], content: Fragment.from([text("let x = 1")]))
         editor.setContent(try schema.node("doc", [:], content: Fragment.from([code])))

@@ -121,6 +121,9 @@ struct LocalTextBlock {
     /// otherwise lose its backgrounds entirely.
     let highlights: [(from: Int, to: Int, color: UIColor)]
     let codeBackgrounds: [(from: Int, to: Int, color: UIColor)]
+    /// Wiki-link chips: one per atom, drawn behind it. Its own list rather than
+    /// a code pill because the two carry different padding and radius.
+    let linkChips: [(from: Int, to: Int, color: UIColor)]
 }
 
 /// Caches typeset blocks by (node, width). Mark-and-sweep keeps it bounded to
@@ -251,6 +254,8 @@ final class DocumentLayout {
     /// run. Kept separate from `highlights` so the (demo) drying-ink renderer,
     /// which consumes `highlights`, never textures a code pill.
     private(set) var codeBackgrounds: [(from: Int, to: Int, color: UIColor)] = []
+    /// Wiki-link chips, painted behind each atom in `theme.wikiLink` colours.
+    private(set) var linkChips: [(from: Int, to: Int, color: UIColor)] = []
     /// Which number each footnote label shows as, in reading order. A block
     /// on its own can't know its place, so the whole document is numbered once
     /// up front.
@@ -282,6 +287,10 @@ final class DocumentLayout {
     private let blockCache: TextBlockLayoutCache?
     /// Optional host hook to color code-block text (nil = plain monospaced).
     private let syntaxHighlighter: SyntaxHighlighter?
+    /// The host's glyph for what a wiki-link points at, by node. The box it
+    /// draws into is reserved either way (see `DocumentTheme.WikiLink`), so a
+    /// nil answer costs a gap and nothing else.
+    private let wikiLinkIcon: ((Node) -> UIImage?)?
     /// Optional host hook returning a badge label (e.g. detected language) for a
     /// code block, given its text and `language` attribute. Nil = no badge.
     private let codeLanguageLabel: ((String, String?) -> String?)?
@@ -319,10 +328,12 @@ final class DocumentLayout {
          blockCache: TextBlockLayoutCache? = nil, previous: DocumentLayout? = nil,
          realizeWindow: ClosedRange<CGFloat>? = nil, syntaxHighlighter: SyntaxHighlighter? = nil,
          codeLanguageLabel: ((String, String?) -> String?)? = nil,
-         mathRenderer: MathRenderer? = nil) {
+         mathRenderer: MathRenderer? = nil,
+         wikiLinkIcon: ((Node) -> UIImage?)? = nil) {
         self.theme = theme
         self.width = width
         self.imageProvider = imageProvider
+        self.wikiLinkIcon = wikiLinkIcon
         self.blockCache = blockCache
         self.syntaxHighlighter = syntaxHighlighter
         self.codeLanguageLabel = codeLanguageLabel
@@ -1213,6 +1224,9 @@ final class DocumentLayout {
         for c in local.codeBackgrounds {
             codeBackgrounds.append((from: contentStart + c.from, to: contentStart + c.to, color: c.color))
         }
+        for chip in local.linkChips {
+            linkChips.append((from: contentStart + chip.from, to: contentStart + chip.to, color: chip.color))
+        }
 
         let frame = CGRect(x: x, y: y, width: width, height: local.height)
         blocks.append(TextBlock(
@@ -1234,7 +1248,7 @@ final class DocumentLayout {
     /// block-relative document offsets, independent of its eventual position —
     /// cacheable by (node, width).
     private func typesetBlock(_ node: Node, width: CGFloat) -> LocalTextBlock {
-        let (attr, segments, imageAtoms, mathAtoms, highlights, codeBackgrounds) =
+        let (attr, segments, imageAtoms, mathAtoms, highlights, codeBackgrounds, linkChips) =
             buildAttributed(node, width: width)
         let rtl = isRightToLeft(attr.string)
         let base = NSMutableAttributedString(attributedString:
@@ -1304,7 +1318,8 @@ final class DocumentLayout {
         }
         return LocalTextBlock(lines: lines, segments: segments, attributed: base, height: lineY,
                               imageAtoms: imageAtoms, mathAtoms: mathAtoms,
-                              highlights: highlights, codeBackgrounds: codeBackgrounds)
+                              highlights: highlights, codeBackgrounds: codeBackgrounds,
+                              linkChips: linkChips)
     }
 
     /// Every document offset it produces is relative to the block's content
@@ -1313,6 +1328,7 @@ final class DocumentLayout {
         -> (NSMutableAttributedString, [Segment],
             [(attrIndex: Int, image: UIImage, size: CGSize)],
             [(attrIndex: Int, docOffset: Int, rendering: MathRendering)],
+            [(from: Int, to: Int, color: UIColor)],
             [(from: Int, to: Int, color: UIColor)],
             [(from: Int, to: Int, color: UIColor)]) {
         let result = NSMutableAttributedString()
@@ -1325,6 +1341,7 @@ final class DocumentLayout {
         // rebasing at the call site is what keeps them.
         var blockHighlights: [(from: Int, to: Int, color: UIColor)] = []
         var blockCodeBackgrounds: [(from: Int, to: Int, color: UIColor)] = []
+        var blockLinkChips: [(from: Int, to: Int, color: UIColor)] = []
         let blockFont = theme.blockFont(node)
         var docPos = 0
 
@@ -1430,12 +1447,41 @@ final class DocumentLayout {
                                  .baselineOffset: blockFont.pointSize * 0.35,
                                  .foregroundColor: theme.link.color]
                 }
-                if child.type.name == "wikiLink", theme.link.underline {
-                    atomAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+                if child.type.name == "wikiLink" {
+                    atomAttrs[.foregroundColor] = theme.wikiLink.color ?? theme.link.color
+                    if theme.wikiLink.underline {
+                        atomAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+                    }
                 }
                 let attrStart = result.length
-                result.append(NSAttributedString(string: display, attributes: atomAttrs))
-                segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: (display as NSString).length, text: nil))
+                if child.type.name == "wikiLink" {
+                    // A chip's padding and its icon's box are part of the atom's
+                    // own advance, carried by a zero-width space at each end that
+                    // a run delegate widens. Reserved whether or not the host has
+                    // a glyph, so an icon arriving later repaints without moving
+                    // a single line of text.
+                    let iconBox = theme.points(theme.wikiLink.iconSize)
+                    result.append(spacer(width: theme.points(theme.wikiLink.paddingX), font: blockFont))
+                    if let provider = wikiLinkIcon {
+                        result.append(spacer(width: iconBox, font: blockFont))
+                        if let icon = provider(child) {
+                            // Drawn by the inline-image path, which sits an atom
+                            // on the baseline.
+                            imageAtoms.append((attrIndex: result.length - 1, image: icon,
+                                               size: CGSize(width: iconBox, height: iconBox)))
+                        }
+                        result.append(spacer(width: theme.points(theme.wikiLink.iconGap), font: blockFont))
+                    }
+                    result.append(NSAttributedString(string: display, attributes: atomAttrs))
+                    result.append(spacer(width: theme.points(theme.wikiLink.paddingX), font: blockFont))
+                    if let chip = theme.wikiLink.background {
+                        blockLinkChips.append((from: docPos, to: docPos + 1, color: chip))
+                    }
+                } else {
+                    result.append(NSAttributedString(string: display, attributes: atomAttrs))
+                }
+                segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart,
+                                        attrLen: result.length - attrStart, text: nil))
                 docPos += 1
                 if child.type.name == "image", let src = child.attrs["src"]?.stringValue, !src.isEmpty {
                     pendingImages.append(child)
@@ -1477,7 +1523,7 @@ final class DocumentLayout {
                 }
             }
         }
-        return (result, segments, imageAtoms, mathAtoms, blockHighlights, blockCodeBackgrounds)
+        return (result, segments, imageAtoms, mathAtoms, blockHighlights, blockCodeBackgrounds, blockLinkChips)
     }
 
     // MARK: - Geometry queries
@@ -1911,6 +1957,16 @@ final class DocumentLayout {
                              cornerRadius: theme.points(theme.code.inline.cornerRadius)).fill()
             }
         }
+        // Wiki-link chips, behind the atom. The atom's advance already holds the
+        // horizontal padding (see `buildAttributed`), so only the vertical
+        // inset overhangs — the same trade the code pill makes.
+        for chip in linkChips where inBand(chip.from, chip.to) {
+            for rect in selectionRects(from: chip.from, to: chip.to, clipY: clipY) where visible(rect.minY, rect.maxY) {
+                chip.color.setFill()
+                UIBezierPath(roundedRect: rect.insetBy(dx: 0, dy: -theme.points(theme.wikiLink.paddingY)),
+                             cornerRadius: theme.points(theme.wikiLink.cornerRadius)).fill()
+            }
+        }
         // Highlight-mark backgrounds, behind the text (CoreText won't draw them).
         if let highlightRenderer {
             // Host-drawn (e.g. a textured "drying ink" effect): hand it the visible runs.
@@ -1994,6 +2050,19 @@ private func makeBoxRunDelegate(width: CGFloat, ascent: CGFloat, descent: CGFloa
 }
 
 /// An inline image hangs from the baseline, so it reserves height above it only.
+/// A box of `width` and no glyph: how an atom reserves space it draws into
+/// itself (a chip's padding, an icon's box).
+///
+/// `\u{fffc}` rather than a zero-width space, which CoreText is free to discard
+/// as ignorable — taking the run delegate, and the reserved width, with it.
+private func spacer(width: CGFloat, font: UIFont) -> NSAttributedString {
+    NSAttributedString(string: "\u{fffc}", attributes: [
+        .font: font,
+        kCTRunDelegateAttributeName as NSAttributedString.Key:
+            makeBoxRunDelegate(width: width, ascent: font.ascender, descent: -font.descender),
+    ])
+}
+
 private func makeImageRunDelegate(_ size: CGSize) -> CTRunDelegate {
     makeBoxRunDelegate(width: size.width, ascent: size.height, descent: 0)
 }

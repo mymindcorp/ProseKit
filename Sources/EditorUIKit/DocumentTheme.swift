@@ -85,6 +85,34 @@ public struct DocumentTheme: Sendable, Equatable {
     }
     public var link = Link()
 
+    /// A `[[wiki-link]]`: an inline atom naming something in the host's own
+    /// store. Plain themed text by default, which is what it has always been;
+    /// set `background` to draw it as a chip, and give the view a
+    /// `wikiLinkIcon` to put the target's own glyph inside one.
+    public struct WikiLink: Sendable, Equatable {
+        /// nil = `link.color`, so a wiki-link follows ordinary links unless a
+        /// theme says otherwise.
+        public var color: UIColor?
+        /// The chip behind the label. nil (the default) draws none.
+        public var background: UIColor?
+        /// Reserved *inside* the atom's own advance rather than added around it,
+        /// so neighbouring text can't sit under the chip.
+        public var paddingX: Em = 0.35
+        /// Vertical only — it overhangs the line the way an inline-code pill does.
+        public var paddingY: Em = 0.1
+        public var cornerRadius: Em = 0.4
+        /// The square box a `wikiLinkIcon` glyph is drawn into, and the gap
+        /// between it and the label. The box is reserved whether or not the host
+        /// answers with an image, so a late icon repaints without re-measuring.
+        public var iconSize: Em = 0.9
+        public var iconGap: Em = 0.2
+        /// Underlining a chip is one decoration too many, so this does not
+        /// follow `link.underline` unless a theme opts in.
+        public var underline = false
+        public init() {}
+    }
+    public var wikiLink = WikiLink()
+
     /// Code: the face and color both forms share, then what distinguishes a
     /// run inside a sentence from a block standing on its own.
     public struct Code: Sendable, Equatable {
