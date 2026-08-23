@@ -6,13 +6,13 @@ public import EditorStateKit
 /// One entry in the slash (`/`) command menu: a display title, search keywords,
 /// and the named command to run when chosen.
 public struct SlashCommandItem: Sendable, Equatable {
-    public var title: String
-    public var keywords: [String]
-    public var command: String
+    public let title: String
+    public let keywords: [String]
+    public let command: String
     /// An SF Symbol name shown as the row's leading glyph.
-    public var icon: String?
+    public let icon: String?
     /// A short description shown under the title.
-    public var subtitle: String?
+    public let subtitle: String?
     public init(title: String, keywords: [String] = [], command: String, icon: String? = nil, subtitle: String? = nil) {
         self.title = title
         self.keywords = keywords
@@ -31,9 +31,9 @@ public struct SlashCommandItem: Sendable, Equatable {
 
 /// The active slash-menu query and the document range of the trigger (`/query`).
 public struct SlashMenuState: Equatable {
-    public var query: String
-    public var from: Int   // position of the `/`
-    public var to: Int     // the cursor
+    public let query: String
+    public let from: Int   // position of the `/`
+    public let to: Int     // the cursor
 }
 
 public let slashMenuKey = PluginKey<SlashMenuState?>("slashMenu")

@@ -11,8 +11,8 @@ public final class ContentMatch: @unchecked Sendable {
     var wrapCache: [(NodeType, [NodeType]?)] = []
 
     struct Edge {
-        var type: NodeType
-        var next: ContentMatch
+        let type: NodeType
+        let next: ContentMatch
     }
 
     init(validEnd: Bool) {

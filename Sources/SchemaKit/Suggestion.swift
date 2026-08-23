@@ -3,9 +3,9 @@ import EditorStateKit
 
 /// The active query for a suggestion menu and the document range it replaces.
 public struct SuggestionContext: Equatable {
-    public var from: Int
-    public var to: Int
-    public var query: String
+    public let from: Int
+    public let to: Int
+    public let query: String
     public init(from: Int, to: Int, query: String) {
         self.from = from
         self.to = to
@@ -15,12 +15,12 @@ public struct SuggestionContext: Equatable {
 
 /// One selectable row in a suggestion popup, with the action to run when chosen.
 public struct SuggestionEntry {
-    public var title: String
-    public var subtitle: String?
+    public let title: String
+    public let subtitle: String?
     /// An optional SF Symbol name shown as a leading glyph (the renderer falls
     /// back to a generic icon when nil).
-    public var icon: String?
-    public var apply: (Editor) -> Void
+    public let icon: String?
+    public let apply: (Editor) -> Void
     public init(title: String, subtitle: String? = nil, icon: String? = nil, apply: @escaping (Editor) -> Void) {
         self.title = title
         self.subtitle = subtitle

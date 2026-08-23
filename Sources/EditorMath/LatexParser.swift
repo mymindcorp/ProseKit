@@ -82,10 +82,10 @@ public struct ArrayColumns: Sendable, Equatable {
 
     /// One entry per declared column. A body with more columns than the spec
     /// declares centers the extras, as TeX does for an over-wide row.
-    public var alignments: [Alignment]
+    public let alignments: [Alignment]
     /// Where vertical rules sit, as column indices: `i` is a rule *before*
     /// column `i`, and `alignments.count` a rule after the last column.
-    public var rules: Set<Int>
+    public let rules: Set<Int>
 
     /// The alignment of column `index`, defaulting to centered.
     func alignment(at index: Int) -> Alignment {
