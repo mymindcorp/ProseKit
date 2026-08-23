@@ -43,6 +43,11 @@ final class WikiLinkTriggerTests: XCTestCase {
         type(view, "[[Page")
     }
 
+    private func moveCaret(_ view: EditorTextView, to pos: Int) {
+        let editor = view.editor
+        editor.dispatch(editor.state.tr.setSelection(TextSelection.near(editor.doc.resolve(pos))))
+    }
+
     private func rendered(_ view: EditorTextView) throws -> NSAttributedString {
         try XCTUnwrap(view.ensureLayout().blocks.first).attributed
     }
@@ -106,14 +111,55 @@ final class WikiLinkTriggerTests: XCTestCase {
 
     /// A space after the opening brackets is mirrored before the closing ones —
     /// and not doubled once the reader types it themselves.
-    func testGhostBracketsMirrorASpaceAfterTheOpening() throws {
+    func testGhostBracketsMirrorTheSpacesAfterTheOpening() throws {
         for (typed, expected) in [("[[Page", "[[Page]]"),
                                   ("[[ Page", "[[ Page ]]"),
-                                  ("[[ Page ", "[[ Page ]]")] {
+                                  ("[[  Page", "[[  Page  ]]"),
+                                  ("[[   Page", "[[   Page   ]]"),
+                                  // The brackets hug the word, so a space typed
+                                  // after it stays outside them.
+                                  ("[[ Page ", "[[ Page ]] "),
+                                  ("[[", "[[]]"),
+                                  ("[[ ", "[[ ]]")] {
             let view = try makeView { $0.wikiLink.trigger.showsClosingBrackets = true }
             type(view, typed)
             XCTAssertEqual(try rendered(view).string, expected, "typed \(typed)")
         }
+    }
+
+    /// The brackets hold the end of the word, not the caret: arrowing back
+    /// through a query mustn't drag them — and the text after them — along.
+    func testGhostBracketsStayPutAsTheCaretMovesThroughTheQuery() throws {
+        let view = try makeView { $0.wikiLink.trigger.showsClosingBrackets = true }
+        typeMidLine(view)
+        XCTAssertEqual(try rendered(view).string, "before [[Page]] after")
+        let end = try XCTUnwrap(view.editor.wikiLinkSuggestion).to
+
+        // Left through "Page", one position at a time, then back out to the end.
+        for caret in stride(from: end - 1, through: end - 4, by: -1) {
+            moveCaret(view, to: caret)
+            XCTAssertNotNil(view.editor.wikiLinkSuggestion, "the trigger should stay open at \(caret)")
+            XCTAssertEqual(try rendered(view).string, "before [[Page]] after",
+                           "the brackets moved with the caret at \(caret)")
+        }
+        // And out the far side: past the space, the word it hugs is behind it.
+        moveCaret(view, to: end + 1)
+        XCTAssertEqual(try rendered(view).string, "before [[Page]] after",
+                       "the brackets moved when the caret left the word")
+    }
+
+    /// Pressing right at the end of the query is the case that gave this away:
+    /// the brackets followed the caret, so every keypress shifted the line.
+    func testPressingRightDoesNotMoveTheGhost() throws {
+        let view = try makeView { $0.wikiLink.trigger.showsClosingBrackets = true }
+        typeMidLine(view)
+        let layout = view.ensureLayout()
+        let tail = try XCTUnwrap(layout.caretRect(at: layout.blocks.first!.contentEnd))
+        let end = try XCTUnwrap(view.editor.wikiLinkSuggestion).to
+        moveCaret(view, to: end + 1)
+        let after = view.ensureLayout()
+        XCTAssertEqual(try XCTUnwrap(after.caretRect(at: after.blocks.first!.contentEnd)).minX,
+                       tail.minX, accuracy: 0.5, "the line reflowed when the caret moved")
     }
 
     /// The ghost sits at the cursor, so text after it reflows rather than being

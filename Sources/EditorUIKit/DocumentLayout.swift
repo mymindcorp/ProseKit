@@ -113,8 +113,9 @@ struct WikiLinkChip {
 struct WikiLinkTrigger: Equatable {
     /// The document range to style — the `[[` alone, or the query with it.
     let range: Range<Int>
-    /// The cursor: where the closing brackets would be typed.
-    let cursor: Int
+    /// Where the ghost closing brackets are drawn — the end of the link's last
+    /// word, which is not necessarily where the caret is.
+    let closingAt: Int
     /// Closing brackets to draw after the cursor without putting them in the
     /// document — `"]]"`, or `" ]]"` to mirror a space typed after the opening.
     /// Nil draws none.
@@ -1397,10 +1398,10 @@ final class DocumentLayout {
     private func localTrigger(contentStart: Int, size: Int) -> WikiLinkTrigger? {
         guard let trigger = wikiLinkTrigger,
               trigger.range.lowerBound >= contentStart, trigger.range.upperBound <= contentStart + size,
-              trigger.cursor >= contentStart, trigger.cursor <= contentStart + size else { return nil }
+              trigger.closingAt >= contentStart, trigger.closingAt <= contentStart + size else { return nil }
         return WikiLinkTrigger(
             range: (trigger.range.lowerBound - contentStart)..<(trigger.range.upperBound - contentStart),
-            cursor: trigger.cursor - contentStart, closing: trigger.closing)
+            closingAt: trigger.closingAt - contentStart, closing: trigger.closing)
     }
 
     /// Set the typed `[[` apart, and draw the closing brackets it hasn't got
@@ -1430,7 +1431,7 @@ final class DocumentLayout {
             }
         }
         guard let closing = trigger.closing, !closing.isEmpty else { return }
-        let index = attrIndex(forDocPos: trigger.cursor, in: segments)
+        let index = attrIndex(forDocPos: trigger.closingAt, in: segments)
         guard index >= 0, index <= text.length else { return }
         // The face of the character it completes, so the ghost matches the text
         // it's standing in for — but none of its decoration: an atom's reserved
@@ -1450,7 +1451,7 @@ final class DocumentLayout {
         if let i = segments.firstIndex(where: { $0.attrStart < index && index < $0.attrStart + $0.attrLen }),
            let runText = segments[i].text {
             let seg = segments[i]
-            let split = runText.index(runText.startIndex, offsetBy: trigger.cursor - seg.docStart,
+            let split = runText.index(runText.startIndex, offsetBy: trigger.closingAt - seg.docStart,
                                       limitedBy: runText.endIndex) ?? runText.endIndex
             let head = String(runText[..<split]), tail = String(runText[split...])
             segments[i] = Segment(docStart: seg.docStart, docLen: head.count, attrStart: seg.attrStart,
@@ -1463,7 +1464,7 @@ final class DocumentLayout {
         // Zero document length: the ghost is not in the document, so no position
         // may land in it — the run before it owns the cursor's index.
         let at = segments.firstIndex { $0.attrStart >= index + length } ?? segments.count
-        segments.insert(Segment(docStart: trigger.cursor, docLen: 0, attrStart: index,
+        segments.insert(Segment(docStart: trigger.closingAt, docLen: 0, attrStart: index,
                                 attrLen: length, text: nil), at: at)
     }
 
