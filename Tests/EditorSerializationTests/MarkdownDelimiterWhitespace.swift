@@ -15,6 +15,7 @@ import TestHarness
 private func brk() -> Node { node("hardBreak", [:]) }
 private func strike(_ s: String) -> Node { schema.text(s, [schema.mark("strike")]) }
 private func highlight(_ s: String) -> Node { schema.text(s, [schema.mark("highlight")]) }
+private func codeSpan(_ s: String) -> Node { schema.text(s, [schema.mark("code")]) }
 private func boldBrk() -> Node {
     try! schema.nodes["hardBreak"]!.create(marks: [schema.mark("bold")])
 }
@@ -122,6 +123,29 @@ func registerMarkdownDelimiterWhitespaceTests() {
            doc(p(t("x"), strong(" "), t("y"))),
            "x y",
            reads: doc(p("x y")))
+
+    // ...but only for the marks that can't hold it. A code span made of nothing
+    // but whitespace is legal CommonMark — `` ` ` `` holds a space, and the
+    // "strip one space from each end" rule explicitly spares a span that is all
+    // spaces. Suppressing the backticks here doesn't move the space outside the
+    // mark, it drops the mark: CommonMark spec examples 138 and 334 stopped
+    // round-tripping when this case shared the flanking marks' shortcut.
+    writes("a code span of nothing but whitespace keeps its delimiters",
+           doc(p(t("x"), codeSpan(" "), t("y"))),
+           "x` `y",
+           reads: doc(p(t("x"), codeSpan(" "), t("y"))))
+
+    writes("the same for a wider run of whitespace",
+           doc(p(codeSpan("  "))),
+           "`  `",
+           reads: doc(p(codeSpan("  "))))
+
+    // A run paired without the flanking rules is the other side of the same
+    // coin: it is entitled to the whitespace, so it keeps its delimiters too.
+    writes("a whitespace-only strike keeps its delimiters",
+           doc(p(t("x"), strike(" "), t("y"))),
+           "x~~ ~~y",
+           reads: doc(p(t("x"), strike(" "), t("y"))))
 
     // Whitespace held back at the end of a block is dropped rather than
     // written: no parser keeps trailing spaces on a line, and two of them would
