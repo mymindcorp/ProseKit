@@ -219,7 +219,7 @@ test("wrappingInputRule turns '- ' into a bullet list") {
     try expectEqual(out!.doc, B.doc(B.ul(B.li(B.p("")))))
 }
 
-registerPMCommandsTests(); registerPMHistoryTests(); registerPMKeymapTests(); registerPMInputRulesTests()
+registerPMCommandsTests(); registerSplitBlockSchemaTests(); registerPMHistoryTests(); registerPMKeymapTests(); registerPMInputRulesTests()
 
 registerKeyStrokeTests()
 TestSuite.main("EditorCommandsTests", collector.all)

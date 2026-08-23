@@ -120,6 +120,10 @@ func registerPMCommandsTests() {
     c("splitBlock: splits a heading in two when in the middle") { try run(doc(h1("foo<a>bar")), splitBlock, doc(h1("foo"), h1("bar"))) }
     c("splitBlock: deletes selected content") { try run(doc(p("fo<a>ob<b>ar")), splitBlock, doc(p("fo"), p("ar"))) }
     c("splitBlock: splits a parent block when a node is selected") { try run(doc(ol(li(p("a")), "<a>", li(p("b")), li(p("c")))), splitBlock, doc(ol(li(p("a"))), ol(li(p("b")), li(p("c"))))) }
+    c("splitBlock: splits off a normal paragraph when splitting at the start of a textblock") { try run(doc(h1("<a>foo")), splitBlock, doc(p(), h1("foo"))) }
+    c("splitBlock: leaves the leftover alone when splitting in the middle") { try run(doc(h1("fo<a>o")), splitBlock, doc(h1("fo"), h1("o"))) }
+    c("splitBlock: splits at the start of a nested textblock") { try run(doc(blockquote(p("<a>foo"))), splitBlock, doc(blockquote(p(), p("foo")))) }
+    c("splitBlock: deletes a selection that spans blocks and splits what is left") { try run(doc(h1("fo<a>o"), p("ba<b>r")), splitBlock, doc(h1("fo"), h1("r"))) }
     c("splitBlock: doesn't split the parent block when at the start") { try run(doc(ol("<a>", li(p("a")), li(p("b")), li(p("c")))), splitBlock, nil) }
 
     // The block being split is the one the cursor lands in once the selection

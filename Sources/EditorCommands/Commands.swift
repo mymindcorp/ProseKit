@@ -414,37 +414,76 @@ public let splitBlock: Command = splitBlockAs(nil)
 public func splitBlockAs(_ splitNode: (@Sendable (_ node: Node, _ atEnd: Bool) -> NodeTypeWithAttrs?)?) -> Command {
     { state, dispatch, _ in
         let sel = state.selection
-        let from = sel.resolvedFrom
-        if sel is NodeSelection, (sel as! NodeSelection).node.isBlock {
+        if let nodeSel = sel as? NodeSelection, nodeSel.node.isBlock {
+            let from = sel.resolvedFrom
             guard from.parentOffset > 0, canSplit(state.doc, from.pos) else { return false }
             if let dispatch, let tr = try? state.tr.split(from.pos) { dispatch(tr.scrollIntoView()) }
             return true
         }
-        if !from.parent.isBlock { return false }
-        if let dispatch {
-            let tr = state.tr
-            if !sel.empty, sel is TextSelection || sel is AllSelection { tr.deleteSelection() }
-            // Everything below is measured on the document the split actually
-            // lands in, and on the block the cursor ends up in. A selection
-            // running from a heading into a paragraph leaves the cursor in the
-            // heading, so that — not the paragraph the selection happened to
-            // end in — is the block whose split type is being chosen.
-            let at = tr.selection.resolvedFrom
-            let atEnd = at.parentOffset == at.parent.content.size
-            let deflt = at.depth == 0 ? nil : defaultBlockAt(at.node(-1).contentMatchAt(at.indexAfter(-1)))
-            let splitType = splitNode?(at.parent, atEnd)
-            var typesAfter: [NodeTypeWithAttrs?]? = splitType.map { [$0] }
-            if typesAfter == nil, atEnd, let deflt {
-                typesAfter = [NodeTypeWithAttrs(deflt)]
+        let tr = state.tr
+        if !sel.empty, sel is TextSelection || sel is AllSelection { tr.deleteSelection() }
+        // Everything below is measured on the document the split actually
+        // lands in, and on the block the cursor ends up in. A selection
+        // running from a heading into a paragraph leaves the cursor in the
+        // heading, so that — not the paragraph the selection happened to
+        // end in — is the block whose split type is being chosen.
+        let at = tr.selection.resolvedFrom
+        // Upstream bails on a depth-0 *selection*, which rules out an
+        // `AllSelection` before it has deleted anything; in a browser the
+        // contenteditable then does the delete-and-split itself and the view
+        // reads it back. There is no such fallback here, so the check asks
+        // about the cursor the delete leaves behind — which for select-all is
+        // inside a textblock, and splits, as it does upstream on screen.
+        if at.depth == 0 { return false }
+        let mapFrom = tr.steps.count
+
+        // Walk out to the nearest block. Anything crossed on the way is an
+        // inline node the cursor sits inside — a link, a footnote — and gets a
+        // `nil` type so the split reproduces it as it is, one level per entry.
+        var types: [NodeTypeWithAttrs?] = []
+        var splitDepth = at.depth
+        var deflt: NodeType?
+        var atEnd = false
+        var atStart = false
+        var d = at.depth
+        while true {
+            let node = at.node(d)
+            if node.isBlock {
+                atEnd = at.end(d) == at.pos + (at.depth - d)
+                atStart = at.start(d) == at.pos - (at.depth - d)
+                deflt = defaultBlockAt(at.node(d - 1).contentMatchAt(at.indexAfter(d - 1)))
+                let splitType = splitNode?(at.parent, atEnd)
+                types.insert(splitType ?? (atEnd ? deflt.map { NodeTypeWithAttrs($0) } : nil), at: 0)
+                splitDepth = d
+                break
             }
-            var can = canSplit(tr.doc, at.pos, 1, typesAfter)
-            if !can, typesAfter == nil, let deflt {
-                typesAfter = [NodeTypeWithAttrs(deflt)]
-                can = canSplit(tr.doc, at.pos, 1, typesAfter)
-            }
-            if can { _ = try? tr.split(at.pos, 1, typesAfter) }
-            dispatch(tr.scrollIntoView())
+            if d == 1 { return false }
+            types.insert(nil, at: 0)
+            d -= 1
         }
+
+        var can = canSplit(tr.doc, at.pos, types.count, types)
+        if !can {
+            types[0] = deflt.map { NodeTypeWithAttrs($0) }
+            can = canSplit(tr.doc, at.pos, types.count, types)
+        }
+        if !can { return false }
+        guard (try? tr.split(at.pos, types.count, types)) != nil else { return false }
+
+        // Splitting at the very start leaves an empty block of the original
+        // type in front of the content — an empty heading above the heading.
+        // Give that leftover the default type instead, when the schema allows
+        // it there.
+        if !atEnd, atStart, at.node(splitDepth).type !== deflt {
+            let mapping = tr.mapping.slice(mapFrom)
+            let first = mapping.map(at.before(splitDepth))
+            let resolvedFirst = tr.doc.resolve(first)
+            if let deflt,
+               at.node(splitDepth - 1).canReplaceWith(resolvedFirst.index(), resolvedFirst.index() + 1, deflt) {
+                _ = try? tr.setNodeMarkup(first, deflt)
+            }
+        }
+        if let dispatch { dispatch(tr.scrollIntoView()) }
         return true
     }
 }
