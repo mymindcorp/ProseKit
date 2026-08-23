@@ -10,7 +10,7 @@ whitespace between block tags, and the newline CommonMark puts at the end of a
 code block). A second pass checks that our *own* output re-reads identically —
 `parse → serialize → parse == parse`.
 
-**Current: 384/652 agree, 650/652 round-trip stable, nothing throws or crashes.**
+**Current: 384/652 agree, 652/652 round-trip stable, nothing throws or crashes.**
 
 The parser is deliberately not a CommonMark implementation, so full agreement
 isn't the target. Round-trip stability is the number that matters for our own
@@ -19,10 +19,12 @@ documents; agreement matters for Markdown written elsewhere.
 | | first measured | 2026-07-31 | 2026-08-22 |
 | --- | --- | --- | --- |
 | spec agreement | 137 | 353 | **384** |
-| round-trip stable | 609 | 650 | **650** |
+| round-trip stable | 609 | 650 | **652** |
 | threw or crashed | 0 | 0 | **0** |
 
-The 2026-08-22 column is measured against `main` at c8f4338.
+The 2026-08-22 column is measured against `main` at dcc7c37. Round-trip is
+clean for the first time: every one of the 652 examples survives
+`parse → serialize → parse`.
 
 **Read the last column against the middle one with care.** The harness that
 produced the first two columns was never committed — only this document was —
@@ -117,7 +119,7 @@ or reads the agreement score as if they were failures.
 - **Percent-encoding of destinations.** CommonMark writes `/my uri` as
   `/my%20uri`; we keep destinations as written, as the HTML parser does.
 
-## Round-trip: the two failures are not the two recorded here in July
+## Round-trip: a regression the count could not show
 
 Both July failures are **fixed**. A document of empty headings, and emphasis
 spanning a soft line break into a setext underline, now both round-trip.
@@ -125,7 +127,7 @@ spanning a soft line break into a setext underline, now both round-trip.
 The count stayed at 650 anyway, because two new failures replaced them — and
 unlike the July pair, these were not pathological. Tracking the count alone
 would have hidden the swap completely; it took comparing the failing example
-*ids* between runs to see it.
+*ids* between runs to see it. That is the whole reason this section exists.
 
 Bisected to `d68cba2`, which introduced a shortcut writing no delimiters around
 a whitespace-only text node. Correct for the flanking marks it was written for,
@@ -137,17 +139,20 @@ space, lost its backticks and with them the mark:
 | `` ` `\n`  ` `` (#334) | `` ` `  `` | second code span gone |
 | ```` ``` ```\naaa ```` (#138) | `  aaa` | code span gone |
 
-Fixed in #136, which restores **652/652** with agreement unmoved at 384. That
-is the highest round-trip figure recorded here, and the first time nothing in
+Fixed in #136, now merged, which restores **652/652** with agreement unmoved at
+384 — the highest round-trip figure recorded here, and the first time nothing in
 the suite fails it.
 
 Measured with one harness across all three trees, so these are exact:
 
-| | before `d68cba2` | `main` at c8f4338 | with #136 |
+| | before `d68cba2` | c8f4338 | `main` at dcc7c37 |
 | --- | ---: | ---: | ---: |
 | spec agreement | 384 | 384 | **384** |
 | round-trip stable | 652 | 650 | **652** |
 | threw or crashed | 0 | 0 | **0** |
+
+The middle column is the window the regression was live in: `d68cba2` through
+`c8f4338`, seven merges.
 
 ## Keeping it honest
 
