@@ -426,13 +426,25 @@ public enum MarkdownSerializer {
         func carries(_ node: Node, _ mark: Mark) -> Bool {
             node.marks.contains { same($0, mark) }
         }
-        // Marks written as a delimiter run. CommonMark will not open one that
-        // is followed by whitespace, or close one that is preceded by it, so
-        // `**foo **bar` is not bold — it is those eleven characters. The
-        // whitespace has to move outside the delimiters.
+        // Marks written as a delimiter run that obeys the flanking rules.
+        // CommonMark will not open such a run when it is followed by
+        // whitespace, or close one preceded by it, so `**foo **bar` is not
+        // bold — it is those eleven characters. The whitespace has to move
+        // outside the delimiters.
+        //
+        // `~~` and `==` are written as runs too but are deliberately paired
+        // without the flanking rules (see the note where they are read back),
+        // so whitespace beside one of those closes it perfectly well and is
+        // content the mark is entitled to keep. Expelling it there would only
+        // throw the whitespace away.
+        //
+        // The cost is that a strike we write with an inner space — `~~gone ~~`
+        // — is read back by *this* parser and not by cmark-gfm, which does
+        // flank `~~`. Worth revisiting if these documents have to travel; it
+        // belongs with the pairing decision rather than here.
         func expelsWhitespace(_ mark: Mark) -> Bool {
             switch mark.type.name {
-            case "italic", "bold", "strike", "highlight": return true
+            case "italic", "bold": return true
             default: return false
             }
         }

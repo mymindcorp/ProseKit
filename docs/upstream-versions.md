@@ -155,7 +155,11 @@ doesn't have to rediscover them.
 - **2026-08-22** — `prosemirror-markdown` 1.13.3/1.13.4/1.13.6 (in kind, not as a
   port): CommonMark will not open a delimiter run followed by whitespace or close
   one preceded by it, so `**foo **bar` spells no mark at all and the bold is gone
-  the next time the document is read. The serializer now moves that whitespace
+  the next time the document is read. `~~` and `==` are written as runs too but
+  are deliberately paired *without* the flanking rules here, so whitespace beside
+  one closes it and there is nothing to expel — the cost being that a strike we
+  write with an inner space is read back by this parser and not by cmark-gfm,
+  which does flank `~~`. The serializer now moves that whitespace
   outside the delimiters, holds hard breaks the same way — Markdown cannot spell
   one at the end of a block, where a trailing `\` reads back as a literal
   backslash — and drops whatever is still held at the end. Upstream predicts where

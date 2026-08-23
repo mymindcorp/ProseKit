@@ -62,10 +62,20 @@ func registerMarkdownDelimiterWhitespaceTests() {
            "a *b* c",
            reads: doc(p(t("a "), em("b"), t(" c"))))
 
-    writes("a mark spelled with a longer delimiter run",
+    // `~~` and `==` are delimiter runs too, but they are deliberately paired
+    // without the flanking rules, so whitespace beside one closes it perfectly
+    // well. Nothing to expel — and expelling anyway would throw away a space
+    // the mark is entitled to hold, which is why this is the one delimiter
+    // spelling that keeps it.
+    writes("a run paired without the flanking rules keeps its whitespace",
            doc(p(strike("gone "), t("here"))),
-           "~~gone~~ here",
-           reads: doc(p(strike("gone"), t(" here"))))
+           "~~gone ~~here",
+           reads: doc(p(strike("gone "), t("here"))))
+
+    writes("the same for a highlight",
+           doc(p(t("a"), highlight(" b "), t("c"))),
+           "a== b ==c",
+           reads: doc(p(t("a"), highlight(" b "), t("c"))))
 
     // The space is between two bold runs, so the run doesn't end and there is
     // nothing to expel.
@@ -213,15 +223,14 @@ func registerMarkdownDelimiterWhitespaceTests() {
         }
     }
 
-    sweep("emphasis", [strong("a "), strong(" a"), strong(" "), strong("a"),
-                       em("b "), em(" b"), em(" "),
-                       t("x"), t(" x"), t("x "), t(" "), brk(), boldBrk()])
-
-    // Without hard breaks: `~~ ~~` and `== ==` are parsed as one flat run of
-    // text, so nothing nested inside one survives a round trip — a limitation
-    // of the inline parser that predates any of this and is not about
-    // whitespace.
-    sweep("other delimiter runs", [strike("c "), strike(" c"), strike(" "), strike("c"),
-                                   highlight("d "), highlight(" d"), highlight("d"),
-                                   t("x"), t(" x"), t("x "), t(" ")])
+    // One sweep over all four spellings. This was two for a while — a strike or
+    // a highlight used to be read back as one flat run of text, so nothing
+    // nested inside one survived and the second sweep had to steer clear of
+    // hard breaks. They pair through the same machinery now, so the awkward
+    // contents belong in one list again.
+    sweep("every delimiter run", [strong("a "), strong(" a"), strong(" "), strong("a"),
+                                  em("b "), em(" b"), em(" "),
+                                  strike("c "), strike(" c"), strike("c"),
+                                  highlight("d "), highlight(" d"), highlight("d"),
+                                  t("x"), t(" x"), t("x "), t(" "), brk(), boldBrk()])
 }
