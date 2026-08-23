@@ -278,15 +278,49 @@ open class EditorTextView: UIView, UIKeyInput {
             ? (style.includesQuery ? suggestion.from..<suggestion.to
                                    : suggestion.from..<min(suggestion.from + 2, suggestion.to))
             : suggestion.from..<suggestion.from
-        return WikiLinkTrigger(range: range, cursor: suggestion.to,
-                               closing: style.showsClosingBrackets ? Self.closingBrackets(suggestion.query) : nil)
+        let closing = style.showsClosingBrackets ? wikiLinkClosing(suggestion) : nil
+        return WikiLinkTrigger(range: range, closingAt: closing?.at ?? suggestion.to,
+                               closing: closing?.text)
     }
 
-    /// The ghost closing brackets for a query — `" ]]"` when the reader put a
-    /// space after the opening ones and hasn't already typed its mirror, so the
-    /// two ends of the link match while it's being written.
-    private static func closingBrackets(_ query: String) -> String {
-        query.hasPrefix(" ") && !query.hasSuffix(" ") ? " ]]" : "]]"
+    /// Where the ghost closing brackets sit, and what they are.
+    ///
+    /// They hold the end of the link's last word rather than the caret: the
+    /// caret moves through a query as it's read back, and brackets that follow
+    /// it drag the text after them along for the ride. Anchored to the word,
+    /// arrowing across the query leaves the whole line still.
+    ///
+    /// They also mirror the opening: as many spaces as were typed after `[[`
+    /// go back in front of `]]`, so `[[  Page` reads as `[[  Page  ]]`.
+    private func wikiLinkClosing(_ suggestion: WikiLinkSuggestion) -> (at: Int, text: String)? {
+        guard let cursor = (editor.state.selection as? TextSelection)?.cursor else { return nil }
+        // One character per inline leaf, so these offsets are document offsets.
+        let text = Array(cursor.parent.textBetween(0, cursor.parent.content.size,
+                                                   blockSeparator: nil, leafText: "\u{fffc}"))
+        let caret = cursor.parentOffset
+        guard caret <= text.count else { return nil }
+        // Where the query starts — just past the opening brackets.
+        let start = caret - suggestion.query.count
+        guard start >= 0 else { return nil }
+
+        // Inside a word, run on to the end of it: a caret in the middle of
+        // "Page" is still typing a link to the whole of it.
+        var end = caret
+        // (`caret == start` is the caret sitting between the brackets and the
+        // word — the opening bracket counts as being inside it.)
+        if caret > 0, !text[caret - 1].isWhitespace {
+            while end < text.count, !text[end].isWhitespace { end += 1 }
+        }
+        // Then hug that word — spaces the reader left behind the caret stay
+        // outside the brackets rather than being swallowed by them.
+        while end > start, text[end - 1].isWhitespace { end -= 1 }
+        // Nothing but spaces typed yet: no word to hold on to, so the brackets
+        // stay with the caret.
+        guard end > start else { return (at: cursor.pos, text: "]]") }
+
+        let lead = text[start..<end].prefix { $0 == " " }.count
+        return (at: cursor.pos - (caret - end),
+                text: String(repeating: " ", count: lead) + "]]")
     }
 
     /// Optional hook to typeset `inlineMath` / `blockMath` nodes — assign
