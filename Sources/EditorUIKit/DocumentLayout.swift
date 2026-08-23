@@ -25,6 +25,32 @@ struct Segment {
     var text: String?
 }
 
+/// A document position (relative to whatever the segments are relative to) as an
+/// index into the attributed string those segments describe. Free-standing
+/// because it is needed both on a laid-out `TextBlock` and while typesetting
+/// one, before there is a block to ask.
+func attrIndex(forDocPos pos: Int, in segments: [Segment]) -> Int {
+    for seg in segments where pos >= seg.docStart && pos <= seg.docStart + seg.docLen {
+        if let text = seg.text {
+            // Grapheme offset → UTF-16 index within the run.
+            let graphemeOffset = pos - seg.docStart
+            // Every grapheme is one UTF-16 unit exactly when the two counts
+            // agree (each is at least one, so equal totals force all ones),
+            // and then the mapping is the identity. That is ordinary text,
+            // and it is worth checking: this runs on the scroll path, where
+            // UIKit asks for character rects as you drag, and walking the
+            // run to build a prefix string made a ~500-word paragraph cost
+            // thousands of graphemes and an allocation per call.
+            if seg.docLen == seg.attrLen { return seg.attrStart + graphemeOffset }
+            let idx = text.index(text.startIndex, offsetBy: graphemeOffset,
+                                 limitedBy: text.endIndex) ?? text.endIndex
+            return seg.attrStart + text.utf16.distance(from: text.startIndex, to: idx)
+        }
+        return pos <= seg.docStart ? seg.attrStart : seg.attrStart + seg.attrLen
+    }
+    return segments.last.map { $0.attrStart + $0.attrLen } ?? 0
+}
+
 /// A laid-out text block (paragraph, heading, code block, list-item paragraph).
 struct TextBlock {
     let contentStart: Int          // doc position of the first inline position
@@ -34,27 +60,7 @@ struct TextBlock {
     let segments: [Segment]
     let attributed: NSAttributedString
 
-    func attrIndex(forDocPos pos: Int) -> Int {
-        for seg in segments where pos >= seg.docStart && pos <= seg.docStart + seg.docLen {
-            if let text = seg.text {
-                // Grapheme offset → UTF-16 index within the run.
-                let graphemeOffset = pos - seg.docStart
-                // Every grapheme is one UTF-16 unit exactly when the two counts
-                // agree (each is at least one, so equal totals force all ones),
-                // and then the mapping is the identity. That is ordinary text,
-                // and it is worth checking: this runs on the scroll path, where
-                // UIKit asks for character rects as you drag, and walking the
-                // run to build a prefix string made a ~500-word paragraph cost
-                // thousands of graphemes and an allocation per call.
-                if seg.docLen == seg.attrLen { return seg.attrStart + graphemeOffset }
-                let idx = text.index(text.startIndex, offsetBy: graphemeOffset,
-                                     limitedBy: text.endIndex) ?? text.endIndex
-                return seg.attrStart + text.utf16.distance(from: text.startIndex, to: idx)
-            }
-            return pos <= seg.docStart ? seg.attrStart : seg.attrStart + seg.attrLen
-        }
-        return segments.last.map { $0.attrStart + $0.attrLen } ?? 0
-    }
+    func attrIndex(forDocPos pos: Int) -> Int { EditorUIKit.attrIndex(forDocPos: pos, in: segments) }
 
     func docPos(forAttrIndex index: Int) -> Int {
         for seg in segments where index >= seg.attrStart && index <= seg.attrStart + seg.attrLen {
@@ -80,12 +86,51 @@ struct TextBlock {
     }
 }
 
+/// A wiki-link chip's typeset extent, in a block's LOCAL terms: the run it
+/// occupies in the attributed string, plus the pill and glyph to draw over it.
+/// Geometry is relative to the run's start x and the line's baseline, so a
+/// cached block can be re-emitted wherever it next sits.
+struct WikiLinkChip {
+    let attrStart: Int
+    /// Exclusive — the index just past the label (and its trailing padding).
+    let attrEnd: Int
+    /// nil = no pill; the glyph (if any) is still drawn.
+    let background: UIColor?
+    let cornerRadius: CGFloat
+    /// The pill's top edge, relative to the baseline (negative = above it).
+    let top: CGFloat
+    let height: CGFloat
+    /// Already tinted with the chip's colour; nil = label only.
+    let icon: UIImage?
+    /// The glyph's box, relative to the run's start x and the baseline.
+    let iconRect: CGRect
+}
+
+/// The `[[…` a reader is part-way through typing: still ordinary text in the
+/// document, and set apart from the prose around it until the input rule turns
+/// it into a chip. Handed to the layout by the editable view, which is the only
+/// one that has a cursor and so the only one that can have an open trigger.
+struct WikiLinkTrigger: Equatable {
+    /// The document range to style — the `[[` alone, or the query with it.
+    let range: Range<Int>
+    /// The cursor: where the closing brackets would be typed.
+    let cursor: Int
+    /// Closing brackets to draw after the cursor without putting them in the
+    /// document — `"]]"`, or `" ]]"` to mirror a space typed after the opening.
+    /// Nil draws none.
+    let closing: String?
+}
+
 /// A non-text drawing primitive (rule, list marker, quote bar, box).
 enum DecorationItem {
     case fill(CGRect, UIColor)
     case text(String, CGPoint, [NSAttributedString.Key: Any])
     case stroke(CGRect, UIColor, CGFloat)
     case image(UIImage, CGRect)
+    /// A small glyph drawn as-is (a wiki-link chip's icon). Unlike `image` it
+    /// never takes the theme's photo corner radius — rounding a 1-em square by
+    /// a radius chosen for photographs turns it into a circle.
+    case icon(UIImage, CGRect)
     /// A typeset formula, drawn by its renderer at the rect's top-left.
     case math(MathRendering, CGRect)
     case roundedFill(CGRect, UIColor, CGFloat)
@@ -121,6 +166,8 @@ struct LocalTextBlock {
     /// otherwise lose its backgrounds entirely.
     let highlights: [(from: Int, to: Int, color: UIColor)]
     let codeBackgrounds: [(from: Int, to: Int, color: UIColor)]
+    /// Wiki-link chips, positioned once line breaking has placed their runs.
+    let wikiLinkChips: [WikiLinkChip]
 }
 
 /// Caches typeset blocks by (node, width). Mark-and-sweep keeps it bounded to
@@ -288,6 +335,13 @@ final class DocumentLayout {
     /// Optional host hook to typeset `inlineMath` / `blockMath` nodes. Nil (or a
     /// nil return) falls back to drawing the raw LaTeX source.
     private let mathRenderer: MathRenderer?
+    /// Optional host hook supplying a wiki-link atom's leading glyph. Nil (or a
+    /// nil return) draws the label alone.
+    private let wikiLinkIcon: WikiLinkIconProvider?
+    /// The `[[` currently being typed, when the editable view has one open and
+    /// the theme actually sets it apart. A block holding it is styled per
+    /// layout and never cached: it is state, not content.
+    private let wikiLinkTrigger: WikiLinkTrigger?
 
     /// One top-level child's fully-positioned output. Kept so an edit can reuse
     /// the unchanged blocks (prefix as-is, suffix shifted) instead of re-laying
@@ -319,7 +373,9 @@ final class DocumentLayout {
          blockCache: TextBlockLayoutCache? = nil, previous: DocumentLayout? = nil,
          realizeWindow: ClosedRange<CGFloat>? = nil, syntaxHighlighter: SyntaxHighlighter? = nil,
          codeLanguageLabel: ((String, String?) -> String?)? = nil,
-         mathRenderer: MathRenderer? = nil) {
+         mathRenderer: MathRenderer? = nil,
+         wikiLinkIcon: WikiLinkIconProvider? = nil,
+         wikiLinkTrigger: WikiLinkTrigger? = nil) {
         self.theme = theme
         self.width = width
         self.imageProvider = imageProvider
@@ -327,6 +383,8 @@ final class DocumentLayout {
         self.syntaxHighlighter = syntaxHighlighter
         self.codeLanguageLabel = codeLanguageLabel
         self.mathRenderer = mathRenderer
+        self.wikiLinkIcon = wikiLinkIcon
+        self.wikiLinkTrigger = wikiLinkTrigger
         footnoteOrder = Self.footnoteOrdering(doc)
         blockCache?.syncTheme(theme) // drop stale-styled blocks when the theme changes
         blockCache?.syncFootnoteOrder(footnoteOrder)
@@ -656,6 +714,7 @@ final class DocumentLayout {
         case let .stroke(r, c, w): return .stroke(r.offsetBy(dx: 0, dy: dy), c, w)
         case let .text(s, p, a): return .text(s, CGPoint(x: p.x, y: p.y + dy), a)
         case let .image(img, r): return .image(img, r.offsetBy(dx: 0, dy: dy))
+        case let .icon(img, r): return .icon(img, r.offsetBy(dx: 0, dy: dy))
         case let .math(m, r): return .math(m, r.offsetBy(dx: 0, dy: dy))
         case let .roundedFill(r, c, rad): return .roundedFill(r.offsetBy(dx: 0, dy: dy), c, rad)
         case let .roundedStroke(r, c, w, rad): return .roundedStroke(r.offsetBy(dx: 0, dy: dy), c, w, rad)
@@ -1176,8 +1235,14 @@ final class DocumentLayout {
         let contentStart = docPos + 1
         // Reuse the cached typeset block (in local coords) when unchanged; this
         // is what keeps per-keystroke cost off the whole document.
-        let local = blockCache?.lookup(node, width: width, checked: inCheckedItem,
-                                       align: inCellAlignment) ?? {
+        // A block holding the `[[` being typed is typeset for this layout only:
+        // the trigger is state, and neither the node nor the width changes as it
+        // opens, moves or closes, so a cached block would keep serving the last
+        // one's styling.
+        let trigger = localTrigger(contentStart: contentStart, size: node.content.size)
+        let local = trigger.map { typesetBlock(node, width: width, trigger: $0) }
+            ?? blockCache?.lookup(node, width: width, checked: inCheckedItem,
+                                  align: inCellAlignment) ?? {
             let built = typesetBlock(node, width: width)
             blockCache?.store(node, width: width, checked: inCheckedItem, align: inCellAlignment, built)
             return built
@@ -1194,6 +1259,21 @@ final class DocumentLayout {
             let xOffset = CTLineGetOffsetForStringIndex(line.ctLine, atom.attrIndex, nil)
             let top = line.baselineOrigin.y - atom.size.height
             decorations.append(.image(atom.image, CGRect(x: line.baselineOrigin.x + xOffset, y: top, width: atom.size.width, height: atom.size.height)))
+        }
+        // Wiki-link chips: the pill first, then the glyph over it (decorations
+        // draw in order, and both draw under the text).
+        for chip in local.wikiLinkChips {
+            guard let line = lines.first(where: { NSLocationInRange(chip.attrStart, $0.stringRange) }) else { continue }
+            let startX = line.baselineOrigin.x + CTLineGetOffsetForStringIndex(line.ctLine, chip.attrStart, nil)
+            if let background = chip.background {
+                let endX = line.baselineOrigin.x + CTLineGetOffsetForStringIndex(line.ctLine, chip.attrEnd, nil)
+                let rect = CGRect(x: startX, y: line.baselineOrigin.y + chip.top,
+                                  width: max(endX - startX, 0), height: chip.height)
+                decorations.append(.roundedFill(rect, background, chip.cornerRadius))
+            }
+            if let icon = chip.icon {
+                decorations.append(.icon(icon, chip.iconRect.offsetBy(dx: startX, dy: line.baselineOrigin.y)))
+            }
         }
         for atom in local.mathAtoms {
             guard let line = lines.first(where: { NSLocationInRange(atom.attrIndex, $0.stringRange) }) else { continue }
@@ -1233,12 +1313,15 @@ final class DocumentLayout {
     /// Typeset a text block in LOCAL coordinates (top at y = 0) and with
     /// block-relative document offsets, independent of its eventual position —
     /// cacheable by (node, width).
-    private func typesetBlock(_ node: Node, width: CGFloat) -> LocalTextBlock {
-        let (attr, segments, imageAtoms, mathAtoms, highlights, codeBackgrounds) =
+    private func typesetBlock(_ node: Node, width: CGFloat,
+                              trigger: WikiLinkTrigger? = nil) -> LocalTextBlock {
+        let (attr, builtSegments, imageAtoms, mathAtoms, highlights, codeBackgrounds, wikiLinkChips) =
             buildAttributed(node, width: width)
+        var segments = builtSegments
         let rtl = isRightToLeft(attr.string)
         let base = NSMutableAttributedString(attributedString:
             attr.length == 0 ? NSAttributedString(string: " ", attributes: [.font: theme.blockFont(node)]) : attr)
+        if let trigger { applyTrigger(trigger, to: base, segments: &segments, font: theme.blockFont(node)) }
         // A cell's alignment wins over the reading direction: a column set
         // `:---:` is centred whichever way its text runs.
         let cellAlignment = inCellAlignment
@@ -1304,7 +1387,95 @@ final class DocumentLayout {
         }
         return LocalTextBlock(lines: lines, segments: segments, attributed: base, height: lineY,
                               imageAtoms: imageAtoms, mathAtoms: mathAtoms,
-                              highlights: highlights, codeBackgrounds: codeBackgrounds)
+                              highlights: highlights, codeBackgrounds: codeBackgrounds,
+                              wikiLinkChips: wikiLinkChips)
+    }
+
+    /// The open `[[` rebased onto a block's local offsets, when it is this
+    /// block that holds it. A trigger never spans two blocks, so anything that
+    /// doesn't sit wholly inside this one belongs to another.
+    private func localTrigger(contentStart: Int, size: Int) -> WikiLinkTrigger? {
+        guard let trigger = wikiLinkTrigger,
+              trigger.range.lowerBound >= contentStart, trigger.range.upperBound <= contentStart + size,
+              trigger.cursor >= contentStart, trigger.cursor <= contentStart + size else { return nil }
+        return WikiLinkTrigger(
+            range: (trigger.range.lowerBound - contentStart)..<(trigger.range.upperBound - contentStart),
+            cursor: trigger.cursor - contentStart, closing: trigger.closing)
+    }
+
+    /// Set the typed `[[` apart, and draw the closing brackets it hasn't got
+    /// yet. The ghost goes into the attributed string rather than over it, so
+    /// the text after the cursor reflows around it instead of being painted on;
+    /// it carries a zero-length segment, which is what keeps every document
+    /// position mapping to a real character.
+    private func applyTrigger(_ trigger: WikiLinkTrigger, to text: NSMutableAttributedString,
+                              segments: inout [Segment], font: UIFont) {
+        let style = theme.wikiLink.trigger
+        if !trigger.range.isEmpty {
+            let start = attrIndex(forDocPos: trigger.range.lowerBound, in: segments)
+            let end = attrIndex(forDocPos: trigger.range.upperBound, in: segments)
+            if end > start, end <= text.length {
+                let range = NSRange(location: start, length: end - start)
+                if let color = style.color { text.addAttribute(.foregroundColor, value: color, range: range) }
+                if style.opacity < 1 {
+                    // Collected first: the colour of one run decides the colour
+                    // it's replaced by, and rewriting it mid-enumeration would
+                    // be reading and writing the same attribute at once.
+                    var faded: [(NSRange, UIColor)] = []
+                    unsafe text.enumerateAttribute(.foregroundColor, in: range) { value, sub, _ in
+                        faded.append((sub, Self.fade(value as? UIColor ?? theme.textColor, style.opacity)))
+                    }
+                    for (sub, color) in faded { text.addAttribute(.foregroundColor, value: color, range: sub) }
+                }
+            }
+        }
+        guard let closing = trigger.closing, !closing.isEmpty else { return }
+        let index = attrIndex(forDocPos: trigger.cursor, in: segments)
+        guard index >= 0, index <= text.length else { return }
+        // The face of the character it completes, so the ghost matches the text
+        // it's standing in for — but none of its decoration: an atom's reserved
+        // box, an underline or a chip's kerning would all come along otherwise.
+        var attrs: [NSAttributedString.Key: Any] = index > 0
+            ? unsafe text.attributes(at: index - 1, effectiveRange: nil) : [.font: font]
+        attrs[kCTRunDelegateAttributeName as NSAttributedString.Key] = nil
+        attrs[.underlineStyle] = nil
+        attrs[.kern] = nil
+        attrs[.foregroundColor] = Self.fade(style.color ?? attrs[.foregroundColor] as? UIColor ?? theme.textColor,
+                                            style.opacity)
+        let ghost = NSAttributedString(string: closing, attributes: attrs)
+        let length = ghost.length
+        // The cursor can sit inside a text run, which then becomes two runs with
+        // the ghost between them. (It can never sit inside an atom: an atom is
+        // one document position, and both of its edges are segment boundaries.)
+        if let i = segments.firstIndex(where: { $0.attrStart < index && index < $0.attrStart + $0.attrLen }),
+           let runText = segments[i].text {
+            let seg = segments[i]
+            let split = runText.index(runText.startIndex, offsetBy: trigger.cursor - seg.docStart,
+                                      limitedBy: runText.endIndex) ?? runText.endIndex
+            let head = String(runText[..<split]), tail = String(runText[split...])
+            segments[i] = Segment(docStart: seg.docStart, docLen: head.count, attrStart: seg.attrStart,
+                                  attrLen: (head as NSString).length, text: head)
+            segments.insert(Segment(docStart: seg.docStart + head.count, docLen: tail.count,
+                                    attrStart: index, attrLen: (tail as NSString).length, text: tail), at: i + 1)
+        }
+        for i in segments.indices where segments[i].attrStart >= index { segments[i].attrStart += length }
+        text.insert(ghost, at: index)
+        // Zero document length: the ghost is not in the document, so no position
+        // may land in it — the run before it owns the cursor's index.
+        let at = segments.firstIndex { $0.attrStart >= index + length } ?? segments.count
+        segments.insert(Segment(docStart: trigger.cursor, docLen: 0, attrStart: index,
+                                attrLen: length, text: nil), at: at)
+    }
+
+    /// A colour at a fraction of its own opacity, still resolving light/dark for
+    /// itself — `withAlphaComponent` alone would pin whichever it is now.
+    private static func fade(_ color: UIColor, _ opacity: CGFloat) -> UIColor {
+        let factor = max(0, min(opacity, 1))
+        guard factor < 1 else { return color }
+        return UIColor { trait in
+            let resolved = color.resolvedColor(with: trait)
+            return resolved.withAlphaComponent(resolved.cgColor.alpha * factor)
+        }
     }
 
     /// Every document offset it produces is relative to the block's content
@@ -1314,7 +1485,8 @@ final class DocumentLayout {
             [(attrIndex: Int, image: UIImage, size: CGSize)],
             [(attrIndex: Int, docOffset: Int, rendering: MathRendering)],
             [(from: Int, to: Int, color: UIColor)],
-            [(from: Int, to: Int, color: UIColor)]) {
+            [(from: Int, to: Int, color: UIColor)],
+            [WikiLinkChip]) {
         let result = NSMutableAttributedString()
         var segments: [Segment] = []
         var imageAtoms: [(attrIndex: Int, image: UIImage, size: CGSize)] = []
@@ -1325,6 +1497,7 @@ final class DocumentLayout {
         // rebasing at the call site is what keeps them.
         var blockHighlights: [(from: Int, to: Int, color: UIColor)] = []
         var blockCodeBackgrounds: [(from: Int, to: Int, color: UIColor)] = []
+        var wikiLinkChips: [WikiLinkChip] = []
         let blockFont = theme.blockFont(node)
         var docPos = 0
 
@@ -1409,7 +1582,11 @@ final class DocumentLayout {
                 let display: String
                 switch child.type.name {
                 case "wikiLink":
-                    display = child.attrs["label"]?.stringValue ?? child.attrs["target"]?.stringValue ?? "link"
+                    let label = child.attrs["label"]?.stringValue ?? child.attrs["target"]?.stringValue ?? "link"
+                    // A chip is one object: it may not break in half at the end
+                    // of a line, so its spaces stop being break opportunities.
+                    display = theme.wikiLink.background == nil
+                        ? label : label.replacingOccurrences(of: " ", with: "\u{00a0}")
                 case "inlineMath":
                     display = "$" + (child.attrs["latex"]?.stringValue ?? "") + "$"
                 case "footnoteReference":
@@ -1419,8 +1596,10 @@ final class DocumentLayout {
                 default:
                     display = "🖼"
                 }
+                let wikiStyle = theme.wikiLink
+                let wikiColor = wikiStyle.color ?? theme.link.color
                 var atomAttrs: [NSAttributedString.Key: Any] = child.type.name == "wikiLink"
-                    ? [.font: blockFont, .foregroundColor: theme.link.color]
+                    ? [.font: blockFont, .foregroundColor: wikiColor]
                     : [.font: child.type.name == "inlineMath" ? theme.monoFont : blockFont,
                        .foregroundColor: theme.code.color]
                 if child.type.name == "footnoteReference" {
@@ -1430,12 +1609,51 @@ final class DocumentLayout {
                                  .baselineOffset: blockFont.pointSize * 0.35,
                                  .foregroundColor: theme.link.color]
                 }
-                if child.type.name == "wikiLink", theme.link.underline {
+                if child.type.name == "wikiLink", wikiStyle.underline ?? theme.link.underline {
                     atomAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
                 }
                 let attrStart = result.length
+                // A wiki-link chip: reserve the pill's leading padding and the
+                // host glyph's box as real advance, so the words around the
+                // chip clear it instead of tucking underneath.
+                var chipIcon: UIImage?
+                if child.type.name == "wikiLink" {
+                    chipIcon = wikiLinkIcon?(child)?.withTintColor(wikiColor, renderingMode: .alwaysTemplate)
+                    let padX = wikiStyle.background != nil ? theme.points(wikiStyle.paddingX) : 0
+                    let iconBox = chipIcon != nil ? theme.points(wikiStyle.iconSize) : 0
+                    let gap = chipIcon != nil ? theme.points(wikiStyle.iconGap) : 0
+                    let leading = padX + iconBox + gap
+                    if leading > 0 {
+                        let delegate = makeBoxRunDelegate(width: leading, ascent: blockFont.ascender,
+                                                          descent: -blockFont.descender)
+                        result.append(NSAttributedString(string: "\u{fffc}", attributes: [
+                            kCTRunDelegateAttributeName as NSAttributedString.Key: delegate,
+                            .font: blockFont,
+                        ]))
+                    }
+                }
                 result.append(NSAttributedString(string: display, attributes: atomAttrs))
-                segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: (display as NSString).length, text: nil))
+                if child.type.name == "wikiLink" {
+                    if wikiStyle.background != nil, result.length > attrStart {
+                        // Trailing padding, as kerning on the last glyph — the
+                        // mirror of the leading box, and the same reason.
+                        result.addAttribute(.kern, value: theme.points(wikiStyle.paddingX),
+                                            range: NSRange(location: result.length - 1, length: 1))
+                    }
+                    let padY = wikiStyle.background != nil ? theme.points(wikiStyle.paddingY) : 0
+                    let iconBox = theme.points(wikiStyle.iconSize)
+                    wikiLinkChips.append(WikiLinkChip(
+                        attrStart: attrStart, attrEnd: result.length,
+                        background: wikiStyle.background,
+                        cornerRadius: theme.points(wikiStyle.cornerRadius),
+                        top: -blockFont.ascender - padY,
+                        height: blockFont.ascender - blockFont.descender + padY * 2,
+                        icon: chipIcon,
+                        iconRect: CGRect(x: wikiStyle.background != nil ? theme.points(wikiStyle.paddingX) : 0,
+                                         y: -(blockFont.capHeight + iconBox) / 2,
+                                         width: iconBox, height: iconBox)))
+                }
+                segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: result.length - attrStart, text: nil))
                 docPos += 1
                 if child.type.name == "image", let src = child.attrs["src"]?.stringValue, !src.isEmpty {
                     pendingImages.append(child)
@@ -1477,7 +1695,7 @@ final class DocumentLayout {
                 }
             }
         }
-        return (result, segments, imageAtoms, mathAtoms, blockHighlights, blockCodeBackgrounds)
+        return (result, segments, imageAtoms, mathAtoms, blockHighlights, blockCodeBackgrounds, wikiLinkChips)
     }
 
     // MARK: - Geometry queries
@@ -1878,6 +2096,9 @@ final class DocumentLayout {
                 } else {
                     image.draw(in: rect)
                 }
+            case let .icon(image, rect):
+                guard visible(rect.minY, rect.maxY) else { continue }
+                image.draw(in: rect)
             case let .math(rendering, rect):
                 guard visible(rect.minY, rect.maxY) else { continue }
                 rendering.draw(ctx, rect.origin)

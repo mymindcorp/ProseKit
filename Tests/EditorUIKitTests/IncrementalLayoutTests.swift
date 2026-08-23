@@ -87,6 +87,7 @@ final class IncrementalLayoutTests: XCTestCase {
         case let .text(string, point, _): return "text[\(string)](\(point.x.rounded()),\(point.y.rounded()))"
         case let .stroke(rect, color, w): return "stroke\(r(rect))\(colorKey(color))\(w)"
         case let .image(_, rect): return "image\(r(rect))"
+        case let .icon(_, rect): return "icon\(r(rect))"
         case let .math(_, rect): return "math\(r(rect))"
         case let .roundedFill(rect, color, radius): return "roundedFill\(r(rect))\(colorKey(color))\(radius)"
         case let .roundedStroke(rect, color, w, radius): return "roundedStroke\(r(rect))\(colorKey(color))\(w)\(radius)"
@@ -264,6 +265,9 @@ final class IncrementalLayoutTests: XCTestCase {
             p(text("paragraph with a formula "),
               try! s.node("inlineMath", ["latex": .string("x^2")], content: Fragment.empty),
               text(" after it")),
+            p(text("a page mentioning "),
+              try! s.node("wikiLink", ["target": .string("Some Page")], content: Fragment.empty),
+              text(" mid-sentence")),
             p(text("outro paragraph")),
         ]))
     }
@@ -278,6 +282,11 @@ final class IncrementalLayoutTests: XCTestCase {
             editor.setContent(richDoc(editor.schema))
             let view = EditorTextView(editor: editor)
             view.mathRenderer = Self.guardMathRenderer
+            // A styled wiki-link chip: its pill is a decoration positioned from
+            // its run, so a reused block has to bring it along.
+            var theme = DocumentTheme()
+            theme.wikiLink.background = .secondarySystemFill
+            view.theme = theme
             view.frame = CGRect(x: 0, y: 0, width: 320, height: 480)
             view.layoutIfNeeded()
             assertExercisesEveryEmitter(DocumentLayout(doc: editor.doc, width: 320, theme: view.theme,
