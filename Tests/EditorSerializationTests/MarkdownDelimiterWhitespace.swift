@@ -161,6 +161,26 @@ func registerMarkdownDelimiterWhitespaceTests() {
     inBlock("a trailing hard break inside a list item is dropped",
             doc(item(p(t("foo"), brk()))),
             "- foo")
+    // A table cell is the tightest case: its content is written between pipes,
+    // so a walk that overshot would eat the delimiter of the cell itself. (A
+    // table needs a header row to be written as pipes at all — without one the
+    // serializer falls back to HTML, where there is no flanking rule and the
+    // whitespace rightly stays where the document put it.)
+    inBlock("expelled inside a table cell, not out through its pipe",
+            doc(tableN(trN(thN([:], p(t("h1"))), thN([:], p(t("h2")))),
+                       trN(tdN([:], p(strong("foo "), t("bar"))),
+                           tdN([:], p(t("x"), strong(" "), t("y")))))),
+            "| h1 | h2 |\n| --- | --- |\n| **foo** bar | x y |")
+
+    test("md whitespace: the HTML fallback keeps whitespace inside the mark") {
+        // No header row, so this is written as HTML rather than pipes. HTML has
+        // no flanking rule — `<strong>foo </strong>` is bold text ending in a
+        // space — so nothing should be moved.
+        let d = doc(tableN(trN(tdN([:], p(strong("foo "), t("bar"))))))
+        try expect(d.toMarkdown().contains("<strong>foo </strong>bar"),
+                   "got \(d.toMarkdown())")
+    }
+
     inBlock("a heading of nothing but marked whitespace keeps its marker",
             doc(node("heading", ["level": .int(1)], [strong(" ")])),
             "# ")
