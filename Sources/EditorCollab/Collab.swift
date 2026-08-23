@@ -5,9 +5,9 @@ public import EditorStateKit
 /// A step paired with its inverse and the origin transaction, kept around while
 /// it is unconfirmed by the central authority.
 public struct Rebaseable {
-    public var step: any Step
-    public var inverted: any Step
-    public var origin: Transaction?
+    public let step: any Step
+    public let inverted: any Step
+    public let origin: Transaction?
     public init(step: any Step, inverted: any Step, origin: Transaction? = nil) {
         self.step = step
         self.inverted = inverted
@@ -19,7 +19,7 @@ public struct Rebaseable {
 /// client has applied locally but not yet had confirmed.
 public final class CollabState {
     public let version: Int
-    var unconfirmed: [Rebaseable]
+    let unconfirmed: [Rebaseable]
     let clientID: Int
 
     init(version: Int, unconfirmed: [Rebaseable], clientID: Int) {

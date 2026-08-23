@@ -46,8 +46,8 @@ private let maxEmptyItems = 500
 private let depthOverflow = 20
 
 struct Branch {
-    var items: [HistoryItem]
-    var eventCount: Int
+    let items: [HistoryItem]
+    let eventCount: Int
 
     static var empty: Branch { Branch(items: [], eventCount: 0) }
 

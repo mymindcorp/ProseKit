@@ -32,7 +32,12 @@ If neither is possible, say so and ask — do not stack.
 Claim a suite passes only from something that actually reports pass/fail.
 
 - Headless suites: `swift run <Module>Tests` (exits non-zero on failure).
-- iOS: `xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests`.
+- iOS — needs a `-destination`, or it builds for the wrong platform:
+
+  ```sh
+  xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
+  ```
+
   Piping it (`| tail`, `| grep`) makes `$?` the *pipe's* exit code, not
   `xcodebuild`'s, so a failing run can look clean. Redirect to a file and check
   `$?`, or read the counts out of the `.xcresult`:
@@ -45,8 +50,10 @@ Claim a suite passes only from something that actually reports pass/fail.
 
 ## Fuzzers
 
-Both fuzz suites are opt-in — they sweep every position of hundreds of generated
-documents, which costs more than the rest of their suite put together.
+The sweeping fuzzers are opt-in — they walk every position of hundreds of
+generated documents, which costs more than the rest of their suite put together.
+(`EditorUIKitTests/InputFuzzTests` is the exception: it drives bounded, seeded
+text-input sequences, is cheap, and always runs.)
 
 Model and state (selections, commands, history, mapping):
 
@@ -55,27 +62,41 @@ PROSEKIT_FUZZ=1 swift run SchemaKitTests
 PROSEKIT_FUZZ=1 PROSEKIT_FUZZ_DOCS=1000 swift run SchemaKitTests   # a deeper hunt
 ```
 
-Layout geometry (caret rects, hit testing, vertical movement) is iOS-only, and
+Layout geometry (`GeometryFuzzTests`: caret rects, hit testing, vertical
+movement) and the `UITextInput` surface (`TextInputFuzzTests`) are iOS-only, and
 gated by a *compilation condition* rather than an environment variable —
-xcodebuild's `TEST_RUNNER_` prefix doesn't reach an SPM scheme's test runner:
+xcodebuild's `TEST_RUNNER_` prefix doesn't reach an SPM scheme's test runner.
+The condition compiles both in; drop the `-only-testing:` to run them together:
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests/GeometryFuzzTests -destination 'platform=iOS Simulator,name=iPhone 17 Pro' SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ'
+xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests/GeometryFuzzTests -destination 'platform=iOS Simulator,name=iPhone 17 Pro' SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ'
 ```
 
 `PROSEKIT_TEST_FILTER=<substring>` narrows any headless suite to matching cases.
 
-Both generate documents from the schema's own content expressions
-(`Sources/TestDocGen`), so coverage follows the schema as extensions are added.
+The opt-in ones generate their documents from the schema's own content
+expressions (`Sources/TestDocGen`, via `FuzzViews` on iOS), so coverage follows
+the schema as extensions are added.
 When adding a property, check it fails against a deliberately broken source —
 an invariant no mutation can break is asserting nothing.
 
 ## Benchmarks
 
-The serialization benchmark is off by default so CI output stays quiet:
+Every benchmark is off by default so CI output stays quiet. The headless ones
+read `PROSEKIT_BENCH` at runtime:
 
 ```sh
 PROSEKIT_BENCH=1 swift run -c release EditorSerializationTests
+PROSEKIT_BENCH=1 swift run -c release DocumentModelTests
+PROSEKIT_BENCH=1 swift run -c release EditorStateKitTests
+```
+
+The renderer's (`EditorUIKitTests/RealizeBench` — what `DocumentLayout.realize`
+costs per paint) is compiled out instead, for the same `TEST_RUNNER_` reason as
+the geometry fuzzer, and wants the optimizer turned on explicitly:
+
+```sh
+xcodebuild test -scheme ProseKit-Package -configuration Release -only-testing:EditorUIKitTests/RealizeBench -destination 'platform=iOS Simulator,name=iPhone 17 Pro' ENABLE_TESTABILITY=YES SWIFT_OPTIMIZATION_LEVEL=-O SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_BENCH'
 ```
 
 Run benchmarks in release — debug numbers are dominated by unspecialized
