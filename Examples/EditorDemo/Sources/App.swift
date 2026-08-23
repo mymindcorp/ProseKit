@@ -67,6 +67,97 @@ struct FormattingToolbar: View {
     }
 }
 
+/// The demo's feature switches, all in one value so the toolbar can present them
+/// as a single menu and the editor host can take them as one parameter.
+///
+/// Everything here is a *demo* choice, not an editor default: each one shows a
+/// hook or a theme option the host is expected to decide for itself.
+struct DemoFlags: Equatable {
+    /// A simulated remote collaborator inserting text as you type.
+    var agent = false
+    /// Drag handles on top-level blocks.
+    var reorder = false
+    /// Highlights rendered with the "real highlighter" drying-ink effect.
+    var dryingInk = false
+    /// The floating format bubble over a selection.
+    var bubble = false
+    /// The editor's built-in spell checker.
+    var spellCheck = true
+    /// Whether an `onLinkClick` handler is installed at all. Without one a link
+    /// is inert — the click just places the caret — since the editor opens
+    /// nothing on its own.
+    var linkClicks = false
+    /// Wiki-links as chips: a pill behind the label and a host glyph for the
+    /// kind of object the target names (`theme.wikiLink` + `wikiLinkIcon`).
+    var wikiChips = false
+    /// The `[[` you are part-way through typing, dimmed and closed by brackets
+    /// that aren't in the document (`theme.wikiLink.trigger`).
+    var wikiBrackets = false
+    /// Swap the editable editor for the read-only `DocumentView` — the same
+    /// `DocumentLayout` renderer, seeded from the current document.
+    var readOnly = false
+
+    /// How many are on, for the menu's label. `spellCheck` is on by default, so
+    /// this counts what differs from the defaults rather than what is true.
+    var changedCount: Int {
+        var count = 0
+        let defaults = DemoFlags()
+        for (a, b) in [(agent, defaults.agent), (reorder, defaults.reorder),
+                       (dryingInk, defaults.dryingInk), (bubble, defaults.bubble),
+                       (spellCheck, defaults.spellCheck), (linkClicks, defaults.linkClicks),
+                       (wikiChips, defaults.wikiChips), (wikiBrackets, defaults.wikiBrackets),
+                       (readOnly, defaults.readOnly)] where a != b {
+            count += 1
+        }
+        return count
+    }
+}
+
+/// The demo's answer to "what kind of object is this wiki-link pointing at?" —
+/// the `wikiLinkIcon` hook, which the editor deliberately has no opinion about.
+/// A real app would look the target up in its own database; this one keys a
+/// table of SF Symbols off the same page names the `[[` popup offers.
+enum WikiLinkIcons {
+    private static let symbols: [String: String] = [
+        "Home": "house.fill",
+        "Getting Started": "sparkles",
+        "Architecture": "building.columns.fill",
+        "ProseMirror": "leaf.fill",
+        "Tiptap": "leaf.fill",
+        "Document Model": "cube.fill",
+        "Commands": "command",
+        "Keymap": "keyboard.fill",
+        "Schema": "tablecells.fill",
+        "Releases": "shippingbox.fill",
+        "Roadmap": "map.fill",
+    ]
+
+    /// Template-rendered, so the editor tints it with the chip's own colour —
+    /// one icon set that works in light and dark and at any type size.
+    static func icon(_ node: Node) -> UIImage? {
+        let target = node.attrs["target"]?.stringValue ?? ""
+        return UIImage(systemName: symbols[target] ?? "doc.text.fill")?
+            .withRenderingMode(.alwaysTemplate)
+    }
+}
+
+/// The live theme, plus the wiki-link styling the flags switch on. Shared by the
+/// editable and read-only hosts so the two can't drift.
+func demoTheme(_ settings: ThemeSettings, _ flags: DemoFlags) -> DocumentTheme {
+    var theme = settings.makeTheme()
+    if flags.wikiChips {
+        // Tinted from the link colour the panel is set to, so the chip belongs
+        // to the same palette rather than pinning a grey of its own.
+        theme.wikiLink.background = UIColor(settings.linkColor).withAlphaComponent(0.14)
+        theme.wikiLink.underline = false   // a chip and an underline is one decoration too many
+    }
+    if flags.wikiBrackets {
+        theme.wikiLink.trigger.opacity = 0.35
+        theme.wikiLink.trigger.showsClosingBrackets = true
+    }
+    return theme
+}
+
 struct ContentView: View {
     @State private var docIndex = 0
     /// The most recent paste-prose request, applied once by `EditorContainer`.
@@ -76,23 +167,8 @@ struct ContentView: View {
     @State private var showProseSheet = false
     @State private var proseDraft = sampleProseJSON
     @State private var loadError: String?
-    /// Whether the simulated remote collaborator is inserting text as you type.
-    @State private var agentOn = false
-    /// Whether top-level blocks show drag handles for reordering.
-    @State private var reorderOn = false
-    /// Whether highlights render with the "real highlighter" drying-ink effect.
-    @State private var dryingInkOn = false
-    /// Whether the floating highlight bubble menu shows on selection.
-    @State private var bubbleOn = false
-    /// Whether misspelled words are underlined (the editor's built-in checker).
-    @State private var spellCheckOn = true
-    /// Whether the demo installs an `onLinkClick` handler. Without one a link is
-    /// inert — the click just places the caret — since the editor opens nothing
-    /// on its own.
-    @State private var linkClickOpensOn = false
-    /// When on, swap the editable editor for the read-only `DocumentView` (the
-    /// shared `DocumentLayout` renderer), seeded from the current document.
-    @State private var readOnly = false
+    /// Every feature switch, in one place — presented as the ⚙︎ Flags menu.
+    @State private var flags = DemoFlags()
     /// The live editor (handed up from the container) so the toolbar can read
     /// the current document — e.g. to dump its prose and verify marks.
     @State private var editorRef: Editor?
@@ -111,28 +187,11 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 Button("Load Prose…") { showProseSheet = true }
                     .buttonStyle(.bordered)
-                Button(agentOn ? "🤖 Stop" : "🤖 Agent") { agentOn.toggle() }
-                    .buttonStyle(.bordered)
-                    .tint(agentOn ? .orange : nil)
-                Button(reorderOn ? "⠿ Reorder On" : "⠿ Reorder") { reorderOn.toggle() }
-                    .buttonStyle(.bordered)
-                    .tint(reorderOn ? .accentColor : nil)
-                Button(dryingInkOn ? "🖍 Ink On" : "🖍 Ink") { dryingInkOn.toggle() }
-                    .buttonStyle(.bordered)
-                    .tint(dryingInkOn ? .accentColor : nil)
-                Button(bubbleOn ? "💬 Bubble On" : "💬 Bubble") { bubbleOn.toggle() }
-                    .buttonStyle(.bordered)
-                    .tint(bubbleOn ? .accentColor : nil)
-                Button(spellCheckOn ? "✓ Spell On" : "✓ Spell") { spellCheckOn.toggle() }
-                    .buttonStyle(.bordered)
-                    .tint(spellCheckOn ? .accentColor : nil)
-                Button(readOnly ? "👁 Read-Only" : "✏️ Editable") { readOnly.toggle() }
-                    .buttonStyle(.bordered)
-                    .tint(readOnly ? .accentColor : nil)
+                FlagsMenu(flags: $flags)
                 Button("🎨 Theme") { showThemePanel = true }
                     .buttonStyle(.bordered)
                     .popover(isPresented: $showThemePanel) {
-                        ThemePanel(settings: $themeSettings, handleLinkClicks: $linkClickOpensOn,
+                        ThemePanel(settings: $themeSettings,
                                    onReset: { themeSettings = ThemeSettings() })
                     }
                 Spacer()
@@ -149,16 +208,14 @@ struct ContentView: View {
             Divider()
             // FormattingToolbar()  // hidden for now (struct kept for later)
             // Divider()
-            if readOnly {
+            if flags.readOnly {
                 // The read-only renderer (`DocumentView` over the shared
                 // `DocumentLayout`), seeded from the live document so you can see
                 // the same content — including non-interactive checkboxes.
-                ReadOnlyContainer(document: editorRef?.doc, themeSettings: themeSettings)
+                ReadOnlyContainer(document: editorRef?.doc, themeSettings: themeSettings, flags: flags)
                     .ignoresSafeArea(.keyboard)
             } else {
-                EditorContainer(docIndex: docIndex, proseLoad: proseLoad, agentOn: agentOn,
-                                reorder: reorderOn, useDryingInk: dryingInkOn, bubbleOn: bubbleOn,
-                                spellCheck: spellCheckOn, handleLinkClicks: linkClickOpensOn,
+                EditorContainer(docIndex: docIndex, proseLoad: proseLoad, flags: flags,
                                 themeSettings: themeSettings,
                                 onReady: { editorRef = $0 }) { message in
                     loadError = message
@@ -184,6 +241,42 @@ struct ContentView: View {
         } message: {
             Text(loadError ?? "")
         }
+    }
+}
+
+/// Every feature switch as one dropdown, grouped by what it affects. A demo
+/// grows a button per flag until the toolbar is all flags; a menu holds them
+/// without crowding out the document picker.
+struct FlagsMenu: View {
+    @Binding var flags: DemoFlags
+
+    var body: some View {
+        Menu {
+            Section("Editing") {
+                Toggle("🤖 Agent typing", isOn: $flags.agent)
+                Toggle("⠿ Block reordering", isOn: $flags.reorder)
+                Toggle("Spell check", isOn: $flags.spellCheck)
+            }
+            Section("Selection") {
+                Toggle("🖍 Drying ink", isOn: $flags.dryingInk)
+                Toggle("💬 Format bubble", isOn: $flags.bubble)
+            }
+            Section("Links") {
+                Toggle("🔗 Wiki-link chips", isOn: $flags.wikiChips)
+                Toggle("Quiet the [[ while typing", isOn: $flags.wikiBrackets)
+                Toggle("Open links on click", isOn: $flags.linkClicks)
+            }
+            Section("View") {
+                Toggle("👁 Read-only renderer", isOn: $flags.readOnly)
+            }
+            Divider()
+            Button("Reset flags") { flags = DemoFlags() }
+        } label: {
+            Text(flags.changedCount == 0 ? "⚙︎ Flags" : "⚙︎ Flags (\(flags.changedCount))")
+        }
+        .menuStyle(.button)
+        .buttonStyle(.bordered)
+        .tint(flags.changedCount == 0 ? nil : .accentColor)
     }
 }
 
@@ -388,9 +481,6 @@ struct ThemeSettings: Equatable {
 /// editor repaint. Bound to a `ThemeSettings` the host feeds to the editor view.
 struct ThemePanel: View {
     @Binding var settings: ThemeSettings
-    /// Not a theme value — a view behaviour — so it rides alongside `settings`
-    /// rather than inside it, and `onReset` leaves it alone.
-    @Binding var handleLinkClicks: Bool
     let onReset: () -> Void
 
     var body: some View {
@@ -439,7 +529,8 @@ struct ThemePanel: View {
                 Section("Links") {
                     ColorPicker("Link color", selection: $settings.linkColor)
                     Toggle("Underline", isOn: $settings.linkUnderline)
-                    Toggle("Open on click", isOn: $handleLinkClicks)
+                    // "Open on click" is a view behaviour rather than a theme
+                    // value, so it lives with the rest of the flags.
                 }
                 Section("Code") {
                     ColorPicker("Inline code", selection: $settings.codeColor)
@@ -486,19 +577,8 @@ struct EditorContainer: UIViewRepresentable {
     let docIndex: Int
     /// The latest pasted-prose request, or nil. Applied once per `id`.
     var proseLoad: ProseLoad?
-    /// Whether the simulated collaborator ("Agent") is running.
-    var agentOn: Bool = false
-    /// Whether top-level blocks show drag handles for reordering.
-    var reorder: Bool = false
-    /// Whether highlights render as the "real highlighter" drying-ink effect.
-    var useDryingInk: Bool = false
-    /// Whether the floating highlight bubble menu shows on selection.
-    var bubbleOn: Bool = false
-    /// Whether the editor underlines misspellings.
-    var spellCheck: Bool = true
-    /// Whether clicking a link opens it — i.e. whether an `onLinkClick` handler
-    /// is installed at all.
-    var handleLinkClicks: Bool = false
+    /// Every feature switch, from the ⚙︎ Flags menu.
+    var flags: DemoFlags = DemoFlags()
     /// The live, user-editable theme from the 🎨 Theme panel.
     var themeSettings: ThemeSettings = ThemeSettings()
     /// Hands the live editor up to the host once it's created (for the toolbar's
@@ -513,8 +593,9 @@ struct EditorContainer: UIViewRepresentable {
         weak var scroll: UIScrollView?
         var currentIndex = -1
         var lastProseID = 0
-        /// The theme settings currently applied, so we only rebuild on a change.
-        var lastThemeSettings = ThemeSettings()
+        /// Whether the wiki-link icon hook is currently installed, so it is only
+        /// assigned when the flag changes (each assignment costs the block cache).
+        var wikiIconsOn = false
         var onLoadError: ((String) -> Void)?
         /// The demo drying-ink controller (records fresh highlights, draws ink).
         var dryingInk: DryingInk?
@@ -689,11 +770,17 @@ struct EditorContainer: UIViewRepresentable {
         scroll.delegate = context.coordinator
 
         let textView = EditorTextView(editor: editor)
-        // The live theme from the 🎨 panel (its `makeTheme()` includes the vivid
-        // highlighter palette below; the bubble/menu swatches use the same set).
-        textView.theme = themeSettings.makeTheme()
-        context.coordinator.lastThemeSettings = themeSettings
+        // The live theme from the 🎨 panel plus the flags' wiki-link styling (its
+        // `makeTheme()` includes the vivid highlighter palette below; the
+        // bubble/menu swatches use the same set).
+        textView.theme = demoTheme(themeSettings, flags)
         textView.theme.highlighters = HighlighterMenu.themeHighlighters
+        // The host's icon for a wiki-link target — "what kind of thing is this"
+        // is the app's concept, so the editor asks rather than guesses.
+        if flags.wikiChips {
+            context.coordinator.wikiIconsOn = true
+            textView.wikiLinkIcon = { WikiLinkIcons.icon($0) }
+        }
         // Opt into code-block syntax highlighting + language badges. Highlighting
         // only affects code blocks; detection only switches when confident.
         textView.syntaxHighlighter = makeSyntaxHighlighter()
@@ -791,20 +878,28 @@ struct EditorContainer: UIViewRepresentable {
         let coordinator = context.coordinator
         guard let editor = coordinator.editor, let textView = coordinator.textView else { return }
         coordinator.onLoadError = onLoadError
-        coordinator.setAgent(agentOn)
-        // Live theme edits from the 🎨 panel — re-apply (and resync height) only
-        // when something actually changed; `theme`'s didSet rebuilds the layout.
-        if coordinator.lastThemeSettings != themeSettings {
-            coordinator.lastThemeSettings = themeSettings
-            textView.theme = themeSettings.makeTheme()
+        coordinator.setAgent(flags.agent)
+        // Live theme edits from the 🎨 panel, and the wiki-link styling the flags
+        // switch on — re-applied (and the height resynced) only on a real change,
+        // since `theme`'s didSet rebuilds the layout.
+        let theme = demoTheme(themeSettings, flags)
+        if textView.theme != theme {
+            textView.theme = theme
             DispatchQueue.main.async { coordinator.syncContentHeight(textView.documentHeight) }
         }
-        textView.blockReorderingEnabled = reorder
-        textView.spellCheckingEnabled = spellCheck
+        // The host's glyph for a wiki-link target. Assigning it drops the
+        // typeset-block cache — the glyph's box is laid out inside its
+        // paragraph — so it is set when the flag moves, not on every update.
+        if coordinator.wikiIconsOn != flags.wikiChips {
+            coordinator.wikiIconsOn = flags.wikiChips
+            textView.wikiLinkIcon = flags.wikiChips ? { WikiLinkIcons.icon($0) } : nil
+        }
+        textView.blockReorderingEnabled = flags.reorder
+        textView.spellCheckingEnabled = flags.spellCheck
         // The editor opens nothing itself: a click is only a link click because
         // the host says what one means. This one honours https and refuses the
         // rest, and reports a wiki-link/mention by name rather than as a URL.
-        textView.onLinkClick = handleLinkClicks ? { link in
+        textView.onLinkClick = flags.linkClicks ? { link in
             guard let url = link.url, url.scheme == "https" || url.scheme == "http" else {
                 print("EditorDemo: ignoring link \(link.node.type.name) \(link.attrs)")
                 return
@@ -812,14 +907,14 @@ struct EditorContainer: UIViewRepresentable {
             UIApplication.shared.open(url)
         } : nil
         // Drying-ink highlight rendering (demo-only effect via highlightRenderer).
-        coordinator.dryingInk?.enabled = useDryingInk
-        textView.highlightRenderer = useDryingInk
+        coordinator.dryingInk?.enabled = flags.dryingInk
+        textView.highlightRenderer = flags.dryingInk
             ? { [weak coordinator] ctx, runs in coordinator?.dryingInk?.render(ctx, runs) }
             : nil
         textView.setNeedsDisplay()
         // Floating highlight bubble menu (uses onSelectionChange).
-        coordinator.bubbleEnabled = bubbleOn
-        if !bubbleOn { coordinator.bubble?.isHidden = true }
+        coordinator.bubbleEnabled = flags.bubble
+        if !flags.bubble { coordinator.bubble?.isHidden = true }
 
         // A pasted-prose request takes priority and is applied exactly once.
         if let proseLoad, proseLoad.id != coordinator.lastProseID {
@@ -860,10 +955,15 @@ struct ReadOnlyContainer: UIViewRepresentable {
     var document: Node?
     /// The live, user-editable theme from the 🎨 Theme panel.
     var themeSettings: ThemeSettings = ThemeSettings()
+    /// Every feature switch, from the ⚙︎ Flags menu. Only the wiki-link styling
+    /// applies here — a read-only document has no cursor and no typing.
+    var flags: DemoFlags = DemoFlags()
 
     @MainActor final class Coordinator: NSObject, UIScrollViewDelegate {
         weak var documentView: DocumentView?
         weak var scroll: UIScrollView?
+        /// Whether the icon hook is installed — assigning it drops the block cache.
+        var wikiIconsOn = false
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             documentView?.contentOffsetY = scrollView.contentOffset.y
         }
@@ -879,7 +979,9 @@ struct ReadOnlyContainer: UIViewRepresentable {
         scroll.alwaysBounceVertical = true
         scroll.delegate = context.coordinator
 
-        let documentView = DocumentView(document: document, theme: themeSettings.makeTheme())
+        let documentView = DocumentView(document: document, theme: demoTheme(themeSettings, flags))
+        // The same host hook as the editable view: chips get their glyphs here too.
+        if flags.wikiChips { documentView.wikiLinkIcon = { WikiLinkIcons.icon($0) } }
         documentView.translatesAutoresizingMaskIntoConstraints = false
         documentView.onDocumentHeightChange = { [weak coordinator = context.coordinator] height in
             coordinator?.syncContentHeight(height)
@@ -900,7 +1002,12 @@ struct ReadOnlyContainer: UIViewRepresentable {
 
     func updateUIView(_ uiView: UIScrollView, context: Context) {
         guard let documentView = context.coordinator.documentView else { return }
-        documentView.theme = themeSettings.makeTheme()
+        let theme = demoTheme(themeSettings, flags)
+        if documentView.theme != theme { documentView.theme = theme }
+        if context.coordinator.wikiIconsOn != flags.wikiChips {
+            context.coordinator.wikiIconsOn = flags.wikiChips
+            documentView.wikiLinkIcon = flags.wikiChips ? { WikiLinkIcons.icon($0) } : nil
+        }
         documentView.document = document
         DispatchQueue.main.async { context.coordinator.syncContentHeight(documentView.documentHeight) }
     }
@@ -959,6 +1066,13 @@ func sampleDocument(_ schema: Schema) -> Node {
         ]),
         b.heading(2, "Wiki links & tables"),
         b.p(b.t("See "), b.n("wikiLink", ["target": .string("Home"), "label": .string("the home page")]), b.t(" for more.")),
+        // Three targets of three kinds, so ⚙︎ Flags → "Wiki-link chips" has
+        // something to show: the pill is the theme's, the glyph is the host's.
+        b.p(b.t("A chip's pill comes from the theme and its glyph from the host, so "),
+            b.n("wikiLink", ["target": .string("Roadmap")]), b.t(", "),
+            b.n("wikiLink", ["target": .string("Releases")]), b.t(" and "),
+            b.n("wikiLink", ["target": .string("Keymap"), "label": .string("the keymap")]),
+            b.t(" each carry their own. Typing [[ shows the brackets quiet down.")),
         b.n("table", [:], [
             b.n("tableRow", [:], [b.n("tableHeader", [:], [b.p(b.t("Feature"))]), b.n("tableHeader", [:], [b.p(b.t("Status"))])]),
             b.n("tableRow", [:], [b.n("tableCell", [:], [b.p(b.t("Marks"))]), b.n("tableCell", [:], [b.p(b.t("done"))])]),

@@ -179,6 +179,50 @@ final class WikiLinkChipTests: XCTestCase {
                              try XCTUnwrap(plain.ensureLayout().caretRect(at: posAfterAtom)).minX)
     }
 
+    /// The glyph's box is a character of its own (U+FFFC), and its line-breaking
+    /// class allows a break on either side — which put a chip's glyph at the end
+    /// of one line and its label at the start of the next.
+    func testChipDoesNotBreakBetweenGlyphAndLabel() throws {
+        // Swept across widths, because the bug only shows at the widths where
+        // the line happens to break exactly at the chip — one fixed width tests
+        // whichever case it lands in and calls the other one passing.
+        var wrapped = 0
+        for width in stride(from: 140.0, through: 340.0, by: 4) {
+            let editor = try Editor(extensions: fullKit())
+            let s = editor.schema
+            editor.setContent(try s.node("doc", [:], content: Fragment.from([
+                try s.node("paragraph", [:], content: Fragment.from([
+                    s.text("some words that nearly fill the line up to about here "),
+                    try s.node("wikiLink", ["target": .string("Releases")], content: Fragment.empty),
+                    s.text(" and on"),
+                ])),
+            ])))
+            let view = EditorTextView(editor: editor)
+            var theme = DocumentTheme()
+            theme.wikiLink.background = .secondarySystemFill
+            view.theme = theme
+            view.wikiLinkIcon = { [glyph = glyph()] _ in glyph }
+            view.frame = CGRect(x: 0, y: 0, width: width, height: 300)
+            view.layoutIfNeeded()
+            let block = try XCTUnwrap(view.ensureLayout().blocks.first)
+            if block.lines.count > 1 { wrapped += 1 }
+            // Which line each half of the chip landed on. The pill is drawn from
+            // the run's own line, so comparing decorations would agree with
+            // itself either way — this asks the typesetter directly.
+            let text = block.attributed.string as NSString
+            let box = text.range(of: "\u{fffc}")
+            let label = text.range(of: "Releases")
+            XCTAssertNotEqual(box.location, NSNotFound)
+            XCTAssertNotEqual(label.location, NSNotFound)
+            func line(_ index: Int) -> Int? {
+                block.lines.firstIndex { NSLocationInRange(index, $0.stringRange) }
+            }
+            XCTAssertEqual(line(box.location), line(label.location),
+                           "the glyph and its label broke apart at width \(width)")
+        }
+        XCTAssertGreaterThan(wrapped, 0, "no width actually wrapped — the sweep proves nothing")
+    }
+
     /// A chip is one object, so it may not break across a line: a two-word
     /// label wraps whole rather than splitting at its space.
     func testChipDoesNotBreakAcrossLines() throws {
@@ -200,6 +244,25 @@ final class WikiLinkChipTests: XCTestCase {
         let block = try XCTUnwrap(view.ensureLayout().blocks.first)
         let label = block.attributed.string
         XCTAssertTrue(label.contains("Two\u{00a0}Words"), "the label's space should stop being a break opportunity")
+    }
+
+    /// A glyph makes a chip even with no pill behind it, so its label stops
+    /// breaking at spaces too.
+    func testAGlyphAloneMakesTheLabelUnbreakable() throws {
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            try s.node("paragraph", [:], content: Fragment.from([
+                try s.node("wikiLink", ["target": .string("Two Words")], content: Fragment.empty),
+            ])),
+        ])))
+        let view = EditorTextView(editor: editor)
+        view.theme = DocumentTheme()   // no pill
+        view.wikiLinkIcon = { [glyph = glyph()] _ in glyph }
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
+        view.layoutIfNeeded()
+        XCTAssertTrue(pills(view).isEmpty)
+        XCTAssertTrue(try XCTUnwrap(view.ensureLayout().blocks.first).attributed.string.contains("Two\u{00a0}Words"))
     }
 }
 #endif
