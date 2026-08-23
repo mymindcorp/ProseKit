@@ -70,7 +70,7 @@ final class DocumentViewTests: XCTestCase {
         let json = try s.node("doc", [:], content: Fragment.from([
             try s.node("heading", ["level": .int(1)], content: Fragment.from([s.text("Title")])),
             try s.node("paragraph", [:], content: Fragment.from([s.text("Loaded from JSON")])),
-        ])).toJSONString()
+        ])).toJSONString(pretty: true)
         let view = try DocumentView(json: json, schema: s)
         view.frame = CGRect(x: 0, y: 0, width: 300, height: 200)
         view.layoutIfNeeded()
