@@ -25,11 +25,11 @@ private struct Frontier {
 }
 
 private struct Fittable {
-    var sliceDepth: Int
-    var frontierDepth: Int
-    var parent: Node?
-    var inject: Fragment?
-    var wrap: [NodeType]?
+    let sliceDepth: Int
+    let frontierDepth: Int
+    let parent: Node?
+    let inject: Fragment?
+    let wrap: [NodeType]?
 }
 
 /// A faithful port of ProseMirror's `Fitter` (prosemirror-transform/replace.ts).

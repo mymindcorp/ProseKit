@@ -135,8 +135,8 @@ private func isCell(_ node: Node) -> Bool {
 }
 
 private struct TableContext {
-    var table: Node
-    var tablePos: Int
+    let table: Node
+    let tablePos: Int
 }
 
 private func tableContext(_ state: EditorState) -> TableContext? {

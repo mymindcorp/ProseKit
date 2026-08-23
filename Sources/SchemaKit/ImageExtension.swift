@@ -54,10 +54,10 @@ public final class ImageExtension: NodeExtension {
 /// a nested object rather than as encoded text.
 public struct ImageModel: Hashable, Sendable {
     /// Where the original lives — whatever the host's resolver understands.
-    public var path: String
+    public let path: String
     /// The original's intrinsic size in pixels, when known.
-    public var width: Int?
-    public var height: Int?
+    public let width: Int?
+    public let height: Int?
 
     public init(path: String, width: Int? = nil, height: Int? = nil) {
         self.path = path

@@ -5,11 +5,11 @@ public import EditorCommands
 /// A platform-neutral description of a key press. Adapters translate native
 /// events (NSEvent / UIKey) into this and feed it to the keymap.
 public struct KeyStroke: Hashable, Sendable {
-    public var key: String          // e.g. "a", "Enter", "Backspace", "ArrowLeft"
-    public var shift: Bool
-    public var alt: Bool
-    public var control: Bool
-    public var meta: Bool            // Command on macOS
+    public let key: String          // e.g. "a", "Enter", "Backspace", "ArrowLeft"
+    public let shift: Bool
+    public let alt: Bool
+    public let control: Bool
+    public let meta: Bool            // Command on macOS
 
     public init(key: String, shift: Bool = false, alt: Bool = false, control: Bool = false, meta: Bool = false) {
         self.key = key
