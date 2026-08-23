@@ -330,6 +330,11 @@ public enum HTMLSerializer {
             escapeAttribute(target, into: &out)
             out += "\" data-wikilink=\""
             escapeAttribute(target, into: &out)
+            // The host's id for the target, when it has one — see WikiLinkExtension.
+            if let id = node.attrs["targetId"]?.stringValue {
+                out += "\" data-wikilink-id=\""
+                escapeAttribute(id, into: &out)
+            }
             out += "\">"
             escape(node.attrs["label"]?.stringValue ?? target, into: &out)
             out += "</a>"
@@ -1296,7 +1301,9 @@ public enum HTMLParser {
                         if !label.isEmpty { result.append(schema.text(label, currentMarks)) }
                         i = close + 1; continue
                     }
-                    if let wl = try? schema.nodes["wikiLink"]?.create(["target": .string(target), "label": .string(label)]) {
+                    var wikiAttrs: Attrs = ["target": .string(target), "label": .string(label)]
+                    if let id = attrs["data-wikilink-id"] { wikiAttrs["targetId"] = .string(id) }
+                    if let wl = try? schema.nodes["wikiLink"]?.create(wikiAttrs) {
                         result.append(wl); i = close + 1; continue
                     }
                 }

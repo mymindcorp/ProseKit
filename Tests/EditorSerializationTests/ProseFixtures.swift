@@ -152,6 +152,17 @@ func registerProseTests() {
         try expectEqual(original, restored)
     }
 
+    // A wiki-link's `targetId` — the host's own id for the page — is not part of
+    // the `[[target|label]]` text, so HTML is where it has to survive.
+    test("prose: a wiki-link's targetId round-trips through HTML") {
+        let original = doc(p(t("see "), node("wikiLink", ["target": .string("Page"),
+                                                         "targetId": .string("3xK9")])))
+        let html = HTMLSerializer.serialize(original)
+        try expect(html.contains("data-wikilink-id=\"3xK9\""), "id is written: \(html)")
+        let restored = try HTMLParser.parse(html, schema: schema)
+        try expectEqual(firstNode(restored, "wikiLink")?.attrs["targetId"], .string("3xK9"))
+    }
+
     // Round-trip the lossless subset through Markdown.
     test("prose: Markdown round-trips the formatting subset") {
         let original = doc(
