@@ -78,17 +78,6 @@ private func minUnchanged(_ sizeA: Int, _ sizeB: Int) -> Int {
 
 public func computeDiff<Data>(_ fragA: Fragment, _ fragB: Fragment, _ range: Change<Data>,
                               _ encoder: ChangesetTokenEncoder = .default) -> [Change<Data>] {
-    // Myers' diff below never searches further than `maxDiffSize`, so a range
-    // longer than that on either side cannot produce a solution — tokenizing it
-    // and running the search to exhaustion only spends time to arrive at the
-    // answer this line gives for free.
-    //
-    // Upstream writes this comparison as `max(toA - fromA, toB, fromB)`, which
-    // reads two absolute positions where it means a length: every change past
-    // position `maxDiffSize` in a long document would bail here. Compare the
-    // lengths, which is what the guard is for.
-    if max(range.toA - range.fromA, range.toB - range.fromB) > maxDiffSize { return [range] }
-
     var tokA: [ChangeToken] = []
     tokens(fragA, encoder, range.fromA, range.toA, &tokA)
     var tokB: [ChangeToken] = []
@@ -106,6 +95,23 @@ public func computeDiff<Data>(_ fragA: Fragment, _ fragB: Fragment, _ range: Cha
     }
     // Simple, or too big to cheaply compute: the remaining region is the diff.
     if endA == start || endB == start || (endA == endB && endA == start + 1) {
+        return [range.slice(start, endA, start, endB)]
+    }
+
+    // Myers' search below never looks further than `maxDiffSize` edits, so a
+    // region still that long after the scan above cannot be solved within the
+    // bound. Running it anyway costs the full quadratic search to arrive at the
+    // same coarse answer this returns immediately — same output, less time.
+    //
+    // Measured *here*, after the trim, not on the range as it arrived. Upstream
+    // checks before tokenizing, and spells the comparison
+    // `max(toA - fromA, toB, fromB)` — two absolute positions where it means a
+    // length. Either way the check lands on a range nothing has trimmed yet,
+    // and a changed range is conservative: a paragraph rewritten in one word
+    // arrives thousands of positions wide and scans down to the word. Ask about
+    // what is actually left to solve and that case keeps its precise diff; ask
+    // earlier and the whole paragraph reads as changed.
+    if max(endA - start, endB - start) > maxDiffSize {
         return [range.slice(start, endA, start, endB)]
     }
 

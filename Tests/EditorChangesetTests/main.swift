@@ -384,21 +384,52 @@ private func diffTest(_ doc1: TaggedNode, _ doc2: TaggedNode, _ ranges: [[Int]])
 }
 
 func registerPMDiffTests() {
-    // Myers' search never looks further than `maxDiffSize`, so a range longer
-    // than that on either side cannot produce a solution — tokenizing it and
-    // running to exhaustion only spends time to reach the answer the guard
-    // gives immediately. The signature of the guard firing is that the range
-    // comes back exactly as passed, without the common prefix and suffix
-    // trimmed off it.
-    test("changeset diff: gives up immediately on a range too long to diff") {
+    // Myers' search never looks further than `maxDiffSize` edits, so a region
+    // still that long once the cheap scan from both ends is done cannot be
+    // solved within the bound — running it to exhaustion only spends time to
+    // reach the one coarse change the guard gives immediately.
+    test("changeset diff: gives up on a region too long to diff") {
         let d1 = doc(p(String(repeating: "a", count: 3000)))
         let d2 = doc(p(String(repeating: "b", count: 3000)))
         let range = Change(0, d1.node.content.size, 0, d2.node.content.size,
                            [Span(d1.node.content.size, 0)], [Span(d2.node.content.size, 0)])
         let diff = computeDiff(d1.node.content, d2.node.content, range)
-        try expectEqual(diff.count, 1)
-        try expectEqual("\([diff[0].fromA, diff[0].toA, diff[0].fromB, diff[0].toB])",
-                        "\([range.fromA, range.toA, range.fromB, range.toB])")
+            .map { [$0.fromA, $0.toA, $0.fromB, $0.toB] }
+        // The paragraph's own tokens match at both ends, so the coarse change
+        // covers its content and not the tokens around it.
+        try expectEqual("\(diff)", "\([[1, 3001, 1, 3001]])")
+    }
+
+    // The guard is a claim about time, not about output: Myers reaches the same
+    // coarse change on its own, by exhausting the search. So this measures.
+    // Guarded it is about 1ms in debug and under that in release; unguarded,
+    // 253ms and 44ms. The budget sits far enough above the first and below the
+    // second that neither a slow machine nor a loaded one can confuse them.
+    test("changeset diff: doesn't pay for the search it cannot finish") {
+        let d1 = doc(p(String(repeating: "a", count: 3000)))
+        let d2 = doc(p(String(repeating: "b", count: 3000)))
+        let range = Change(0, d1.node.content.size, 0, d2.node.content.size,
+                           [Span(d1.node.content.size, 0)], [Span(d2.node.content.size, 0)])
+        let started = DispatchTime.now().uptimeNanoseconds
+        _ = computeDiff(d1.node.content, d2.node.content, range)
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
+        try expect(ms < 100, "took \(Int(ms))ms; the unguarded search costs ~253ms here")
+    }
+
+    // The guard has to be asked about what is left to solve, not about the
+    // range as it arrived. A changed range is conservative — a paragraph
+    // rewritten in one word arrives thousands of positions wide — and the scan
+    // from both ends cuts it down to the word before Myers ever runs. Checking
+    // the untrimmed width instead makes the whole paragraph read as changed.
+    test("changeset diff: keeps a precise diff inside a wide changed range") {
+        let head = String(repeating: "word ", count: 600)
+        let d1 = doc(p(head + "alpha"))
+        let d2 = doc(p(head + "omega"))
+        let size = d1.node.content.size
+        let range = Change(1, size - 1, 1, size - 1, [Span(size - 2, 0)], [Span(size - 2, 0)])
+        let diff = computeDiff(d1.node.content, d2.node.content, range)
+            .map { [$0.fromA, $0.toA, $0.fromB, $0.toB] }
+        try expectEqual("\(diff)", "\([[3001, 3005, 3001, 3005]])")
     }
 
     // The guard compares lengths. Comparing the absolute end position instead

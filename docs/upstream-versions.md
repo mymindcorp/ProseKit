@@ -167,13 +167,23 @@ doesn't have to rediscover them.
 - **2026-08-22** — `prosemirror-changeset` 2.4.1/2.4.2: `isLetter`'s ASCII range
   starts the lowercase block at 97 rather than 79, so ``[ \ ] ^ _ ` `` stop
   counting as word characters and a change stops growing across them — the typo
-  had been ported faithfully, comment and all. `computeDiff` gives up before
-  tokenizing a range longer than `maxDiffSize` (now 2500), which Myers' search
-  could never solve anyway. Upstream's guard compares `max(toA - fromA, toB,
-  fromB)`, reading two absolute positions where it means a length; ported as a
-  comparison of lengths, or every edit past position 2500 in a long document
-  would bail. `Sources/EditorChangeset/{Simplify,Diff}.swift`; regression tests
-  in `Tests/EditorChangesetTests/main.swift`.
+  had been ported faithfully, comment and all. `computeDiff` gives up on a
+  region longer than `maxDiffSize` (now 2500) rather than running a search that
+  cannot finish inside the bound — 253ms of it, in debug, to reach the same
+  coarse answer.
+
+  **Ported with the guard moved.** Upstream checks before tokenizing, and spells
+  the comparison `max(toA - fromA, toB, fromB)` — two absolute positions where
+  it means a length. Both spellings ask about the range as it arrived, which is
+  conservative: a paragraph rewritten in one word arrives thousands of positions
+  wide, and the scan from both ends cuts it to the word before Myers ever runs.
+  Checking there made a 3005-wide range whose diff had been `[3001, 3005]` come
+  back as the whole `[1, 3006]` — every such edit reading as a wholly rewritten
+  paragraph. The guard asks after the trim instead, which keeps the precise diff
+  and still skips the unfinishable search. `Sources/EditorChangeset/{Simplify,Diff}.swift`;
+  regression tests in `Tests/EditorChangesetTests/main.swift`, one of them a time
+  budget, since the guard's whole claim is about time — the output is identical
+  either way.
 - **2026-08-22** — `prosemirror-model` 1.25.x: `Fragment.fromJSON` builds through
   `Fragment.from` rather than the raw initializer, so JSON that spells one run of
   text as several adjacent nodes sharing markup loads in the canonical joined
