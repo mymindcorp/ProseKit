@@ -128,6 +128,51 @@ func registerMarkdownInlineParityTests() {
         try expectEqual(text("~~a and ~~b~~"), "a and b~~")
     }
 
+    // They go through the same delimiter machinery as emphasis, so what they
+    // enclose is inline content rather than one flat run of text. Taking it as a
+    // slice instead lost every construct inside a strike or a highlight — a
+    // nested mark, a code span, a link, a hard break — on the way through.
+    test("inline parity: strike and highlight hold nested inline content") {
+        try expectEqual(marksOn("~~a *b* c~~"),
+                        [["strike"], ["italic", "strike"], ["strike"]])
+        try expectEqual(marksOn("==a **b** c=="),
+                        [["highlight"], ["bold", "highlight"], ["highlight"]])
+        // A code span is still parsed, and still keeps only its own mark —
+        // `code` excludes the others, inside a strike exactly as inside
+        // emphasis, where `marksOn("*a `b` c*")` is ["italic"], ["code"],
+        // ["italic"].
+        try expectEqual(marksOn("~~a `b` c~~"), [["strike"], ["code"], ["strike"]])
+        try expectEqual(marksOn("~~a [b](u) c~~"),
+                        [["strike"], ["link", "strike"], ["strike"]])
+        try expectEqual(marksOn("*a ==b== c*"),
+                        [["italic"], ["highlight", "italic"], ["italic"]])
+    }
+
+    // One sweep over every delimiter run, rather than one for emphasis and a
+    // second that had to steer clear of hard breaks: they all resolve through
+    // the same pairing now, so the same awkward contents — padding, a soft
+    // wrap, a hard break, a nested run — must behave the same way inside any of
+    // them, and must survive a round trip through the serializer.
+    test("inline parity: every delimiter run holds the same contents") {
+        for delimiter in ["*", "_", "**", "__", "~~", "=="] {
+            for inner in ["a", "a b", " a ", "a\nb", "a  \nb", "a \\\nb", "a `c` b"] {
+                let markdown = delimiter + inner + delimiter
+                let parsed = try MarkdownParser.parse(markdown, schema: schema)
+                let again = try MarkdownParser.parse(MarkdownSerializer.serialize(parsed),
+                                                     schema: schema)
+                try expectEqual(again, parsed, "round trip of \(markdown.debugDescription)")
+            }
+            // A backslash before the newline is a hard break wherever it lands,
+            // not two literal characters in the middle of a flat span.
+            let broken = try MarkdownParser.parse(delimiter + "c \\\nc" + delimiter,
+                                                  schema: schema)
+            try expectEqual(broken.child(0).childCount, 3, "hard break inside \(delimiter)")
+            try expectEqual(broken.child(0).child(1).type.name, "hardBreak",
+                            "hard break inside \(delimiter)")
+            try expectEqual(broken.textContent, "c c", "hard break inside \(delimiter)")
+        }
+    }
+
     // MARK: - Text joining
 
     test("inline parity: adjacent text with the same marks becomes one node") {

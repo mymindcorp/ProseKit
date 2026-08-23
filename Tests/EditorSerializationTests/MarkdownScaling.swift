@@ -87,6 +87,10 @@ func registerMarkdownScalingTests() {
         ("link destinations, one closer", { String(repeating: "[a](", count: $0 - 1) + ")" }, 12_500), // 4.1s
         ("reference-shaped brackets", { String(repeating: "[a][", count: $0) }, 12_500),   //  5.5s
         ("emphasis runs", { String(repeating: "*a", count: $0) }, 25_000),                 //  6.0s
+        // Not one of the payloads that hung: `~~` and `==` used to be found with
+        // a memoised search. They resolve through the same pairing as emphasis
+        // now, so they belong under the same guard.
+        ("doubled runs", { String(repeating: "~~a", count: $0) }, 16_666),
         ("unclosed angle brackets", { String(repeating: "<", count: $0) }, 50_000),        //  5.1s
         ("tag-shaped angle brackets", { String(repeating: "<a ", count: $0) }, 16_666),    //  1.7s
     ]

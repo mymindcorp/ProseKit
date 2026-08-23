@@ -2116,10 +2116,10 @@ public enum MarkdownParser {
     static func parseInline(_ text: String, _ schema: Schema,
                             _ definitions: [String: LinkDefinition] = [:],
                             literals: Bool = true) -> [Node] {
-        // Everything except emphasis is resolved as the text is scanned. Runs of
-        // "*" and "_" are set aside as delimiters and paired afterwards, because
-        // which of them open and which close can't be known until the whole line
-        // has been seen.
+        // Everything except the marks written as delimiter runs is resolved as
+        // the text is scanned. Runs of "*", "_", "~" and "=" are set aside as
+        // delimiters and paired afterwards, because which of them open and which
+        // close can't be known until the whole line has been seen.
         enum Piece {
             case node(Node)
             case delimiter(Int)  // index into `delimiters`
@@ -2133,8 +2133,8 @@ public enum MarkdownParser {
         // is a copy rather than a per-character append.
         let chars = Array(text.utf8)
         // Both of these cost a pass over the line, and prose asks them nothing —
-        // only a `[`, `<`, `~` or `=` ever reaches a scan that consults them —
-        // so neither is built until something actually needs it.
+        // only a `[` or `<` ever reaches a scan that consults them — so neither
+        // is built until something actually needs it.
         var lastByteCache: LastByte?
         func lastBytes() -> LastByte {
             if let lastByteCache { return lastByteCache }
@@ -2416,22 +2416,27 @@ public enum MarkdownParser {
                 i += run
                 continue
             }
-            // Strike ~~ ~~
-            if c == UInt8(ascii: "~") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "~") {
-                if let close = findPair(chars, i + 2, UInt8(ascii: "~"), UInt8(ascii: "~"), lastBytes(), &pairExhausted), close > i + 2 {
+            // Strike ~~ ~~ and highlight == ==. Set aside as delimiter runs, the
+            // same as emphasis, so that what they enclose stays inline content:
+            // a hard break, a link or nested emphasis inside one is markup, not
+            // the literal characters. Reading the span as a flat slice of text
+            // instead lost all of that on the way through.
+            //
+            // Neither means anything singly — a lone "~" or "=" is ordinary
+            // prose — so only a run of two or more becomes a delimiter, and
+            // pairing spends two characters at a time. The flanking rules are
+            // deliberately not applied: unlike "*", these have no in-word use to
+            // protect, and matching each closer with the nearest opener keeps
+            // "~~a and ~~b~~" closing where it always has.
+            if c == UInt8(ascii: "~") || c == UInt8(ascii: "=") {
+                let run = runLength(chars, i, c)
+                if run >= 2 {
                     flush()
-                    appendNode(schema.text(unescapeInline(slice(chars, (i + 2)..<close)), mark("strike")))
-                    i = close + 2; continue
-                }
-            }
-            // Highlight == ==
-            // A run of "=" is a setext heading underline or a divider far more
-            // often than it is an empty highlight, so require content.
-            if c == UInt8(ascii: "=") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "=") {
-                if let close = findPair(chars, i + 2, UInt8(ascii: "="), UInt8(ascii: "="), lastBytes(), &pairExhausted), close > i + 2 {
-                    flush()
-                    appendNode(schema.text(unescapeInline(slice(chars, (i + 2)..<close)), mark("highlight")))
-                    i = close + 2; continue
+                    delimiters.append(Delimiter(char: c, count: run, original: run,
+                                                canOpen: true, canClose: true))
+                    pieces.append(.delimiter(delimiters.count - 1))
+                    i += run
+                    continue
                 }
             }
             // Inline math $ $ — only when the schema has the node, so a lone `$`
@@ -2490,23 +2495,32 @@ public enum MarkdownParser {
             return nil
         }
         let pairs = processEmphasis(&delimiters, positions)
-        // How many pairs of each kind cover each piece. Counting over the pairs'
-        // ranges once beats asking, for every piece, which pairs enclose it —
-        // and the two marks are built once rather than per piece.
-        var strongDepth = [Int](repeating: 0, count: pieces.count)
-        var emphasisDepth = [Int](repeating: 0, count: pieces.count)
+        // Which kinds of pair cover each piece. Walking the pairs' ranges once
+        // beats asking, for every piece, which pairs enclose it. A bitmask
+        // rather than a count per kind: marks nest by set membership, so all
+        // that matters is whether a kind covers the piece at all — and only the
+        // kinds actually paired have their mark built, once rather than per
+        // piece.
+        var covering = [UInt8](repeating: 0, count: pieces.count)
+        var present: UInt8 = 0
         for pair in pairs {
-            let range = (positions[pair.open] + 1)..<positions[pair.close]
-            for index in range {
-                if pair.strong { strongDepth[index] += 1 } else { emphasisDepth[index] += 1 }
+            present |= pair.kind.rawValue
+            for index in (positions[pair.open] + 1)..<positions[pair.close] {
+                covering[index] |= pair.kind.rawValue
             }
         }
-        let boldMark = mark("bold"), italicMark = mark("italic")
+        let kindMarks = EmphasisKind.allCases
+            .filter { present & $0.rawValue != 0 }
+            .map { (bit: $0.rawValue, marks: mark($0.markName)) }
         var result: [Node] = []
         for (index, piece) in pieces.enumerated() {
             var marks: [Mark] = []
-            if strongDepth[index] > 0 { for m in boldMark { marks = m.addToSet(marks) } }
-            if emphasisDepth[index] > 0 { for m in italicMark { marks = m.addToSet(marks) } }
+            let cover = covering[index]
+            if cover != 0 {
+                for (bit, kindMark) in kindMarks where cover & bit != 0 {
+                    for m in kindMark { marks = m.addToSet(marks) }
+                }
+            }
             switch piece {
             case let .node(node):
                 result.append(marks.isEmpty ? node : node.mark(marks.reduce(node.marks) { $1.addToSet($0) }))
@@ -2789,7 +2803,26 @@ public enum MarkdownParser {
         return (label, url, title, closeParen + 1)
     }
 
-    /// One run of `*` or `_`, as the emphasis algorithm sees it.
+    /// What a matched pair of delimiters marks its contents with.
+    enum EmphasisKind: UInt8, CaseIterable {
+        case emphasis = 1, strong = 2, strike = 4, highlight = 8
+
+        /// The pair spends two characters of each run rather than one.
+        static func doubled(_ char: UInt8) -> Bool {
+            char == UInt8(ascii: "~") || char == UInt8(ascii: "=")
+        }
+
+        var markName: String {
+            switch self {
+            case .emphasis: return "italic"
+            case .strong: return "bold"
+            case .strike: return "strike"
+            case .highlight: return "highlight"
+            }
+        }
+    }
+
+    /// One run of `*`, `_`, `~` or `=`, as the emphasis algorithm sees it.
     struct Delimiter {
         let char: UInt8
         /// How many characters of the run are still unused.
@@ -2805,7 +2838,7 @@ public enum MarkdownParser {
     struct EmphasisPair {
         let open: Int
         let close: Int
-        let strong: Bool
+        let kind: EmphasisKind
     }
 
     /// CommonMark's "process emphasis": walk the delimiter runs left to right and
@@ -2843,13 +2876,21 @@ public enum MarkdownParser {
                 closer = next[closer]
                 continue
             }
+            // "~~" and "==" only mean anything in pairs of two, so a run with a
+            // single character left over is spent as text rather than matched.
+            let doubled = EmphasisKind.doubled(delimiters[closer].char)
+            if doubled, delimiters[closer].count < 2 {
+                closer = next[closer]
+                continue
+            }
             // The nearest opener of the same character that may pair with it.
             var opener = -1
             var scan = prev[closer]
             while scan >= 0 {
                 if delimiters[scan].char == delimiters[closer].char,
                    delimiters[scan].canOpen, delimiters[scan].count > 0,
-                   canPair(delimiters[scan], delimiters[closer]) {
+                   doubled ? delimiters[scan].count >= 2
+                           : canPair(delimiters[scan], delimiters[closer]) {
                     opener = scan
                     break
                 }
@@ -2863,10 +2904,14 @@ public enum MarkdownParser {
                 closer = after
                 continue
             }
-            // Two characters make it strong when both runs can spare them.
+            // Two characters make emphasis strong when both runs can spare them;
+            // the doubled delimiters always spend two.
             let strong = delimiters[opener].count >= 2 && delimiters[closer].count >= 2
-            let used = strong ? 2 : 1
-            pairs.append(EmphasisPair(open: opener, close: closer, strong: strong))
+            let used = strong || doubled ? 2 : 1
+            let kind: EmphasisKind = doubled
+                ? (delimiters[closer].char == UInt8(ascii: "~") ? .strike : .highlight)
+                : (strong ? .strong : .emphasis)
+            pairs.append(EmphasisPair(open: opener, close: closer, kind: kind))
             delimiters[opener].count -= used
             delimiters[closer].count -= used
             // Delimiters caught between the pair can never match anything now.
