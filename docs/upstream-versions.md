@@ -15,10 +15,10 @@ Use it to find what's new when re-auditing: read each package's CHANGELOG from t
 
 | Swift module | Upstream package | Reviewed through | Date | Notes |
 | --- | --- | --- | --- | --- |
-| `DocumentModel` | `prosemirror-model` | **1.25.11** | 2026-08-22 | `Fragment.fromJSON` adjacent-text-node join **ported** this pass. Slice invalid-`ReplaceAroundStep` guard (1.25.3) confirmed present. The surrogate-pair fix in `findDiffStart`/`End` (1.25.8) is N/A — positions here are grapheme clusters. `ReplaceError` vs `checkContent` (1.25.9) is free: `StepResult.fromReplace` catches any error. `DOMOutputSpec` typing (1.25.5/1.25.7/1.25.10) is TypeScript-only, and `body` in `blockTags` (1.25.11) is already how our `HTMLParser` treats it. See "Known gaps". |
+| `DocumentModel` | `prosemirror-model` | **1.25.11** | 2026-08-22 | `Fragment.fromJSON` adjacent-text-node join **ported** this pass. The Slice invalid-`ReplaceAroundStep` guard (1.25.3, narrowed in 1.25.5) was **not** present — an earlier pass recorded it as confirmed in error — and is **ported** now. The surrogate-pair fix in `findDiffStart`/`End` (1.25.8) is N/A — positions here are grapheme clusters. `ReplaceError` vs `checkContent` (1.25.9) is free: `StepResult.fromReplace` catches any error. `DOMOutputSpec` typing (1.25.5/1.25.7/1.25.10) is TypeScript-only, and `body` in `blockTags` (1.25.11) is already how our `HTMLParser` treats it. See "Known gaps". |
 | `DocumentTransform` | `prosemirror-transform` | **1.12.0** | 2026-03-30 | `ReplaceStep.map` structure-flag fix (1.10.4) **ported** this pass. `liftTarget` split-constraint (1.10.5), `Mapping.appendMap` aliasing (1.10.3, free via Swift value semantics), and `deleteRange` start-to-start (1.12.0) confirmed present. See "Known gaps". |
 | `EditorStateKit` | `prosemirror-state` | **1.4.4** | 2025-10-23 | `insertText` selection-mapping fix (1.4.4) confirmed present. |
-| `EditorCommands` | `prosemirror-commands` | **1.7.2** | 2026-08-22 | `splitBlock` measuring its split against the post-deletion selection (1.7.2) **ported** this pass. `splitBlock` no-crash regression (1.7.1) and `joinBackward`/`splitBlock` fixes (1.6.x) confirmed present. |
+| `EditorCommands` | `prosemirror-commands` | **1.7.2** | 2026-08-22 | `splitBlock` measuring its split against the post-deletion selection (1.7.2) **ported** in an earlier pass. `splitBlockAs` has now been brought up to upstream's shape wholesale: the multi-depth walk out of an inline node (1.6.2), the reset of the empty leftover a start-of-block split leaves behind, and the `false` return when no split is possible (1.6.1) were all missing — the row previously claimed them as confirmed — and are **ported** this pass. The `splitNode` callback still takes `(node, atEnd)` rather than upstream's third `$from` parameter (an unported feature). See "Known gaps". |
 | `SchemaKit` (tables) | `prosemirror-tables` | **1.8.5** | 2025-12-24 | `fixTables` zero-sized removal (1.6.4), colwidth validation (1.7.1), and keep-cell-type-on-row-move (1.8.1) confirmed present. Newer row/col *move* helpers track the same source. |
 | `EditorHistory` | `prosemirror-history` | **1.5.0** | 2026-07-04 | Mark-step adjacency (1.4.1) and closed-event append guard (1.1.3) confirmed present. Composition grouping (1.3.1) and 1.5.0's beforeinput check N/A (no browser IME/DOM); `isHistoryTransaction` (1.5.0) is a feature, add on demand. |
 | `EditorKeymap` | `prosemirror-keymap` | _not yet pinned_ | — | Upstream fixes are DOM `KeyboardEvent`-specific; the UIKit key handling is hand-written. Audit deferred. |
@@ -52,6 +52,17 @@ Use it to find what's new when re-auditing: read each package's CHANGELOG from t
   into a failed step. Narrower than it was — 1.25.5 dropped the check for open
   nodes, which is most of the cases — and the invalid slice still fails in
   `doc.replace`, which is what `ReplaceAroundStep` goes on to call.
+- **`splitBlock` on an `AllSelection`** (prosemirror-commands): upstream bails
+  before deleting anything when the selection's `$from` sits at depth 0, which an
+  `AllSelection` always does. In a browser that is not the end of it — the keymap
+  returns false, the contenteditable performs the delete-and-split itself, and the
+  view reads the result back — so on screen select-all-then-Enter still splits.
+  There is no such fallback here, so the depth check asks about the cursor the
+  deletion leaves behind rather than the selection that went in. Every other
+  selection reaches it unchanged.
+- **`splitBlockAs`'s callback signature**: upstream passes the resolved position
+  as a third argument (`(node, atEnd, $from)`), added in 1.6.0. The Swift closure
+  takes `(node, atEnd)`; add the parameter when a caller needs it.
 - **Remote steps via `maybeStep`** (prosemirror-collab): upstream's
   `receiveTransaction` uses `tr.step` and throws when an authority-confirmed step
   fails to apply; the Swift port uses `maybeStep`, silently skipping it. A failure
@@ -152,6 +163,31 @@ doesn't have to rediscover them.
 
 ## Ported-fix log
 
+- **2026-08-22** — `prosemirror-model` 1.25.3/1.25.5: `Slice.insertAt` asks the
+  node the content lands in whether it may hold it, and returns `nil` when it may
+  not. Without that check a `ReplaceAroundStep` could drop its gap anywhere the
+  positions happened to fit — a paragraph into a code block — and `apply`
+  succeeded, because nothing downstream rechecks a node the slice carries
+  wholesale: the step produced a document its own schema rejects. The check skips
+  a cut edge, which is upstream's 1.25.5 narrowing: what sits on an open edge is
+  half a node, and the rest of it arrives from the document when the slice is
+  placed, so the schema question there is about content the node never owns.
+  `Sources/DocumentModel/Slice.swift`; regression tests in
+  `Tests/DocumentTransformTests/SliceInsertAt.swift`, including the open/closed
+  pair that pins the narrowing and the step that used to build the invalid doc.
+- **2026-08-22** — `prosemirror-commands` 1.6.1/1.6.2 (and the older start-of-block
+  behaviour): `splitBlockAs` was a reduction of upstream — it split one level, at a
+  position it re-mapped rather than resolved, and reported success whether or not
+  it had done anything. It now follows upstream's shape. It walks out to the
+  nearest block, carrying a `nil` type per inline level crossed, so a cursor inside
+  an inline node splits that node too; it returns `false` when neither the original
+  type nor the default can be split to, instead of dispatching an empty
+  transaction; and a split at the *start* of a block resets the empty block left in
+  front to the default type when the schema allows it there — which is why Enter at
+  the start of a heading now leaves a paragraph above it rather than a second empty
+  heading. `Sources/EditorCommands/Commands.swift`; regression tests in
+  `Tests/EditorCommandsTests/PMCommands.swift` and the upstream cases needing their
+  own schema in `Tests/EditorCommandsTests/PMSplitBlockSchemas.swift`.
 - **2026-08-22** — `prosemirror-markdown` 1.13.3/1.13.4/1.13.6 (in kind, not as a
   port): CommonMark will not open a delimiter run followed by whitespace or close
   one preceded by it, so `**foo **bar` spells no mark at all and the bold is gone
