@@ -43,6 +43,53 @@ func registerWikiLinkTargetIdTests() {
                        "the typed query is replaced, not left behind")
         }
     }
+    test("wiki trigger: a link already in the line doesn't shift the range") {
+        try MainActor.assumeIsolated {
+            let editor = try Editor(extensions: fullKit(wikiLinkSuggestions: { _ in ["Architecture"] }))
+            // An atom renders as its whole label but occupies one position. With
+            // the two counted as if they were the same unit, the `[[` typed after
+            // one resolved past the end of the document and trapped.
+            try expect(editor.insertWikiLink(target: "Soccer Training Session"), "insert should succeed")
+            try typeAtCursor(editor, " [[Arc")
+
+            let suggestion = try expectSuggestion(editor)
+            try expectEqual(suggestion.query, "Arc")
+            try expect(suggestion.to <= editor.doc.content.size, "the range is inside the document")
+            // `[[` sits two positions back from the cursor's `Arc`.
+            try expectEqual(suggestion.to - suggestion.from, 5)
+
+            // The pick that used to crash.
+            try expect(editor.acceptWikiLinkSuggestion(target: "Architecture", targetId: "3xK9",
+                                                       from: suggestion.from, to: suggestion.to),
+                       "accept should succeed")
+            try expectEqual(countWikiLinks(editor.doc), 2)
+        }
+    }
+}
+
+/// The editor's active `[[` suggestion. Fails the test when there is none.
+private func expectSuggestion(_ editor: Editor, file: StaticString = #file,
+                              line: UInt = #line) throws -> WikiLinkSuggestion {
+    try expectNotNil(editor.wikiLinkSuggestion, file: file, line: line)
+    return editor.wikiLinkSuggestion!
+}
+
+/// Type at the cursor rather than at position 1, so text lands after whatever
+/// the document already holds.
+@MainActor private func typeAtCursor(_ editor: Editor, _ text: String) throws {
+    let tr = editor.state.tr
+    try tr.insertText(text, editor.state.selection.to)
+    editor.dispatch(tr)
+}
+
+/// How many `wikiLink` atoms a document holds.
+private func countWikiLinks(_ doc: Node) -> Int {
+    var n = 0
+    doc.descendants { node, _, _, _ in
+        if node.type.name == "wikiLink" { n += 1 }
+        return true
+    }
+    return n
 }
 
 /// The first `wikiLink` atom in a document. Fails the test when there is none,

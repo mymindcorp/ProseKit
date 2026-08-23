@@ -94,7 +94,11 @@ private func computeSlashMenu(_ state: EditorState, atLineStart: Bool) -> SlashM
     guard let cursor = (state.selection as? TextSelection)?.cursor else { return nil }
     let parent = cursor.parent
     guard parent.isTextblock, !parent.type.spec.code else { return nil }
-    let textBefore = parent.textBetween(0, cursor.parentOffset)
+    // One character per inline leaf, so an offset into this string IS a document
+    // offset. An atom occupies a single position but renders as its whole label
+    // (a wiki-link's target, an image's alt), and counting those characters put
+    // the trigger's `from` past the end of the document.
+    let textBefore = parent.textBetween(0, cursor.parentOffset, leafText: "\u{fffc}")
     guard let slashRange = textBefore.range(of: "/", options: .backwards) else { return nil }
     let slashOffset = textBefore.distance(from: textBefore.startIndex, to: slashRange.lowerBound)
     if atLineStart {
