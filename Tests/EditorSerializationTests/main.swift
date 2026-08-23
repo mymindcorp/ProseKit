@@ -85,9 +85,12 @@ func em(_ s: String) -> Node { schema.text(s, [schema.mark("italic")]) }
 
 test("JSON round-trip") {
     let d = doc(h(2, "Title"), p(t("Hello "), strong("world")), node("bulletList", tightList, [node("listItem", [:], [p("item")])]))
-    let json = try DocumentJSON.string(d, pretty: true)
-    let back = try DocumentJSON.decode(schema, json)
-    try expectEqual(d, back)
+    // Both spellings: the dense one is what gets written, and the laid-out one
+    // is what a person pastes back in.
+    for pretty in [false, true] {
+        let json = try DocumentJSON.string(d, pretty: pretty)
+        try expectEqual(d, try DocumentJSON.decode(schema, json), "pretty=\(pretty)")
+    }
 }
 
 test("JSON decodes every attribute value type") {
@@ -116,8 +119,10 @@ test("JSON round-trips escapes, unicode and attribute types") {
         h(2, "Quote \" backslash \\ newline \n tab \t"),
         p(t("emoji 👨‍👩‍👧 accents éü CJK 日本語 math ∑∫")),
         p(node("image", ["src": .string("https://example.test/a?b=1&c=2"), "alt": .null])))
-    let back = try DocumentJSON.decode(schema, try DocumentJSON.string(d, pretty: true))
-    try expectEqual(d, back)
+    for pretty in [false, true] {
+        let back = try DocumentJSON.decode(schema, try DocumentJSON.string(d, pretty: pretty))
+        try expectEqual(d, back, "pretty=\(pretty)")
+    }
 }
 
 test("JSON decode rejects malformed input") {
