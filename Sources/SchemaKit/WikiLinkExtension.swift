@@ -18,9 +18,10 @@ public struct WikiLinkSuggestion: Equatable {
 
 public let wikiLinkSuggestionKey = PluginKey<WikiLinkSuggestion?>("wikiLinkSuggestion")
 
-/// A wiki-link is an inline atom node with a stable `target` (page id/name) and
-/// an optional display `label`. It renders its label (or target) and serializes
-/// to `[[target|label]]`.
+/// A wiki-link is an inline atom node with a stable `target` (page id/name), an
+/// optional display `label`, and an optional `targetId` — the host's id for the
+/// thing named. It renders its label (or target) and serializes to
+/// `[[target|label]]`.
 public final class WikiLinkExtension: NodeExtension {
     public let name = "wikiLink"
     /// Provides `[[` autocomplete candidates for a typed query (synchronous, for
@@ -45,6 +46,13 @@ public final class WikiLinkExtension: NodeExtension {
             attrs: [
                 "target": AttributeSpec(),
                 "label": AttributeSpec(default: .null),
+                // The id of the thing `target` names, when the host knows it.
+                // `target` is a page name, which is how a link typed by hand
+                // reads; an id is what a host that picked the target from its
+                // own store can resolve later, after the page has been renamed.
+                // Attributes outside this spec are dropped on parse, so a host
+                // that writes one needs it declared here.
+                "targetId": AttributeSpec(default: .null),
             ],
             selectable: true,
             draggable: true,
@@ -145,11 +153,21 @@ private func computeSuggestion(_ state: EditorState) -> WikiLinkSuggestion? {
     return WikiLinkSuggestion(query: query, from: from, to: cursor.pos)
 }
 
+/// The attribute set a wiki-link carries. What isn't passed isn't supplied, so
+/// the node type fills it from the spec's default (null) — the shape a hand-typed
+/// `[[link]]` has always had.
+func wikiLinkAttrs(target: String, targetId: String?, label: String?) -> Attrs {
+    var attrs: Attrs = ["target": .string(target)]
+    if let targetId { attrs["targetId"] = .string(targetId) }
+    if let label { attrs["label"] = .string(label) }
+    return attrs
+}
+
 /// Insert a wiki-link node at the current selection.
-public func insertWikiLink(_ type: NodeType, target: String, label: String? = nil) -> Command {
+public func insertWikiLink(_ type: NodeType, target: String, targetId: String? = nil,
+                           label: String? = nil) -> Command {
     { state, dispatch, _ in
-        var attrs: Attrs = ["target": .string(target)]
-        if let label { attrs["label"] = .string(label) }
+        let attrs = wikiLinkAttrs(target: target, targetId: targetId, label: label)
         guard let node = try? type.create(attrs) else { return false }
         dispatch?(state.tr.replaceSelectionWith(node).scrollIntoView())
         return true
@@ -159,9 +177,9 @@ public func insertWikiLink(_ type: NodeType, target: String, label: String? = ni
 public extension Editor {
     /// Insert a wiki-link to the given target page.
     @discardableResult
-    func insertWikiLink(target: String, label: String? = nil) -> Bool {
+    func insertWikiLink(target: String, targetId: String? = nil, label: String? = nil) -> Bool {
         guard let type = schema.nodes["wikiLink"] else { return false }
-        return run(SchemaKit.insertWikiLink(type, target: target, label: label))
+        return run(SchemaKit.insertWikiLink(type, target: target, targetId: targetId, label: label))
     }
 
     /// The active `[[` suggestion, if the cursor is typing one.
@@ -171,18 +189,19 @@ public extension Editor {
 
     /// Replace the active `[[` query with a wiki-link to the chosen target.
     @discardableResult
-    func acceptWikiLinkSuggestion(target: String, label: String? = nil) -> Bool {
+    func acceptWikiLinkSuggestion(target: String, targetId: String? = nil, label: String? = nil) -> Bool {
         guard let suggestion = wikiLinkSuggestion else { return false }
-        return acceptWikiLinkSuggestion(target: target, label: label, from: suggestion.from, to: suggestion.to)
+        return acceptWikiLinkSuggestion(target: target, targetId: targetId, label: label,
+                                        from: suggestion.from, to: suggestion.to)
     }
 
     /// Replace an explicit `[[` range with a wiki-link. Use this when the range
     /// was captured before a tap could move the selection.
     @discardableResult
-    func acceptWikiLinkSuggestion(target: String, label: String? = nil, from: Int, to: Int) -> Bool {
+    func acceptWikiLinkSuggestion(target: String, targetId: String? = nil, label: String? = nil,
+                                  from: Int, to: Int) -> Bool {
         guard let type = schema.nodes["wikiLink"] else { return false }
-        var attrs: Attrs = ["target": .string(target)]
-        if let label { attrs["label"] = .string(label) }
+        let attrs = wikiLinkAttrs(target: target, targetId: targetId, label: label)
         guard let node = try? type.create(attrs) else { return false }
         let tr = state.tr
         _ = try? tr.replaceWith(min(from, to), max(from, to), node)
