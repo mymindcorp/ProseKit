@@ -10,28 +10,40 @@ whitespace between block tags, and the newline CommonMark puts at the end of a
 code block). A second pass checks that our *own* output re-reads identically —
 `parse → serialize → parse == parse`.
 
-**Current: 353/652 agree, 650/652 round-trip stable, nothing throws or crashes.**
+**Current: 384/652 agree, 650/652 round-trip stable, nothing throws or crashes.**
 
 The parser is deliberately not a CommonMark implementation, so full agreement
 isn't the target. Round-trip stability is the number that matters for our own
 documents; agreement matters for Markdown written elsewhere.
 
-| | first measured | now |
-| --- | --- | --- |
-| spec agreement | 137 | **353** |
-| round-trip stable | 609 | **650** |
-| threw or crashed | 0 | 0 |
+| | first measured | 2026-07-31 | 2026-08-22 |
+| --- | --- | --- | --- |
+| spec agreement | 137 | 353 | **384** |
+| round-trip stable | 609 | 650 | **650** |
+| threw or crashed | 0 | 0 | **0** |
 
-Two cautions when reading the agreement figure:
+The 2026-08-22 column is measured against `main` at c8f4338.
 
-- **It undercounts lists.** A ProseMirror `listItem` always holds block content,
-  so we emit `<li><p>…</p></li>` where CommonMark writes `<li>…</li>` for a tight
-  list. Normalizing that difference away gives **371/652** — the extra 18 are
-  entirely that.
+**Read the last column against the middle one with care.** The harness that
+produced the first two columns was never committed — only this document was —
+so the August figures come from a harness rebuilt from the method described
+above. Its normalization is not guaranteed to match the original's character for
+character, and the per-section costs below differ from the July ones in both
+directions (fenced code blocks most visibly). Treat 353 → 384 as approximate.
+
+Comparisons made *within* one harness run are exact, and those are the ones
+worth acting on: see the round-trip section below.
+
+One caution on the agreement figure itself:
+
 - **It once undercounted code blocks**, because the harness didn't normalize the
   trailing newline CommonMark puts inside `<pre><code>`. Figures quoted before
   that was fixed (137–236) are on the old basis; everything from 246 on is
   comparable.
+
+The list undercount recorded here in July is **gone**: a tight list now
+serializes as `<ul><li>foo</li></ul>`, so the 18 examples it cost have come
+back and normalizing the `<li><p>` form away no longer changes the score at all.
 
 ## Done
 
@@ -72,23 +84,30 @@ Recorded so the same ground isn't covered twice.
 
 ## What's left
 
+Disagreements per section, as measured on 2026-08-22 (268 in total):
+
 | gap | examples | notes |
 | --- | ---: | --- |
-| **Raw HTML blocks and inline tags** | 44 + 20 | Pasted Markdown containing `<table>` or `<div>` is escaped into visible text. We already own a full HTML parser, so routing these through it is plausible rather than writing new code. Import-only. The largest remaining bucket by some distance. |
-| **Emphasis, the rest** | 45 of 132 | The stack is in; what remains is mostly precedence against links and code spans, and Unicode punctuation in the flanking tests. |
-| **Links, the rest** | 46 of 90 | Mostly destinations and titles in shapes we don't accept yet, plus interaction with raw HTML. |
-| **List structure** | 56 | Tight vs loose (see below) plus start numbers, markers changing mid-list, and how far an item's content may be indented. |
-| **Fenced code details** | 13 | Info strings, closing-fence length rules, indentation of the closing fence. |
-| **Entity edge cases** | 10 | Numeric references out of range, and references inside destinations. |
+| **Raw HTML blocks and inline tags** | 44 of 44 + 14 of 20 | Pasted Markdown containing `<table>` or `<div>` is escaped into visible text. We already own a full HTML parser, so routing these through it is plausible rather than writing new code. Import-only. Still the largest bucket by some distance, and the only section we fail outright. |
+| **List structure** | 24 of 48 + 12 of 26 | Start numbers, markers changing mid-list, and how far an item's content may be indented. No longer includes tight vs loose, which is fixed. |
+| **Emphasis, the rest** | 27 of 132 | The stack is in; what remains is mostly precedence against links and code spans, and Unicode punctuation in the flanking tests. Down from 45 in July. |
+| **Fenced code details** | 21 of 29 | Info strings, closing-fence length rules, indentation of the closing fence. July costed this at 13; the gap between the two figures is the harness caveat above, not a change in behaviour — the per-section counts are identical before and after every commit landed since. |
+| **Links, the rest** | 20 of 90 + 12 of 27 | Mostly destinations and titles in shapes we don't accept yet, plus interaction with raw HTML. Down from 46 in July. |
+| **Block quotes** | 15 of 25 | Largely their interaction with the list and raw-HTML gaps above. |
+| **Setext headings** | 11 of 27 | |
+| **Indented code blocks** | 10 of 12 | |
+| **Entity edge cases** | 10 of 17 | Numeric references out of range, and references inside destinations. |
+| **Everything else** | 48 | Hard line breaks 9, tabs 8, autolinks 7, backslash escapes 7, paragraphs 6, thematic breaks 3, and 2 each in images, soft line breaks, ATX headings, and code spans. |
 
 ## Divergences to keep
 
 These follow from the document model. Listed so nobody spends time "fixing" them
 or reads the agreement score as if they were failures.
 
-- **Tight vs loose lists.** A ProseMirror `listItem` always holds block content,
-  so we always produce the paragraph form. Round-trips fine; only the HTML
-  differs. Worth 18 examples.
+- ~~**Tight vs loose lists.**~~ Fixed since July — a tight list now serializes as
+  `<ul><li>foo</li></ul>`, not the `<li><p>` form. Kept here struck through
+  because the July figures were quoted with an 18-example correction for it, and
+  the August ones are not.
 - **A code span can't carry another mark.** The schema's `code` mark excludes all
   others, so `**`code` is bold**` parses to a code span followed by bold text —
   which has no Markdown spelling, since `**` after a backtick can't open
@@ -98,21 +117,47 @@ or reads the agreement score as if they were failures.
 - **Percent-encoding of destinations.** CommonMark writes `/my uri` as
   `/my%20uri`; we keep destinations as written, as the HTML parser does.
 
-## The two that still don't round-trip
+## Round-trip: the two failures are not the two recorded here in July
 
-Both are pathological, and both are recorded rather than chased:
+Both July failures are **fixed**. A document of empty headings, and emphasis
+spanning a soft line break into a setext underline, now both round-trip.
 
-- a document of empty headings (`## \n#\n### ###`);
-- a paragraph whose emphasis spans a soft line break, then a setext underline —
-  the mark's text node holds a literal newline that a one-line heading can't
-  write back.
+The count stayed at 650 anyway, because two new failures replaced them — and
+unlike the July pair, these were not pathological. Tracking the count alone
+would have hidden the swap completely; it took comparing the failing example
+*ids* between runs to see it.
+
+Bisected to `d68cba2`, which introduced a shortcut writing no delimiters around
+a whitespace-only text node. Correct for the flanking marks it was written for,
+applied to every mark instead — so `` ` ` ``, a legal code span holding a
+space, lost its backticks and with them the mark:
+
+| input | wrote | |
+| --- | --- | --- |
+| `` ` `\n`  ` `` (#334) | `` ` `  `` | second code span gone |
+| ```` ``` ```\naaa ```` (#138) | `  aaa` | code span gone |
+
+Fixed in #136, which restores **652/652** with agreement unmoved at 384. That
+is the highest round-trip figure recorded here, and the first time nothing in
+the suite fails it.
+
+Measured with one harness across all three trees, so these are exact:
+
+| | before `d68cba2` | `main` at c8f4338 | with #136 |
+| --- | ---: | ---: | ---: |
+| spec agreement | 384 | 384 | **384** |
+| round-trip stable | 652 | 650 | **652** |
+| threw or crashed | 0 | 0 | **0** |
 
 ## Keeping it honest
 
-Two properties are worth holding onto while changing any of this:
+Three properties are worth holding onto while changing any of this:
 
 - the 652 examples **never throw and never crash** — the property that matters
   most for the paste path, where hostile input arrives;
+- **the identity of the failures, not just the count.** The two failures in
+  August are not the two in July, and the count never moved. A regression that
+  swaps one failure for another is invisible to the number by itself;
 - **round-trip stability catches what agreement doesn't.** Several fixes in this
   work exist only because that number dropped when a feature went in: leaving
   control-character references alone, the escape-aware link scan,
