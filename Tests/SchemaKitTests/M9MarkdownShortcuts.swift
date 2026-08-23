@@ -122,21 +122,20 @@ func registerMarkdownShortcutTests() {
         var count = 0
         var target: String?
         editor.doc.descendants { node, _, _, _ in
-            if node.type.name == "wikiLink" { count += 1; target = node.attrs["target"]?.stringValue }
+            if node.type.name == "wikiLink" { count += 1; target = node.attrs["text"]?.stringValue }
             return true
         }
         try expectEqual(count, 1)
         try expectEqual(target, "Page")
     }
 
-    test("md shortcut: [[Target|Label]] keeps target and label") {
+    test("md shortcut: [[Target|Label]] reads as the label") {
         let editor = try Editor(extensions: fullKit())
         try type(editor, "[[Home|Start]")
         _ = textInput(editor, at: editor.doc.content.size - 1, "]")
         var node: Node?
         editor.doc.descendants { n, _, _, _ in if n.type.name == "wikiLink" { node = n }; return true }
-        try expectEqual(node?.attrs["target"]?.stringValue, "Home")
-        try expectEqual(node?.attrs["label"]?.stringValue, "Start")
+        try expectEqual(node?.attrs["text"]?.stringValue, "Start")
     }
 
     // MARK: Smart typography

@@ -160,7 +160,7 @@ func registerWikiLinkAsyncTests() {
             entries[0].apply(editor)
             var target: String?
             editor.doc.descendants { n, _, _, _ in
-                if n.type.name == "wikiLink" { target = n.attrs["target"]?.stringValue }
+                if n.type.name == "wikiLink" { target = n.attrs["text"]?.stringValue }
                 return true
             }
             try! expectEqual(target, "Architecture")

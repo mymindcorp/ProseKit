@@ -135,7 +135,7 @@ enum WikiLinkIcons {
     /// Template-rendered, so the editor tints it with the chip's own colour —
     /// one icon set that works in light and dark and at any type size.
     static func icon(_ node: Node) -> UIImage? {
-        let target = node.attrs["target"]?.stringValue ?? ""
+        let target = node.type.spec.leafText?(node) ?? ""
         return UIImage(systemName: symbols[target] ?? "doc.text.fill")?
             .withRenderingMode(.alwaysTemplate)
     }
@@ -1065,13 +1065,13 @@ func sampleDocument(_ schema: Schema) -> Node {
             b.n("taskItem", ["checked": .bool(false)], [b.p(b.t("double-click a word to select it"))]),
         ]),
         b.heading(2, "Wiki links & tables"),
-        b.p(b.t("See "), b.n("wikiLink", ["target": .string("Home"), "label": .string("the home page")]), b.t(" for more.")),
+        b.p(b.t("See "), b.n("wikiLink", ["text": .string("the home page")]), b.t(" for more.")),
         // Three targets of three kinds, so ⚙︎ Flags → "Wiki-link chips" has
         // something to show: the pill is the theme's, the glyph is the host's.
         b.p(b.t("A chip's pill comes from the theme and its glyph from the host, so "),
-            b.n("wikiLink", ["target": .string("Roadmap")]), b.t(", "),
-            b.n("wikiLink", ["target": .string("Releases")]), b.t(" and "),
-            b.n("wikiLink", ["target": .string("Keymap"), "label": .string("the keymap")]),
+            b.n("wikiLink", ["text": .string("Roadmap")]), b.t(", "),
+            b.n("wikiLink", ["text": .string("Releases")]), b.t(" and "),
+            b.n("wikiLink", ["text": .string("the keymap")]),
             b.t(" each carry their own. Typing [[ shows the brackets quiet down.")),
         b.n("table", [:], [
             b.n("tableRow", [:], [b.n("tableHeader", [:], [b.p(b.t("Feature"))]), b.n("tableHeader", [:], [b.p(b.t("Status"))])]),

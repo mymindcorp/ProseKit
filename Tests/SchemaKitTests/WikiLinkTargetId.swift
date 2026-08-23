@@ -4,28 +4,42 @@ import EditorStateKit
 import SchemaKit
 import TestHarness
 
-/// The `targetId` attribute: a host's own id for the page a `[[wiki-link]]`
-/// names. Attributes the spec doesn't declare are dropped on parse, so these
-/// pin that one down — created, round-tripped through JSON, and written by
-/// accepting a suggestion.
+/// What a `[[wiki-link]]` carries: the `text` it reads as, and — when a host
+/// picked the target from its own store — the `targetId` that still resolves
+/// after a rename and the `targetType` a renderer draws an icon from.
+/// Attributes the spec doesn't declare are dropped on parse, so these pin the
+/// whole set down: created, round-tripped through JSON, and written by accepting
+/// a suggestion.
 func registerWikiLinkTargetIdTests() {
-    test("wiki targetId: survives a JSON round trip") {
+    test("wiki link: the whole attribute set survives a JSON round trip") {
         try MainActor.assumeIsolated {
             let editor = try Editor(extensions: fullKit())
-            try expect(editor.insertWikiLink(target: "Architecture", targetId: "3xK9", label: "the plan"),
+            try expect(editor.insertWikiLink(text: "Architecture", targetId: "3xK9", targetType: "Note"),
                        "insert should succeed")
             let reparsed = try Node.fromJSON(editor.schema, editor.doc.toJSON())
             let node = try firstWikiLink(reparsed)
+            try expectEqual(node.attrs["text"]?.stringValue, "Architecture")
             try expectEqual(node.attrs["targetId"]?.stringValue, "3xK9")
-            try expectEqual(node.attrs["target"]?.stringValue, "Architecture")
-            try expectEqual(node.attrs["label"]?.stringValue, "the plan")
+            try expectEqual(node.attrs["targetType"]?.stringValue, "Note")
+        }
+    }
+
+    test("wiki link: typing `[[Page]]` puts the words in `text`") {
+        try MainActor.assumeIsolated {
+            let editor = try Editor(extensions: fullKit())
+            // The closing bracket has to go through the input rules — typing it
+            // straight into the document is what the rule watches for.
+            try type(editor, "[[Architecture]")
+            _ = textInput(editor, at: editor.doc.content.size - 1, "]")
+            let node = try firstWikiLink(editor.doc)
+            try expectEqual(node.attrs["text"]?.stringValue, "Architecture")
         }
     }
 
     test("wiki targetId: absent when nobody supplied one") {
         try MainActor.assumeIsolated {
             let editor = try Editor(extensions: fullKit())
-            try expect(editor.insertWikiLink(target: "Architecture"), "insert should succeed")
+            try expect(editor.insertWikiLink(text: "Architecture"), "insert should succeed")
             let node = try firstWikiLink(editor.doc)
             try expect(node.attrs["targetId"]?.stringValue == nil, "no id was given, so none is carried")
         }
@@ -35,7 +49,7 @@ func registerWikiLinkTargetIdTests() {
         try MainActor.assumeIsolated {
             let editor = try Editor(extensions: fullKit(wikiLinkSuggestions: { _ in ["Architecture"] }))
             try type(editor, "[[Arc")
-            try expect(editor.acceptWikiLinkSuggestion(target: "Architecture", targetId: "3xK9"),
+            try expect(editor.acceptWikiLinkSuggestion(text: "Architecture", targetId: "3xK9"),
                        "accept should succeed")
             let node = try firstWikiLink(editor.doc)
             try expectEqual(node.attrs["targetId"]?.stringValue, "3xK9")

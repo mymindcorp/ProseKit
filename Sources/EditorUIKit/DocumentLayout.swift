@@ -1592,7 +1592,9 @@ final class DocumentLayout {
                 let display: String
                 switch child.type.name {
                 case "wikiLink":
-                    let label = child.attrs["label"]?.stringValue ?? child.attrs["target"]?.stringValue ?? "link"
+                    // Through the schema's own ladder, so a document written
+                    // before `text` still reads as what it always said.
+                    let label = child.type.spec.leafText?(child) ?? "link"
                     // A chip is one object: it may not break in half at the end
                     // of a line, so its spaces stop being break opportunities.
                     display = isChip ? label.replacingOccurrences(of: " ", with: "\u{00a0}") : label

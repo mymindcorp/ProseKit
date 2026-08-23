@@ -20,7 +20,7 @@ final class WikiLinkChipTests: XCTestCase {
         editor.setContent(try s.node("doc", [:], content: Fragment.from([
             try s.node("paragraph", [:], content: Fragment.from([
                 s.text("before "),
-                try s.node("wikiLink", ["target": .string("Target")], content: Fragment.empty),
+                try s.node("wikiLink", ["text": .string("Target")], content: Fragment.empty),
                 s.text(" after"),
             ])),
         ])))
@@ -136,7 +136,7 @@ final class WikiLinkChipTests: XCTestCase {
 
         let view = try makeView { $0.wikiLink.background = .secondarySystemFill }
         view.wikiLinkIcon = { [glyph = glyph()] node in
-            node.attrs["target"]?.stringValue == "Target" ? glyph : nil
+            node.attrs["text"]?.stringValue == "Target" ? glyph : nil
         }
         let iconRects = icons(view)
         XCTAssertEqual(iconRects.count, 1)
@@ -193,7 +193,7 @@ final class WikiLinkChipTests: XCTestCase {
             editor.setContent(try s.node("doc", [:], content: Fragment.from([
                 try s.node("paragraph", [:], content: Fragment.from([
                     s.text("some words that nearly fill the line up to about here "),
-                    try s.node("wikiLink", ["target": .string("Releases")], content: Fragment.empty),
+                    try s.node("wikiLink", ["text": .string("Releases")], content: Fragment.empty),
                     s.text(" and on"),
                 ])),
             ])))
@@ -231,7 +231,7 @@ final class WikiLinkChipTests: XCTestCase {
         editor.setContent(try s.node("doc", [:], content: Fragment.from([
             try s.node("paragraph", [:], content: Fragment.from([
                 s.text("some words that nearly fill the line up to here"),
-                try s.node("wikiLink", ["target": .string("Two Words")], content: Fragment.empty),
+                try s.node("wikiLink", ["text": .string("Two Words")], content: Fragment.empty),
             ])),
         ])))
         let view = EditorTextView(editor: editor)
@@ -253,7 +253,7 @@ final class WikiLinkChipTests: XCTestCase {
         let s = editor.schema
         editor.setContent(try s.node("doc", [:], content: Fragment.from([
             try s.node("paragraph", [:], content: Fragment.from([
-                try s.node("wikiLink", ["target": .string("Two Words")], content: Fragment.empty),
+                try s.node("wikiLink", ["text": .string("Two Words")], content: Fragment.empty),
             ])),
         ])))
         let view = EditorTextView(editor: editor)

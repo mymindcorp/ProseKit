@@ -80,7 +80,7 @@ final class SuggestionMenuTests: XCTestCase {
         XCTAssertNil(view.suggestionTitles)
         var wikiTarget: String?
         view.editor.doc.descendants { n, _, _, _ in
-            if n.type.name == "wikiLink" { wikiTarget = n.attrs["target"]?.stringValue }
+            if n.type.name == "wikiLink" { wikiTarget = n.attrs["text"]?.stringValue }
             return true
         }
         XCTAssertEqual(wikiTarget, "Architecture")
@@ -101,7 +101,7 @@ final class SuggestionMenuTests: XCTestCase {
         _ = view.handle(EditorTextView.KeyEvent(.keyboardReturnOrEnter))
         var targets: [String] = []
         view.editor.doc.descendants { n, _, _, _ in
-            if n.type.name == "wikiLink" { targets.append(n.attrs["target"]?.stringValue ?? "") }
+            if n.type.name == "wikiLink" { targets.append(n.attrs["text"]?.stringValue ?? "") }
             return true
         }
         XCTAssertEqual(targets, ["Soccer Training Session", "Architecture"])

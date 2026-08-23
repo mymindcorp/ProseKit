@@ -18,10 +18,9 @@ public struct WikiLinkSuggestion: Equatable {
 
 public let wikiLinkSuggestionKey = PluginKey<WikiLinkSuggestion?>("wikiLinkSuggestion")
 
-/// A wiki-link is an inline atom node with a stable `target` (page id/name), an
-/// optional display `label`, and an optional `targetId` — the host's id for the
-/// thing named. It renders its label (or target) and serializes to
-/// `[[target|label]]`.
+/// A wiki-link is an inline atom node: the words it reads as (`text`), and
+/// optionally the host's identity for what it points at (`targetId`) and what
+/// kind of thing that is (`targetType`). It serializes to `[[text]]`.
 public final class WikiLinkExtension: NodeExtension {
     public let name = "wikiLink"
     /// Provides `[[` autocomplete candidates for a typed query (synchronous, for
@@ -44,21 +43,21 @@ public final class WikiLinkExtension: NodeExtension {
             inline: true,
             atom: true,
             attrs: [
-                "target": AttributeSpec(),
-                "label": AttributeSpec(default: .null),
-                // The id of the thing `target` names, when the host knows it.
-                // `target` is a page name, which is how a link typed by hand
-                // reads; an id is what a host that picked the target from its
-                // own store can resolve later, after the page has been renamed.
-                // Attributes outside this spec are dropped on parse, so a host
-                // that writes one needs it declared here.
+                // What the link reads as. A `[[Page]]` typed by hand puts the
+                // typed words here; a host that picked the target from its own
+                // store puts the thing's name here and its identity below.
+                "text": AttributeSpec(default: .null),
+                // The host's id for what `text` names, and what kind of thing it
+                // is. The id is what still resolves after a rename, and the type
+                // is what lets a renderer draw the target's own icon without
+                // asking anyone. Attributes outside this spec are dropped on
+                // parse, so a host that writes one needs it declared here.
                 "targetId": AttributeSpec(default: .null),
+                "targetType": AttributeSpec(default: .null),
             ],
             selectable: true,
             draggable: true,
-            leafText: { node in
-                node.attrs["label"]?.stringValue ?? node.attrs["target"]?.stringValue ?? ""
-            })
+            leafText: { node in wikiLinkText(node) })
     }
     public var html: HTMLSpec { HTMLSpec(tag: "a") }
 
@@ -76,10 +75,11 @@ public final class WikiLinkExtension: NodeExtension {
         guard let type = ctx.nodeType else { return [] }
         // [[Target]] or [[Target|Label]] -> a wiki-link node.
         return [InputRule("\\[\\[([^\\]|]+)(?:\\|([^\\]]+))?\\]\\]$") { state, match, start, end in
-            let target = (match[1] ?? "").trimmingCharacters(in: .whitespaces)
-            if target.isEmpty { return nil }
-            var attrs: Attrs = ["target": .string(target)]
-            if let label = match[2], !label.isEmpty { attrs["label"] = .string(label) }
+            let typed = (match[1] ?? "").trimmingCharacters(in: .whitespaces)
+            if typed.isEmpty { return nil }
+            // `[[Page|shown]]` reads as "shown": what a reader sees is the text.
+            let shown = match[2].flatMap { $0.isEmpty ? nil : $0 } ?? typed
+            let attrs: Attrs = ["text": .string(shown)]
             guard let node = try? type.create(attrs) else { return nil }
             let tr = state.tr
             _ = try? tr.replaceWith(start, end, node)
@@ -134,7 +134,7 @@ private func trimmedQuery(_ query: String) -> String {
 private func wikiLinkEntries(_ targets: [String], from: Int, to: Int) -> [SuggestionEntry] {
     targets.map { target in
         SuggestionEntry(title: target, icon: "doc.text") {
-            $0.acceptWikiLinkSuggestion(target: target, from: from, to: to)
+            $0.acceptWikiLinkSuggestion(text: target, from: from, to: to)
         }
     }
 }
@@ -191,21 +191,25 @@ private func computeSuggestion(_ state: EditorState) -> WikiLinkSuggestion? {
     return WikiLinkSuggestion(query: query, from: from, to: cursor.pos)
 }
 
+/// What a wiki-link reads as.
+public func wikiLinkText(_ node: Node) -> String {
+    node.attrs["text"]?.stringValue ?? ""
+}
+
 /// The attribute set a wiki-link carries. What isn't passed isn't supplied, so
-/// the node type fills it from the spec's default (null) — the shape a hand-typed
-/// `[[link]]` has always had.
-func wikiLinkAttrs(target: String, targetId: String?, label: String?) -> Attrs {
-    var attrs: Attrs = ["target": .string(target)]
+/// the node type fills it from the spec's default (null).
+func wikiLinkAttrs(text: String, targetId: String?, targetType: String?) -> Attrs {
+    var attrs: Attrs = ["text": .string(text)]
     if let targetId { attrs["targetId"] = .string(targetId) }
-    if let label { attrs["label"] = .string(label) }
+    if let targetType { attrs["targetType"] = .string(targetType) }
     return attrs
 }
 
 /// Insert a wiki-link node at the current selection.
-public func insertWikiLink(_ type: NodeType, target: String, targetId: String? = nil,
-                           label: String? = nil) -> Command {
+public func insertWikiLink(_ type: NodeType, text: String, targetId: String? = nil,
+                           targetType: String? = nil) -> Command {
     { state, dispatch, _ in
-        let attrs = wikiLinkAttrs(target: target, targetId: targetId, label: label)
+        let attrs = wikiLinkAttrs(text: text, targetId: targetId, targetType: targetType)
         guard let node = try? type.create(attrs) else { return false }
         dispatch?(state.tr.replaceSelectionWith(node).scrollIntoView())
         return true
@@ -213,11 +217,11 @@ public func insertWikiLink(_ type: NodeType, target: String, targetId: String? =
 }
 
 public extension Editor {
-    /// Insert a wiki-link to the given target page.
+    /// Insert a wiki-link reading as `text`, optionally naming what it points at.
     @discardableResult
-    func insertWikiLink(target: String, targetId: String? = nil, label: String? = nil) -> Bool {
+    func insertWikiLink(text: String, targetId: String? = nil, targetType: String? = nil) -> Bool {
         guard let type = schema.nodes["wikiLink"] else { return false }
-        return run(SchemaKit.insertWikiLink(type, target: target, targetId: targetId, label: label))
+        return run(SchemaKit.insertWikiLink(type, text: text, targetId: targetId, targetType: targetType))
     }
 
     /// The active `[[` suggestion, if the cursor is typing one.
@@ -227,19 +231,20 @@ public extension Editor {
 
     /// Replace the active `[[` query with a wiki-link to the chosen target.
     @discardableResult
-    func acceptWikiLinkSuggestion(target: String, targetId: String? = nil, label: String? = nil) -> Bool {
+    func acceptWikiLinkSuggestion(text: String, targetId: String? = nil,
+                                  targetType: String? = nil) -> Bool {
         guard let suggestion = wikiLinkSuggestion else { return false }
-        return acceptWikiLinkSuggestion(target: target, targetId: targetId, label: label,
+        return acceptWikiLinkSuggestion(text: text, targetId: targetId, targetType: targetType,
                                         from: suggestion.from, to: suggestion.to)
     }
 
     /// Replace an explicit `[[` range with a wiki-link. Use this when the range
     /// was captured before a tap could move the selection.
     @discardableResult
-    func acceptWikiLinkSuggestion(target: String, targetId: String? = nil, label: String? = nil,
+    func acceptWikiLinkSuggestion(text: String, targetId: String? = nil, targetType: String? = nil,
                                   from: Int, to: Int) -> Bool {
         guard let type = schema.nodes["wikiLink"] else { return false }
-        let attrs = wikiLinkAttrs(target: target, targetId: targetId, label: label)
+        let attrs = wikiLinkAttrs(text: text, targetId: targetId, targetType: targetType)
         guard let node = try? type.create(attrs) else { return false }
         let tr = state.tr
         _ = try? tr.replaceWith(min(from, to), max(from, to), node)
