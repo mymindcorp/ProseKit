@@ -1519,6 +1519,69 @@ test("Markdown link + wikiLink round-trip") {
     try expectEqual(back, d)
 }
 
+// A schema without the node still has to keep the author's characters: the
+// brackets are text, not a link nobody can hold.
+private let noWikiSchema: Schema = try! Schema(
+    nodes: [("doc", NodeSpec(content: "block+")),
+            ("paragraph", NodeSpec(content: "inline*", group: "block")),
+            ("text", NodeSpec(group: "inline"))],
+    marks: [], topNode: "doc")
+
+test("Markdown: an empty wiki link is text, not a link") {
+    // `[[]]` names no page. It used to index an empty `split` result and trap.
+    for md in ["[[]]", "[[|]]", "a [[]] b", "[[ ]]"] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try d.check()
+        try expect(!nodeNames(d).contains("wikiLink"), md)
+        try expectEqual(d.textContent, md)
+    }
+}
+
+test("Markdown: wiki brackets survive a schema with no wikiLink node") {
+    for md in ["[[Page]]", "see [[Page]] here", "[[a|b]]"] {
+        let d = try MarkdownParser.parse(md, schema: noWikiSchema)
+        try d.check()
+        try expectEqual(d.textContent, md)
+    }
+}
+
+test("Markdown: a hard break in a heading stays a break") {
+    // A heading is one line, so the `\` + newline a break is written as used to
+    // be flattened to `\ ` — a stray backslash in the title, and no break.
+    let br = node("hardBreak")
+    for content in [[t("a"), br, t("b")], [t("a"), br, br, t("b")],
+                    [t("a"), br, strong("b")], [t("a\\"), br, t("b")]] {
+        let d = doc(node("heading", ["level": .int(2)], content))
+        let md = MarkdownSerializer.serialize(d)
+        try expect(!md.contains("\\ "), md)
+        try expectEqual(try MarkdownParser.parse(md, schema: schema), d, md)
+    }
+}
+
+test("Markdown: a mark written as a tag keeps a break inside the tag") {
+    // `<sup>a\` + newline + `b</sup>` is not a tag any reader accepts — it used
+    // to come back as literal angle brackets with the mark gone.
+    let br = node("hardBreak")
+    for name in ["superscript", "subscript", "underline"] {
+        let marked = { (text: String) in schema.text(text, [schema.mark(name)]) }
+        let d = doc(p(marked("a"), br, marked("b")))
+        let md = MarkdownSerializer.serialize(d)
+        try expect(md.contains("<br>"), md)
+        let back = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(back.textContent, "ab", md)
+        try expect(nodeNames(back).contains("hardBreak"), md)
+        try expect(back.child(0).child(0).marks.contains { $0.type.name == name }, md)
+    }
+}
+
+test("Markdown: a break the mark ends at stays outside the tag") {
+    let sup = { (text: String) in schema.text(text, [schema.mark("superscript")]) }
+    let d = doc(p(sup("a"), node("hardBreak"), t("b")))
+    let md = MarkdownSerializer.serialize(d)
+    try expectEqual(md.trimmingCharacters(in: .newlines), "<sup>a</sup>\\\nb")
+    try expectEqual(try MarkdownParser.parse(md, schema: schema), d)
+}
+
 test("Markdown code fence round-trip") {
     let d = doc(node("codeBlock", [:], [t("let x = 1\nprint(x)")]))
     let md = MarkdownSerializer.serialize(d)
@@ -3492,6 +3555,30 @@ test("Markdown round-trip: a figure without a caption") {
     let d = doc(figure(p("body text")))
     try expectEqual(MarkdownSerializer.serialize(d), "^^^\nbody text\n^^^")
     try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
+}
+
+test("Markdown round-trip: a figure inside a figure") {
+    // Both written `^^^`, the inner closing fence ended the outer figure and the
+    // document came back as three siblings. The outer fence has to be longer,
+    // the way a code fence around a code fence is.
+    let d = doc(figure(figure(p("inner"), figcaption("in")), figcaption("out")))
+    let md = MarkdownSerializer.serialize(d)
+    try expect(md.hasPrefix("^^^^\n"), md)
+    try expectEqual(try MarkdownParser.parse(md, schema: schema), d, md)
+}
+
+test("Markdown round-trip: figures nested three deep, and with siblings") {
+    for d in [doc(figure(figure(figure(p("x"))))),
+              doc(figure(p("before"), figure(p("inner")), p("after"), figcaption("c")))] {
+        let md = MarkdownSerializer.serialize(d)
+        try expectEqual(try MarkdownParser.parse(md, schema: schema), d, md)
+    }
+}
+
+test("Markdown: a longer figure fence carries its caption") {
+    let d = try MarkdownParser.parse("^^^^\n^^^\ninner\n^^^\n^^^^ out", schema: schema)
+    try d.check()
+    try expectEqual(d, doc(figure(figure(p("inner")), figcaption("out"))))
 }
 
 test("Markdown round-trip: a figure holding several blocks") {

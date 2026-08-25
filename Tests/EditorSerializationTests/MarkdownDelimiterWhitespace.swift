@@ -16,6 +16,9 @@ private func brk() -> Node { node("hardBreak", [:]) }
 private func strike(_ s: String) -> Node { schema.text(s, [schema.mark("strike")]) }
 private func highlight(_ s: String) -> Node { schema.text(s, [schema.mark("highlight")]) }
 private func codeSpan(_ s: String) -> Node { schema.text(s, [schema.mark("code")]) }
+private func boldStrike(_ s: String) -> Node {
+    schema.text(s, [schema.mark("bold"), schema.mark("strike")])
+}
 private func boldBrk() -> Node {
     try! schema.nodes["hardBreak"]!.create(marks: [schema.mark("bold")])
 }
@@ -257,4 +260,16 @@ func registerMarkdownDelimiterWhitespaceTests() {
                                   strike("c "), strike(" c"), strike("c"),
                                   highlight("d "), highlight(" d"), highlight("d"),
                                   t("x"), t(" x"), t("x "), t(" "), brk(), boldBrk()])
+
+    // Whitespace is only half the flanking rule. CommonMark also refuses to open
+    // a run that is followed by punctuation unless what sits before the run is
+    // whitespace or punctuation, and mirrors that for closing — so `a**.x**` and
+    // `**x.**a` are literal characters too, and so is `a**~~x~~**`, where the
+    // punctuation after the run is the nested mark's own delimiter. Where the
+    // delimiters can't land, the mark is written as a tag, which has no such
+    // rule. No whitespace in these pieces: what moves here is the spelling.
+    sweep("every punctuation edge", [strong(".a"), strong("a."), strong("."),
+                                     em(".b"), em("b."), em("."),
+                                     boldStrike("c"), strike(".c"), codeSpan("d"),
+                                     t("x"), t("."), t("x.")])
 }

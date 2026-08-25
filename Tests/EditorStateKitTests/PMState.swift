@@ -97,6 +97,54 @@ func registerPMStateTests() {
         try expect(transactions[1].getMeta("appendedTransaction") as? Transaction === transactions[0])
     }
 
+    // A plugin that runs after one which appends still has to be shown the
+    // transaction the round started from. Handing it only the appended one made
+    // an `appendTransaction` that asks "did the document change?" answer no.
+    test("PM state: a later plugin sees the root transaction an earlier one responded to") {
+        final class Seen: @unchecked Sendable { var rounds: [[Bool]] = [] }
+        let seen = Seen()
+        let appender = Plugin(appendTransaction: { trs, _, newState in
+            // Once, and with no document change of its own.
+            guard !trs.contains(where: { $0.getMeta("appended") != nil }) else { return nil }
+            return newState.tr.setMeta("appended", true)
+        })
+        let watcher = Plugin(appendTransaction: { trs, _, _ in
+            seen.rounds.append(trs.map(\.docChanged))
+            return nil
+        })
+        let state = EditorState.create(EditorStateConfig(schema: basicSchema, plugins: [appender, watcher]))
+        _ = state.applyTransaction(try! state.tr.insertText("X"))
+        try expectEqual(seen.rounds.first ?? [], [true, false])
+    }
+
+    // The state a plugin is handed as `oldState` has to be the one its slice of
+    // transactions starts from — for a plugin that already saw them all, that is
+    // the state after them, not the state the round began in.
+    test("PM state: an earlier plugin's oldState keeps up with what it has seen") {
+        final class Seen: @unchecked Sendable { var olds: [String] = []; var news: [String] = [] }
+        let seen = Seen()
+        let watcher = Plugin(appendTransaction: { _, oldState, newState in
+            seen.olds.append(oldState.doc.textContent)
+            seen.news.append(newState.doc.textContent)
+            return nil
+        })
+        let appender = Plugin(appendTransaction: { trs, _, newState in
+            guard !trs.contains(where: { $0.getMeta("appended") != nil }) else { return nil }
+            return try! newState.tr.insertText("Y").setMeta("appended", true)
+        })
+        let state = EditorState.create(EditorStateConfig(schema: basicSchema, doc: doc(p()).node,
+                                                        plugins: [watcher, appender]))
+        _ = state.applyTransaction(try! state.tr.insertText("X"))
+        // Round one: the watcher runs before the appender, so it sees only "X".
+        try expectEqual(seen.olds.first, "")
+        try expectEqual(seen.news.first, "X")
+        // Round two: it is asked again about the appended transaction alone, so
+        // the state that transaction started from is the one holding "X".
+        try expectEqual(seen.olds.count, 2)
+        try expectEqual(seen.olds[1], "X")
+        try expectEqual(seen.news[1], "XY")
+    }
+
     test("PM plugin: generates new keys") {
         let p1 = Plugin(), p2 = Plugin()
         try expect(p1.key != p2.key)

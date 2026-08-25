@@ -77,8 +77,14 @@ public final class EditorState: @unchecked Sendable {
                    newState.filterTransaction(tr, i) {
                     tr.setMeta("appendedTransaction", rootTr)
                     if seen == nil {
-                        seen = plugins.map { _ in (self, 0) }
-                        for j in 0..<plugins.count { seen![j] = (self, trs.count) }
+                        // The plugins before this one have already been asked
+                        // about every transaction so far, and were asked from
+                        // `newState`; the ones after it are about to be asked
+                        // for the first time, so they still start at the
+                        // beginning — including the root transaction, which
+                        // they would otherwise never see.
+                        let sofar = trs.count
+                        seen = plugins.indices.map { j in j < i ? (newState, sofar) : (self, 0) }
                     }
                     trs.append(tr)
                     newState = newState.applyInner(tr)
