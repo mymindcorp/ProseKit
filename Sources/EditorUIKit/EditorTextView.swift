@@ -56,14 +56,16 @@ open class EditorTextView: UIView, UIKeyInput {
     private var blinkTimer: Timer?
     /// Native selection UI (loupe, handles, edit menu, tap-to-place caret).
     private var textInteraction: UITextInteraction?
-    private weak var columnResizeRecognizer: UIGestureRecognizer?
-    private weak var linkTapRecognizer: UIGestureRecognizer?
-    private weak var blockDragRecognizer: UIGestureRecognizer?
-    private weak var imageResizeRecognizer: UIGestureRecognizer?
-    private weak var disclosureTapRecognizer: UIGestureRecognizer?
-    private weak var mathTapRecognizer: UIGestureRecognizer?
-    private weak var trailingTapRecognizer: UIGestureRecognizer?
-    private weak var imageLongPressRecognizer: UIGestureRecognizer?
+    // Internal rather than private so tests can drive the gesture wiring: the
+    // delegate compares recognizer identity, so a test needs these instances.
+    weak var columnResizeRecognizer: UIGestureRecognizer?
+    weak var linkTapRecognizer: UIGestureRecognizer?
+    weak var blockDragRecognizer: UIGestureRecognizer?
+    weak var imageResizeRecognizer: UIGestureRecognizer?
+    weak var disclosureTapRecognizer: UIGestureRecognizer?
+    weak var mathTapRecognizer: UIGestureRecognizer?
+    weak var trailingTapRecognizer: UIGestureRecognizer?
+    weak var imageLongPressRecognizer: UIGestureRecognizer?
 
     /// When true, each top-level block shows a drag handle in the left gutter
     /// that reorders the block by dragging. Off by default.
@@ -1647,7 +1649,7 @@ open class EditorTextView: UIView, UIKeyInput {
     // MARK: - Details disclosure
 
     /// Tapping the disclosure triangle folds/unfolds that collapsible section.
-    @objc private func handleDisclosureTap(_ gesture: UITapGestureRecognizer) {
+    @objc func handleDisclosureTap(_ gesture: UITapGestureRecognizer) {
         let point = docPoint(gesture.location(in: self))
         guard let hit = ensureLayout().disclosure(at: point) else { return }
         toggleDetails(at: hit.pos)
@@ -1673,7 +1675,7 @@ open class EditorTextView: UIView, UIKeyInput {
         return last.type.name != "paragraph"
     }
 
-    @objc private func handleTrailingTap(_ gesture: UITapGestureRecognizer) {
+    @objc func handleTrailingTap(_ gesture: UITapGestureRecognizer) {
         guard trailingGapTap(at: docPoint(gesture.location(in: self))) else { return }
         appendTrailingParagraph()
     }
@@ -1693,7 +1695,7 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     /// A tap on a rendered formula: select it and hand it to the host.
-    @objc private func handleMathTap(_ gesture: UITapGestureRecognizer) {
+    @objc func handleMathTap(_ gesture: UITapGestureRecognizer) {
         guard let pos = ensureLayout().math(at: docPoint(gesture.location(in: self))) else { return }
         activateMath(at: pos)
     }
@@ -1719,7 +1721,7 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     /// A long press on a rendered image: select it and hand it to the host.
-    @objc private func handleImageLongPress(_ gesture: UILongPressGestureRecognizer) {
+    @objc func handleImageLongPress(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began,
               let img = imageAt(docPoint(gesture.location(in: self))) else { return }
         activateImage(img)
@@ -1767,7 +1769,7 @@ open class EditorTextView: UIView, UIKeyInput {
 
     /// Hand the link the click landed on to the host. See
     /// `shouldActivateLink(at:)` for when the recognizer begins at all.
-    @objc private func handleLinkTap(_ gesture: UITapGestureRecognizer) {
+    @objc func handleLinkTap(_ gesture: UITapGestureRecognizer) {
         let point = docPoint(gesture.location(in: self))
         guard let pos = ensureLayout().position(at: point) else { return }
         activateLink(at: pos, commandHeld: isCommandClick(gesture))
@@ -1803,7 +1805,7 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     /// Triple-tap → select the whole paragraph (the text block under the point).
-    @objc private func handleTripleTap(_ gesture: UITapGestureRecognizer) {
+    @objc func handleTripleTap(_ gesture: UITapGestureRecognizer) {
         if !isFirstResponder { becomeFirstResponder() }
         let point = docPoint(gesture.location(in: self))
         guard let range = paragraphRange(at: point) else { return }
@@ -1935,7 +1937,7 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Test hook: whether block `index`'s handle is currently drawn.
     func blockHandleVisibleForTesting(_ index: Int) -> Bool { blockHandleVisible(index) }
 
-    @objc private func handleBlockDrag(_ gesture: UIPanGestureRecognizer) {
+    @objc func handleBlockDrag(_ gesture: UIPanGestureRecognizer) {
         let p = gesture.location(in: self)
         switch gesture.state {
         case .began:
@@ -2007,7 +2009,7 @@ open class EditorTextView: UIView, UIKeyInput {
     // resize handle. Each `.changed` commits the new width; the commits land
     // within one undo group (they fall inside the history grouping window), so a
     // single undo restores the pre-drag width.
-    @objc private func handleImageResize(_ gesture: UIPanGestureRecognizer) {
+    @objc func handleImageResize(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
         case .began:
             guard let hit = imageResizeHit(at: gesture.location(in: self)) else { return }
@@ -2044,7 +2046,7 @@ open class EditorTextView: UIView, UIKeyInput {
     // The column-resize pan, gated by the gesture delegate to begin only on a
     // table column border. Caret placement and text selection are handled
     // natively by UITextInteraction.
-    @objc private func handleMouseDrag(_ gesture: UIPanGestureRecognizer) {
+    @objc func handleMouseDrag(_ gesture: UIPanGestureRecognizer) {
         let point = docPoint(gesture.location(in: self))
         switch gesture.state {
         case .began: beginColumnResize(at: point)
@@ -2382,7 +2384,9 @@ open class EditorTextView: UIView, UIKeyInput {
         }
     }
 
-    open override func copy(_ sender: Any?) { writeSelectionToPasteboard() }
+    open override func copy(_ sender: Any?) { writeSelectionToPasteboard(UIPasteboard.general) }
+
+    func copy(to pb: UIPasteboard) { writeSelectionToPasteboard(pb) }
 
     // Formatting actions, dispatched from the app's toolbar / Format menu.
     // NOTE: these are deliberately NOT the system selectors `toggleBoldface:`/
@@ -2448,15 +2452,21 @@ open class EditorTextView: UIView, UIKeyInput {
         ("Add Link…", #selector(addOrEditLink(_:))),
     ]
 
-    open override func cut(_ sender: Any?) {
+    open override func cut(_ sender: Any?) { cut(to: UIPasteboard.general) }
+
+    // Split from the responder entry points so tests can drive a private
+    // pasteboard: reading `UIPasteboard.general` off the main app hits the
+    // system paste-consent gate, which never resolves in a test runner.
+    func cut(to pb: UIPasteboard) {
         guard isEditable else { return }
-        writeSelectionToPasteboard()
+        writeSelectionToPasteboard(pb)
         deleteCurrentSelection()
     }
 
-    open override func paste(_ sender: Any?) {
+    open override func paste(_ sender: Any?) { paste(from: UIPasteboard.general) }
+
+    func paste(from pb: UIPasteboard) {
         guard isEditable else { return }
-        let pb = UIPasteboard.general
         // Pasting a bare URL over selected text links the selection instead of
         // replacing it (the common "select text, paste link" gesture).
         if pasteURLOverSelection(pb) { return }
@@ -2637,9 +2647,11 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     /// Paste the pasteboard's text as plain text, discarding any rich formatting.
-    open override func pasteAndMatchStyle(_ sender: Any?) {
+    open override func pasteAndMatchStyle(_ sender: Any?) { pasteAndMatchStyle(from: UIPasteboard.general) }
+
+    func pasteAndMatchStyle(from pb: UIPasteboard) {
         guard isEditable else { return }
-        if let string = UIPasteboard.general.string { pastePlainText(string) }
+        if let string = pb.string { pastePlainText(string) }
     }
 
     // Internal rather than private so tests can reach it: this decides whether
@@ -2704,13 +2716,13 @@ open class EditorTextView: UIView, UIKeyInput {
         editor.dispatch(editor.state.tr.setSelection(AllSelection(editor.doc)))
     }
 
-    private func writeSelectionToPasteboard() {
+    private func writeSelectionToPasteboard(_ pb: UIPasteboard) {
         let sel = editor.state.selection
         guard !sel.empty else { return }
         let fragment = sel.content().content
         let html = HTMLSerializer.serialize(fragment: fragment)
         let text = editor.doc.textBetween(sel.from, sel.to, blockSeparator: "\n")
-        UIPasteboard.general.items = [[
+        pb.items = [[
             "public.html": html,
             "public.utf8-plain-text": text,
         ]]
@@ -2835,7 +2847,10 @@ open class EditorTextView: UIView, UIKeyInput {
     private var keyRepeatTimer: Timer?
     private var keyRepeatEvent: KeyEvent?
 
-    private func isAutoRepeatKey(_ keyCode: UIKeyboardHIDUsage) -> Bool {
+    // Internal rather than private so the auto-repeat cadence can be driven
+    // directly: `pressesBegan` is the only caller, and `UIKey` has no public
+    // initializer for a test to feed it.
+    func isAutoRepeatKey(_ keyCode: UIKeyboardHIDUsage) -> Bool {
         // All arrows + Delete/Backspace repeat when held (they flow through
         // presses, not key commands).
         keyCode == .keyboardLeftArrow || keyCode == .keyboardRightArrow
@@ -2843,7 +2858,7 @@ open class EditorTextView: UIView, UIKeyInput {
             || keyCode == .keyboardDeleteOrBackspace || keyCode == .keyboardDeleteForward
     }
 
-    private func startKeyRepeat(_ event: KeyEvent) {
+    func startKeyRepeat(_ event: KeyEvent) {
         stopKeyRepeat()
         keyRepeatEvent = event
         // Initial delay, then a steady repeat — the usual key-repeat cadence.
@@ -2864,7 +2879,7 @@ open class EditorTextView: UIView, UIKeyInput {
         }
     }
 
-    private func stopKeyRepeat(for keyCode: UIKeyboardHIDUsage? = nil) {
+    func stopKeyRepeat(for keyCode: UIKeyboardHIDUsage? = nil) {
         if let keyCode, keyRepeatEvent?.keyCode != keyCode { return }
         keyRepeatTimer?.invalidate()
         keyRepeatTimer = nil
