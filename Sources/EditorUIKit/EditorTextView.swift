@@ -1605,7 +1605,9 @@ open class EditorTextView: UIView, UIKeyInput {
         // `interactionShouldBegin` keeps the native text interaction from
         // focusing us behind the checkbox's back.
         let checked = editor.doc.nodeAt(pos)?.attrs["checked"]?.boolValue ?? false
-        if let tr = try? editor.state.tr.setNodeAttribute(pos, "checked", .bool(!checked)) {
+        // Via `setTaskChecked`, so an editor that sorts checked items to the
+        // bottom does the move in this same transaction.
+        if let tr = setTaskChecked(editor.state, pos: pos, checked: !checked) {
             editor.dispatch(tr)
         }
     }

@@ -9,8 +9,13 @@ public import EditorInputRules
 
 public final class TaskListExtension: NodeExtension {
     public let name = "taskList"
-    public init() {}
+    /// Behaviour options; see `TaskListOptions`.
+    public let options: TaskListOptions
+    public init(options: TaskListOptions = TaskListOptions()) { self.options = options }
     public var nodeSpec: NodeSpec { NodeSpec(content: "taskItem+", group: "block") }
+    public func plugins(_ ctx: ExtensionContext) -> [Plugin] {
+        options.sortCompletedToBottom ? [taskSortPlugin()] : []
+    }
     public var html: HTMLSpec { HTMLSpec(tag: "ul") }
     public func commands(_ ctx: ExtensionContext) -> [String: Command] {
         guard let type = ctx.nodeType, let item = ctx.schema.nodes["taskItem"] else { return [:] }
@@ -29,7 +34,9 @@ public final class TaskListExtension: NodeExtension {
 
 public final class TaskItemExtension: NodeExtension {
     public let name = "taskItem"
-    public init() {}
+    /// Behaviour options; see `TaskListOptions`.
+    public let options: TaskListOptions
+    public init(options: TaskListOptions = TaskListOptions()) { self.options = options }
     public var nodeSpec: NodeSpec {
         NodeSpec(content: "paragraph block*", attrs: ["checked": AttributeSpec(default: .bool(false))], defining: true)
     }
@@ -59,8 +66,10 @@ public func toggleTaskChecked(_ itemType: NodeType) -> Command {
             if from.node(depth).type === itemType {
                 let pos = from.before(depth)
                 let checked = from.node(depth).attrs["checked"]?.boolValue ?? false
-                if let dispatch {
-                    try? dispatch(state.tr.setNodeAttribute(pos, "checked", .bool(!checked)))
+                if let dispatch, let tr = try? state.tr.setNodeAttribute(pos, "checked", .bool(!checked)) {
+                    // Sorting (when it's on) rides along in the same transaction.
+                    sortTasksInPlace(tr, state)
+                    dispatch(tr)
                 }
                 return true
             }
@@ -72,11 +81,14 @@ public func toggleTaskChecked(_ itemType: NodeType) -> Command {
 
 /// Set the `checked` attribute of the task item at the given document position.
 public func setTaskChecked(_ state: EditorState, pos: Int, checked: Bool) -> Transaction? {
-    guard let node = state.doc.nodeAt(pos), node.type.name == "taskItem" else { return nil }
-    return try? state.tr.setNodeAttribute(pos, "checked", .bool(checked))
+    guard let node = state.doc.nodeAt(pos), node.type.name == "taskItem",
+          let tr = try? state.tr.setNodeAttribute(pos, "checked", .bool(checked)) else { return nil }
+    // Sorting (when it's on) rides along in the same transaction.
+    sortTasksInPlace(tr, state)
+    return tr
 }
 
 /// The task-list extensions (list + item).
-public func taskListExtensions() -> [any Extension] {
-    [TaskListExtension(), TaskItemExtension()]
+public func taskListExtensions(options: TaskListOptions = TaskListOptions()) -> [any Extension] {
+    [TaskListExtension(options: options), TaskItemExtension(options: options)]
 }
