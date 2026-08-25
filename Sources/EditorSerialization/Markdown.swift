@@ -33,6 +33,44 @@ public enum MarkdownSerializer {
         return out
     }
 
+    /// A heading's inline content on one line. A hard break wrote `\` and a
+    /// newline; the backslash alone reads back as a literal backslash — a stray
+    /// `\` in the title — so the break is spelled the way a table cell spells
+    /// one instead. Any other newline is a soft wrap and reads as a space.
+    private static func flattenHeadingLines(_ text: String) -> String {
+        var out = ""
+        out.reserveCapacity(text.count)
+        // A literal backslash in the text is written as two, so only an odd run
+        // of them ends in the one a hard break put there.
+        var backslashes = 0
+        for character in text {
+            if character == "\n" {
+                if backslashes % 2 == 1 {
+                    out.removeLast()
+                    out += "<br>"
+                } else {
+                    out += " "
+                }
+                backslashes = 0
+                continue
+            }
+            backslashes = character == "\\" ? backslashes + 1 : 0
+            out.append(character)
+        }
+        return out
+    }
+
+    /// The longest run of `^` opening a line of the given text — the fence a
+    /// figure written around it has to beat.
+    private static func longestCaretRun(_ text: String) -> Int {
+        var longest = 0
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let run = line.drop { $0 == " " || $0 == "\t" }.prefix { $0 == "^" }.count
+            longest = max(longest, run)
+        }
+        return longest
+    }
+
     static func serializeBlock(_ node: Node, indent: String, alternate: Bool = false) -> String {
         switch node.type.name {
         case "paragraph":
@@ -43,7 +81,7 @@ public enum MarkdownSerializer {
             // a mark spanning a soft wrap can carry — reads as a space.
             var text = serializeInline(node.content)
             if text.utf8.contains(UInt8(ascii: "\n")) {
-                text = text.replacingOccurrences(of: "\n", with: " ")
+                text = flattenHeadingLines(text)
             }
             // A trailing run of "#" reads as a closing sequence, so escape it.
             if text.hasSuffix("#") {
@@ -126,8 +164,13 @@ public enum MarkdownSerializer {
                     body.append(serializeBlock(child, indent: indent))
                 }
             }
-            let fenceEnd = caption.isEmpty ? "^^^" : "^^^ \(caption)"
-            return "^^^\n\(body.joined(separator: "\n\n"))\n\(fenceEnd)"
+            // A figure holding a figure needs the longer fence, the way a code
+            // fence does: with both written `^^^`, the inner closing fence ends
+            // the outer figure and the two come apart into siblings.
+            let bodyText = body.joined(separator: "\n\n")
+            let fence = String(repeating: "^", count: max(3, longestCaretRun(bodyText) + 1))
+            let fenceEnd = caption.isEmpty ? fence : "\(fence) \(caption)"
+            return "\(fence)\n\(bodyText)\n\(fenceEnd)"
         case "details":
             // Markdown has no collapsible section; emit the HTML block form that
             // GitHub-flavored Markdown (and our parser) understands.
@@ -382,6 +425,37 @@ public enum MarkdownSerializer {
         }
     }
 
+    /// The HTML spelling of a mark that is normally a delimiter run. CommonMark
+    /// only lets `*`/`**` open or close where the characters around them allow
+    /// it (see `writeInline`), and where they don't, the tag form is the only
+    /// spelling that survives being read back.
+    private static func markHTMLOpen(_ mark: Mark) -> String {
+        switch mark.type.name {
+        case "italic": return "<em>"
+        case "bold": return "<strong>"
+        default: return markOpen(mark)
+        }
+    }
+
+    private static func markHTMLClose(_ mark: Mark) -> String {
+        switch mark.type.name {
+        case "italic": return "</em>"
+        case "bold": return "</strong>"
+        default: return markClose(mark)
+        }
+    }
+
+    /// CommonMark's "punctuation character" — ASCII punctuation, or a Unicode
+    /// punctuation or symbol character. Which side of a delimiter run one sits
+    /// on is what decides whether the run may open or close emphasis.
+    private static func isPunctuation(_ character: Character) -> Bool {
+        if let ascii = character.asciiValue {
+            return (ascii >= 33 && ascii <= 47) || (ascii >= 58 && ascii <= 64)
+                || (ascii >= 91 && ascii <= 96) || (ascii >= 123 && ascii <= 126)
+        }
+        return character.isPunctuation || character.isSymbol
+    }
+
     static func serializeInline(_ fragment: Fragment) -> String {
         var out = ""
         // Text is what most of a document is, so the buffer starts out big
@@ -393,14 +467,16 @@ public enum MarkdownSerializer {
 
     static func writeInline(_ fragment: Fragment, into out: inout String) {
         let children = fragment.content
-        // Marks currently open, outermost first.
+        // Marks currently open, outermost first, and whether each was opened as
+        // an HTML tag rather than as a delimiter run.
         var active: [Mark] = []
+        var activeHTML: [Bool] = []
         func closeDown(to keep: Int) {
             guard active.count > keep else { return }
             // A closing delimiter run preceded by whitespace closes nothing —
             // the whitespace has to end up on the outside of it. Only spaces
             // and tabs: a newline here is the one a hard break just wrote.
-            if active[keep...].contains(where: expelsWhitespace) {
+            if (keep..<active.count).contains(where: { expelsWhitespace(active[$0]) && !activeHTML[$0] }) {
                 var held = ""
                 while true {
                     // Only spaces and tabs — and the newline of a hard break,
@@ -420,7 +496,22 @@ public enum MarkdownSerializer {
                 // `held` came before whatever is already pending.
                 pending = held + pending
             }
-            while active.count > keep { out += markClose(active.removeLast()) }
+            while active.count > keep {
+                let mark = active.removeLast()
+                out += activeHTML.removeLast() ? markHTMLClose(mark) : markClose(mark)
+            }
+        }
+        // A hard break held over a mark that is written as a tag has to be a tag
+        // too: no reader accepts a newline inside one, so `<sup>a\<newline>b</sup>`
+        // comes back as literal angle brackets with the mark gone. `closeDown`
+        // has already run by the time this is called, so what is still open is
+        // exactly what the break would land inside.
+        func flushPending() {
+            guard !pending.isEmpty else { return }
+            let inTag = activeHTML.contains(true)
+                || active.contains { markTags[$0.type.name] != nil }
+            out += inTag ? pending.replacingOccurrences(of: "\\\n", with: "<br>") : pending
+            pending = ""
         }
         func same(_ a: Mark, _ b: Mark) -> Bool { a.type === b.type && a.attrs == b.attrs }
         func carries(_ node: Node, _ mark: Mark) -> Bool {
@@ -470,6 +561,106 @@ public enum MarkdownSerializer {
             if let cached { runEnds[cached].end = j } else { runEnds.append((mark, j)) }
             return j
         }
+        // A `*`/`**` run only opens emphasis when the character after it isn't
+        // whitespace and — where that character is punctuation — only when the
+        // one before the run is whitespace or punctuation. Closing has the rule
+        // mirrored. So `a**~~x~~**` is eleven literal characters rather than a
+        // bolded strike, and `**x.**a` isn't bold either. Where the delimiters
+        // would land like that, the mark is written as a tag instead, which has
+        // no such rule and which the reader takes back as the same mark.
+        //
+        // Only `italic` and `bold` need it: `~~` and `==` are paired here
+        // without the flanking rules (see `expelsWhitespace`), and a link's
+        // brackets aren't a delimiter run at all.
+        func writtenEdges(_ node: Node) -> (first: Character?, last: Character?) {
+            // An atom is spelled with punctuation at both ends — `![a](b)`,
+            // `[[Page]]`, `$x$` — whichever one it is.
+            guard node.isText else { return ("!", ")") }
+            if node.marks.contains(where: { $0.type.name == "code" }) { return ("`", "`") }
+            return (node.text?.first, node.text?.last)
+        }
+        // `*` and `**` written back to back merge into one delimiter run, and
+        // the flanking rule is asked about the run, not about the halves — the
+        // `***` in `**a***.b*` is followed by `.` and preceded by `a`, so
+        // neither half can open. Marks spelled with an asterisk are therefore
+        // looked through when working out what sits on either side.
+        func isStarRun(_ mark: Mark) -> Bool { expelsWhitespace(mark) }
+        // A node that can't hold the mark doesn't close it either (see `canCarry`
+        // in the loop below), so the mark stays open across it and its closing
+        // delimiter lands further along than the run of carriers ends.
+        func cannotCarry(_ node: Node, _ mark: Mark) -> Bool {
+            guard node.isText else { return false }
+            if node.marks.contains(where: { $0.type === mark.type }) { return false }
+            return !mark.addToSet(node.marks).contains { $0.type === mark.type }
+        }
+        func spellAsHTML(_ mark: Mark, at index: Int, opening: ArraySlice<Mark>, offset: Int) -> Bool {
+            guard expelsWhitespace(mark) else { return false }
+
+            // Where the closing delimiter lands, and whether the mark has to
+            // stay open across a line break to get there — which it can't do as
+            // a tag, since no reader accepts a newline inside one.
+            var closeAt = index + 1
+            var crossedBreak = false
+            var breakBeforeClose = false
+            var scan = index
+            while scan < children.count {
+                let child = children[scan]
+                if child.type.name == "hardBreak" {
+                    crossedBreak = true
+                    breakBeforeClose = true
+                    scan += 1
+                    continue
+                }
+                if carries(child, mark) {
+                    if crossedBreak { return false }
+                    if child.isText, child.text?.contains("\n") ?? false { return false }
+                    breakBeforeClose = false
+                } else if !cannotCarry(child, mark) {
+                    break
+                }
+                closeAt = scan + 1
+                scan += 1
+            }
+
+            // The character before the run this opening delimiter joins.
+            var opens = true
+            var cut = out.endIndex
+            while cut > out.startIndex, out[out.index(before: cut)] == "*" { cut = out.index(before: cut) }
+            if cut > out.startIndex {
+                let before = out[out.index(before: cut)]
+                if !before.isWhitespace, !isPunctuation(before) {
+                    // What lands after it: the first delimiter opened behind this
+                    // one that isn't part of the same run, or else the content.
+                    let after = opening.dropFirst(offset + 1).first(where: { !isStarRun($0) })
+                        .flatMap { markOpen($0).first } ?? writtenEdges(children[index]).first
+                    opens = !(after.map(isPunctuation) ?? false)
+                }
+            }
+
+            var closes = true
+            if closeAt < children.count {
+                let last = children[closeAt - 1]
+                // A mark nested inside this one closes first, and its closing
+                // delimiter is punctuation — unless it is another asterisk run,
+                // which merges with this one.
+                let closesInside = last.marks.contains { other in
+                    !same(other, mark) && spanningRank[other.type.name] != nil && !isStarRun(other)
+                        && runEnd(other, from: closeAt - 1) == closeAt
+                }
+                let before = closesInside ? Character(")") : writtenEdges(last).last
+                if before.map(isPunctuation) ?? false {
+                    let next = children[closeAt]
+                    let opensNext = next.marks.contains { other in
+                        spanningRank[other.type.name] != nil && !isStarRun(other) && !carries(last, other)
+                    }
+                    let after: Character? = breakBeforeClose ? "\\"
+                        : (opensNext ? "[" : writtenEdges(next).first)
+                    closes = after.map { $0.isWhitespace || isPunctuation($0) } ?? true
+                }
+            }
+            return !(opens && closes)
+        }
+
         // The spanning marks a node carries, outermost first, reused each pass
         // so the loop doesn't allocate two arrays per child.
         var own: [Mark] = []
@@ -505,8 +696,7 @@ public enum MarkdownSerializer {
                i == 0 || !carries(children[i - 1], link),
                runEnd(link, from: i) == i + 1 {
                 closeDown(to: 0)
-                out += pending
-                pending = ""
+                flushPending()
                 out += text
                 continue
             }
@@ -584,10 +774,10 @@ public enum MarkdownSerializer {
                 }
             }
             closeDown(to: shared)
-            out += pending
-            pending = ""
+            flushPending()
             out += leading
-            for mark in wanted[shared...] {
+            let opening = wanted[shared...]
+            for (offset, mark) in opening.enumerated() {
                 // A "!" directly before a link's bracket would read back as an
                 // image, so escape it. Only there — escaping every exclamation
                 // mark in prose would be noise.
@@ -595,8 +785,10 @@ public enum MarkdownSerializer {
                     out.removeLast()
                     out += "\\!"
                 }
-                out += markOpen(mark)
+                let asHTML = spellAsHTML(mark, at: i, opening: opening, offset: offset)
+                out += asHTML ? markHTMLOpen(mark) : markOpen(mark)
                 active.append(mark)
+                activeHTML.append(asHTML)
             }
             inlineBody(body, into: &out)
         }
@@ -991,18 +1183,25 @@ public enum MarkdownParser {
             // the nodes, so `^^^` stays literal text everywhere else — the same
             // rule the math fences follow.
             if trimmed.hasPrefix("^^^"), schema.nodes["figure"] != nil {
+                // Only a fence at least as long as the opening one closes it, so
+                // a figure can hold a figure the way a code fence can hold a
+                // code fence.
+                let opening = trimmed.prefix { $0 == "^" }.count
                 // Markdig accepts the caption on either fence; prefer the
                 // closing one, which is what we write.
-                var caption = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                var caption = String(trimmed.dropFirst(opening)).trimmingCharacters(in: .whitespaces)
                 var body: [String] = []
                 i += 1
-                while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("^^^") {
+                func closesFigure(_ line: String) -> Bool {
+                    line.trimmingCharacters(in: .whitespaces).prefix { $0 == "^" }.count >= opening
+                }
+                while i < lines.count, !closesFigure(lines[i]) {
                     body.append(lines[i])
                     i += 1
                 }
                 if i < lines.count {
                     let closing = lines[i].trimmingCharacters(in: .whitespaces)
-                    let trailing = String(closing.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                    let trailing = String(closing.drop { $0 == "^" }).trimmingCharacters(in: .whitespaces)
                     if !trailing.isEmpty { caption = trailing }
                     i += 1  // consume the closing fence
                 }
@@ -2422,16 +2621,22 @@ public enum MarkdownParser {
                     continue
                 }
             }
-            // Wiki link [[...]]
-            if c == UInt8(ascii: "[") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "[") {
-                if let close = findPair(chars, i + 2, UInt8(ascii: "]"), UInt8(ascii: "]"), lastBytes(), &pairExhausted) {
+            // Wiki link [[...]]. Only a schema with somewhere to put one reads
+            // these brackets as a link — otherwise they are the four characters
+            // the author typed, and swallowing them would delete their text.
+            // An empty target is not a link either: `[[]]` names no page, which
+            // is the same call the `[[…]]` input rule makes.
+            if c == UInt8(ascii: "[") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "["),
+               let type = schema.nodes["wikiLink"] {
+                let inner = findPair(chars, i + 2, UInt8(ascii: "]"), UInt8(ascii: "]"), lastBytes(), &pairExhausted)
+                    .map { (close: $0, parts: slice(chars, (i + 2)..<$0).split(separator: "|", maxSplits: 1).map(String.init)) }
+                // `[[Page|shown]]` reads as "shown".
+                if let inner, let target = inner.parts.count > 1 ? inner.parts[1] : inner.parts.first,
+                   !target.trimmingCharacters(in: .whitespaces).isEmpty,
+                   let wl = try? type.create(["text": .string(target)]) {
                     flush()
-                    let inner = slice(chars, (i + 2)..<close)
-                    let parts = inner.split(separator: "|", maxSplits: 1).map(String.init)
-                    // `[[Page|shown]]` reads as "shown".
-                    let attrs: Attrs = ["text": .string(parts.count > 1 ? parts[1] : parts[0])]
-                    if let wl = try? schema.nodes["wikiLink"]?.create(attrs) { appendNode(wl) }
-                    i = close + 2
+                    appendNode(wl)
+                    i = inner.close + 2
                     continue
                 }
             }
