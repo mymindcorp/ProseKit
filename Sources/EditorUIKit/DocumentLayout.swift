@@ -544,7 +544,8 @@ final class DocumentLayout {
     }
 
     /// A cheap height estimate for a top-level child (no typesetting): its text
-    /// length wrapped at the content width.
+    /// length wrapped at the content width, plus the boxes of any pictures it
+    /// holds.
     private func estimatedContentHeight(of child: Node) -> CGFloat {
         // A rule holds a height the theme fixes outright, so estimate it exactly
         // rather than guessing at text it doesn't have.
@@ -552,6 +553,11 @@ final class DocumentLayout {
             let rule = theme.horizontalRule
             return theme.points(rule.spacingBefore) + rule.thickness + theme.points(rule.spacingAfter)
         }
+        // A picture is not text, and estimating one from the text it doesn't
+        // have made every unrealized image a single line tall. Size it by the
+        // same rule that lays it out, which needs no bytes: an article of
+        // photographs is then as tall before it is typeset as after.
+        if child.type.name == "image" { return estimatedImageHeight(child) }
         let font = theme.blockFont(child)
         let lineHeight = theme.lineHeight(for: child, naturalHeight: font.lineHeight)
         let avgChar = max(font.pointSize * 0.5, 1)
@@ -575,7 +581,38 @@ final class DocumentLayout {
         if let rule = theme.heading.resolved(for: child)?.rule {
             height += theme.points(rule.spacing) + rule.thickness
         }
+        // Pictures nested inside the block — a figure's illustration, a photo in
+        // a list item — which the text estimate above counted as nothing.
+        height += nestedImageHeight(of: child, lineHeight: lineHeight)
         return height
+    }
+
+    /// The box an image reserves before anything has been decoded.
+    ///
+    /// Deliberately measured with `natural: nil`: that is exactly what the
+    /// placeholder reserves when the block is realized, so realizing an image
+    /// whose bytes haven't landed moves nothing at all. When the bytes do land,
+    /// `relayoutImages` re-lays that block — the one path that is allowed to
+    /// change an image's height.
+    private func estimatedImageHeight(_ node: Node) -> CGFloat {
+        let contentWidth = max(width - theme.pageInsets.left - theme.pageInsets.right, 1)
+        return Self.imageDisplaySize(node, natural: nil, available: contentWidth).height
+    }
+
+    /// The height that pictures *inside* `child` add to a text-based estimate.
+    ///
+    /// A block image adds its whole box. An inline one only adds what it makes
+    /// its own line taller by — the line itself is already in the text estimate,
+    /// since the atom counts as a character there.
+    private func nestedImageHeight(of child: Node, lineHeight: CGFloat) -> CGFloat {
+        var extra: CGFloat = 0
+        child.descendants { node, _, _, _ in
+            guard node.type.name == "image" else { return true }
+            let box = estimatedImageHeight(node)
+            extra += node.type.spec.inline ? max(0, box - lineHeight) : box
+            return false
+        }
+        return extra
     }
 
     /// Realize (typeset) any estimated children overlapping `window`, re-flowing
