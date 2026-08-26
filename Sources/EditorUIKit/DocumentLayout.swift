@@ -1626,12 +1626,15 @@ final class DocumentLayout {
                     : nil
                 let isChip = child.type.name == "wikiLink"
                     && (wikiStyle.background != nil || chipIcon != nil)
-                let display: String
+                var display: String
                 switch child.type.name {
                 case "wikiLink":
                     // Through the schema's own ladder, so a document written
-                    // before `text` still reads as what it always said.
-                    let label = child.type.spec.leafText?(child) ?? "link"
+                    // before `text` still reads as what it always said. A link
+                    // whose label is empty reads the same as one with no label
+                    // at all — both show the placeholder.
+                    let named = child.type.spec.leafText?(child) ?? ""
+                    let label = named.isEmpty ? "link" : named
                     // A chip is one object: it may not break in half at the end
                     // of a line, so its spaces stop being break opportunities.
                     display = isChip ? label.replacingOccurrences(of: " ", with: "\u{00a0}") : label
@@ -1644,6 +1647,16 @@ final class DocumentLayout {
                 default:
                     display = "🖼"
                 }
+                // An atom takes one document position, so it must take at
+                // least one character of the attributed string. Two positions
+                // mapping to the same index are one position as far as every
+                // geometry query is concerned: asked for the start of the line
+                // holding the position before an empty atom, the layout mapped
+                // to the shared index and mapped back to the position *after*
+                // it — a "line start" past the caret it was asked about. Every
+                // placeholder above is non-empty for its own reasons; this is
+                // the invariant they are each keeping.
+                if display.isEmpty { display = "\u{200b}" }
                 var atomAttrs: [NSAttributedString.Key: Any] = child.type.name == "wikiLink"
                     ? [.font: blockFont, .foregroundColor: wikiColor]
                     : [.font: child.type.name == "inlineMath" ? theme.monoFont : blockFont,
