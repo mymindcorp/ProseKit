@@ -7,9 +7,9 @@ import UIKit
 /// keyboard, scrolling when the list is long, and tap-to-choose.
 final class SuggestionPopupView: UIView {
     struct Item: Equatable {
-        var title: String
-        var subtitle: String?
-        var icon: String?
+        let title: String
+        let subtitle: String?
+        let icon: String?
     }
 
     private let scroll = UIScrollView()
