@@ -55,11 +55,11 @@ final class DocumentImageStore {
         case url(String)
     }
     private struct Entry {
-        var image: UIImage
+        let image: UIImage
         /// The content width this bitmap was decoded for. A wider column later
         /// (rotation) makes it stale — usable, but soft.
-        var decodedForWidth: CGFloat
-        var cost: Int
+        let decodedForWidth: CGFloat
+        let cost: Int
         var used: Int
     }
     private var entries: [Key: Entry] = [:]

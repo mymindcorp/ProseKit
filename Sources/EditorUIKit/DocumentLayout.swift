@@ -16,13 +16,13 @@ struct LineLayout {
 /// runs map 1:1; inline atoms (image/wikiLink) take one document position but
 /// may display several glyphs.
 struct Segment {
-    var docStart: Int
-    var docLen: Int
+    let docStart: Int
+    let docLen: Int
     var attrStart: Int
-    var attrLen: Int
+    let attrLen: Int
     /// The source text for a text run (nil for inline atoms). Lets us convert
     /// between grapheme-based document offsets and UTF-16 attributed indices.
-    var text: String?
+    let text: String?
 }
 
 /// A document position (relative to whatever the segments are relative to) as an
