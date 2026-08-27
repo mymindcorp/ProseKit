@@ -23,14 +23,28 @@ public enum MarkdownSerializer {
         var alternate = false
         var previous: String?
         for node in nodes {
-            let name = node.type.name
-            let isList = name == "bulletList" || name == "orderedList"
-            if isList, name == previous { alternate.toggle() } else if isList { alternate = false }
-            if previous != nil { out += separator }
-            out += serializeBlock(node, indent: indent, alternate: isList && alternate)
-            previous = name
+            // A task list is written with a bullet marker, so it joins a plain
+            // bullet list next to it just as readily as another bullet list
+            // would — and the checkboxes then read as literal text. What tells
+            // two lists apart is the marker, so it is the marker that has to
+            // differ, whichever kind of list is wearing it.
+            let family = markerFamily(node.type.name)
+            if let family, family == previous { alternate.toggle() } else { alternate = false }
+            if previous != nil || !out.isEmpty { out += separator }
+            out += serializeBlock(node, indent: indent, alternate: family != nil && alternate)
+            previous = family ?? node.type.name
         }
         return out
+    }
+
+    /// The marker a list writes, for the lists that share one. Nil for anything
+    /// that isn't a list — two of those in a row never merge.
+    private static func markerFamily(_ name: String) -> String? {
+        switch name {
+        case "bulletList", "taskList": "bullet"
+        case "orderedList": "ordered"
+        default: nil
+        }
     }
 
     /// A heading's inline content on one line. A hard break wrote `\` and a
@@ -60,21 +74,37 @@ public enum MarkdownSerializer {
         return out
     }
 
-    /// The longest run of `^` opening a line of the given text — the fence a
-    /// figure written around it has to beat.
-    private static func longestCaretRun(_ text: String) -> Int {
+    /// The longest run of `character` opening a line of the given text — the
+    /// fence written around it has to beat this, or the content closes it.
+    /// Only a run at the head of a line can close a fence, so that is what is
+    /// measured.
+    private static func longestOpeningRun(of character: Character, in text: String) -> Int {
         var longest = 0
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let run = line.drop { $0 == " " || $0 == "\t" }.prefix { $0 == "^" }.count
+            let run = line.drop { $0 == " " || $0 == "\t" }.prefix { $0 == character }.count
             longest = max(longest, run)
         }
         return longest
     }
 
+    private static func longestCaretRun(_ text: String) -> Int {
+        longestOpeningRun(of: "^", in: text)
+    }
+
+    /// A fence the code can't close early. Backticks unless the code opens a
+    /// line with three of them, then tildes — and when the code writes both,
+    /// a run of backticks longer than any it contains.
+    private static func codeFence(around text: String) -> String {
+        let backticks = longestOpeningRun(of: "`", in: text)
+        if backticks < 3 { return "```" }
+        if longestOpeningRun(of: "~", in: text) < 3 { return "~~~" }
+        return String(repeating: "`", count: backticks + 1)
+    }
+
     static func serializeBlock(_ node: Node, indent: String, alternate: Bool = false) -> String {
         switch node.type.name {
         case "paragraph":
-            return escapeLeadingBlockMarker(serializeInline(node.content))
+            return escapeLeadingBlockMarkers(serializeInline(node.content))
         case "heading":
             let level = node.attrs["level"]?.intValue ?? 1
             // A heading is one line, so a line break inside its content — which
@@ -92,8 +122,8 @@ public enum MarkdownSerializer {
         case "blockquote":
             return prefixLines(serializeBlocks(node.content, indent: indent), with: "> ")
         case "codeBlock":
-            // Fence with the delimiter the code itself doesn't use.
-            let fence = node.textContent.contains("```") ? "~~~" : "```"
+            // Fence with a delimiter the code itself can't close.
+            let fence = codeFence(around: node.textContent)
             let language = node.attrs["language"]?.stringValue ?? ""
             return "\(fence)\(language)\n\(node.textContent)\n\(fence)"
         case "horizontalRule":
@@ -110,10 +140,11 @@ public enum MarkdownSerializer {
         case "taskList":
             // GitHub's checkbox syntax. Without this the list fell to the default
             // branch and serialized to nothing at all, taking its contents with it.
+            let taskBullet = alternate ? "+" : "-"
             return (0..<node.childCount).map { i -> String in
                 let item = node.child(i)
-                let box = (item.attrs["checked"]?.boolValue ?? false) ? "- [x] " : "- [ ] "
-                return box + listItemText(item, continuation: "  ")
+                let checked = item.attrs["checked"]?.boolValue ?? false
+                return "\(taskBullet) [\(checked ? "x" : " ")] " + listItemText(item, continuation: "  ")
             }.joined(separator: "\n")
         case "orderedList":
             let start = node.attrs["order"]?.intValue ?? 1
@@ -144,9 +175,7 @@ public enum MarkdownSerializer {
         case "blockMath":
             // The `$$…$$` display-math convention shared by Pandoc, MathJax, and
             // most Markdown renderers with math support.
-            // No escaping needed: display math ends at a line that *starts* with
-            // "$$", so dollars inside the formula are already safe.
-            return "$$\n\(node.attrs["latex"]?.stringValue ?? "")\n$$"
+            return "$$\n\(blockMathSource(node.attrs["latex"]?.stringValue ?? ""))\n$$"
         case "figure":
             // Markdig's figure fence: `^^^` around the content, with the caption
             // trailing the closing fence. Unlike `details` — which has no
@@ -268,36 +297,80 @@ public enum MarkdownSerializer {
         return rows.isEmpty ? nil : (rows, alignments)
     }
 
-    /// Escape a leading `#`/`>`/`-`/`*`/`+`/`1.` so a paragraph that happens to
-    /// start with block-marker syntax round-trips as a paragraph, not a heading/
-    /// quote/list.
+    /// Escape anything on a paragraph's line that would read back as block
+    /// structure — a heading, quote, list marker, thematic break, setext
+    /// underline, figure fence, or pipe-table delimiter row — so the paragraph
+    /// round-trips as a paragraph.
     ///
-    /// Only the first few characters can spell a marker, so this walks the start
-    /// of the string instead of copying all of it into an array first: a
-    /// paragraph pays for its opening run here, not for its whole text.
-    private static func escapeLeadingBlockMarker(_ s: String) -> String {
-        guard let first = s.first else { return s }
+    /// Every line, not just the first: a hard break starts a new source line,
+    /// and a `>` at the head of *that* line opens a blockquote just as surely.
+    ///
+    /// Nearly every paragraph is one line with an ordinary first character, so
+    /// the single-line case never copies the string and the scan gives up on
+    /// the opening run.
+    private static func escapeLeadingBlockMarkers(_ s: String) -> String {
+        guard s.utf8.contains(UInt8(ascii: "\n")) else { return escapeBlockMarkerLine(s) }
+        return s.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { escapeBlockMarkerLine(String($0)) }
+            .joined(separator: "\n")
+    }
+
+    private static func escapeBlockMarkerLine(_ line: String) -> String {
+        guard let at = blockMarkerEscape(line) else { return line }
+        var out = line
+        out.insert("\\", at: at)
+        return out
+    }
+
+    /// Where a backslash has to go to stop this line reading as block structure,
+    /// or nil when it reads as prose already.
+    private static func blockMarkerEscape(_ line: String) -> String.Index? {
+        // A run of `-` or `=` under a paragraph line retitles the paragraph, and
+        // a run of `-`/`*`/`_` is a thematic break wherever it stands. Both are
+        // about the whole line, and both allow the marker to be indented.
+        if MarkdownParser.setextUnderline(line) != nil || MarkdownParser.isThematicBreak(line) { return line.startIndex }
+
+        // A marker keeps its meaning indented up to three columns.
+        var start = line.startIndex
+        var indent = 0
+        while start < line.endIndex, line[start] == " ", indent < 3 {
+            indent += 1
+            start = line.index(after: start)
+        }
+        let body = line[start...]
+        guard let first = body.first else { return nil }
+
+        // A tab separates a marker from its content exactly as a space does,
+        // and a marker alone on its line is an empty block.
+        func separates(_ i: Substring.Index) -> Bool {
+            i == body.endIndex || body[i] == " " || body[i] == "\t"
+        }
+
         if first == "#" {
-            var n = 0
-            var i = s.startIndex
-            while i < s.endIndex, s[i] == "#" { n += 1; i = s.index(after: i) }
-            if n <= 6, i == s.endIndex || s[i] == " " { return "\\" + s }
+            var hashes = 0
+            var i = body.startIndex
+            while i < body.endIndex, body[i] == "#" { hashes += 1; i = body.index(after: i) }
+            if hashes <= 6, separates(i) { return start }
         }
-        if first == ">" { return "\\" + s }
-        // A figure fence, when the figure nodes are registered. ("$$" needs no
-        // case here — dollars are already escaped everywhere in prose.)
-        if s.hasPrefix("^^^") { return "\\" + s }
-        if first == "-" || first == "*" || first == "+" {
-            let second = s.index(after: s.startIndex)
-            if second < s.endIndex, s[second] == " " { return "\\" + s }
+        if first == ">" { return start }
+        if body.hasPrefix("^^^") { return start }
+        if first == "-" || first == "*" || first == "+", separates(body.index(after: body.startIndex)) {
+            return start
         }
-        guard first.isNumber else { return s }
-        var i = s.startIndex
-        while i < s.endIndex, s[i].isNumber { i = s.index(after: i) }
-        guard i < s.endIndex, s[i] == "." else { return s }
-        let afterDot = s.index(after: i)
-        guard afterDot < s.endIndex, s[afterDot] == " " else { return s }
-        return s[..<i] + "\\." + s[afterDot...]
+        // A delimiter row turns the line above it into a table header. Breaking
+        // the first cell is enough — a cell has to be all `-` and `:`.
+        if body.utf8.contains(UInt8(ascii: "|")),
+           MarkdownParser.pipeAlignments(String(body), columns: MarkdownParser.pipeCells(String(body)).count) != nil {
+            return start
+        }
+        guard first.isNumber else { return nil }
+        var i = body.startIndex
+        var digits = 0
+        while i < body.endIndex, body[i].isNumber { digits += 1; i = body.index(after: i) }
+        // Either delimiter starts a list: `1.` and `1)` are both markers.
+        guard digits <= 9, i < body.endIndex, body[i] == "." || body[i] == ")",
+              separates(body.index(after: i)) else { return nil }
+        return i
     }
 
     /// `body` with `prefix` in front of each of its lines — how a blockquote
@@ -922,6 +995,22 @@ public enum MarkdownSerializer {
         out += String(decoding: escaped, as: UTF8.self)
     }
 
+    /// Prepare a formula for `$$…$$`. Display math ends at a line that *starts*
+    /// with `$$`, so a line of the formula that does would cut it short — the
+    /// rest of the formula reappearing as prose. Such a line is held back with a
+    /// backslash, and a line already spelling backslashes before its `$$` takes
+    /// one more, so the parser can undo exactly this and no more.
+    static func blockMathSource(_ latex: String) -> String {
+        guard latex.utf8.contains(UInt8(ascii: "$")) else { return latex }
+        return latex.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+            let indent = line.prefix { $0 == " " || $0 == "\t" }
+            let rest = line.dropFirst(indent.count)
+            let slashes = rest.prefix { $0 == "\\" }.count
+            guard rest.dropFirst(slashes).hasPrefix("$$") else { return String(line) }
+            return String(indent) + "\\" + rest
+        }.joined(separator: "\n")
+    }
+
     /// Prepare a formula for `$…$`. A bare `$` would close the math early, so it
     /// becomes `\$` — already-escaped dollars are left alone, so a formula that
     /// spells its dollar correctly round-trips unchanged. Inline math is a single
@@ -1222,7 +1311,7 @@ public enum MarkdownParser {
                     var body: [String] = rest.isEmpty ? [] : [rest]
                     i += 1
                     while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("$$") {
-                        body.append(lines[i]); i += 1
+                        body.append(unescapeBlockMathLine(lines[i])); i += 1
                     }
                     i += 1 // consume the closing fence
                     latex = body.joined(separator: "\n")
@@ -1997,12 +2086,22 @@ public enum MarkdownParser {
         return number == 1 && !content.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
+    /// Undo the backslash `MarkdownSerializer.blockMathSource` puts in front of
+    /// a formula line that would otherwise close the display math.
+    private static func unescapeBlockMathLine(_ line: String) -> String {
+        let indent = line.prefix { $0 == " " || $0 == "\t" }
+        let rest = line.dropFirst(indent.count)
+        let slashes = rest.prefix { $0 == "\\" }.count
+        guard slashes > 0, rest.dropFirst(slashes).hasPrefix("$$") else { return line }
+        return String(indent) + String(rest.dropFirst())
+    }
+
     /// A setext heading's underline: a run of `=` (level 1) or `-` (level 2),
     /// indented no more than three columns. Any length counts, so "Foo\n--" is
     /// a heading. Only meaningful directly under a paragraph — the caller checks
     /// that, which is also what makes "---" a heading there and a thematic break
     /// anywhere else.
-    private static func setextUnderline(_ line: String) -> Int? {
+    static func setextUnderline(_ line: String) -> Int? {
         guard indentWidth(line) <= 3 else { return nil }
         let t = line.trimmingCharacters(in: .whitespaces)
         guard let first = t.first, first == "=" || first == "-",
@@ -2012,7 +2111,7 @@ public enum MarkdownParser {
 
     /// A thematic break: three or more of `-`, `*` or `_`, optionally separated
     /// by spaces (`***`, `___`, `* * *`, `- - -`).
-    private static func isThematicBreak(_ line: String) -> Bool {
+    static func isThematicBreak(_ line: String) -> Bool {
         var char: Character?
         var count = 0
         for c in line {
@@ -2289,6 +2388,8 @@ public enum MarkdownParser {
         let attrs: [String: String]
         let isClosing: Bool
         let selfClosing: Bool
+        /// The tag's "<".
+        let start: Int
         /// One past the tag's ">".
         let end: Int
     }
@@ -2303,7 +2404,7 @@ public enum MarkdownParser {
         func skipped(_ terminator: [UInt8]) -> InlineTag? {
             guard let close = findSeq(bytes, i, terminator) else { return nil }
             return InlineTag(name: "", attrs: [:], isClosing: false, selfClosing: true,
-                             end: close + terminator.count)
+                             start: start, end: close + terminator.count)
         }
         if matches(bytes, i, "!--") { i += 3; return skipped(Array("-->".utf8)) }
         if matches(bytes, i, "![CDATA[") { i += 8; return skipped(Array("]]>".utf8)) }
@@ -2325,11 +2426,12 @@ public enum MarkdownParser {
             guard i < bytes.count else { return nil }
             if bytes[i] == UInt8(ascii: ">") { return InlineTag(name: name, attrs: attrs,
                                                                isClosing: isClosing,
-                                                               selfClosing: false, end: i + 1) }
+                                                               selfClosing: false,
+                                                               start: start, end: i + 1) }
             if bytes[i] == UInt8(ascii: "/"), i + 1 < bytes.count,
                bytes[i + 1] == UInt8(ascii: ">") {
                 return InlineTag(name: name, attrs: attrs, isClosing: isClosing,
-                                 selfClosing: true, end: i + 2)
+                                 selfClosing: true, start: start, end: i + 2)
             }
             // An attribute name, optionally followed by a value.
             let attrStart = i
@@ -2579,7 +2681,7 @@ public enum MarkdownParser {
                    let markName = HTMLConfig.default.tagToMark[tag.name],
                    schema.marks[markName] != nil,
                    let close = closingTag(chars, tag.end, tag.name),
-                   !slice(chars, tag.end..<(close.end - tag.name.count - 3)).contains("\n") {
+                   !slice(chars, tag.end..<close.start).contains("\n") {
                     var applied: Mark?
                     if markName == "link" {
                         if let target = tag.attrs["href"], let href = sanitizeURL(target, for: .link) {
@@ -2590,7 +2692,7 @@ public enum MarkdownParser {
                     } else {
                         applied = mark(markName).first
                     }
-                    let inner = slice(chars, tag.end..<(close.end - tag.name.count - 3))
+                    let inner = slice(chars, tag.end..<close.start)
                     let content = parseInline(inner, schema, definitions)
                     if !content.isEmpty {
                         flush()

@@ -606,7 +606,15 @@ final class DocumentLayout {
     /// since the atom counts as a character there.
     private func nestedImageHeight(of child: Node, lineHeight: CGFloat) -> CGFloat {
         var extra: CGFloat = 0
-        child.descendants { node, _, _, _ in
+        child.descendants { node, _, parent, _ in
+            // A closed details lays out its summary and nothing else, so the
+            // pictures in its hidden body reserve no height — counting them
+            // made the document shrink under the reader the moment the block
+            // was realized, which is the jump the estimate exists to prevent.
+            if node.type.name == "detailsContent", let parent,
+               parent.type.name == "details", !(parent.attrs["open"]?.boolValue ?? false) {
+                return false
+            }
             guard node.type.name == "image" else { return true }
             let box = estimatedImageHeight(node)
             extra += node.type.spec.inline ? max(0, box - lineHeight) : box
@@ -1645,7 +1653,12 @@ final class DocumentLayout {
                     // second footnote, so it reads as "2".
                     display = footnoteNumber(child.attrs["label"]?.stringValue ?? "")
                 default:
-                    display = "🖼"
+                    // Anything else that can say what it is, says it: a mention
+                    // reads as "@name". The picture is for what genuinely has
+                    // no spelling — an image still loading, math with no
+                    // renderer — not for every atom this switch hasn't named.
+                    display = child.type.spec.leafText?(child) ?? ""
+                    if display.isEmpty { display = "🖼" }
                 }
                 // An atom takes one document position, so it must take at
                 // least one character of the attributed string. Two positions
@@ -1843,7 +1856,16 @@ final class DocumentLayout {
             let endsInBreak = Unicode.Scalar((target.block.attributed.string as NSString).character(at: lineEnd - 1))
                 .map { CharacterSet(charactersIn: "\n\r\u{2028}\u{2029}").contains($0) } ?? false
             let isLastLine = target.line.stringRange.location == target.block.lines.last?.stringRange.location
-            if endsInBreak || !isLastLine { attr = lineEnd - 1 }
+            if endsInBreak || !isLastLine {
+                // One *character* back, not one UTF-16 unit. Backing into the
+                // middle of a surrogate pair (an emoji at the wrap) leaves an
+                // index that maps forward to a whole cluster again — landing on
+                // the next line's start, which is the bounce this clamp exists
+                // to stop.
+                let ns = target.block.attributed.string as NSString
+                attr = max(ns.rangeOfComposedCharacterSequence(at: lineEnd - 1).location,
+                           target.line.stringRange.location)
+            }
         }
         return target.block.docPos(forAttrIndex: attr)
     }
