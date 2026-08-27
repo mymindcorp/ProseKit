@@ -30,7 +30,7 @@ public enum MarkdownSerializer {
             // differ, whichever kind of list is wearing it.
             let family = markerFamily(node.type.name)
             if let family, family == previous { alternate.toggle() } else { alternate = false }
-            if previous != nil || !out.isEmpty { out += separator }
+            if previous != nil { out += separator }
             out += serializeBlock(node, indent: indent, alternate: family != nil && alternate)
             previous = family ?? node.type.name
         }
