@@ -34,6 +34,20 @@ final class SyntaxHighlighterTests: XCTestCase {
         XCTAssertEqual(color(of: "\"const\"", in: code, language: "js"), SyntaxColors.default.string)
     }
 
+    func testPythonDocstringIsAllString() {
+        let code = "def f():\n    \"\"\"Return None if not found.\"\"\"\n    pass"
+        // Words inside the docstring are prose, not keywords.
+        XCTAssertEqual(color(of: "None", in: code, language: "py"), SyntaxColors.default.string)
+        XCTAssertEqual(color(of: "not", in: code, language: "py"), SyntaxColors.default.string)
+    }
+
+    func testSwiftMultilineStringIsAllString() {
+        let code = "let s = \"\"\"\nline \"one\" and let\n\"\"\"\nlet t = 1"
+        XCTAssertEqual(color(of: "line", in: code, language: "swift"), SyntaxColors.default.string)
+        // The literal ends at its closing delimiter — code after it still highlights.
+        XCTAssertEqual(color(of: "let t", in: code, language: "swift"), SyntaxColors.default.keyword)
+    }
+
     func testEachLanguageColorsItsKeyword() {
         let cases: [(String, String, String)] = [
             ("js", "function f() {}", "function"),

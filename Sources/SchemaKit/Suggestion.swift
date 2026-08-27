@@ -54,3 +54,24 @@ public protocol SuggestionSource: AnyObject {
 public extension SuggestionSource {
     var onChange: (() -> Void)? { get { nil } set {} } // sync sources don't refresh
 }
+
+/// Where a typed trigger may open a popup: running prose that can actually hold
+/// the node the trigger inserts. Code is literal text — a `[[` there means
+/// brackets and an `@` means an `@` — and the schema has the last word: a
+/// textblock that can't hold the node can't be offered it, or accepting the
+/// suggestion would build a document the schema rejects.
+///
+/// `excludingHeadings` is the caller's judgment about prose rather than a
+/// schema matter: a wiki-link treats a heading as a title, not prose, while a
+/// mention in a title is ordinary.
+func isSuggestionContext(_ parent: Node, state: EditorState, cursor: ResolvedPos,
+                         inserting type: NodeType, excludingHeadings: Bool) -> Bool {
+    guard parent.isTextblock, !parent.type.spec.code,
+          !(excludingHeadings && parent.type.name == "heading"),
+          parent.type.contentMatch.matchType(type) != nil else { return false }
+    // An inline code span is code too, even in a paragraph. `storedMarks` is
+    // what the next character would take on, which is what matters at a
+    // boundary where the cursor's own marks haven't caught up yet.
+    let marks = state.storedMarks ?? cursor.marks()
+    return !marks.contains { $0.type.spec.code }
+}

@@ -106,7 +106,13 @@ final class MentionSuggestionSource: SuggestionSource {
 }
 
 private func computeMentionSuggestion(_ state: EditorState) -> MentionSuggestion? {
-    guard let cursor = (state.selection as? TextSelection)?.cursor else { return nil }
+    guard let cursor = (state.selection as? TextSelection)?.cursor,
+          let type = state.schema.nodes["mention"] else { return nil }
+    // Not in a code block, and not under a code mark: there an `@` is an `@`.
+    // Accepting there would try to insert a node the textblock can't hold, and
+    // fail silently after the popup had already offered it.
+    guard isSuggestionContext(cursor.parent, state: state, cursor: cursor,
+                              inserting: type, excludingHeadings: false) else { return nil }
     // Neutralize leaf atoms (a mention's own leaf text starts with "@" and
     // must not re-trigger the popup right after insertion).
     let textBefore = cursor.parent.textBetween(0, cursor.parentOffset, blockSeparator: nil, leafText: "\u{fffc}")

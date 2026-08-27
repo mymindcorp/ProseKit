@@ -150,17 +150,43 @@ func sortTasks(into tr: Transaction, doc: Node, selection: Selection,
     guard !lists.isEmpty else { return nil }
 
     // Reordering a list neither adds nor removes content, so every position
-    // outside the list it happens in survives it — the lists can be handled in
-    // any order, against positions and a table all taken from one document.
+    // *outside* the list it happens in survives it. Positions inside a moved
+    // item do not — and one of these lists can be nested inside an item of
+    // another, which is why the order here is not free:
+    //
+    //   - Innermost first. A nested list always starts after the list holding
+    //     it, so descending position puts the inner one first. Sorting an outer
+    //     list first would leave the inner list's step addressing where its
+    //     items no longer are, and it would land in a sibling item — replacing
+    //     content that has nothing to do with the check that started this.
+    //   - Re-read from the transaction's document. `entry.list` is the node as
+    //     it stood before any of this; re-inserting it would undo an inner sort
+    //     that has already happened. Positions are unchanged by a reorder, so
+    //     `listPos` still addresses the list.
+    //
+    // Sorting the keys also makes the result deterministic, which a dictionary's
+    // iteration order is not.
     let stepsBefore = tr.steps.count
     var remaps: [ListRemap] = []
-    for (listPos, entry) in lists {
-        guard let sorted = sortList(tr, listPos: listPos, list: entry.list,
+    for listPos in lists.keys.sorted(by: >) {
+        guard let entry = lists[listPos] else { continue }
+        let current = tr.doc.nodeAt(listPos) ?? entry.list
+        guard let sorted = sortList(tr, listPos: listPos, list: current,
                                     changed: entry.changed, homes: table) else { continue }
-        let content = listPos + 1 ..< listPos + 1 + entry.list.content.size
-        table = table.filter { !content.contains($0.key) }
+        // The sort re-states every direct child's home; drop the old ones so an
+        // item that just got unchecked doesn't keep a stale entry.
+        for start in sorted.itemStarts { table[start] = nil }
+        // A home deeper inside an item — a nested list's own checked items —
+        // travels with that item rather than being forgotten.
+        if let remap = sorted.remap {
+            let moves = table.compactMap { pos, home in
+                remap.map(pos).map { (from: pos, to: $0, home: home) }
+            }
+            for move in moves { table[move.from] = nil }
+            for move in moves { table[move.to] = move.home }
+            remaps.append(remap)
+        }
         table.merge(sorted.homes) { _, new in new }
-        if let remap = sorted.remap { remaps.append(remap) }
     }
     guard tr.steps.count > stepsBefore else { return table == homes ? nil : table }
     restoreSelection(tr, selection, remaps)
@@ -256,7 +282,7 @@ struct ListRemap {
 /// first and last index that changed is replaced, so checking the last item of
 /// a long list is a step over one item, not over the list.
 func sortList(_ tr: Transaction, listPos: Int, list: Node, changed: Set<Int>, homes: TaskHomes)
-    -> (remap: ListRemap?, homes: TaskHomes)? {
+    -> (remap: ListRemap?, homes: TaskHomes, itemStarts: [Int])? {
     let count = list.childCount
     var sizes = [Int](repeating: 0, count: count)
     var oldStarts = [Int](repeating: 0, count: count)
@@ -281,7 +307,7 @@ func sortList(_ tr: Transaction, listPos: Int, list: Node, changed: Set<Int>, ho
         pos += sizes[old]
         moved = moved || old != i
     }
-    guard moved else { return (nil, newHomes) }
+    guard moved else { return (nil, newHomes, oldStarts) }
 
     var lo = 0
     while plan.order[lo] == lo { lo += 1 }
@@ -297,7 +323,7 @@ func sortList(_ tr: Transaction, listPos: Int, list: Node, changed: Set<Int>, ho
     guard (try? tr.step(ReplaceStep(from, to, slice))) != nil else { return nil }
 
     return (ListRemap(from: from, to: to, oldStarts: oldStarts, newStarts: newStarts,
-                      sizes: sizes, newIndexOfOld: newIndexOfOld), newHomes)
+                      sizes: sizes, newIndexOfOld: newIndexOfOld), newHomes, oldStarts)
 }
 
 /// Keep the caret in the text it was in. Without this the caret lands at the top

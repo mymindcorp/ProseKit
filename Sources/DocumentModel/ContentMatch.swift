@@ -423,7 +423,10 @@ enum ContentExpression {
             }
         }
         scan(node)
-        return result.sorted()
+        // Descending, like upstream's `cmp = (a, b) => b - a`. State order is
+        // what fixes the order of the DFA's outgoing edges, and that order is
+        // what `defaultType`, `fillBefore` and `findWrapping` pick from.
+        return result.sorted(by: >)
     }
 
     // Subset construction (NFA → DFA), producing ContentMatch states.
@@ -435,7 +438,7 @@ enum ContentExpression {
             // states includes epsilon closure
             var states = states0
             for s in states0 { for n in nullFrom(nfa, s) where !states.contains(n) { states.append(n) } }
-            states.sort()
+            states.sort(by: >)
             if let existing = labeled[states] { return existing }
             let validEnd = states.contains(endState)
             let match = ContentMatch(validEnd: validEnd)

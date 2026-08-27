@@ -52,6 +52,34 @@ private func setChecked(_ editor: Editor, _ index: Int, _ checked: Bool) {
     editor.dispatch(tr)
 }
 
+/// Check several items the way one paste or one collab step would: a single
+/// transaction carrying more than one `checked` attr step.
+private func setCheckedTogether(_ editor: Editor, _ changes: [(Int, Bool)]) {
+    let tr = editor.state.tr
+    for (index, checked) in changes {
+        _ = try? tr.setNodeAttribute(itemPos(editor, index), "checked", .bool(checked))
+    }
+    editor.dispatch(tr)
+}
+
+/// Two outer items, each holding a nested list of two.
+private func nestedEditor() throws -> Editor {
+    let editor = try Editor(extensions: fullKit(
+        taskListOptions: TaskListOptions(sortCompletedToBottom: true)))
+    func outer(_ name: String, _ a: String, _ b: String) -> String {
+        """
+        <li data-type="taskItem" data-checked="false"><p>\(name)</p>\
+        <ul data-type="taskList">\
+        <li data-type="taskItem" data-checked="false"><p>\(a)</p></li>\
+        <li data-type="taskItem" data-checked="false"><p>\(b)</p></li>\
+        </ul></li>
+        """
+    }
+    try editor.setContent(html: "<ul data-type=\"taskList\">"
+        + outer("A", "a1", "a2") + outer("B", "b1", "b2") + "</ul>")
+    return editor
+}
+
 func registerTaskSortTests() {
     test("task sort: off by default — checking leaves the item where it is") {
         let editor = try sortingEditor([("a", false), ("b", false), ("c", false)], sorting: false)
@@ -163,6 +191,38 @@ func registerTaskSortTests() {
         try expectEqual(texts(editor).filter { $0 == "inner1" || $0 == "inner2" || $0 == "last" },
                         ["inner2", "inner1", "last"])
         try expectEqual(checks(editor)[0], false, "the outer item is untouched")
+    }
+
+
+    test("task sort: one batch checking an item and its own child keeps every item") {
+        let editor = try nestedEditor()
+        // A (index 0) and its own child a1 (index 1), in one transaction.
+        setCheckedTogether(editor, [(0, true), (1, true)])
+        let leaves = texts(editor).filter { $0.count == 2 }
+        try expectEqual(leaves.sorted(), ["a1", "a2", "b1", "b2"],
+                        "no item is lost, and none is duplicated")
+        // A drops below B; inside A, the checked a1 drops below a2.
+        try expectEqual(leaves, ["b1", "b2", "a2", "a1"])
+        try expectEqual(checks(editor).filter { $0 }.count, 2, "only A and a1 are checked")
+    }
+
+    test("task sort: sorting an outer list carries the inner sort with it") {
+        let editor = try nestedEditor()
+        setChecked(editor, 1, true)     // a1, inside A
+        try expectEqual(texts(editor).filter { $0.count == 2 }, ["a2", "a1", "b1", "b2"])
+        setChecked(editor, 0, true)     // now A itself
+        try expectEqual(texts(editor).filter { $0.count == 2 }, ["b1", "b2", "a2", "a1"],
+                        "A moves below B and keeps a2/a1 in the order it had")
+    }
+
+    test("task sort: a nested item still remembers its home after its parent moves") {
+        let editor = try nestedEditor()
+        setChecked(editor, 1, true)     // a1 -> bottom of its list
+        try expectEqual(texts(editor).filter { $0.count == 2 }, ["a2", "a1", "b1", "b2"])
+        setChecked(editor, 0, true)     // A moves; a1's home must travel with it
+        setChecked(editor, 5, false)    // uncheck a1 where it now stands
+        try expectEqual(texts(editor).filter { $0.count == 2 }, ["b1", "b2", "a1", "a2"],
+                        "a1 goes back above a2, where it started")
     }
 
     test("task sort: an ordinary edit appends nothing") {

@@ -231,7 +231,10 @@ public extension Transform {
                 }
                 if clearNewlines, !keepNewlines, child.isText, let text = child.text {
                     let space = Slice(content: Fragment.from(parentType.schema.text(" ", parentType.allowedMarks(child.marks))), openStart: 0, openEnd: 0)
-                    for (k, ch) in Array(text).enumerated() where ch == "\n" || ch == "\r" {
+                    // `\r\n` is a single Swift grapheme (and a single model
+                    // position), so it has to be matched in its own right —
+                    // it equals neither "\n" nor "\r". Upstream: /\r?\n|\r/.
+                    for (k, ch) in Array(text).enumerated() where ch == "\n" || ch == "\r" || ch == "\r\n" {
                         replSteps.append(ReplaceStep(cur + k, cur + k + 1, space))
                     }
                 }
@@ -377,11 +380,16 @@ public extension Transform {
     /// Replace the given range with a single node.
     @discardableResult
     func replaceRangeWith(_ from: Int, _ to: Int, _ node: Node) throws -> Self {
-        if !node.isInline && from == to,
+        var from = from, to = to
+        // Only hunt for an insert point when the parent has content to sit
+        // beside; in an empty textblock the range itself is the right place,
+        // and `replaceRange` will consume that empty parent.
+        if !node.isInline, from == to, doc.resolve(from).parent.content.size != 0,
            let point = insertPoint(doc, from, node.type) {
-            return try replaceWith(point, point, node)
+            from = point
+            to = point
         }
-        return try replaceWith(from, to, node)
+        return try replaceRange(from, to, Slice(content: Fragment.from(node), openStart: 0, openEnd: 0))
     }
 
     /// Delete the given range. Where deleting the inner content would leave an
