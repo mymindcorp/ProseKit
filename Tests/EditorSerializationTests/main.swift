@@ -1558,6 +1558,47 @@ test("Markdown: a hard break in a heading stays a break") {
     }
 }
 
+test("Markdown: a block marker after a hard break stays prose") {
+    // The line a hard break starts is a source line like any other: a `>` at the
+    // head of it opens a blockquote, a `#` a heading, a `-` a list. Only the
+    // paragraph's first line used to be escaped.
+    let br = node("hardBreak")
+    for second in ["> b", "# b", "- b", "* b", "+ b", "1. b", "1) b", "-\tb", "#\tb",
+                   ">", "-", "=", "---", "***", "^^^fig", "#### b"] {
+        let d = doc(p(t("a"), br, t(second)))
+        let md = MarkdownSerializer.serialize(d)
+        try expectEqual(try MarkdownParser.parse(md, schema: schema), d, md)
+    }
+    // An indented marker is still a marker. (The leading spaces themselves are
+    // whitespace the reader normalizes away, so this asks only for the block.)
+    let indented = doc(p(t("a"), br, t("  - b")))
+    let back = try MarkdownParser.parse(MarkdownSerializer.serialize(indented), schema: schema)
+    try expectEqual(back.childCount, 1)
+    try expectEqual(back.child(0).type.name, "paragraph")
+}
+
+test("Markdown: a paragraph that looks like a rule or a table stays prose") {
+    for text in ["---", "-- --", "___", "- - -", "-", "1.", "1)", "-\tx", "#\tx", "1.\tx"] {
+        let d = doc(p(t(text)))
+        let md = MarkdownSerializer.serialize(d)
+        try expectEqual(try MarkdownParser.parse(md, schema: schema), d, md)
+    }
+    // A header line plus a delimiter row is a table; neither line is one here.
+    let table = doc(p(t("x|y"), node("hardBreak"), t("-|-")))
+    let md = MarkdownSerializer.serialize(table)
+    try expectEqual(try MarkdownParser.parse(md, schema: schema), table, md)
+}
+
+test("Markdown: a setext underline after a break doesn't retitle the paragraph") {
+    for underline in ["=", "===", "-", "---"] {
+        let d = doc(p(t("a"), node("hardBreak"), t(underline)))
+        let md = MarkdownSerializer.serialize(d)
+        let back = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(back.child(0).type.name, "paragraph", md)
+        try expectEqual(back, d, md)
+    }
+}
+
 test("Markdown: a mark written as a tag keeps a break inside the tag") {
     // `<sup>a\` + newline + `b</sup>` is not a tag any reader accepts — it used
     // to come back as literal angle brackets with the mark gone.
@@ -1580,6 +1621,31 @@ test("Markdown: a break the mark ends at stays outside the tag") {
     let md = MarkdownSerializer.serialize(d)
     try expectEqual(md.trimmingCharacters(in: .newlines), "<sup>a</sup>\\\nb")
     try expectEqual(try MarkdownParser.parse(md, schema: schema), d)
+}
+
+test("Markdown: a fence clears the code it wraps") {
+    // Backticks, tildes, or both: the fence has to be one the code can't close.
+    for code in ["```", "~~~", "```\n~~~\ncode", "~~~\n```", "````\ntext",
+                 "a\n```\nb\n~~~\nc", "~~~~\n```"] {
+        let d = doc(node("codeBlock", [:], [t(code)]))
+        let md = MarkdownSerializer.serialize(d)
+        try expectEqual(try MarkdownParser.parse(md, schema: schema), d, md)
+    }
+}
+
+test("Markdown: a task list next to a bullet list keeps its checkboxes") {
+    // Both write a bullet marker, so an identical one lets the reader join the
+    // two lists — and the `[x]` then arrives as literal text.
+    let task = { (text: String, checked: Bool) in
+        node("taskItem", ["checked": .bool(checked)], [p(t(text))])
+    }
+    let taskList = node("taskList", [:], [task("a", true), task("b", false)])
+    let bullets = node("bulletList", [:], [node("listItem", [:], [p(t("c"))])])
+    for d in [doc(taskList, bullets), doc(bullets, taskList),
+              doc(taskList, node("taskList", [:], [task("d", false)]))] {
+        let md = MarkdownSerializer.serialize(d)
+        try expectEqual(try MarkdownParser.parse(md, schema: schema), d, md)
+    }
 }
 
 test("Markdown code fence round-trip") {
@@ -3261,6 +3327,18 @@ test("Markdown round-trip: inline math in a list item") {
     try expectEqual(try MarkdownParser.parse(MarkdownSerializer.serialize(d), schema: schema), d)
 }
 
+test("Markdown round-trip: a formula line that spells the closing fence") {
+    // "$$" at the head of a line ends display math, so a formula containing one
+    // used to be cut in half — the rest coming back as prose and an empty node.
+    for latex in ["a\n$$\nb", "$$", "$$x", "a\n  $$  \nb", "a\n\\$$\nb", "a\n$$$\nb"] {
+        let d = doc(blockMath(latex))
+        let md = MarkdownSerializer.serialize(d)
+        let back = try MarkdownParser.parse(md, schema: schema)
+        try expectEqual(back.childCount, 1, "latex: \(latex) — md: \(md)")
+        try expectEqual(back, d, "latex: \(latex) — md: \(md)")
+    }
+}
+
 test("Markdown round-trip: formulas with awkward sources") {
     for latex in ["\\frac{a}{b}", "a_b^*c*", "\\alpha \\beta", "x < y > z", "a \\$ b"] {
         let d = doc(p(t("see "), inlineMath(latex), t(" ok")), blockMath(latex))
@@ -3944,6 +4022,29 @@ test("Markdown round-trip: the third long-tail batch") {
 }
 
 // MARK: - Inline HTML in Markdown, and a fourth long-tail batch
+
+test("HTML: a bare < is text, not a tag") {
+    // `1 < 2 > 3` is a comparison. Reading the `<` as a tag consumed `< 2 >`
+    // and the text around it went with it.
+    let d = try HTMLParser.parse("<p>1 &lt; 2 > 3</p>", schema: schema)
+    try expectEqual(d.textContent, "1 < 2 > 3")
+    for (html, text) in [("<p>a < b</p>", "a < b"), ("<p>x <3 y</p>", "x <3 y"),
+                         ("<p>i <</p>", "i <"), ("<p>a </ b</p>", "a </ b")] {
+        try expectEqual(try HTMLParser.parse(html, schema: schema).textContent, text, html)
+    }
+    // A real tag still is one.
+    try expectEqual(try HTMLParser.parse("<p>a <em>b</em> c</p>", schema: schema).textContent, "a b c")
+}
+
+test("Markdown: an inline tag closed with a space keeps its content") {
+    // `</u >` is a closing tag; the content ends where it begins, not a fixed
+    // number of bytes before its ">".
+    for (md, text) in [("a <u>x</u > b", "x"), ("a <em>y</em  > b", "y")] {
+        let d = try MarkdownParser.parse(md, schema: schema)
+        try expect(d.textContent.contains(text), "\(md) -> \(d.textContent)")
+        try expect(!d.textContent.contains("<"), "\(md) -> \(d.textContent)")
+    }
+}
 
 test("Markdown: <br> is a hard break") {
     let d = try MarkdownParser.parse("a <br> b", schema: schema)

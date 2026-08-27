@@ -1498,9 +1498,22 @@ public enum HTMLParser {
         let bang = UInt8(ascii: "!"), question = UInt8(ascii: "?")
         let slash = UInt8(ascii: "/")
         let doubleQuote = UInt8(ascii: "\""), singleQuote = UInt8(ascii: "'")
+        // A "<" opens markup only when what follows can begin one: a tag name,
+        // a "/" and a tag name, or the "!"/"?" of a declaration. Anywhere else
+        // it is text — `1 < 2 > 3` in pasted HTML is a comparison, and reading
+        // it as a tag swallowed the text around it.
+        func startsMarkup(_ at: Int) -> Bool {
+            guard at + 1 < chars.count else { return false }
+            let next = unsafe chars[at + 1]
+            if next == bang || next == question { return true }
+            if next == slash {
+                return unsafe at + 2 < chars.count && isASCIILetter(chars[at + 2])
+            }
+            return isASCIILetter(next)
+        }
         var i = 0
         while i < chars.count {
-            if unsafe chars[i] == lt {
+            if unsafe chars[i] == lt, startsMarkup(i) {
                 // Markup declarations, comments, CDATA, and processing
                 // instructions: <!DOCTYPE …>, <!-- … -->, <![CDATA[ … ]]>, <? … >.
                 // These aren't elements — skip them (a leading <!DOCTYPE> from
@@ -1542,7 +1555,12 @@ public enum HTMLParser {
                 i = j + 1
             } else {
                 var j = i
-                while unsafe j < chars.count && chars[j] != lt { j += 1 }
+                // A "<" that can't open markup is part of this run of text.
+                if unsafe chars[j] == lt { j += 1 }
+                while j < chars.count {
+                    if unsafe chars[j] == lt, startsMarkup(j) { break }
+                    j += 1
+                }
                 unsafe tokens.append(.text(decodeUTF8(chars, i, j)))
                 i = j
             }
@@ -1557,6 +1575,10 @@ public enum HTMLParser {
     private static func isASCIIWhitespace(_ b: UInt8) -> Bool {
         b == 0x20 || b == 0x0A || b == 0x09 || b == 0x0D || b == 0x0C
     }
+
+    /// A tag name starts with a letter — which is what separates `<b>` from the
+    /// `<` in "1 < 2".
+    private static func isASCIILetter(_ b: UInt8) -> Bool { (b | 0x20) >= 97 && (b | 0x20) <= 122 }
 
     private static func decodeUTF8(_ b: UnsafeBufferPointer<UInt8>, _ lo: Int, _ hi: Int) -> String {
         unsafe lo < hi ? String(decoding: UnsafeBufferPointer(rebasing: b[lo..<hi]), as: UTF8.self) : ""

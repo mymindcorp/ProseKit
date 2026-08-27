@@ -223,6 +223,7 @@ open class EditorTextView: UIView, UIKeyInput {
 
         editor.onTransaction = { [weak self] tr in
             self?.mapSpellCache(through: tr)
+            self?.mapMarkedRange(through: tr)
             if tr.docChanged { self?.onDocumentChange?(tr) }
         }
         editor.onChange = { [weak self] _ in self?.setNeedsRebuild(); self?.fireSelectionChange() }
@@ -1102,6 +1103,30 @@ open class EditorTextView: UIView, UIKeyInput {
     /// outside the edited paragraph never change, and the edited paragraph
     /// updates immediately. The word being typed is hidden separately
     /// (`visibleSpellingRanges` skips the decoration under the caret).
+    /// Carry an in-progress composition through a change it didn't make.
+    ///
+    /// `markedRange` is held in document positions, and a transaction from
+    /// anywhere else — a collaborator's step, a host's programmatic edit, a
+    /// task list re-sorting itself — moves the text under it. Left unmapped,
+    /// the next keystroke of the composition replaces the old offsets, which
+    /// now address someone else's text.
+    ///
+    /// The UITextInput paths set `markedRange` themselves as part of the edit
+    /// they are making, so this stays out of their way.
+    private func mapMarkedRange(through tr: Transaction) {
+        guard tr.docChanged, !applyingTextInput, let marked = markedRange else { return }
+        let from = tr.mapping.mapResult(marked.0, 1)
+        let to = tr.mapping.mapResult(marked.1, -1)
+        // Composing over text that has since been deleted has nothing left to
+        // replace — end the composition rather than commit it into whatever
+        // took its place.
+        if from.deletedAcross || to.deletedAcross || to.pos < from.pos {
+            markedRange = nil
+            return
+        }
+        markedRange = (from.pos, to.pos)
+    }
+
     private func mapSpellCache(through tr: Transaction) {
         guard tr.docChanged else { return }
         if !spellCache.isEmpty {

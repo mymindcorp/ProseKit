@@ -30,7 +30,7 @@ func cssRules(_ c: SyntaxColors) -> [SyntaxRule] {
 func pythonRules(_ c: SyntaxColors) -> [SyntaxRule] {
     [
         rule(#"#[^\n]*"#, c.comment),                            // comment
-        rule(#"""""".*?""""""#, c.string),                       // triple-double docstring
+        rule("\"\"\".*?\"\"\"", c.string),                       // triple-double docstring
         rule(#"'''.*?'''"#, c.string),                           // triple-single docstring
         rule(#""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'"#, c.string), // strings
         rule(#"@[\w.]+"#, c.atRule),                             // decorators
@@ -43,7 +43,7 @@ func swiftRules(_ c: SyntaxColors) -> [SyntaxRule] {
     [
         rule(#"/\*.*?\*/"#, c.comment),                          // block comment
         rule(#"//[^\n]*"#, c.comment),                           // line comment
-        rule(#""""".*?""""#, c.string),                          // multiline string
+        rule("\"\"\".*?\"\"\"", c.string),                          // multiline string
         rule(#""(?:\\.|[^"\\])*""#, c.string),                   // string
         rule(#"@\w+"#, c.atRule),                                // attributes (@objc…)
         rule(#"\b(?:func|let|var|struct|class|enum|protocol|extension|import|return|if|else|guard|for|while|repeat|switch|case|default|break|continue|defer|do|try|catch|throw|throws|rethrows|init|deinit|self|super|nil|true|false|some|any|as|is|in|where|associatedtype|typealias|public|private|internal|fileprivate|open|final|static|lazy|weak|unowned|mutating|nonmutating|override|convenience|required|indirect|inout|async|await|actor)\b"#, c.keyword),

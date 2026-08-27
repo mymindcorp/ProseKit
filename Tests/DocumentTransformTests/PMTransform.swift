@@ -136,6 +136,8 @@ func registerPMTransformTests() {
     typeT("clears markup when necessary", doc(p("hello<a> ", em("world"))), doc(pre("hello world")), "code_block")
     typeT("removes non-allowed nodes", doc(p("<a>one", img(), "two", img(), "three")), doc(pre("onetwothree")), "code_block")
     typeT("removes newlines in non-code", doc(pre("<a>one\ntwo\nthree")), doc(p("one two three")), "paragraph")
+    // `\r\n` is one Swift grapheme, so it needs matching in its own right.
+    typeT("removes CRLF newlines in non-code", doc(pre("<a>one\r\ntwo\rthree")), doc(p("one two three")), "paragraph")
     typeT("only clears markup when needed", doc(p("hello<a> ", em("world"))), doc(h1("hello<a> ", em("world"))), "heading", ["level": .int(1)])
     typeT("skips nodes that can't be changed due to constraints", doc(p("<a>hello", img()), p("okay"), ul(li(p("foo<b>")))), doc(pre("<a>hello"), pre("okay"), ul(li(p("foo<b>")))), "code_block")
 
@@ -179,4 +181,18 @@ func registerPMTransformTests() {
     repl("can insert into an empty block", doc(p("a"), p("<a>"), p("b")), doc(p("x<a>y<b>z")), doc(p("a"), p("y<a>"), p("b")))
     repl("doesn't change the nesting of blocks after the selection", doc(p("one<a>"), p("two"), p("three")), doc(p("outside<a>"), blockquote(p("inside<b>"))), doc(p("one"), blockquote(p("inside")), p("two"), p("three")))
     repl("can close a parent node", doc(blockquote(p("b<a>c"), p("d<b>e"), p("f"))), doc(blockquote(p("x<a>y")), p("after"), "<b>"), doc(blockquote(p("b<a>y")), p("after"), blockquote(p("<b>e"), p("f"))))
+
+    // MARK: replaceRangeWith
+    // Upstream finishes with `replaceRange`, which consumes the empty parent
+    // a plain `replaceWith` would leave standing.
+    func rrw(_ name: String, _ d: TaggedNode, _ node: TaggedNode, _ e: TaggedNode) {
+        test("PM replaceRangeWith: \(name)") {
+            let tr = Transform(d.node)
+            try tr.replaceRangeWith(tag(d, "a"), tagOpt(d, "b") ?? tag(d, "a"), node.node)
+            try expectEqual(tr.doc, e.node)
+        }
+    }
+    rrw("consumes the empty paragraph it lands in", doc(p("a"), p("<a>"), p("b")), hr(), doc(p("a"), hr(), p("b")))
+    rrw("replacing a whole textblock leaves no empty parent", doc(p("<a>hello<b>")), hr(), doc(hr()))
+    rrw("still finds an insert point beside content", doc(p("a<a>"), p("b")), hr(), doc(p("a"), hr(), p("b")))
 }

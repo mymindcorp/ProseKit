@@ -97,12 +97,11 @@ func registerPMContentTests() {
     fill("adds elements to match a count", "hard_break{3}", p(br()), p(br()), p(br()))
     fill("fails when there are too many elements", "hard_break{3}", p(br(), br()), p(br(), br()), nil)
     fill("adds elements for two counted groups", "code_block{2} paragraph{2}", doc(pre()), doc(p()), doc(pre(), p()))
-    // DIVERGENCE from ProseMirror: PM's fillBefore yields just `doc(hr())` here
-    // (it skips the optional paragraph). Ours produces a valid but non-minimal
-    // fill, `doc(p(), hr())` — both satisfy "heading paragraph? horizontal_rule".
-    // The difference is only edge ordering in the compiled content DFA; it never
-    // produces an invalid document, only an occasional extra empty optional node.
-    fill("non-minimal fill includes an optional element", "heading paragraph? horizontal_rule", doc(h1()), doc(), doc(p(), hr()))
+    // The optional paragraph is skipped: a minimal fill, matching ProseMirror.
+    // (This was once a documented divergence — the content DFA built its edges
+    // in the reverse of upstream's order, so the optional node came out first
+    // and got included. See `nullFrom`/`dfa` in ContentMatch.swift.)
+    fill("minimal fill skips an optional element", "heading paragraph? horizontal_rule", doc(h1()), doc(), doc(hr()))
 
     fill3("completes a sequence", "paragraph horizontal_rule paragraph horizontal_rule paragraph", doc(p()), doc(p()), doc(p()), doc(hr()), doc(hr()))
     fill3("accepts plus across two bounds", "code_block+ paragraph+", doc(pre()), doc(pre()), doc(p()), doc(), doc())

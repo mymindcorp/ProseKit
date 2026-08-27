@@ -26,6 +26,14 @@ private func suggestsAtEndOf(_ editor: Editor, _ blocks: [Node]) throws -> Bool 
     return editor.wikiLinkSuggestion != nil
 }
 
+/// Type `@Ar` at the end of a document made of `blocks`, and report whether the
+/// mention popup opened.
+private func mentionsAtEndOf(_ editor: Editor, _ blocks: [Node]) throws -> Bool {
+    editor.setContent(try editor.schema.node("doc", [:], content: Fragment.from(blocks)))
+    try typeAtEnd(editor, "@Ar")
+    return editor.mentionSuggestion != nil
+}
+
 func registerWikiLinkContextTests() {
     test("wiki suggestion: a paragraph offers targets") {
         let editor = try Editor(extensions: fullKit())
@@ -93,5 +101,39 @@ func registerWikiLinkContextTests() {
         let text = s.text("let a = ", [s.marks["code"]!.create()])
         try expect(!(try suggestsAtEndOf(editor, [try s.node("paragraph", [:], content: Fragment.from([text]))])),
                    "a code span is code, paragraph or not")
+    }
+
+    // The `@` trigger answers to the same rule: code is literal text, and the
+    // schema decides. (A heading differs — a mention in a title is ordinary.)
+
+    test("mention suggestion: a paragraph offers names") {
+        let editor = try Editor(extensions: fullKit(mentionSuggestions: { _ in ["Ari"] }))
+        let s = editor.schema
+        try expect(try mentionsAtEndOf(editor, [try s.node("paragraph", [:], content: Fragment.from([s.text("ask ")]))]),
+                   "a paragraph is prose")
+    }
+
+    test("mention suggestion: a code block doesn't") {
+        let editor = try Editor(extensions: fullKit(mentionSuggestions: { _ in ["Ari"] }))
+        let s = editor.schema
+        let code = try s.node("codeBlock", [:], content: Fragment.from([s.text("let a = ")]))
+        try expect(!(try mentionsAtEndOf(editor, [code])), "`@` in code is an `@`")
+        // The text is still typed — only the popup is withheld.
+        try expectEqual(editor.doc.textBetween(0, editor.doc.content.size, blockSeparator: nil), "let a = @Ar")
+    }
+
+    test("mention suggestion: an inline code span doesn't") {
+        let editor = try Editor(extensions: fullKit(mentionSuggestions: { _ in ["Ari"] }))
+        let s = editor.schema
+        let text = s.text("let a = ", [s.marks["code"]!.create()])
+        try expect(!(try mentionsAtEndOf(editor, [try s.node("paragraph", [:], content: Fragment.from([text]))])),
+                   "a code span is code, paragraph or not")
+    }
+
+    test("mention suggestion: a heading does") {
+        let editor = try Editor(extensions: fullKit(mentionSuggestions: { _ in ["Ari"] }))
+        let s = editor.schema
+        let heading = try s.node("heading", ["level": .int(2)], content: Fragment.from([s.text("Notes ")]))
+        try expect(try mentionsAtEndOf(editor, [heading]), "a mention in a title is ordinary")
     }
 }
