@@ -2273,9 +2273,18 @@ final class DocumentLayout {
                 }
             }
         }
-        // Text blocks via CoreText.
+        // Text blocks via CoreText. Lines are culled individually as well as
+        // blocks: a paragraph is never much taller than the viewport, but a
+        // code block is a single block, and drawing a 2000-line one to show
+        // its top forty lines cost 5 ms a frame. Lines are in top-to-bottom
+        // order, so once one starts below the band the rest do too.
         for block in blocks where visible(block.frame.minY, block.frame.maxY) {
             for line in block.lines {
+                let top = line.baselineOrigin.y - line.ascent
+                if let clipY {
+                    if top > clipY.upperBound { break }
+                    if top + line.height < clipY.lowerBound { continue }
+                }
                 ctx.textPosition = .zero
                 ctx.textMatrix = .identity
                 ctx.saveGState()
