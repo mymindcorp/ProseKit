@@ -412,6 +412,94 @@ final class EditorTextViewGestureTests: XCTestCase {
                        "no border was grabbed, so nothing resized")
     }
 
+    // MARK: - Atom tap (single tap selects a block-level atom)
+
+    func testAtomTapSelectsABlockImage() throws {
+        let view = try imageView()
+        let rect = try XCTUnwrap(view.ensureLayout().imageRects.first).rect
+        let tap = FakeTap()
+        tap.point = viewPoint(view, CGPoint(x: rect.midX, y: rect.midY))
+        view.handleAtomTap(tap)
+
+        let sel = try XCTUnwrap(view.editor.state.selection as? NodeSelection)
+        XCTAssertEqual(sel.node.type.name, "image", "the tap selected the image itself")
+    }
+
+    func testAtomTapSelectsAHorizontalRule() throws {
+        let view = try makeView { s in
+            [try s.node("paragraph", [:], content: Fragment.from([s.text("above")])),
+             try s.node("horizontalRule"),
+             try s.node("paragraph", [:], content: Fragment.from([s.text("below")]))]
+        }
+        let layout = view.ensureLayout()
+        let entry = try XCTUnwrap(layout.entries.first { $0.node.type.name == "horizontalRule" })
+        let tap = FakeTap()
+        tap.point = viewPoint(view, CGPoint(x: 160, y: entry.topY + entry.height / 2))
+        view.handleAtomTap(tap)
+
+        let sel = try XCTUnwrap(view.editor.state.selection as? NodeSelection)
+        XCTAssertEqual(sel.node.type.name, "horizontalRule")
+    }
+
+    func testAtomTapOverTextSelectsNothing() throws {
+        let view = try paragraphs(["plain text"])
+        let before = view.editor.state.selection
+        let block = view.ensureLayout().blocks[0]
+        let tap = FakeTap()
+        tap.point = viewPoint(view, CGPoint(x: block.frame.midX, y: block.frame.midY))
+        view.handleAtomTap(tap)
+        XCTAssertTrue(view.editor.state.selection.eq(before), "text is left to the native caret tap")
+    }
+
+    func testAtomTapRecognizerNeverBeginsOverPlainText() throws {
+        let view = try paragraphs(["only words here"])
+        let recognizer = try XCTUnwrap(view.atomTapRecognizer)
+        XCTAssertFalse(view.gestureRecognizerShouldBegin(recognizer),
+                       "no atom under the (0,0) tap, so the tap falls through to UITextInteraction")
+    }
+
+    func testMathWithAHostListeningIsNotClaimedByTheAtomTap() throws {
+        let view = try makeView { s in
+            [try s.node("blockMath", ["latex": .string("x^2")])]
+        }
+        view.onActivateMath = { _, _ in }
+        let layout = view.ensureLayout()
+        guard let hit = layout.mathTargets.first else { return } // no renderer → no target
+        XCTAssertNil(view.blockAtomPosition(at: CGPoint(x: hit.rect.midX, y: hit.rect.midY)),
+                     "handleMathTap owns that tap; two answers would dispatch twice")
+    }
+
+    func testTextInteractionStaysOutOfBlockAtoms() throws {
+        // Without this, the same tap that node-selects an image would also let
+        // UITextInteraction place a caret beside it — two selections from one tap.
+        let view = try imageView()
+        let rect = try XCTUnwrap(view.ensureLayout().imageRects.first).rect
+        let interaction = UITextInteraction(for: .editable)
+        XCTAssertFalse(view.interactionShouldBegin(interaction,
+                                                   at: CGPoint(x: rect.midX, y: rect.midY)),
+                       "the atom tap owns this point")
+        XCTAssertTrue(view.interactionShouldBegin(interaction, at: CGPoint(x: 4, y: 4)),
+                      "off the image the native interaction runs as usual")
+    }
+
+    func testNodeSelectedAtomHasAHighlightRect() throws {
+        // A block atom owns no text lines, so `selectionRects` is empty for it —
+        // the draw pass highlights `blockAtomRect` instead. If both were empty,
+        // a node-selected image would give no visual feedback at all.
+        let view = try imageView()
+        let layout = view.ensureLayout()
+        let rect = try XCTUnwrap(layout.imageRects.first).rect
+        let tap = FakeTap()
+        tap.point = viewPoint(view, CGPoint(x: rect.midX, y: rect.midY))
+        view.handleAtomTap(tap)
+
+        let sel = try XCTUnwrap(view.editor.state.selection as? NodeSelection)
+        XCTAssertTrue(layout.selectionRects(from: sel.from, to: sel.to).isEmpty,
+                      "no text lines cover a block image — which is why the atom rect exists")
+        XCTAssertEqual(layout.blockAtomRect(at: sel.from), rect,
+                       "the drawn highlight covers exactly the image's rect")
+    }
+
     // MARK: - gestureRecognizerShouldBegin
 
     func testColumnResizeBeginsOnlyOnABorder() throws {

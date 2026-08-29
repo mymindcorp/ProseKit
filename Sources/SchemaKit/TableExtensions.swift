@@ -72,8 +72,14 @@ public final class TableExtension: NodeExtension {
         // and TableMap assume) and normalize cell/row/table node-selections into
         // CellSelections — mirroring prosemirror-tables' fixTables + normalizeSelection.
         let allowNodeSelection = options.allowTableNodeSelection
-        var plugins: [Plugin] = [Plugin(key: "fixTables", appendTransaction: { _, oldState, newState in
-            normalizeSelection(newState, fixTables(newState, oldState), allowNodeSelection)
+        var plugins: [Plugin] = [Plugin(key: "fixTables", appendTransaction: { trs, oldState, newState in
+            // Only a doc change can leave a table malformed, so a selection-only
+            // transaction (every tick of a selection drag) skips the document
+            // walk — as upstream does. Normalizing node selections into cell
+            // selections still runs: that is about the selection, not the doc.
+            let docChanged = trs.contains { $0.docChanged }
+            return normalizeSelection(newState, docChanged ? fixTables(newState, oldState) : nil,
+                                      allowNodeSelection)
         })]
         // Left out entirely when resizing is off: the view takes the plugin's
         // absence as the answer, so there is one place to ask.

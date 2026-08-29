@@ -66,6 +66,7 @@ open class EditorTextView: UIView, UIKeyInput {
     weak var mathTapRecognizer: UIGestureRecognizer?
     weak var trailingTapRecognizer: UIGestureRecognizer?
     weak var imageLongPressRecognizer: UIGestureRecognizer?
+    weak var atomTapRecognizer: UIGestureRecognizer?
 
     /// When true, each top-level block shows a drag handle in the left gutter
     /// that reorders the block by dragging. Off by default.
@@ -195,6 +196,9 @@ open class EditorTextView: UIView, UIKeyInput {
         // the sense that it begins at all when `onActivateImage` is set — see
         // that property for how it and the image drag divide the gesture.
         let imageLongPress = UILongPressGestureRecognizer(target: self, action: #selector(handleImageLongPress(_:)))
+        // Tapping a block-level atom (a block image, a horizontal rule) selects
+        // the node itself — a caret beside it is not what the tap meant.
+        let atomTap = UITapGestureRecognizer(target: self, action: #selector(handleAtomTap(_:)))
         columnResizeRecognizer = columnResize
         linkTapRecognizer = linkTap
         blockDragRecognizer = blockDrag
@@ -203,8 +207,9 @@ open class EditorTextView: UIView, UIKeyInput {
         mathTapRecognizer = mathTap
         trailingTapRecognizer = trailingTap
         imageLongPressRecognizer = imageLongPress
+        atomTapRecognizer = atomTap
         for recognizer in [columnResize, linkTap, blockDrag, imageResize, disclosureTap, mathTap, tripleTap,
-                           trailingTap, imageLongPress] as [UIGestureRecognizer] {
+                           trailingTap, imageLongPress, atomTap] as [UIGestureRecognizer] {
             recognizer.delegate = self
             recognizer.cancelsTouchesInView = false
             addGestureRecognizer(recognizer)
@@ -916,6 +921,15 @@ open class EditorTextView: UIView, UIKeyInput {
             for range in sel.ranges {
                 for r in l.selectionRects(from: range.from.pos, to: range.to.pos, clipY: visibleY) { ctx.fill(r) }
             }
+        }
+        // A node-selected block atom (image, rule) owns no text lines, so the
+        // pass above drew nothing for it: tint and outline its drawn rect.
+        if sel is NodeSelection, let atom = l.blockAtomRect(at: sel.from), onScreen(atom) {
+            ctx.setFillColor(theme.selection.fill.cgColor)
+            ctx.fill(atom)
+            ctx.setStrokeColor(theme.selection.caret.cgColor)
+            ctx.setLineWidth(2)
+            ctx.stroke(atom.insetBy(dx: 1, dy: 1))
         }
         l.draw(in: ctx, clipY: visibleY, highlightRenderer: highlightRenderer)
 
@@ -1837,6 +1851,23 @@ open class EditorTextView: UIView, UIKeyInput {
         setTextSelection(anchor: range.from, head: range.to)
     }
 
+    /// Single tap on a block-level atom → select the node itself.
+    @objc func handleAtomTap(_ gesture: UITapGestureRecognizer) {
+        guard let pos = blockAtomPosition(at: docPoint(gesture.location(in: self))) else { return }
+        if !isFirstResponder { becomeFirstResponder() }
+        editor.dispatch(editor.state.tr.setSelection(NodeSelection(editor.doc.resolve(pos))))
+    }
+
+    /// The selectable block-level leaf atom a tap at `point` (DOCUMENT
+    /// coordinates) should select, if any. A formula a host is listening for is
+    /// not ours: `handleMathTap` both selects it and hands it over, and two
+    /// recognizers answering one tap would dispatch twice.
+    func blockAtomPosition(at point: CGPoint) -> Int? {
+        let l = ensureLayout()
+        if onActivateMath != nil, l.math(at: point) != nil { return nil }
+        return l.blockAtom(at: point)
+    }
+
     /// The content range of the text block containing a document-space point.
     func paragraphRange(at point: CGPoint) -> (from: Int, to: Int)? {
         let l = ensureLayout()
@@ -2098,6 +2129,7 @@ open class EditorTextView: UIView, UIKeyInput {
         if gesture === imageLongPressRecognizer { return shouldActivateImage(at: point) }
         if gesture === linkTapRecognizer { return shouldActivateLink(at: point) }
         if gesture === trailingTapRecognizer { return trailingGapTap(at: point) }
+        if gesture === atomTapRecognizer { return blockAtomPosition(at: point) != nil }
         return super.gestureRecognizerShouldBegin(gesture)
     }
 
@@ -3408,7 +3440,11 @@ extension EditorTextView: UITextInteractionDelegate {
     /// raise the keyboard, on top of toggling the item. Ticking a task off
     /// shouldn't move the caret or focus the editor.
     public func interactionShouldBegin(_ interaction: UITextInteraction, at point: CGPoint) -> Bool {
-        ensureLayout().checkbox(at: docPoint(point)) == nil
+        let dp = docPoint(point)
+        // Same again for a block-level atom: the tap there is `handleAtomTap`'s
+        // (a NodeSelection), and letting the interaction run too would put a
+        // caret beside the node it just selected.
+        return ensureLayout().checkbox(at: dp) == nil && blockAtomPosition(at: dp) == nil
     }
 }
 

@@ -98,6 +98,45 @@ func registerPMTableExtraTests() {
     fixCase("respects table role when inserting a cell", table(tr(h11()), tr(c11(), c11()), tr(cell(3, 1))),
             table(tr(h11(), hEmpty(), hEmpty()), tr(cEmpty(), c11(), c11()), tr(cell(3, 1))))
     fixCase("removes a zero-sized table", doc(table(tr()), table(tr(c11()))), doc(table(tr(c11()))))
+    // Guards the walk's textblock prune: the descent must still pass through
+    // table → row → cell to reach a table nested inside a cell.
+    fixCase("fixes a table nested inside a cell",
+            table(tr(td(p("x"), table(tr(c11(), c11()), tr(c11()))), c11())),
+            table(tr(td(p("x"), table(tr(c11(), c11()), tr(c11(), cEmpty()))), c11())))
+
+    test("PM fixTables: a selection-only transaction skips the fix pass") {
+        // The fix pass walks the document, and it runs from appendTransaction —
+        // on every transaction, including each tick of a selection drag. Only a
+        // doc change can leave a table malformed, so a selection-only
+        // transaction must not pay for (or perform) the walk. Observable from
+        // outside: a malformed doc stays malformed across a selection change,
+        // and is repaired by the first transaction that edits the document.
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        func cell() throws -> Node {
+            try s.node("tableCell", [:], content: Fragment.from([try s.node("paragraph")]))
+        }
+        let malformed = try s.node("doc", [:], content: Fragment.from([
+            try s.node("table", [:], content: Fragment.from([
+                try s.node("tableRow", [:], content: Fragment.from([cell(), cell()])),
+                try s.node("tableRow", [:], content: Fragment.from([cell()])),
+            ])),
+            try s.node("paragraph", [:], content: Fragment.from([s.text("after")])),
+        ]))
+        let state = EditorState.create(EditorStateConfig(schema: s, doc: malformed,
+                                                         plugins: editor.state.plugins))
+        try expect(fixTables(state, nil) != nil, "the fixture must actually be malformed")
+
+        let end = state.doc.content.size
+        let selOnly = state.applyTransaction(
+            state.tr.setSelection(TextSelection.create(state.doc, end - 2))).state
+        try expectEqual(selOnly.doc, malformed, "a selection move must not rewrite the document")
+
+        let tr = selOnly.tr
+        _ = try tr.insertText("x", end - 2, end - 2)
+        let edited = selOnly.applyTransaction(tr).state
+        try expect(fixTables(edited, nil) == nil, "the first edit repairs the table")
+    }
 
     // MARK: normalizeSelection (node-selection → cell-selection)
     let nt = doc(table(tr(c11(), c11(), c11()), tr(c11(), c11(), c11()), tr(c11(), c11(), c11()))).node

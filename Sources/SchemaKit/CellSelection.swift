@@ -260,8 +260,10 @@ public struct CellBookmark: SelectionBookmark {
 
 /// Convert a NodeSelection of a cell/row/table into the matching CellSelection.
 public func normalizeSelection(_ state: EditorState, _ tr0: Transaction?, _ allowTableNodeSelection: Bool) -> Transaction? {
-    let sel = (tr0 ?? state.tr).selection
-    let doc = (tr0 ?? state.tr).doc
+    // Read through `tr0` when there is one; otherwise straight off the state —
+    // `state.tr` would build a fresh Transaction just to ask it these.
+    let sel = tr0?.selection ?? state.selection
+    let doc = tr0?.doc ?? state.doc
     var tr = tr0
     var normalize: Selection?
     if let ns = sel as? NodeSelection, let role = tableRole(ns.node) {
