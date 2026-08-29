@@ -13,7 +13,10 @@ public func fixTables(_ state: EditorState, _ oldState: EditorState?) -> Transac
     var tr: Transaction?
     state.doc.descendants { node, pos, _, _ in
         if node.type.name == "table" { tr = fixTable(state, node, pos, tr) }
-        return true
+        // A textblock holds inline content, and a table is not inline: nothing
+        // below one can be a table, so don't walk the document's actual text.
+        // Tables themselves are still descended into — a cell can nest one.
+        return !node.isTextblock
     }
     return tr
 }

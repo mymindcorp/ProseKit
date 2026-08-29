@@ -2003,6 +2003,37 @@ final class DocumentLayout {
         return nil
     }
 
+    /// The document position of a selectable block-level leaf atom (a block
+    /// image, a horizontal rule) drawn under `point`, if any — what a tap
+    /// there should select as a node rather than resolve to a caret beside.
+    /// An image answers for its drawn rect only, so the margins around a
+    /// narrow image still place the caret; a rule, a hairline the theme pads
+    /// with spacing, answers for its whole band or it could not be hit at all.
+    func blockAtom(at point: CGPoint) -> Int? {
+        for e in entries where !e.estimated && e.node.isLeaf && !e.node.isText
+            && e.node.type.spec.selectable {
+            let hit: CGRect?
+            if e.node.type.name == "image" {
+                hit = blockImageRect(e)
+            } else {
+                hit = CGRect(x: 0, y: e.topY, width: width, height: e.height)
+            }
+            if let hit, hit.contains(point) { return e.docStart }
+        }
+        return nil
+    }
+
+    /// The drawn rect of the block-level leaf atom starting at `pos`, if that is
+    /// one — what a node selection over it highlights. These blocks own no text
+    /// lines, so `selectionRects` has nothing to say about them.
+    func blockAtomRect(at pos: Int) -> CGRect? {
+        for e in entries where e.docStart == pos && !e.estimated && e.node.isLeaf && !e.node.isText {
+            if e.node.type.name == "image", let rect = blockImageRect(e) { return rect }
+            return CGRect(x: 0, y: e.topY, width: width, height: e.height)
+        }
+        return nil
+    }
+
     /// Selection highlight rectangles for a document range.
     /// The rectangles covering `from..<to`, one per line of text.
     ///

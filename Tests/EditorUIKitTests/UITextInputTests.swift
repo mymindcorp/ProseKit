@@ -219,6 +219,33 @@ final class UITextInputTests: XCTestCase {
         // Hit-testing maps a point back to a position.
         XCTAssertNotNil(view.closestPosition(to: CGPoint(x: caret.midX, y: caret.midY)))
     }
+
+    /// A range the system sets that exactly spans one leaf atom (the U+FFFC
+    /// "word" a double-tap on an image yields) becomes a node selection, so
+    /// delete/copy address the node. Anything wider stays a text selection.
+    func testRangeExactlySpanningAnAtomBecomesANodeSelection() throws {
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        editor.setContent(try! s.node("doc", [:], content: Fragment.from([
+            try! s.node("paragraph", [:], content: Fragment.from([s.text("ab")])),
+            try! s.node("image", ["src": .string("https://example.com/a.png")]),
+            try! s.node("paragraph", [:], content: Fragment.from([s.text("cd")])),
+        ])))
+        let view = EditorTextView(editor: editor)
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
+        view.layoutIfNeeded()
+
+        view.selectedTextRange = range(4, 5) // exactly the image
+        let sel = try XCTUnwrap(view.editor.state.selection as? NodeSelection)
+        XCTAssertEqual(sel.node.type.name, "image")
+
+        view.selectedTextRange = range(2, 8) // text on both sides: a text drag
+        XCTAssertTrue(view.editor.state.selection is TextSelection,
+                      "a wider range is not promoted")
+
+        view.selectedTextRange = range(1, 3) // "ab": plain text stays plain
+        XCTAssertTrue(view.editor.state.selection is TextSelection)
+    }
 }
 
 @MainActor

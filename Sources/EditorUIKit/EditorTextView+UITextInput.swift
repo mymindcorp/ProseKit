@@ -79,6 +79,16 @@ extension EditorTextView: UITextInput {
                 editor.dispatch(editor.state.tr.setSelection(GapCursor(h)))
                 return
             }
+            // A range that exactly spans one leaf atom is that node, selected:
+            // double-tapping an image (or a mention chip) reaches here as the
+            // atom's one-position "word", and the node should be what deleting
+            // or copying then addresses. Only leaf atoms — a drag whose
+            // endpoints happen to bracket a paragraph is still a text drag.
+            if let node = a.nodeAfter, node.isLeaf, NodeSelection.isSelectable(node),
+               clamp(r.from) + node.nodeSize == clamp(r.to) {
+                editor.dispatch(editor.state.tr.setSelection(NodeSelection(a)))
+                return
+            }
             // A drag whose endpoints sit in different cells of one table is a
             // cell selection (prosemirror-tables' createSelectionBetween).
             if r.from != r.to,
