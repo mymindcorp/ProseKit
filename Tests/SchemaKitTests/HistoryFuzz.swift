@@ -24,7 +24,7 @@ func registerHistoryFuzzTests() {
     test("history fuzz: undoing everything returns to the document you started from") {
         for seed in 1 ... fuzzOpSeeds {
             var rng = SelRNG(seed &* 7 &+ 1)
-            let editor = try Editor(extensions: fullKit())
+            let editor = try Editor(extensions: fuzzKit())
             let original = editor.doc
             var log: [String] = []
 
@@ -66,7 +66,7 @@ func registerHistoryFuzzTests() {
         // whichever of forty came first.
         for seed in 1 ... fuzzOpSeeds {
             var rng = SelRNG(seed &* 11 &+ 3)
-            let editor = try Editor(extensions: fullKit())
+            let editor = try Editor(extensions: fuzzKit())
             for _ in 0 ..< fuzzOpHistoryCount {
                 let before = editor.doc
                 let what = fuzzStep(editor, &rng)
@@ -96,7 +96,7 @@ func registerHistoryFuzzTests() {
         // position turns into a trap.
         for seed in 1 ... fuzzOpSeeds {
             var rng = SelRNG(seed &* 13 &+ 5)
-            let editor = try Editor(extensions: fullKit())
+            let editor = try Editor(extensions: fuzzKit())
             var log: [String] = []
             for _ in 0 ..< fuzzOpHistoryCount {
                 log.append(fuzzStep(editor, &rng))

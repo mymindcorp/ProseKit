@@ -295,9 +295,22 @@ final class Fitter {
 
     private func closeFrontierNode() {
         let open = frontier.removeLast()
-        if let add = open.match.fillBefore(.empty, toEnd: true), add.childCount != 0 {
-            placed = addToFragment(placed, frontier.count, add)
-        }
+        guard let add = open.match.fillBefore(.empty, toEnd: true), add.childCount != 0 else { return }
+        // Only when the node isn't finished already.
+        //
+        // `open.match` is a proxy for the node's state, and for one of the
+        // slice's open-end nodes it is a poor one: the frontier gets
+        // `contentMatchAt(childCount)`, which falls back to the *start* of the
+        // content expression when the content can't be matched from there — and
+        // that is the normal case here, because a slice's open nodes are
+        // deliberately half a node. Filling from a start state appends what the
+        // node needs at its *beginning* to its end instead. A `figure`, whose
+        // shape is `block+ figcaption?`, came back with a paragraph behind its
+        // caption; pasting anything into a caption produced a document that
+        // failed its own check. So ask the content, which is not a proxy.
+        let existing = lastContentAt(placed, frontier.count)
+        guard open.type.contentMatch.matchFragment(existing)?.validEnd != true else { return }
+        placed = addToFragment(placed, frontier.count, add)
     }
 }
 
@@ -313,6 +326,18 @@ private func addToFragment(_ fragment: Fragment, _ depth: Int, _ content: Fragme
     if depth == 0 { return fragment.append(content) }
     let last = fragment.lastChild!
     return fragment.replaceChild(fragment.childCount - 1, last.copy(content: addToFragment(last.content, depth - 1, content)))
+}
+
+/// The content of the node `addToFragment` would append to at `depth` — down
+/// the *last* child at each level, which is where the fitter is building.
+private func lastContentAt(_ fragment: Fragment, _ depth: Int) -> Fragment {
+    var frag = fragment
+    var i = 0
+    while i < depth, let last = frag.lastChild {
+        frag = last.content
+        i += 1
+    }
+    return frag
 }
 
 private func contentAt(_ fragment: Fragment, _ depth: Int) -> Fragment {

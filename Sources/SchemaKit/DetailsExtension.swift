@@ -88,13 +88,15 @@ public func setDetails(_ detailsType: NodeType, _ summaryType: NodeType, _ conte
         guard let range = sel.resolvedFrom.blockRange(sel.resolvedTo) else { return false }
         let slice = state.doc.slice(range.start, range.end)
         // The selected blocks must be valid content for a `detailsContent`.
+        // Checked both ways down: `matchFragment` alone says the content could
+        // still be *continued*, not that it is complete, and `create` doesn't
+        // look at content at all. See the same note in `setFigure`.
         guard slice.openStart == 0, slice.openEnd == 0,
-              contentType.contentMatch.matchFragment(slice.content) != nil,
-              let content = try? contentType.create([:], content: slice.content),
+              let content = try? contentType.createChecked([:], content: slice.content),
               let summary = summaryType.createAndFill(),
               // A new section opens, so its content is visible right away.
-              let details = try? detailsType.create(["open": .bool(true)],
-                                                    content: Fragment.from([summary, content]))
+              let details = try? detailsType.createChecked(["open": .bool(true)],
+                                                           content: Fragment.from([summary, content]))
         else { return false }
         guard let dispatch else { return true }
         let tr = state.tr

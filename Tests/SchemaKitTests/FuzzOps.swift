@@ -15,18 +15,35 @@ import TestHarness
 // random to this editor". One driver means an op added here immediately
 // deepens all of them.
 
+/// The extensions every live-editor sweep drives.
+///
+/// The same set `fuzzSchema` builds, not bare `fullKit()`. The two had drifted:
+/// the document corpus covered figures, footnotes and math because
+/// `fuzzSchema` adds them, while every sweep that *edited* a document ran on a
+/// schema that had none of those node types — so the commands that build them
+/// were never run, and the structures whose shapes are least like a paragraph
+/// were only ever generated, never edited.
+func fuzzKit() -> [any Extension] { fullKit() + figureExtensions() + footnoteExtensions() }
+
 /// The commands the driver picks from. Ones that are no-ops outside their
 /// context (the table family outside a table) are kept deliberately: a command
 /// declining has to be as safe as a command running.
 let fuzzOpCommands = [
     "toggleBold", "toggleItalic", "toggleCode", "toggleStrike", "toggleUnderline",
-    "toggleBulletList", "toggleOrderedList", "toggleTaskList",
+    "toggleHighlight", "toggleSubscript", "toggleSuperscript",
+    "toggleBulletList", "toggleOrderedList", "toggleTaskList", "toggleTaskChecked",
     "toggleHeading1", "toggleHeading2", "toggleBlockquote", "toggleCodeBlock",
-    "setHorizontalRule", "setParagraph", "lift", "liftListItem", "sinkListItem",
+    "setHorizontalRule", "setParagraph", "setHardBreak", "lift", "liftListItem", "sinkListItem",
     "joinBackward", "joinForward", "selectParentNode", "splitBlock",
     "addColumnBefore", "addColumnAfter", "deleteColumn", "addRowBefore", "addRowAfter",
-    "deleteRow", "mergeCells", "splitCell", "toggleHeaderRow", "toggleHeaderColumn",
-    "goToNextCell", "goToPreviousCell", "deleteTable",
+    "deleteRow", "mergeCells", "splitCell", "mergeOrSplit", "toggleHeaderRow",
+    "toggleHeaderColumn", "toggleHeaderCell", "goToNextCell", "goToPreviousCell", "deleteTable",
+    // The nested containers, whose shapes are the least paragraph-like in the
+    // kit and the ones the fitter has the most trouble placing content into.
+    "setDetails", "toggleDetails", "toggleDetailsOpen",
+    "setFigure", "toggleFigure",
+    "insertFootnote", "removeFootnote",
+    "insertInlineMath", "insertBlockMath", "deleteInlineMath", "deleteBlockMath",
 ]
 
 let fuzzOpKeys = ["Enter", "Backspace", "Delete", "Tab", "Shift-Tab", "Mod-Enter",
@@ -155,7 +172,7 @@ final class FuzzRecorder {
     let editor: Editor
     private(set) var transactions: [Transaction] = []
 
-    init(_ extensions: [any Extension] = fullKit(), content: Node? = nil) throws {
+    init(_ extensions: [any Extension] = fuzzKit(), content: Node? = nil) throws {
         editor = try Editor(extensions: extensions, content: content)
         editor.onTransaction = { [weak self] tr in self?.transactions.append(tr) }
     }

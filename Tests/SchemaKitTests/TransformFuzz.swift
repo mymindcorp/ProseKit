@@ -123,24 +123,31 @@ func registerTransformFuzzTests() {
 
     // MARK: rebase
 
-    test("transform fuzz: a step mapped through a concurrent edit still applies") {
-        // The rebase primitive. A step that survives being mapped through
-        // another step's map must be applicable to the document that other step
-        // produced — `nil` means "deleted, drop it", but a step that comes back
-        // and then fails to apply is a crash in the collab client, and one that
-        // applies to an invalid document is a corrupt document on every peer.
+    test("transform fuzz: a rebased step either fails or produces a real document") {
+        // The rebase primitive. A mapped step is allowed to *fail* — the
+        // concurrent edit may have taken away the ground it stood on, and
+        // `rebaseSteps` drops it — and it is allowed to be dropped outright by
+        // `map` returning nil. What it may not do is succeed into a document
+        // the schema rejects: that one is not reported anywhere, it just
+        // arrives, and it arrives identically on every peer.
         try eachFuzzFork("rebase") { mine, theirs, shared, ctx in
             // `mine` and `theirs` were both written against `shared`; theirs
             // landed first, so mine has to be mapped over it.
             guard let overDoc = theirs.apply(shared).doc else { return }
             guard let rebased = mine.map(theirs.getMap()) else { return }
-            let result = rebased.apply(overDoc)
-            try expect(result.doc != nil, "a rebased step failed to apply — \(ctx()): \(result.failed ?? "")")
-            guard let doc = result.doc else { return }
+            guard let doc = rebased.apply(overDoc).doc else { return }
             var invalid: (any Error)?
             do { try doc.check() } catch { invalid = error }
             try expect(invalid == nil,
                        "a rebased step produced an invalid document — \(ctx()): \(invalid.map { "\($0)" } ?? "")")
+            // And the step's own map has to describe what it did, or the next
+            // rebase over it puts everything in the wrong place.
+            let map = rebased.getMap()
+            for pos in 0 ... overDoc.content.size {
+                let there = map.map(pos, 1)
+                try expect(there >= 0 && there <= doc.content.size,
+                           "a rebased step's map sent \(pos) to \(there), outside a doc of \(doc.content.size) — \(ctx())")
+            }
         }
     }
 }
@@ -238,7 +245,7 @@ private func eachFuzzFork(_ label: String,
 /// One random operation applied to a fresh editor loaded with `doc`, returning
 /// the steps it produced against that very document.
 private func forkedStep(_ doc: Node, _ rng: inout SelRNG) throws -> [(step: any Step, doc: Node)]? {
-    let fork = try FuzzRecorder(fullKit(), content: doc)
+    let fork = try FuzzRecorder(fuzzKit(), content: doc)
     // Loading content can itself normalize the document (fixing a table, adding
     // a missing ID); a step written against something other than `doc` isn't the
     // concurrent edit this property is about.

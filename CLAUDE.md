@@ -56,7 +56,7 @@ generated documents, which costs more than the rest of their suite put together.
 text-input sequences, is cheap, and always runs.)
 
 Model and state (selections, commands, history, mapping, steps, serialization,
-collaboration):
+collaboration, copy/paste, track changes):
 
 ```sh
 PROSEKIT_FUZZ=1 swift run SchemaKitTests
@@ -70,9 +70,15 @@ The two knobs scale different sweeps, because the sweeps take different input:
   deepens everything that inspects a static document — the selection sweeps and
   the serialization round-trips.
 - `PROSEKIT_FUZZ_OPS` is how many *seeds* of a random editing session each sweep
-  runs. It deepens everything that drives a live editor — steps, history and
-  collaboration. Those share one op driver (`Tests/SchemaKitTests/FuzzOps.swift`),
-  so an operation added there deepens all three at once.
+  runs. It deepens everything that drives a live editor — steps, history,
+  collaboration and track changes. Those share one op driver
+  (`Tests/SchemaKitTests/FuzzOps.swift`), so an operation added there deepens
+  all of them at once.
+
+Add a new node type's commands to `fuzzOpCommands`, and its extension to
+`fuzzKit()`. Both defaults are the *whole* kit, opt-in extensions included: the
+sweeps that only edited `fullKit()` documents never once ran the commands that
+build a figure or a footnote, while the corpus was full of them.
 
 Layout geometry (`GeometryFuzzTests`: caret rects, hit testing, vertical
 movement) and the `UITextInput` surface (`TextInputFuzzTests`) are iOS-only, and

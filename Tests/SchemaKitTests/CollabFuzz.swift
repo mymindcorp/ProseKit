@@ -193,7 +193,7 @@ final class FuzzAuthority {
     private(set) var clientIDs: [Int] = []
 
     init() throws {
-        owner = try Editor(extensions: fullKit())
+        owner = try Editor(extensions: fuzzKit())
         doc = owner.doc
     }
 
@@ -228,7 +228,7 @@ final class FuzzPeer {
         // History off: an undo is a local edit like any other for these
         // purposes, and the plugin's own transactions would only make the op
         // log harder to read back.
-        editor = try Editor(extensions: fullKit() + [CollabExtension(clientID: clientID)], history: false)
+        editor = try Editor(extensions: fuzzKit() + [CollabExtension(clientID: clientID)], history: false)
     }
 
     func edit(_ rng: inout SelRNG) -> String { fuzzStep(editor, &rng) }

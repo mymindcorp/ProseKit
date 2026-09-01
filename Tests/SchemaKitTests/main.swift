@@ -239,6 +239,8 @@ registerTransformFuzzTests()
 registerHistoryFuzzTests()
 registerSerializationFuzzTests()
 registerCollabFuzzTests()
+registerPasteFuzzTests()
+registerSuggestionFuzzTests()
 registerSelectionCommandFuzzTests()
 
 registerPMListTests(); registerPMTableMapTests(); registerPMTableCommandsTests(); registerPMCellCopyPasteTests(); registerPMTableExtraTests()
