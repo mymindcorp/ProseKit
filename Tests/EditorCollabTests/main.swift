@@ -18,7 +18,9 @@ let schema: Schema = {
 }()
 
 func startDoc() -> Node {
-    try! schema.node("doc", [:], content: Fragment.from([try! schema.node("paragraph", [:], content: Fragment.from([schema.text("")]))]))
+    // An empty paragraph has no content; a text node with no text is not a
+    // node the model allows.
+    try! schema.node("doc", [:], content: Fragment.from([try! schema.node("paragraph", [:], content: .empty)]))
 }
 
 /// A minimal central authority: an ordered, append-only log of steps.

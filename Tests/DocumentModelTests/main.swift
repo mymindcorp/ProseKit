@@ -314,8 +314,11 @@ test("text positions are grapheme-cluster offsets") {
         try expectEqual(B.t(s).nodeSize, chars.count, "size of \(s.debugDescription)")
         for from in 0...chars.count {
             for to in from...chars.count {
-                try expectEqual(B.t(s).cut(from, to).text ?? "", String(chars[from..<to]),
-                                "cut(\(from),\(to)) of \(s.debugDescription)")
+                // A text node cannot be empty, so a cut has to take something.
+                if from < to {
+                    try expectEqual(B.t(s).cut(from, to).text ?? "", String(chars[from..<to]),
+                                    "cut(\(from),\(to)) of \(s.debugDescription)")
+                }
                 let doc = B.doc(B.p(s))
                 // +1 for the paragraph's opening token.
                 try expectEqual(doc.textBetween(from + 1, to + 1), String(chars[from..<to]),
@@ -333,5 +336,8 @@ registerBench()
 
 registerAttributeValueTests()
 registerStorageIdentityTests()
+registerValidationTests()
+registerLeafTextTests()
+registerResolvedPosTests()
 
 TestSuite.main("DocumentModelTests", collector.all)

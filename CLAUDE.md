@@ -122,9 +122,14 @@ PROSEKIT_BENCH=1 swift run -c release DocumentModelTests
 PROSEKIT_BENCH=1 swift run -c release EditorStateKitTests
 ```
 
-The renderer's (`EditorUIKitTests/RealizeBench` — what `DocumentLayout.realize`
-costs per paint) is compiled out instead, for the same `TEST_RUNNER_` reason as
-the geometry fuzzer, and wants the optimizer turned on explicitly:
+The renderer's are compiled out instead, for the same `TEST_RUNNER_` reason as
+the geometry fuzzer, and want the optimizer turned on explicitly. There are
+four, and they split the paint path between them: `RealizeBench` (what
+`DocumentLayout.realize` costs per paint), `DrawBench` (what `draw(in:clipY:)`
+costs), `EditorDrawBench` (the editable view's whole `draw`, with plugin
+decorations), and `HotPathProbe` (a survey of the per-frame and per-keystroke
+paths — scroll ticks, cursor moves, and typing, with and without the find bar
+open). Swap the `-only-testing:` below for whichever you want:
 
 ```sh
 xcodebuild test -scheme ProseKit-Package -configuration Release -only-testing:EditorUIKitTests/RealizeBench -destination 'platform=iOS Simulator,name=iPhone 17 Pro' ENABLE_TESTABILITY=YES SWIFT_OPTIMIZATION_LEVEL=-O SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_BENCH'

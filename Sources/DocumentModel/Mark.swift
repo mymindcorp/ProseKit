@@ -84,6 +84,11 @@ public struct Mark: Hashable, Sendable {
         }
         var attrs: Attrs = [:]
         if case let .object(o)? = json["attrs"] { attrs = o }
+        // A required attribute the JSON leaves out is a malformed mark, not a
+        // programming error, so it has to fail here rather than trap in
+        // `create`. This is the door a collab step or a stored document comes
+        // through.
+        try type.checkAttrs(attrs)
         return type.create(attrs)
     }
 }

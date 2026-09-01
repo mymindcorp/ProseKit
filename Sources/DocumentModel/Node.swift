@@ -242,6 +242,7 @@ public struct Node: Hashable, Sendable {
     public func withText(_ text: String) -> Node {
         if text == self.text { return self }
         precondition(isText, "withText called on non-text node")
+        precondition(!text.isEmpty, "Empty text nodes are not allowed")
         return Node(type: type, attrs: attrs, content: content, marks: marks, text: text)
     }
 
@@ -346,6 +347,10 @@ public struct Node: Hashable, Sendable {
         if typeName == "text" {
             guard let text = json["text"]?.stringValue else {
                 throw ModelError.invalidJSON("Invalid text node in JSON")
+            }
+            // `Schema.text` traps on this; JSON is untrusted, so it fails.
+            if text.isEmpty {
+                throw ModelError.invalidJSON("Empty text node in JSON")
             }
             return schema.text(text, marks)
         }
