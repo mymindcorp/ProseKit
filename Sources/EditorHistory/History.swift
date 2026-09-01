@@ -156,9 +156,28 @@ struct Branch {
         var eventCount = self.eventCount
         for item in items[start...] where item.selection != nil { eventCount -= 1 }
 
+        // Which rebased step each item is. The rebase transform begins with
+        // the `rebasedCount` local steps undone in reverse, so the inverted map
+        // of local step `k` sits at index `rebasedCount - 1 - k`, and an item's
+        // own map is that map's inverse.
+        //
+        // Upstream pairs items with steps by *count* — the last item with the
+        // last step, and so on back — which is right only when this branch's
+        // tail holds every rebased step. It doesn't once the user has undone
+        // before their typing was confirmed: the typed step's item is on `done`
+        // and the undo's is on `undone`, each branch holds half, and the count
+        // pairs the redo item with the *insert* it was never the inverse of. A
+        // redo then inverted that insert into a delete over whatever a
+        // collaborator had put there since. So each item finds the step whose
+        // inverted map is its own, searching downwards so the pairing stays in
+        // order; an item with no such step was not rebased and is dropped, as
+        // before.
         var iRebased = rebasedCount
         for item in items[start...] {
-            iRebased -= 1
+            guard let match = (0 ..< iRebased).reversed().first(where: { j in
+                mapping.maps[j].inverse(of: item.map)
+            }) else { continue }
+            iRebased = match
             guard let pos = mapping.getMirror(iRebased) else { continue }
             newUntil = min(newUntil, pos)
             let map = mapping.maps[pos]
@@ -457,4 +476,17 @@ private func mapRanges(_ ranges: [Int]?, _ mapping: Mapping) -> [Int]? {
         i += 2
     }
     return result
+}
+
+
+private extension StepMap {
+    /// Whether this map is the inverse of `other`: the same ranges, read the
+    /// other way round. Compared through `forEach`, the one view of a map's
+    /// ranges that is public.
+    func inverse(of other: StepMap) -> Bool {
+        var mine: [[Int]] = [], theirs: [[Int]] = []
+        forEach { a, b, c, d in mine.append([a, b, c, d]) }
+        other.forEach { a, b, c, d in theirs.append([c, d, a, b]) }
+        return mine == theirs
+    }
 }

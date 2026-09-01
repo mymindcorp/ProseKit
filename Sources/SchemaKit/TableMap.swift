@@ -28,7 +28,12 @@ public enum TableAxis: Sendable { case horiz, vert }
 func cellColspan(_ node: Node) -> Int { node.attrs["colspan"]?.intValue ?? 1 }
 func cellRowspan(_ node: Node) -> Int { node.attrs["rowspan"]?.intValue ?? 1 }
 func cellColwidth(_ node: Node) -> [Int]? {
-    if case let .array(arr)? = node.attrs["colwidth"] { return arr.map { $0.intValue ?? 0 } }
+    // A width that isn't positive is no width: zero already means "unknown"
+    // to the map, and a negative one — which nothing here writes, but a stored
+    // or pasted cell can carry — became a column's authority and then a
+    // mismatch the fixer wrote into every other cell of the column. Reading it
+    // as unknown keeps garbage from spreading.
+    if case let .array(arr)? = node.attrs["colwidth"] { return arr.map { max(0, $0.intValue ?? 0) } }
     return nil
 }
 
@@ -233,7 +238,10 @@ private func badColWidthProblems(_ map: [Int], _ width: Int, _ colWidths: [Int?]
     var seen = Set<Int>()
     for i in map.indices {
         let pos = map[i]
-        if seen.contains(pos) { continue }
+        // A slot no cell reached — a ragged row the fixer is about to fill —
+        // holds 0, and offset 0 is the first *row*, not a cell: reporting a
+        // width for it produced a fix that set `colwidth` on a row.
+        if pos == 0 || seen.contains(pos) { continue }
         seen.insert(pos)
         guard let node = table.nodeAt(pos) else { fatalError("No cell with offset \(pos) found") }
         var updated: [Int]?
@@ -258,6 +266,12 @@ private func badColWidthProblems(_ map: [Int], _ width: Int, _ colWidths: [Int?]
 }
 
 private func freshColWidth(_ node: Node) -> [Int] {
-    if let cw = cellColwidth(node) { return cw }
-    return [Int](repeating: 0, count: cellColspan(node))
+    // Always `colspan` wide. A stored `colwidth` can be shorter — a cell
+    // whose span grew in a merge, or one pasted in from a table that kept a
+    // single width — and the caller writes `updated[j]` for every column the
+    // cell spans, which indexed past the end and took the process down while
+    // building the map, which every selection change does.
+    var widths = [Int](repeating: 0, count: cellColspan(node))
+    if let cw = cellColwidth(node) { for (j, w) in cw.prefix(widths.count).enumerated() { widths[j] = w } }
+    return widths
 }

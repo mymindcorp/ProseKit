@@ -101,7 +101,7 @@ private struct ContentFitter {
     private func wrap(_ content: Fragment, in types: [NodeType]) -> Node? {
         var fragment = content
         for type in types.reversed() {
-            guard let node = (try? type.create([:], content: fragment))
+            guard let node = (try? type.createChecked([:], content: fragment))
                     ?? type.createAndFill([:], content: fragment) else { return nil }
             fragment = Fragment.from(node)
         }

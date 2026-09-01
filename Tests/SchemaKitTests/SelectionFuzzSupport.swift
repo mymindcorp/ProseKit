@@ -14,7 +14,7 @@ func fuzzCorpus(_ schema: Schema, count: Int) -> [(seed: String, doc: Node)] {
 /// The richest schema in the package: everything `fullKit` registers, plus the
 /// two opt-in node families, so the corpus really does cover every node type.
 func fuzzSchema() throws -> Schema {
-    try Editor(extensions: fullKit() + figureExtensions() + footnoteExtensions()).schema
+    try Editor(extensions: fuzzKit()).schema
 }
 
 /// The generator's RNG, reused by the sweeps for their own random choices.
@@ -230,4 +230,35 @@ func everySelection(in doc: Node) -> [Selection] {
     }
     for a in cells { for b in cells { out.append(CellSelection.create(doc, a, b)) } }
     return out
+}
+
+/// A document as an indented outline, for failure messages.
+///
+/// `Node`'s own description is a struct dump — three screens of
+/// `DocumentModel.AttributeValue.string(...)` for a document you can't read the
+/// shape of, which is the one thing a failure message needs to show.
+func fuzzOutline(_ node: Node, _ depth: Int = 0) -> String {
+    var line = String(repeating: "  ", count: depth) + node.type.name
+    if !node.attrs.isEmpty {
+        let shown = node.attrs.compactMap { key, value -> String? in
+            if case .null = value { return nil }
+            return "\(key)=\(describeAttr(value))"
+        }.sorted()
+        if !shown.isEmpty { line += " " + shown.joined(separator: " ") }
+    }
+    if !node.marks.isEmpty { line += " marks=[\(node.marks.map(\.type.name).joined(separator: ","))]" }
+    if let text = node.text { line += " " + text.debugDescription }
+    var out = line + "\n"
+    for i in 0 ..< node.childCount { out += fuzzOutline(node.child(i), depth + 1) }
+    return out
+}
+
+private func describeAttr(_ value: AttributeValue) -> String {
+    switch value {
+    case let .string(s): return s.debugDescription
+    case let .int(i): return "\(i)"
+    case let .bool(b): return "\(b)"
+    case let .double(d): return "\(d)"
+    default: return "\(value)"
+    }
 }

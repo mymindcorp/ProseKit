@@ -71,8 +71,14 @@ public func setFigure(_ figureType: NodeType, _ captionType: NodeType) -> Comman
         else { return false }
         let parent = range.parent
         let blocks = (range.startIndex..<range.endIndex).map { parent.child($0) }
+        // `createChecked`, not `create`: `create` validates the attributes and
+        // takes whatever content it is given. A selection inside a table has a
+        // block range whose children are table *rows*, and wrapping those built
+        // `figure(tableRow…)` — a document no schema describes, which the
+        // renderer and the table machinery then met head-on. Checking makes the
+        // command decline there, which is the right answer.
         guard !blocks.isEmpty, let caption = captionType.createAndFill(),
-              let figure = try? figureType.create([:], content: Fragment.from(blocks + [caption]))
+              let figure = try? figureType.createChecked([:], content: Fragment.from(blocks + [caption]))
         else { return false }
         guard let dispatch else { return true }
         let tr = state.tr

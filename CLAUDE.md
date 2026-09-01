@@ -55,12 +55,40 @@ generated documents, which costs more than the rest of their suite put together.
 (`EditorUIKitTests/InputFuzzTests` is the exception: it drives bounded, seeded
 text-input sequences, is cheap, and always runs.)
 
-Model and state (selections, commands, history, mapping):
+Model and state (selections, commands, history, mapping, steps, serialization,
+collaboration — with and without undo — copy/paste, foreign markup, the JSON
+loaders on corrupt input, the structural transforms and the predicates that gate
+them, track changes, tables, marks, input rules, decorations, task sorting,
+search and its incremental highlighter):
 
 ```sh
 PROSEKIT_FUZZ=1 swift run SchemaKitTests
 PROSEKIT_FUZZ=1 PROSEKIT_FUZZ_DOCS=1000 swift run SchemaKitTests   # a deeper hunt
+PROSEKIT_FUZZ=1 PROSEKIT_FUZZ_OPS=200 swift run SchemaKitTests     # more editing seeds
 ```
+
+The LaTeX parser and layout (random token soup, every prefix and one-character
+typo of the notation corpus, pathological nesting):
+
+```sh
+PROSEKIT_FUZZ=1 swift run EditorMathTests
+```
+
+The two knobs scale different sweeps, because the sweeps take different input:
+
+- `PROSEKIT_FUZZ_DOCS` is how many *documents* the generated corpus holds. It
+  deepens everything that inspects a static document — the selection sweeps and
+  the serialization round-trips.
+- `PROSEKIT_FUZZ_OPS` is how many *seeds* of a random editing session each sweep
+  runs. It deepens everything that drives a live editor — steps, history,
+  collaboration and track changes. Those share one op driver
+  (`Tests/SchemaKitTests/FuzzOps.swift`), so an operation added there deepens
+  all of them at once.
+
+Add a new node type's commands to `fuzzOpCommands`, and its extension to
+`fuzzKit()`. Both defaults are the *whole* kit, opt-in extensions included: the
+sweeps that only edited `fullKit()` documents never once ran the commands that
+build a figure or a footnote, while the corpus was full of them.
 
 Layout geometry (`GeometryFuzzTests`: caret rects, hit testing, vertical
 movement) and the `UITextInput` surface (`TextInputFuzzTests`) are iOS-only, and
@@ -79,6 +107,11 @@ expressions (`Sources/TestDocGen`, via `FuzzViews` on iOS), so coverage follows
 the schema as extensions are added.
 When adding a property, check it fails against a deliberately broken source —
 an invariant no mutation can break is asserting nothing.
+
+That check is worth doing even for a property that sounds airtight. "Every peer
+ends up with the same document" survives a rebase that silently *drops* a local
+step, because all of them agree on the log the step never reached — which is why
+`CollabFuzz` also asserts that concurrent edits in separate places all survive.
 
 ## Benchmarks
 

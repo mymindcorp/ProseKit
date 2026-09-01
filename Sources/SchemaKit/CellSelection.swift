@@ -37,7 +37,7 @@ public final class CellSelection: Selection {
     public override func map(_ doc: Node, _ mapping: any Mappable) -> Selection {
         let aCell = doc.resolve(mapping.map(anchorCell.pos))
         let hCell = doc.resolve(mapping.map(headCell.pos))
-        if pointsAtCell(aCell), pointsAtCell(hCell), inSameTable(aCell, hCell) {
+        if Self.canSelectCells(aCell, hCell) {
             let tableChanged = anchorCell.node(-1) != aCell.node(-1)
             if tableChanged, isRowSelection() { return CellSelection.rowSelection(aCell, hCell) }
             if tableChanged, isColSelection() { return CellSelection.colSelection(aCell, hCell) }
@@ -216,8 +216,22 @@ public final class CellSelection: Selection {
     /// aren't cells of the same table).
     public static func create(_ doc: Node, _ anchorCell: Int, _ headCell: Int? = nil) -> Selection {
         let a = doc.resolve(anchorCell), h = doc.resolve(headCell ?? anchorCell)
-        if pointsAtCell(a), pointsAtCell(h), inSameTable(a, h) { return CellSelection(a, h) }
-        return TextSelection.between(a, h)
+        return canSelectCells(a, h) ? CellSelection(a, h) : TextSelection.between(a, h)
+    }
+
+    /// Whether these two positions can become a cell selection — which is to
+    /// say, whether `init` can build a table map from them.
+    ///
+    /// The cell and same-table checks say the positions sit in front of cells
+    /// of one row. They do *not* say that row is in a table. A row can only be
+    /// somewhere else in a document that is already invalid, but positions
+    /// reach here from stored JSON, from a peer, and from a bookmark resolved
+    /// against a document that has moved on — and `TableMap.get` is a
+    /// precondition failure, not an error. One command that built
+    /// `figure(tableRow…)` was enough to take the process down.
+    static func canSelectCells(_ a: ResolvedPos, _ h: ResolvedPos) -> Bool {
+        pointsAtCell(a) && pointsAtCell(h) && inSameTable(a, h)
+            && tableRole(a.node(-1)) == "table" && tableRole(h.node(-1)) == "table"
     }
 
     /// Compatibility overload (previous labelled signature).
@@ -248,12 +262,12 @@ public struct CellBookmark: SelectionBookmark {
         CellBookmark(anchor: mapping.map(anchor), head: mapping.map(head))
     }
     public func resolve(_ doc: Node) -> Selection {
-        let aCell = doc.resolve(anchor), hCell = doc.resolve(head)
-        if tableRole(aCell.parent) == "row", tableRole(hCell.parent) == "row",
-           aCell.index() < aCell.parent.childCount, hCell.index() < hCell.parent.childCount,
-           inSameTable(aCell, hCell) {
-            return CellSelection(aCell, hCell)
-        }
+        // Clamped like every other bookmark: a redo's bookmark can sit a few
+        // positions past the document under collaboration, and `resolve`
+        // outside the document is a precondition, not an error.
+        let size = doc.content.size
+        let aCell = doc.resolve(min(max(anchor, 0), size)), hCell = doc.resolve(min(max(head, 0), size))
+        if CellSelection.canSelectCells(aCell, hCell) { return CellSelection(aCell, hCell) }
         return Selection.near(hCell, 1)
     }
 }

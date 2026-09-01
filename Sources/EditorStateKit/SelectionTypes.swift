@@ -84,9 +84,19 @@ struct TextBookmark: SelectionBookmark {
         TextBookmark(anchor: mapping.map(anchor), head: mapping.map(head))
     }
     func resolve(_ doc: Node) -> Selection {
-        TextSelection.between(doc.resolve(anchor), doc.resolve(head))
+        // Clamped, not trusted. A bookmark is history: undo keeps one per
+        // event and maps it through every edit since, and under collaboration
+        // that mapping is the approximation `Branch.rebased` makes — the same
+        // one upstream makes, which can leave a redo's bookmark a few positions
+        // past the document it lands on. Upstream's `resolve` throws a
+        // RangeError there; ours is a precondition, and a redo took the
+        // process down. A caret near the right place beats no process.
+        TextSelection.between(doc.resolve(clamp(anchor, doc)), doc.resolve(clamp(head, doc)))
     }
 }
+
+/// A stored position brought back inside `doc`; see `TextBookmark.resolve`.
+func clamp(_ pos: Int, _ doc: Node) -> Int { min(max(pos, 0), doc.content.size) }
 
 /// A node selection points at a single node. Its `node` is the selected node.
 public final class NodeSelection: Selection {
@@ -149,7 +159,7 @@ struct NodeBookmark: SelectionBookmark {
         return result.deletedAfter ? TextBookmark(anchor: result.pos, head: result.pos) : NodeBookmark(anchor: result.pos)
     }
     func resolve(_ doc: Node) -> Selection {
-        let pos = doc.resolve(anchor)
+        let pos = doc.resolve(clamp(anchor, doc)) // see `TextBookmark.resolve`
         if let after = pos.nodeAfter, NodeSelection.isSelectable(after) { return NodeSelection(pos) }
         return Selection.near(pos)
     }

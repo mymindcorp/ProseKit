@@ -257,4 +257,24 @@ func registerPMCollabTests() {
         s.undo(1)
         try s.conv(doc(p("A"), p("B")))
     }
+    test("PM collab: a redo after rebasing a half-confirmed undo puts back its own text only") {
+        // Client 1 types and undoes while offline; client 2's text is confirmed
+        // meanwhile. When client 1 reconnects, both of its unconfirmed steps —
+        // the insert and the undo's delete — are rebased, but only the delete's
+        // inverse is on its redo branch. Pairing items with rebased steps by
+        // count then handed the redo the insert's inverse: a delete over what
+        // client 2 had typed.
+        let s = DummyServer(doc(p("A"), p("B")), n: 3)
+        s.delay(1) {
+            s.type(1, "12", 2)
+            s.undo(1)
+            s.type(2, "xy", 5)
+        }
+        try s.conv(doc(p("A"), p("Bxy")))
+        s.redo(1)
+        try s.conv(doc(p("A12"), p("Bxy")))
+        s.undo(1)
+        try s.conv(doc(p("A"), p("Bxy")))
+    }
+
 }

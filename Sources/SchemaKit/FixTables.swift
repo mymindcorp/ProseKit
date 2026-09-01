@@ -75,5 +75,20 @@ public func fixTable(_ state: EditorState, _ table: Node, _ tablePos: Int, _ tr0
         }
         pos = end
     }
+    // Then square the widths up on the table as it now is. The cells just
+    // added carry no width, so a column that had one is contested again — and
+    // the plugin is never re-asked about its own appended transaction, which is
+    // how a mismatch used to survive until the next edit and, when that edit
+    // bit the table again, the one after that. One more pass, on the fixed
+    // table, closes it; there is nothing structural left for it to disturb.
+    if !mustAdd.contains(where: { $0 != 0 }) { return tr }
+    let fixedPos = tr.mapping.map(tablePos)
+    guard let fixed = tr.doc.nodeAt(fixedPos), fixed.type.name == "table" else { return tr }
+    for case let .colwidthMismatch(pos, colwidth) in TableMap.get(fixed).problems ?? [] {
+        guard let cell = fixed.nodeAt(pos) else { continue }
+        var attrs = cell.attrs
+        attrs["colwidth"] = .array(colwidth.map { .int($0) })
+        _ = try? tr.setNodeMarkup(fixedPos + 1 + pos, nil, attrs)
+    }
     return tr
 }

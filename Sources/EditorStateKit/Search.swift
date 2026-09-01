@@ -292,7 +292,12 @@ private struct RegExpQuery: QueryImpl {
             let hi = hay.distance(from: hay.startIndex, to: r.upperBound)
             groups.append(SearchMatchGroup(range: lo..<hi, text: String(hay[r])))
         }
-        guard let whole = groups.first?.range else { return nil }
+        // Empty *in document positions*, not only in the pattern's own units.
+        // The regex works in UTF-16; a document position is a character. `.`
+        // matches a lone combining mark inside `e\u{0301}`, and that is a
+        // non-empty NSRange whose two ends are the same character — a match
+        // 6..6 that no earlier guard could see, drawn as an empty highlight.
+        guard let whole = groups.first?.range, !whole.isEmpty else { return nil }
         return SearchResult(from: blockStart + whole.lowerBound, to: blockStart + whole.upperBound,
                             match: groups, matchStart: blockStart)
     }
@@ -305,9 +310,18 @@ private struct RegExpQuery: QueryImpl {
             let hay = String(content[..<content.index(content.startIndex, offsetBy: hi)])
             let lo = max(0, from - start)
             guard lo <= hay.count else { return nil }
+            // The first match *with width*. An empty match is not a match: `a|`
+            // and `.*` match the empty string at every position, and a result
+            // whose `to` equals the `from` it was searched from sends every
+            // "find all" loop — the highlighter's included — round forever; the
+            // find bar spun until the process was killed. One enumeration pass
+            // rather than a `firstMatch` per offset, which was quadratic in the
+            // block on exactly the queries that produce empty matches.
             let searchRange = NSRange(hay.index(hay.startIndex, offsetBy: lo)..<hay.endIndex, in: hay)
-            guard let m = regex.firstMatch(in: hay, options: [], range: searchRange) else { return nil }
-            return result(from: m, in: hay, blockStart: start)
+            // `result` is nil for a match with no width in document positions,
+            // so the first non-nil result is the first real match.
+            return regex.matches(in: hay, options: [], range: searchRange)
+                .lazy.compactMap { self.result(from: $0, in: hay, blockStart: start) }.first
         }
     }
 
@@ -326,9 +340,11 @@ private struct RegExpQuery: QueryImpl {
         while cursor <= hay.endIndex {
             let searchRange = NSRange(cursor ..< hay.endIndex, in: hay)
             guard let m = regex.firstMatch(in: hay, options: [], range: searchRange),
-                  let r = Range(m.range, in: hay), let res = result(from: m, in: hay, blockStart: start)
-            else { break }
-            out.append(res)
+                  let r = Range(m.range, in: hay) else { break }
+            // An empty match is not a match — see `findNext`. `a|` and `.*`
+            // produce one at every position, and each would have become a
+            // zero-width highlight and a "match" the find bar counts.
+            if !r.isEmpty, let res = result(from: m, in: hay, blockStart: start) { out.append(res) }
             guard r.lowerBound < hay.endIndex else { break }
             cursor = hay.index(after: r.lowerBound)
         }
@@ -342,17 +358,17 @@ private struct RegExpQuery: QueryImpl {
             guard hi > 0, hi <= content.count else { return nil }
             let hay = String(content[..<content.index(content.startIndex, offsetBy: hi)])
             // Like upstream: walk overlapping match starts and keep the last.
-            var best: NSTextCheckingResult?
+            var best: SearchResult?
             var off = 0
             while off <= hay.count {
                 let searchRange = NSRange(hay.index(hay.startIndex, offsetBy: off)..<hay.endIndex, in: hay)
                 guard let m = regex.firstMatch(in: hay, options: [], range: searchRange),
                       let r = Range(m.range, in: hay) else { break }
-                best = m
+                // Keep the last match with width; `result` decides width.
+                if let res = result(from: m, in: hay, blockStart: start) { best = res }
                 off = hay.distance(from: hay.startIndex, to: r.lowerBound) + 1
             }
-            guard let best else { return nil }
-            return result(from: best, in: hay, blockStart: start)
+            return best
         }
     }
 }
@@ -663,7 +679,16 @@ public func searchQueryPlugin(initialQuery: SearchQuery? = nil, initialRange: Se
                         let to = tr.mapping.map(r.to, -1)
                         range = from < to ? SearchRange(from: from, to: to) : nil
                     }
-                    let deco = updateMatchDeco(cur, tr, state, range)
+                    // Carrying matches across an edit assumes the range only
+                    // *moved*. When the edit collapsed it — and the search is
+                    // now the whole document — every match outside the old
+                    // range is one the carried set never held and the touched
+                    // span never covers; the sweep found a match at the start
+                    // of the document that a delete near the end made
+                    // disappear. Nothing to carry: search from scratch.
+                    let deco = (cur.range == nil) == (range == nil)
+                        ? updateMatchDeco(cur, tr, state, range)
+                        : buildMatchDeco(state, cur.query, range)
                     return SearchQueryState(query: cur.query, range: range, deco: deco,
                                             activeIndex: activeMatchIndex(deco, state.selection))
                 }

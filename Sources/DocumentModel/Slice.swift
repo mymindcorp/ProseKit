@@ -108,6 +108,65 @@ public struct Slice: Hashable, Sendable {
                      openEnd: max(0, min(openEnd, limit.openEnd)))
     }
 
+    /// Every node the slice holds *whole* is a valid node.
+    ///
+    /// A slice's open nodes are partial by design — cut through, so their
+    /// content is a suffix or a prefix of what the type wants. Everything else
+    /// in it is a complete node, and `replace` trusts a complete node: it
+    /// checks how the slice *joins* the document, not what is inside the nodes
+    /// it drops in. So a step from a peer whose slice held a `table` with no
+    /// rows applied cleanly, on every peer, and every copy then failed its own
+    /// check. Step JSON is the boundary those nodes cross, and this is what a
+    /// plain replace asks of its slice: attributes and marks on every node,
+    /// and content on every node that isn't cut. Not every slice can promise
+    /// that — a `ReplaceAroundStep` wraps content it leaves in place, so its
+    /// slice carries an empty wrapper with a hole for the gap — which is why
+    /// this is a method the right decoder calls, not part of `fromJSON`.
+    ///
+    /// `holeAt` is a `ReplaceAroundStep`'s `insert`: the slice offset where the
+    /// wrapped content goes back in. The nodes on the way down to it are the
+    /// wrappers, and their content is whatever will be inserted there — so
+    /// they are held to attributes and marks only, like a cut node.
+    public func checkClosedNodes(holeAt hole: Int? = nil) throws(ModelError) {
+        let count = content.childCount
+        var offset = 0
+        for i in 0 ..< count {
+            let child = content.child(i)
+            let onHolePath = hole.map { offset < $0 && $0 < offset + child.nodeSize } ?? false
+            try Slice.checkNode(child,
+                                openStart: i == 0 ? openStart : 0,
+                                openEnd: i == count - 1 ? openEnd : 0,
+                                hole: onHolePath ? hole! - offset - 1 : nil)
+            offset += child.nodeSize
+        }
+    }
+
+    private static func checkNode(_ node: Node, openStart: Int, openEnd: Int, hole: Int? = nil) throws(ModelError) {
+        if openStart == 0 && openEnd == 0 && hole == nil { try node.check(); return }
+        // Cut through: attributes and marks still have to be right, and so
+        // does every child except the ones the cut continues through.
+        try node.type.checkAttrs(node.attrs)
+        var set: [Mark] = []
+        for mark in node.marks {
+            try mark.type.checkAttrs(mark.attrs)
+            set = mark.addToSet(set)
+        }
+        if !Mark.sameSet(set, node.marks) {
+            throw ModelError.invalidContent("Invalid collection of marks for node \(node.type.name)")
+        }
+        let count = node.childCount
+        var offset = 0
+        for i in 0 ..< count {
+            let child = node.child(i)
+            let onHolePath = hole.map { offset < $0 && $0 < offset + child.nodeSize } ?? false
+            try checkNode(child,
+                          openStart: i == 0 && openStart > 0 ? openStart - 1 : 0,
+                          openEnd: i == count - 1 && openEnd > 0 ? openEnd - 1 : 0,
+                          hole: onHolePath ? hole! - offset - 1 : nil)
+            offset += child.nodeSize
+        }
+    }
+
     /// Create a slice with the maximum possible open depth on both sides given
     /// the fragment.
     public static func maxOpen(_ fragment: Fragment, openIsolating: Bool = true) -> Slice {

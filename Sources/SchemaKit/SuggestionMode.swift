@@ -68,19 +68,22 @@ public final class SuggestionModeState {
         return makeSet(newBase, rest)
     }
 
-    /// Drop change `index` after the document was reverted to the base content
-    /// for its range (the rejecting transaction carries those steps): later
-    /// changes' document coordinates shift accordingly. The base is untouched.
-    static func rejecting(_ set: ChangeSet<String>, _ index: Int) -> ChangeSet<String> {
-        let change = set.changes[index]
-        let delta = (change.toA - change.fromA) - (change.toB - change.fromB)
-        var rest = set.changes
-        rest.remove(at: index)
-        rest = rest.map { c in
-            c.fromB >= change.toB
-                ? Change(c.fromA, c.toA, c.fromB + delta, c.toB + delta, c.deleted, c.inserted) : c
-        }
-        return makeSet(set.startDoc, rest)
+    /// Fold the rejecting transaction's own steps into the set. The base is
+    /// untouched; the restored range stops differing from it, so the diff drops
+    /// that change by itself and every other change's document coordinates move
+    /// with the steps.
+    ///
+    /// Deliberately not "remove change `index` and shift the rest by the size
+    /// it was supposed to lose". A reject is a `replace`, and a replace is
+    /// allowed to land differently from what was asked: restoring one change's
+    /// range inside a table the *other* pending change created cannot delete
+    /// the last row, so the document shrank by less than the arithmetic
+    /// predicted. The set then described a document that no longer existed —
+    /// every later suggestion was drawn a few positions off, and rejecting one
+    /// of those restored the wrong text. Asking the changeset to diff what
+    /// actually happened costs a re-diff and cannot drift.
+    static func rejecting(_ set: ChangeSet<String>, _ tr: Transaction, author: String) -> ChangeSet<String> {
+        set.addSteps(tr.doc, tr.mapping.maps, author)
     }
 
     func apply(_ tr: Transaction, author: String) -> SuggestionModeState {
@@ -96,7 +99,7 @@ public final class SuggestionModeState {
                 return SuggestionModeState(enabled: enabled, changeSet: Self.accepting(set, index, doc: tr.doc))
             case .reject(let index):
                 guard let set = changeSet, set.changes.indices.contains(index) else { return self }
-                return SuggestionModeState(enabled: enabled, changeSet: Self.rejecting(set, index))
+                return SuggestionModeState(enabled: enabled, changeSet: Self.rejecting(set, tr, author: author))
             case .acceptAll, .rejectAll:
                 // Either way every change is resolved: after acceptAll the
                 // current doc IS the new base; after rejectAll the reverting
@@ -202,8 +205,18 @@ public func suggestionIndex(at pos: Int, _ state: EditorState) -> Int? {
 /// change stops being a suggestion.
 public func acceptSuggestion(_ index: Int) -> Command {
     { state, dispatch, _ in
-        guard let pluginState = suggestionModeKey.getState(state),
-              pluginState.changes.indices.contains(index) else { return false }
+        guard let pluginState = suggestionModeKey.getState(state), let set = pluginState.changeSet,
+              set.changes.indices.contains(index) else { return false }
+        // The base has to be able to take the document's content for this
+        // range. Where it can't — one change's range sitting inside structure
+        // another pending change created — `accepting` returns the set it was
+        // given, and the command used to report a success that had not
+        // happened: the suggestion stayed on screen, and clicking accept again
+        // did nothing again, forever. `acceptAllSuggestions` resolves those.
+        let change = set.changes[index]
+        guard (try? set.startDoc.replace(change.fromA, change.toA,
+                                         state.doc.slice(change.fromB, change.toB))) != nil
+        else { return false }
         dispatch?(state.tr.setMeta(suggestionModeMeta, SuggestionAction.accept(index)))
         return true
     }
@@ -211,6 +224,14 @@ public func acceptSuggestion(_ index: Int) -> Command {
 
 /// Reject the suggestion at `index`: the document's range is replaced with the
 /// base document's content for that change.
+///
+/// All or nothing. A `replace` is allowed to land differently from what was
+/// asked, and one change's range can sit inside structure another pending
+/// change created — restoring it alone would delete the rows of a table whose
+/// own insertion is still only suggested, which the schema won't do. That used
+/// to leave the document half-reverted and the record describing neither
+/// version. Declining leaves both alone; the change stays rejectable through
+/// `rejectAllSuggestions`, which reverts the entangled changes together.
 public func rejectSuggestion(_ index: Int) -> Command {
     { state, dispatch, _ in
         guard let pluginState = suggestionModeKey.getState(state), let set = pluginState.changeSet,
@@ -219,6 +240,13 @@ public func rejectSuggestion(_ index: Int) -> Command {
         let tr = state.tr
         guard (try? tr.replace(change.fromB, change.toB, set.startDoc.slice(change.fromA, change.toA))) != nil
         else { return false }
+        // The range really does hold the base's content again. Mapped with a
+        // forward bias, so the end lands *after* whatever the replace put
+        // there — a rejected deletion inserts into an empty range, and a
+        // backward bias would look at the nothing in front of it.
+        let restoredTo = tr.mapping.map(change.toB, 1)
+        guard tr.doc.slice(change.fromB, restoredTo).content
+                == set.startDoc.slice(change.fromA, change.toA).content else { return false }
         dispatch?(tr.setMeta(suggestionModeMeta, SuggestionAction.reject(index)))
         return true
     }
@@ -235,9 +263,26 @@ public let rejectAllSuggestions: Command = { state, dispatch, _ in
     guard let pluginState = suggestionModeKey.getState(state), let set = pluginState.changeSet,
           !set.changes.isEmpty else { return false }
     let tr = state.tr
-    // Back to front so earlier changes' positions stay valid.
+    // Back to front so earlier changes' positions stay valid. One replace per
+    // change rather than one for the whole document, so positions outside the
+    // suggestions map precisely — a cursor, a collaborator's selection and the
+    // undo stack all ride on this mapping.
     for change in set.changes.reversed() {
         guard (try? tr.replace(change.fromB, change.toB, set.startDoc.slice(change.fromA, change.toA))) != nil
+        else { return false }
+    }
+    // Then make sure it landed. A change's range can sit inside structure
+    // another change created, and reverting it in isolation is not always
+    // something the schema permits: the replaces left a document that was
+    // neither version, and `.rejectAll` then declared the base to be whatever
+    // that was — the suggestions were gone from the record and the stray
+    // content stayed in the note. Where the piecewise revert didn't get all the
+    // way, one replace of the whole document finishes the job; it maps coarsely
+    // but it cannot be wrong.
+    if tr.doc != set.startDoc {
+        guard (try? tr.replace(0, tr.doc.content.size,
+                               Slice(content: set.startDoc.content, openStart: 0, openEnd: 0))) != nil,
+              tr.doc == set.startDoc
         else { return false }
     }
     dispatch?(tr.setMeta(suggestionModeMeta, SuggestionAction.rejectAll))

@@ -43,5 +43,6 @@ registerLayoutTests()
 registerCorpusTests()
 registerNotationTests()
 registerMathDrawingTests()
+registerMathFuzzTests()
 
 TestSuite.main("EditorMathTests", collector.all)

@@ -24,7 +24,10 @@ public extension Editor {
         let end = qs.range?.to ?? state.doc.content.size
         while let next = qs.query.findNext(state, pos, end) {
             result.append((next.from, next.to))
-            pos = next.to
+            // Always forward: a matcher that ever handed back an empty match at
+            // `pos` would otherwise keep this loop — and the memory it fills —
+            // going until the process was killed.
+            pos = Swift.max(next.to, pos + 1)
         }
         return result
     }
@@ -80,7 +83,7 @@ public extension Editor {
         var pos = range.from
         while let next = query.findNext(state, pos, range.to) {
             matches.append(next)
-            pos = next.to
+            pos = Swift.max(next.to, pos + 1) // see `searchMatches`
         }
         guard !matches.isEmpty else { return 0 }
         let tr = state.tr
