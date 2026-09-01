@@ -386,7 +386,22 @@ final class DocumentLayout {
         self.mathRenderer = mathRenderer
         self.wikiLinkIcon = wikiLinkIcon
         self.wikiLinkTrigger = wikiLinkTrigger
-        footnoteOrder = Self.footnoteOrdering(doc)
+        // The footnote numbering is a walk of every node in the document, and
+        // this runs on every keystroke. When the edit is confined to top-level
+        // children that hold no footnote nodes — before or after — the
+        // numbering cannot have changed, so the previous layout's is reused
+        // and the walk is skipped. Worth about a tenth of a keystroke's layout
+        // cost at 3000 paragraphs (0.27 ms of 1.8) — not the bulk of it, which
+        // is the per-entry work of the incremental build itself.
+        let edit = previous.flatMap { p in
+            p.width == width && p.theme == theme ? diff(doc, p).map { (p, $0.front, $0.back) } : nil
+        }
+        if let (p, front, back) = edit,
+           !Self.footnotesTouched(doc, previous: p, front: front, back: back) {
+            footnoteOrder = p.footnoteOrder
+        } else {
+            footnoteOrder = Self.footnoteOrdering(doc)
+        }
         blockCache?.syncTheme(theme) // drop stale-styled blocks when the theme changes
         blockCache?.syncFootnoteOrder(footnoteOrder)
         blockCache?.beginPass()
@@ -394,9 +409,7 @@ final class DocumentLayout {
         let x = theme.pageInsets.left
         // Only reuse a previous layout when it was built with the same theme — its
         // entries bake in the old colors/fonts, so a theme change must re-lay them.
-        if let previous, previous.width == width, previous.theme == theme,
-           previous.footnoteOrder == footnoteOrder,
-           let (front, back) = diff(doc, previous), front + back > 0 {
+        if let (previous, front, back) = edit, previous.footnoteOrder == footnoteOrder, front + back > 0 {
             // A real edit: reuse the unchanged prefix/suffix, re-lay the middle.
             buildIncremental(doc, previous: previous, front: front, back: back, x: x, width: contentWidth)
         } else if let realizeWindow, doc.childCount > Self.lazyThreshold {
@@ -469,7 +482,11 @@ final class DocumentLayout {
         let dPos = back > 0 ? pos - previous.entries[oldBackStart].docStart : 0
         for j in oldBackStart..<previous.entries.count {
             let e = shiftEntry(previous.entries[j], dPos: dPos, dy: dy)
-            append(e); entries.append(e)
+            // An estimated entry has nothing to contribute to the flat arrays,
+            // and on a long document nearly every suffix entry is one: eight
+            // empty concatenations apiece was a measurable share of a keystroke.
+            if !e.estimated { append(e) }
+            entries.append(e)
             y = e.topY + e.height; pos = e.docStart + e.node.nodeSize
         }
         height = y + theme.pageInsets.bottom
@@ -1049,6 +1066,27 @@ final class DocumentLayout {
 
     /// Every footnote label in the document, numbered in reading order:
     /// references first, then any note nothing refers to.
+    /// Whether any top-level child the edit replaced — in the old document or
+    /// the new one — contains a footnote reference or definition. Only those
+    /// children are walked; the unchanged prefix and suffix are the same nodes
+    /// they were, so they hold exactly the footnotes they held.
+    static func footnotesTouched(_ doc: Node, previous: DocumentLayout, front: Int, back: Int) -> Bool {
+        func holdsFootnote(_ node: Node) -> Bool {
+            var found = false
+            node.descendants { child, _, _, _ in
+                if found { return false }
+                let name = child.type.name
+                if name == "footnoteReference" || name == "footnoteDefinition" { found = true; return false }
+                return true
+            }
+            return found
+        }
+        for i in front ..< max(front, doc.childCount - back) where holdsFootnote(doc.child(i)) { return true }
+        let old = previous.entries
+        for i in front ..< max(front, old.count - back) where holdsFootnote(old[i].node) { return true }
+        return false
+    }
+
     static func footnoteOrdering(_ doc: Node) -> [String: Int] {
         // One walk, not two: this runs for every layout, so a long document
         // shouldn't be traversed more than it has to be. References are
