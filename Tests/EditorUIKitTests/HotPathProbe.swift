@@ -142,5 +142,95 @@ final class HotPathProbe: XCTestCase {
             }
         }
     }
+
+    /// Where a keystroke's time goes, phase by phase: the bare transform and
+    /// plugin pass (no view), the layout rebuild on its own, the whole view
+    /// keystroke, and the paint that follows. Spell checking is on by default
+    /// in the view, so it is measured both ways.
+    func testKeystrokeBreakdown() {
+        print("\n  --- one keystroke, by phase (edit near the top) ---")
+        for n in [200, 1000, 3000] {
+            // (a) Bare dispatch: transform + plugins + state, no view attached.
+            let bare = try! Editor(extensions: fullKit())
+            let s = bare.schema
+            let words = Array(repeating: "lorem ipsum dolor sit amet", count: 12).joined(separator: " ")
+            let paras = (0 ..< n).map { i in
+                try! s.node("paragraph", [:], content: Fragment.from([s.text("Para \(i): \(words)")]))
+            }
+            bare.setContent(try! s.node("doc", [:], content: Fragment.from(paras)))
+            bare.dispatch(bare.state.tr.setSelection(TextSelection.create(bare.doc, 40)))
+            let dispatchMs = bestMs(5) {
+                for _ in 0 ..< 20 {
+                    let tr = bare.state.tr
+                    _ = try? tr.insertText("x")
+                    bare.dispatch(tr)
+                }
+            } / 20
+
+            // (b) Layout alone: incremental rebuild of a fully-realized layout
+            //     after replacing one paragraph near the top.
+            let cache = TextBlockLayoutCache()
+            var doc = bare.doc
+            var layout = DocumentLayout(doc: doc, width: Self.width, theme: DocumentTheme(),
+                                        blockCache: cache, realizeWindow: 0 ... Self.viewport)
+            // The same rebuild before anything off screen has been realized —
+            // the state a long document opens in, and stays in until the reader
+            // scrolls through it. Estimated entries carry no arrays to shift.
+            var lazyDoc = doc, lazyLayout = layout, lazyRound = 0
+            let lazyMs = bestMs(5) {
+                for _ in 0 ..< 5 {
+                    lazyRound += 1
+                    var children = (0 ..< lazyDoc.childCount).map { lazyDoc.child($0) }
+                    children[2] = try! s.node("paragraph", [:], content: Fragment.from([s.text("lazy \(lazyRound) \(words)")]))
+                    lazyDoc = try! s.node("doc", [:], content: Fragment.from(children))
+                    lazyLayout = DocumentLayout(doc: lazyDoc, width: Self.width, theme: DocumentTheme(),
+                                                blockCache: cache, previous: lazyLayout, realizeWindow: 0 ... Self.viewport)
+                }
+            } / 5
+            row("\(n) paras: layout only, lazy (unscrolled)", lazyMs)
+            row("\(n) paras: Node == over every child (diff's sweep)", bestMs(5) {
+                let a = lazyDoc, b = doc
+                for _ in 0 ..< 5 { for i in 0 ..< a.childCount { _ = a.child(i) == b.child(i) } }
+            } / 5)
+            row("\(n) paras: footnoteOrdering walk alone", bestMs(5) {
+                for _ in 0 ..< 5 { _ = DocumentLayout.footnoteOrdering(lazyDoc) }
+            } / 5)
+            _ = layout.realize(window: 0 ... .greatestFiniteMagnitude)
+            var round = 0
+            let layoutMs = bestMs(5) {
+                for _ in 0 ..< 5 {
+                    round += 1
+                    var children = (0 ..< doc.childCount).map { doc.child($0) }
+                    children[2] = try! s.node("paragraph", [:], content: Fragment.from([s.text("edit \(round) \(words)")]))
+                    doc = try! s.node("doc", [:], content: Fragment.from(children))
+                    layout = DocumentLayout(doc: doc, width: Self.width, theme: DocumentTheme(),
+                                            blockCache: cache, previous: layout, realizeWindow: 0 ... Self.viewport)
+                }
+            } / 5
+
+            // (c) The whole view keystroke, spell checking off and on, and
+            // (d) the paint that follows it.
+            for spell in [false, true] {
+                let view = makeView(n)
+                view.spellCheckingEnabled = spell
+                view.contentOffsetY = 0
+                view.editor.dispatch(view.editor.state.tr.setSelection(TextSelection.create(view.editor.doc, 40)))
+                _ = view.becomeFirstResponder()
+                let keyMs = bestMs(5) { for _ in 0 ..< 20 { view.insertText("x") } } / 20
+                let paintMs = bestMs(5) {
+                    for _ in 0 ..< 5 {
+                        view.insertText("x")
+                        UIGraphicsBeginImageContextWithOptions(view.bounds.size, true, 1)
+                        view.draw(view.bounds)
+                        UIGraphicsEndImageContext()
+                    }
+                } / 5
+                row("\(n) paras, spell \(spell ? "on " : "off"): dispatch", dispatchMs)
+                row("\(n) paras, spell \(spell ? "on " : "off"): layout only", layoutMs)
+                row("\(n) paras, spell \(spell ? "on " : "off"): view keystroke", keyMs)
+                row("\(n) paras, spell \(spell ? "on " : "off"): keystroke + paint", paintMs)
+            }
+        }
+    }
 }
 #endif

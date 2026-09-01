@@ -98,6 +98,36 @@ final class FootnoteRenderTests: XCTestCase {
         XCTAssertTrue(text.contains("text12"), "expected renumbering to 1,2 — got \(text)")
     }
 
+    func testNumberingIsRecomputedOnlyWhenAnEditTouchesAFootnote() throws {
+        // The numbering walk runs on every keystroke, so an edit confined to
+        // children without footnotes reuses the previous layout's. That reuse
+        // has to stop exactly where it becomes wrong: an edit that removes a
+        // reference renumbers the ones after it, previous layout or not.
+        let editor = try footnoteEditor()
+        let s = editor.schema
+        let first = try document(editor, labels: ["a", "b"])
+        let base = layout(first)
+        XCTAssertTrue(base.blocks.map(\.attributed.string).joined().contains("text12"))
+
+        // Edit the reference paragraph so it cites only "b": "b" becomes 1.
+        var blocks = (0 ..< first.childCount).map { first.child($0) }
+        blocks[0] = try s.node("paragraph", [:], content: Fragment.from([
+            s.text("text"), try s.node("footnoteReference", ["label": .string("b")]),
+        ]))
+        let second = try s.node("doc", [:], content: Fragment.from(blocks))
+        let renumbered = DocumentLayout(doc: second, width: 320, theme: DocumentTheme(), previous: base)
+        let text = renumbered.blocks.map(\.attributed.string).joined()
+        XCTAssertTrue(text.contains("text1"), "b should now be 1 — got \(text)")
+        XCTAssertFalse(text.contains("text2"), "stale numbering reused — got \(text)")
+
+        // Now an edit that touches no footnote: the numbers must simply hold.
+        blocks = (0 ..< second.childCount).map { second.child($0) }
+        blocks.append(try s.node("paragraph", [:], content: Fragment.from([s.text("unrelated")])))
+        let third = try s.node("doc", [:], content: Fragment.from(blocks))
+        let reused = DocumentLayout(doc: third, width: 320, theme: DocumentTheme(), previous: renumbered)
+        XCTAssertTrue(reused.blocks.map(\.attributed.string).joined().contains("text1"))
+    }
+
     func testADocumentWithoutFootnotesIsUnaffected() throws {
         let editor = try Editor(extensions: fullKit())
         let s = editor.schema
