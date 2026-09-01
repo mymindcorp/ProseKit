@@ -137,8 +137,14 @@ public func textblockTypeInputRule(_ pattern: String, _ nodeType: NodeType, _ ge
 /// group, stripping the surrounding marker characters (Tiptap-style, e.g.
 /// `**bold**` → bold "bold"). The captured group must be the inner text; any
 /// leading whitespace consumed by the pattern is preserved.
-public func markInputRule(_ pattern: String, _ markType: MarkType, _ getAttrs: (@Sendable ([String?]) -> Attrs)? = nil) -> InputRule {
-    InputRule(pattern) { state, match, start, end in
+///
+/// Unlike `InputRule`, this defaults `inCodeMark` to **false**. A code mark
+/// excludes every other mark, so inside a code span the rule would strip the
+/// markers and then have its `addMark` silently dropped — `**b**` becomes a
+/// bare "b" and the asterisks are gone. Code spans are literal, so the rule
+/// must not fire there at all.
+public func markInputRule(_ pattern: String, _ markType: MarkType, _ getAttrs: (@Sendable ([String?]) -> Attrs)? = nil, inCodeMark: Bool = false) -> InputRule {
+    InputRule(pattern, inCodeMark: inCodeMark) { state, match, start, end in
         let fullMatch = match[0] ?? ""
         // The inner text is the last participating capture group.
         guard let inner = match.dropFirst().compactMap({ $0 }).last, !inner.isEmpty,
