@@ -340,5 +340,172 @@ final class HotPathProbe: XCTestCase {
             }
         }
     }
+
+    /// Typing inside the other containers that group many blocks under one
+    /// top-level child — the shape that made lists 15x worse than paragraphs
+    /// — and inside one very long paragraph, which is one block however long.
+    func testKeystrokeInsideContainers() {
+        print("\n  --- one keystroke inside a container ---")
+        let words = Array(repeating: "lorem ipsum dolor sit amet", count: 6).joined(separator: " ")
+        func para(_ s: Schema, _ t: String) -> Node {
+            try! s.node("paragraph", [:], content: Fragment.from([s.text(t)]))
+        }
+        typealias Build = (Schema, Int) -> (doc: Node, caret: Int)
+        let cases: [(String, [Int], Build)] = [
+            ("blockquote of n paragraphs", [200, 1000, 3000], { s, n in
+                let q = try! s.node("blockquote", [:], content: Fragment.from((0 ..< n).map { para(s, "Para \($0): \(words)") }))
+                return (try! s.node("doc", [:], content: Fragment.from([q])), 1 + 1 + 4)
+            }),
+            ("open details of n paragraphs", [200, 1000, 3000], { s, n in
+                let summary = try! s.node("detailsSummary", [:], content: Fragment.from([s.text("Summary")]))
+                let content = try! s.node("detailsContent", [:], content: Fragment.from((0 ..< n).map { para(s, "Para \($0): \(words)") }))
+                let d = try! s.node("details", ["open": .bool(true)], content: Fragment.from([summary, content]))
+                return (try! s.node("doc", [:], content: Fragment.from([d])), 1 + summary.nodeSize + 1 + 1 + 4)
+            }),
+            ("table of n rows x 3 cells", [50, 200, 500], { s, n in
+                let rows = (0 ..< n).map { r -> Node in
+                    let cells = (0 ..< 3).map { c in
+                        try! s.node("tableCell", [:], content: Fragment.from([para(s, "r\(r)c\(c) lorem ipsum dolor")]))
+                    }
+                    return try! s.node("tableRow", [:], content: Fragment.from(cells))
+                }
+                let t = try! s.node("table", [:], content: Fragment.from(rows))
+                return (try! s.node("doc", [:], content: Fragment.from([t])), 1 + 1 + 1 + 1 + 2)
+            }),
+            ("nested list, n items x 10 sub-items", [20, 100, 300], { s, n in
+                let items = (0 ..< n).map { i -> Node in
+                    let subs = (0 ..< 10).map { j in
+                        try! s.node("listItem", [:], content: Fragment.from([para(s, "Sub \(i).\(j): \(words)")]))
+                    }
+                    let inner = try! s.node("bulletList", [:], content: Fragment.from(subs))
+                    return try! s.node("listItem", [:], content: Fragment.from([para(s, "Item \(i): \(words)"), inner]))
+                }
+                let l = try! s.node("bulletList", [:], content: Fragment.from(items))
+                return (try! s.node("doc", [:], content: Fragment.from([l])), 1 + 1 + 1 + 4)
+            }),
+            ("one paragraph of n words", [500, 1500, 3000], { s, n in
+                let text = (0 ..< n).map { "word\($0 % 97)" }.joined(separator: " ")
+                return (try! s.node("doc", [:], content: Fragment.from([para(s, text)])), 1 + 4)
+            }),
+        ]
+        for (label, sizes, build) in cases {
+            for n in sizes {
+                let editor = try! Editor(extensions: fullKit())
+                let (doc, caret) = build(editor.schema, n)
+                editor.setContent(doc)
+                let view = EditorTextView(editor: editor)
+                view.frame = CGRect(x: 0, y: 0, width: Self.width, height: Self.viewport)
+                view.spellCheckingEnabled = false
+                view.layoutIfNeeded()
+                _ = view.ensureLayout()
+                view.editor.dispatch(view.editor.state.tr.setSelection(TextSelection.create(view.editor.doc, caret)))
+                _ = view.becomeFirstResponder()
+                let ms = bestMs(5) {
+                    for _ in 0 ..< 5 {
+                        view.insertText("x")
+                        UIGraphicsBeginImageContextWithOptions(view.bounds.size, true, 1)
+                        view.draw(view.bounds)
+                        UIGraphicsEndImageContext()
+                    }
+                } / 5
+                row("\(label), n=\(n): keystroke + paint", ms)
+            }
+        }
+    }
+
+    /// Where a long paragraph's keystroke goes. One paragraph is one block, so
+    /// a keystroke re-typesets all of it; this isolates the CoreText line
+    /// breaking from everything around it, and tries the framesetter beside
+    /// the typesetter, to see which part grows faster than the text does.
+    ///
+    /// What it found (2026-09): `CTTypesetterSuggestLineBreak` is linear in
+    /// the whole string per call, so breaking a paragraph is quadratic — 38 ms
+    /// at 3000 words, 152 at 6000, on every keystroke. The framesetter is the
+    /// same. A forced embedding level, the usual remedy, is refused (nil)
+    /// past a few thousand characters. Typesetting in chunks *is* linear —
+    /// and the row below measures that — but it was built and reverted:
+    /// CoreText's suggestion for a line depends on text thousands of
+    /// characters after it (one first line: 2384 chars from a 4096- or
+    /// 8192-char substring, 2376 from 16384 or the whole), so chunks change
+    /// wraps — at every width from 800pt up for plain words — and chunk
+    /// boundaries move as you type. Do not retry substring typesetting; the
+    /// open route is reusing unchanged lines against the whole-string
+    /// typesetter, which needs its own oracle test first.
+    func testLongParagraphBreakdown() {
+        print("\n  --- one long paragraph, by phase ---")
+        let font = DocumentTheme().bodyFont
+        for n in [500, 1500, 3000, 6000] {
+            let text = (0 ..< n).map { "word\($0 % 97)" }.joined(separator: " ")
+            let attributed = NSAttributedString(string: text, attributes: [.font: font])
+            let width = Double(Self.width - 40)
+
+            let typesetterMs = bestMs(3) {
+                let ts = CTTypesetterCreateWithAttributedString(attributed as CFAttributedString)
+                var start = 0, lines = 0
+                let length = attributed.length
+                while start < length {
+                    var count = CTTypesetterSuggestLineBreak(ts, start, width)
+                    if count <= 0 { count = length - start }
+                    _ = CTTypesetterCreateLine(ts, CFRangeMake(start, count))
+                    start += count; lines += 1
+                }
+            }
+            let framesetterMs = bestMs(3) {
+                let fs = CTFramesetterCreateWithAttributedString(attributed as CFAttributedString)
+                let path = unsafe CGPath(rect: CGRect(x: 0, y: 0, width: width, height: 1e6), transform: nil)
+                let frame = CTFramesetterCreateFrame(fs, CFRangeMake(0, 0), path, nil)
+                _ = CTFrameGetLines(frame) as! [CTLine]
+            }
+            // (a) Bidi analysis switched off: is that where the growth is?
+            var forcedRefused = false
+            let forcedMs = bestMs(3) {
+                let opts = [kCTTypesetterOptionForcedEmbeddingLevel: 0 as CFNumber] as CFDictionary
+                // Returns nil past some length — worth knowing on its own.
+                guard let ts = CTTypesetterCreateWithAttributedStringAndOptions(attributed as CFAttributedString, opts)
+                else { forcedRefused = true; return }
+                var start = 0
+                let length = attributed.length
+                while start < length {
+                    var count = CTTypesetterSuggestLineBreak(ts, start, width)
+                    if count <= 0 { count = length - start }
+                    _ = CTTypesetterCreateLine(ts, CFRangeMake(start, count))
+                    start += count
+                }
+            }
+            // (b) A fresh typesetter per chunk, each chunk starting at a line
+            //     boundary the previous one produced.
+            let chunkedMs = bestMs(3) {
+                let length = attributed.length
+                var start = 0
+                while start < length {
+                    let chunkLen = min(1500, length - start)
+                    let chunk = attributed.attributedSubstring(from: NSRange(location: start, length: chunkLen))
+                    let ts = CTTypesetterCreateWithAttributedString(chunk as CFAttributedString)
+                    // Measurement only: the chunk edge cuts its last line short,
+                    // which a real implementation would carry into the next
+                    // chunk. The cost is what is being asked here.
+                    var local = 0
+                    while local < chunkLen {
+                        var count = CTTypesetterSuggestLineBreak(ts, local, width)
+                        if count <= 0 { count = chunkLen - local }
+                        _ = CTTypesetterCreateLine(ts, CFRangeMake(local, count))
+                        local += count
+                    }
+                    start += chunkLen
+                }
+            }
+            let s = try! Editor(extensions: fullKit()).schema
+            let doc = try! s.node("doc", [:], content: Fragment.from([
+                try! s.node("paragraph", [:], content: Fragment.from([s.text(text)]))]))
+            let layoutMs = bestMs(3) {
+                _ = DocumentLayout(doc: doc, width: Self.width, theme: DocumentTheme())
+            }
+            row("\(n) words: CTTypesetter loop", typesetterMs)
+            row("\(n) words: CTFramesetter frame", framesetterMs)
+            row("\(n) words: typesetter, forced embedding level" + (forcedRefused ? " (REFUSED: nil)" : ""), forcedMs)
+            row("\(n) words: typesetter, 1500-char chunks", chunkedMs)
+            row("\(n) words: DocumentLayout cold", layoutMs)
+        }
+    }
 }
 #endif
