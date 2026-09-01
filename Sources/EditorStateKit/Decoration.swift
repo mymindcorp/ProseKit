@@ -51,16 +51,76 @@ public struct Decoration: Sendable, Equatable {
 public struct DecorationSet: Sendable, Equatable {
     public let decorations: [Decoration]
 
+    /// `reach[i]` is the largest `to` among `decorations[0...i]`, built only
+    /// when the decorations arrive sorted by `from` — which is what walking a
+    /// document to produce them gives, and what every set this editor builds
+    /// does. Nil means "not sorted", and `find` falls back to a scan.
+    ///
+    /// Sorting by `from` alone cannot bound a range query from below: an
+    /// earlier decoration may still reach past a later one. The running maximum
+    /// can, and it is non-decreasing, so both ends of the query are a binary
+    /// search. Deliberately *not* sorted here on the caller's behalf: the
+    /// public array's order is observable, and reordering it to win a search
+    /// would be a surprising thing for a constructor to do.
+    private let reach: [Int]?
+
     public init(_ decorations: [Decoration] = []) {
         self.decorations = decorations
+        var sorted = true
+        for i in 1 ..< max(decorations.count, 1) where decorations[i].from < decorations[i - 1].from {
+            sorted = false
+            break
+        }
+        if sorted {
+            var running = Int.min
+            self.reach = decorations.map { running = max(running, $0.to); return running }
+        } else {
+            self.reach = nil
+        }
+    }
+
+    /// Compares the decorations alone: `reach` is derived from them, and a
+    /// synthesized `==` would compare it too.
+    public static func == (lhs: DecorationSet, rhs: DecorationSet) -> Bool {
+        lhs.decorations == rhs.decorations
     }
 
     public static let empty = DecorationSet()
 
+    /// Whether a decoration overlaps `[from, to)` — widgets, being zero-width,
+    /// count at either edge.
+    private static func overlaps(_ d: Decoration, _ from: Int, _ to: Int) -> Bool {
+        d.from < to && d.to > from || (d.kind == .widget && d.from >= from && d.from <= to)
+    }
+
     /// All decorations overlapping `[from, to)` (or all when omitted).
+    ///
+    /// Bounded by binary search when the set is ordered. This is called once
+    /// per frame per plugin while drawing, and a find-all over a long document
+    /// puts tens of thousands of decorations in here — walking them all to
+    /// find the handful on screen was a measurable part of a scroll frame.
     public func find(_ from: Int? = nil, _ to: Int? = nil) -> [Decoration] {
         guard let from, let to else { return decorations }
-        return decorations.filter { $0.from < to && $0.to > from || ($0.kind == .widget && $0.from >= from && $0.from <= to) }
+        guard let reach else {
+            return decorations.filter { Self.overlaps($0, from, to) }
+        }
+        // Last candidate: decorations are sorted by `from`, so the first one
+        // starting past `to` ends it. Past, not at: a widget exactly at `to`
+        // still counts.
+        var lo = 0, hi = decorations.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if decorations[mid].from <= to { lo = mid + 1 } else { hi = mid }
+        }
+        let end = lo
+        // First candidate: nothing before the first index whose running reach
+        // gets to `from` can overlap. Inclusive, again for zero-width widgets.
+        var blo = 0, bhi = end
+        while blo < bhi {
+            let mid = (blo + bhi) / 2
+            if reach[mid] < from { blo = mid + 1 } else { bhi = mid }
+        }
+        return decorations[blo ..< end].filter { Self.overlaps($0, from, to) }
     }
 
     /// Remap all decorations through a mapping, dropping any that were deleted.

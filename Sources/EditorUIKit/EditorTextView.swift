@@ -864,8 +864,19 @@ open class EditorTextView: UIView, UIKeyInput {
             let attrs: [NSAttributedString.Key: Any] = [.font: theme.bodyFont, .foregroundColor: theme.code.color]
             NSAttributedString(string: placeholder, attributes: attrs).draw(at: CGPoint(x: theme.pageInsets.left, y: theme.pageInsets.top))
         }
-        // Plugin (e.g. search highlight) backgrounds.
-        let decorations = gatherDecorations()
+        // Plugin (e.g. search highlight) backgrounds, over the band being
+        // painted rather than over the document — see `gatherDecorations`.
+        // `DocumentLayout.draw` turns its clip into a position range this way
+        // for its own marks; these came from the plugins and were the ones
+        // still paid for in full.
+        //
+        // Probed a couple of points wider than the band: a node decoration
+        // insets its rect by 1pt, so a block sitting just off the edge can
+        // still paint a sliver inside it, and the rejection must not be
+        // tighter than the drawing it is guarding. No blocks in the band means
+        // nothing can draw, which is the empty range rather than "everything".
+        let bandPos = l.positionRange(intersecting: (visibleY.lowerBound - 2) ... (visibleY.upperBound + 2))
+        let decorations = gatherDecorations(in: bandPos ?? 0 ..< 0)
         for deco in decorations where deco.kind == .inline || deco.kind == .node {
             // Suggested insertions are tinted by their author; otherwise an
             // explicit background attribute, else a known decoration class (the
@@ -1023,11 +1034,11 @@ open class EditorTextView: UIView, UIKeyInput {
     /// The document-position range spanned by the blocks intersecting the
     /// visible y window (for culling per-position drawing on large documents).
     private func visiblePositionRange(_ l: DocumentLayout, y: ClosedRange<CGFloat>) -> ClosedRange<Int>? {
-        var lo = Int.max, hi = Int.min
-        for b in l.blocks where b.frame.maxY >= y.lowerBound && b.frame.minY <= y.upperBound {
-            lo = min(lo, b.contentStart); hi = max(hi, b.contentEnd)
-        }
-        return lo <= hi ? lo...hi : nil
+        // Blocks run down the page in document order, so the ones meeting a
+        // band are a contiguous run and its edges are a binary search — which
+        // `positionRange` already is. This walked every block in the document
+        // to find the same two numbers, on every frame.
+        l.positionRange(intersecting: y).map { $0.lowerBound ... $0.upperBound }
     }
 
     /// The misspelled ranges that should currently be underlined: every spelling
@@ -1047,12 +1058,22 @@ open class EditorTextView: UIView, UIKeyInput {
     private var spellCheckedVersion = -1
     private var spellCheckedRange: ClosedRange<Int>?
 
-    /// Collect decorations contributed by the active plugins, plus spelling.
-    private func gatherDecorations() -> [Decoration] {
+    /// Collect the decorations contributed by the active plugins over `band`,
+    /// plus spelling.
+    ///
+    /// Bounded to the band because a plugin's decorations cover the whole
+    /// document — a find-all with a common query emits one per match, and there
+    /// can be tens of thousands. Copying every one of them into this array on
+    /// every frame is what a find-all used to add to the cost of scrolling; the
+    /// set's own `find` rejects them on two integer compares instead.
+    ///
+    /// Spelling is appended whole: it is already bounded to the visible region
+    /// (and a margin) by the debounced pass that produces it.
+    private func gatherDecorations(in band: Range<Int>) -> [Decoration] {
         var result: [Decoration] = []
         for plugin in editor.state.plugins {
             if let provider = plugin.props?.decorations, let set = provider(editor.state) {
-                result.append(contentsOf: set.find())
+                result.append(contentsOf: set.find(band.lowerBound, band.upperBound))
             }
         }
         result.append(contentsOf: currentSpellDecorations())

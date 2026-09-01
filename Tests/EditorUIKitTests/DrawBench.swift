@@ -3,6 +3,7 @@ import XCTest
 import UIKit
 import DocumentModel
 import SchemaKit
+import EditorStateKit
 @testable import EditorUIKit
 
 /// What `DocumentLayout.draw(in:clipY:)` costs per frame — the other half of the
@@ -118,4 +119,72 @@ final class DrawBench: XCTestCase {
         }
     }
 }
+
+/// What the *editable* view's `draw(_:)` costs when a plugin contributes
+/// decorations across the whole document — a find-all with a common query.
+/// `DocumentLayout.draw` rejects its own marks on position before doing any
+/// geometry; this measures whether the plugin-decoration loop in
+/// `EditorTextView.draw` does the same.
+@MainActor
+final class EditorDrawBench: XCTestCase {
+    private static let width: CGFloat = 362
+    private static let viewport: CGFloat = 800
+
+    private func bestMs(_ runs: Int = 7, _ body: () -> Void) -> Double {
+        var best = Double.infinity
+        for _ in 0 ..< runs {
+            let t = CFAbsoluteTimeGetCurrent()
+            body()
+            best = min(best, (CFAbsoluteTimeGetCurrent() - t) * 1000)
+        }
+        return best
+    }
+
+    /// An editable view over `n` paragraphs, scrolled to the middle.
+    private func makeView(_ n: Int) -> EditorTextView {
+        let editor = try! Editor(extensions: fullKit())
+        let s = editor.schema
+        let words = Array(repeating: "lorem ipsum dolor sit amet", count: 12).joined(separator: " ")
+        let paras = (0 ..< n).map { i in
+            try! s.node("paragraph", [:], content: Fragment.from([s.text("Para \(i): \(words)")]))
+        }
+        editor.setContent(try! s.node("doc", [:], content: Fragment.from(paras)))
+        let view = EditorTextView(editor: editor)
+        view.frame = CGRect(x: 0, y: 0, width: Self.width, height: Self.viewport)
+        view.spellCheckingEnabled = false
+        view.layoutIfNeeded()
+        let l = view.ensureLayout()
+        _ = l.realize(window: 0 ... .greatestFiniteMagnitude)
+        view.contentOffsetY = max((l.height - Self.viewport) / 2, 0)
+        return view
+    }
+
+    private func drawFrame(_ view: EditorTextView) {
+        UIGraphicsBeginImageContextWithOptions(view.bounds.size, true, 2)
+        defer { UIGraphicsEndImageContext() }
+        view.draw(view.bounds)
+    }
+
+    func testDrawWithDocumentWideSearchMatches() {
+        for n in [200, 1000] {
+            let view = makeView(n)
+            let plain = bestMs { for _ in 0 ..< 10 { drawFrame(view) } }
+
+            // A find-all with a query that hits every paragraph many times:
+            // the search plugin emits one inline decoration per match, over
+            // the whole document, and `draw` sees all of them every frame.
+            let tr = view.editor.state.tr
+            setSearchState(tr, SearchQuery(search: "lorem"))
+            view.editor.dispatch(tr)
+            _ = view.ensureLayout()
+            let matches = getSearchQueryState(view.editor.state)?.deco.decorations.count ?? 0
+            let searching = bestMs { for _ in 0 ..< 10 { drawFrame(view) } }
+
+            unsafe print(String(format: "  %-40@ no matches %7.3f ms   %d matches %7.3f ms   (per frame)",
+                         "\(n) paragraphs" as NSString, plain / 10, matches, searching / 10))
+            unsafe fflush(stdout)
+        }
+    }
+}
+
 #endif

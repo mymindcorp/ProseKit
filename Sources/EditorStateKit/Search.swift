@@ -88,6 +88,35 @@ public final class SearchQuery: @unchecked Sendable {
         }
     }
 
+    /// Every match in `[from, to)`, in document order.
+    ///
+    /// The same sequence as calling `findNext` from `from` and again from each
+    /// result's `to` until it returns nil — but it walks the document once
+    /// instead of once per match. `scanTextblocks` restarts at the root every
+    /// call, so the loop it replaces was O(matches x blocks): highlighting a
+    /// common query over a few thousand paragraphs took over a second, on every
+    /// keystroke.
+    public func findAll(_ state: EditorState, _ from: Int = 0, _ to: Int? = nil) -> [SearchResult] {
+        let to = to ?? state.doc.content.size
+        guard valid, from < to else { return [] }
+        var out: [SearchResult] = []
+        // Carried across blocks: the loop this replaces resumed at the accepted
+        // match's end, so a candidate starting inside one was never offered to
+        // it. A rejected candidate advances nothing, which is what lets an
+        // overlapping neighbour still be tried.
+        var cursor = from
+        forEachTextblock(state.doc, from, to) { node, start in
+            for candidate in impl.matchesIn(node, start, from, to) {
+                guard candidate.from >= cursor else { continue }
+                if checkResult(state, candidate) {
+                    out.append(candidate)
+                    cursor = candidate.to
+                }
+            }
+        }
+        return out
+    }
+
     /// Find the previous occurrence searching back from `from` down to `to`.
     public func findPrev(_ state: EditorState, _ from: Int? = nil, _ to: Int = 0) -> SearchResult? {
         var from = from ?? state.doc.content.size
@@ -171,11 +200,17 @@ public final class SearchQuery: @unchecked Sendable {
 private protocol QueryImpl {
     func findNext(_ state: EditorState, _ from: Int, _ to: Int) -> SearchResult?
     func findPrev(_ state: EditorState, _ from: Int, _ to: Int) -> SearchResult?
+    /// Every match *start* in one textblock, in increasing order, overlapping
+    /// ones included. The caller enforces non-overlap, because a match the
+    /// whole-word test rejects can still be followed by one that overlaps it —
+    /// which is exactly what the `findNext` retry loop does.
+    func matchesIn(_ node: Node, _ blockStart: Int, _ from: Int, _ to: Int) -> [SearchResult]
 }
 
 private struct NullQuery: QueryImpl {
     func findNext(_ state: EditorState, _ from: Int, _ to: Int) -> SearchResult? { nil }
     func findPrev(_ state: EditorState, _ from: Int, _ to: Int) -> SearchResult? { nil }
+    func matchesIn(_ node: Node, _ blockStart: Int, _ from: Int, _ to: Int) -> [SearchResult] { [] }
 }
 
 private struct StringQuery: QueryImpl {
@@ -194,6 +229,31 @@ private struct StringQuery: QueryImpl {
             let index = hay.distance(from: hay.startIndex, to: r.lowerBound)
             return SearchResult(from: off + index, to: off + index + string.count, match: nil, matchStart: start)
         }
+    }
+
+    func matchesIn(_ node: Node, _ start: Int, _ from: Int, _ to: Int) -> [SearchResult] {
+        let content = blockText(node)
+        let off = max(from, start)
+        let lo = off - start, hi = min(node.content.size, to - start)
+        guard lo < hi, hi <= content.count else { return [] }
+        var hay = String(content[content.index(content.startIndex, offsetBy: lo)
+                                 ..< content.index(content.startIndex, offsetBy: hi)])
+        if !caseSensitive { hay = hay.lowercased() }
+        var out: [SearchResult] = []
+        var cursor = hay.startIndex
+        // `cursorOffset` is carried rather than re-measured: `distance(from:
+        // startIndex)` per match would make a block with many matches quadratic
+        // in its own text, which is the shape being removed here.
+        var cursorOffset = 0
+        while cursor < hay.endIndex,
+              let r = hay.range(of: string, range: cursor ..< hay.endIndex) {
+            let index = cursorOffset + hay.distance(from: cursor, to: r.lowerBound)
+            out.append(SearchResult(from: off + index, to: off + index + string.count,
+                                    match: nil, matchStart: start))
+            cursor = hay.index(after: r.lowerBound)
+            cursorOffset = index + 1
+        }
+        return out
     }
 
     func findPrev(_ state: EditorState, _ from: Int, _ to: Int) -> SearchResult? {
@@ -249,6 +309,30 @@ private struct RegExpQuery: QueryImpl {
             guard let m = regex.firstMatch(in: hay, options: [], range: searchRange) else { return nil }
             return result(from: m, in: hay, blockStart: start)
         }
+    }
+
+    func matchesIn(_ node: Node, _ start: Int, _ from: Int, _ to: Int) -> [SearchResult] {
+        let content = blockText(node)
+        let hi = min(node.content.size, to - start)
+        guard hi >= 0, hi <= content.count else { return [] }
+        let hay = String(content[..<content.index(content.startIndex, offsetBy: hi)])
+        let lo = max(0, from - start)
+        guard lo <= hay.count else { return [] }
+        var out: [SearchResult] = []
+        var cursor = hay.index(hay.startIndex, offsetBy: lo)
+        // Successive `firstMatch` from one past the previous start, rather than
+        // `matches(in:)`: that returns only non-overlapping matches, and the
+        // whole-word test can reject one whose overlapping neighbour is good.
+        while cursor <= hay.endIndex {
+            let searchRange = NSRange(cursor ..< hay.endIndex, in: hay)
+            guard let m = regex.firstMatch(in: hay, options: [], range: searchRange),
+                  let r = Range(m.range, in: hay), let res = result(from: m, in: hay, blockStart: start)
+            else { break }
+            out.append(res)
+            guard r.lowerBound < hay.endIndex else { break }
+            cursor = hay.index(after: r.lowerBound)
+        }
+        return out
     }
 
     func findPrev(_ state: EditorState, _ from: Int, _ to: Int) -> SearchResult? {
@@ -324,6 +408,29 @@ private func scanTextblocks<T>(_ node: Node, _ from: Int, _ to: Int,
     return nil
 }
 
+/// Visit every textblock overlapping `[from, to)`, in document order.
+///
+/// `scanTextblocks` stops at the first block that answers, and always restarts
+/// from the document root — so asking it for *every* match walked the whole
+/// document once per match. Callers that want them all use this instead and
+/// walk once.
+private func forEachTextblock(_ node: Node, _ from: Int, _ to: Int,
+                              _ f: (Node, Int) -> Void, _ nodeStart: Int = 0) {
+    if node.inlineContent {
+        f(node, nodeStart)
+    } else if !node.isLeaf {
+        var pos = nodeStart
+        var i = 0
+        while i < node.childCount, pos < to {
+            let child = node.child(i)
+            let start = pos
+            pos += child.nodeSize
+            if pos > from { forEachTextblock(child, from, to, f, start + 1) }
+            i += 1
+        }
+    }
+}
+
 private func checkWordBoundary(_ state: EditorState, _ pos: Int) -> Bool {
     let resolved = state.doc.resolve(pos)
     guard let before = resolved.nodeBefore, let after = resolved.nodeAfter,
@@ -397,10 +504,16 @@ public final class SearchQueryState {
     public let query: SearchQuery
     public let range: SearchRange?
     public let deco: DecorationSet
-    init(query: SearchQuery, range: SearchRange?, deco: DecorationSet) {
+    /// Index of the decoration currently drawn as the active match, if any.
+    /// Kept so a selection change can decide in O(log n) whether the
+    /// highlighting changed at all — moving the caret around usually does not,
+    /// and rebuilding it meant searching the whole document again.
+    let activeIndex: Int?
+    init(query: SearchQuery, range: SearchRange?, deco: DecorationSet, activeIndex: Int? = nil) {
         self.query = query
         self.range = range
         self.deco = deco
+        self.activeIndex = activeIndex
     }
 }
 
@@ -412,19 +525,116 @@ private struct SetSearchAction {
     let range: SearchRange?
 }
 
+private let activeMatchClass = "ProseMirror-active-search-match"
+private let matchClass = "ProseMirror-search-match"
+
 private func buildMatchDeco(_ state: EditorState, _ query: SearchQuery, _ range: SearchRange?) -> DecorationSet {
     guard query.valid else { return .empty }
-    var deco: [Decoration] = []
     let sel = state.selection
-    var pos = range?.from ?? 0
-    let end = range?.to ?? state.doc.content.size
-    while let next = query.findNext(state, pos, end) {
-        let cls = next.from == sel.from && next.to == sel.to
-            ? "ProseMirror-active-search-match" : "ProseMirror-search-match"
-        deco.append(.inline(next.from, next.to, ["class": cls]))
-        pos = next.to
+    let matches = query.findAll(state, range?.from ?? 0, range?.to ?? state.doc.content.size)
+    return DecorationSet(matches.map { next in
+        .inline(next.from, next.to,
+                ["class": next.from == sel.from && next.to == sel.to ? activeMatchClass : matchClass])
+    })
+}
+
+/// The span of `newDoc` an edit could have changed, widened to whole top-level
+/// children — or nil when the mapping reports no changed range at all.
+///
+/// A match never crosses a textblock (the scan is per block), so widening to the
+/// enclosing top-level child is enough to contain every match an edit can have
+/// created, destroyed, or reshaped — including one that splits or joins blocks.
+private func changedSpan(_ mapping: Mapping, _ newDoc: Node) -> (from: Int, to: Int)? {
+    var lo = Int.max, hi = Int.min
+    for (i, map) in mapping.maps.enumerated() {
+        map.forEach { _, _, newStart, newEnd in
+            // Carry each step's range through the steps that follow it, so the
+            // union is in the final document's coordinates.
+            var s = newStart, e = newEnd
+            if i + 1 < mapping.maps.count {
+                for j in (i + 1) ..< mapping.maps.count {
+                    s = mapping.maps[j].map(s, -1)
+                    e = mapping.maps[j].map(e, 1)
+                }
+            }
+            lo = min(lo, s); hi = max(hi, e)
+        }
     }
-    return DecorationSet(deco)
+    guard lo <= hi else { return nil }
+    let size = newDoc.content.size
+    let start = newDoc.resolve(min(max(lo, 0), size))
+    let end = newDoc.resolve(min(max(hi, 0), size))
+    return (from: start.depth >= 1 ? start.before(1) : 0,
+            to: end.depth >= 1 ? end.after(1) : size)
+}
+
+/// The match decorations after an edit, re-searching only the blocks the edit
+/// touched and carrying the rest forward through the mapping.
+///
+/// A full rebuild re-scans every block's text, which on a few thousand
+/// paragraphs is tens of milliseconds on every keystroke — while the find bar
+/// is open, which is exactly when someone is typing a replacement.
+private func updateMatchDeco(_ cur: SearchQueryState, _ tr: Transaction,
+                             _ state: EditorState, _ range: SearchRange?) -> DecorationSet {
+    let size = state.doc.content.size
+    let limit = (from: range?.from ?? 0, to: range?.to ?? size)
+    guard let span = changedSpan(tr.mapping, state.doc) else {
+        return buildMatchDeco(state, cur.query, range)
+    }
+    let from = max(span.from, limit.from), to = min(span.to, limit.to)
+    let carried = cur.deco.map(tr.mapping).decorations
+    var out: [Decoration] = []
+    out.reserveCapacity(carried.count)
+    // A carried decoration keeps its attributes — rebuilding all of them to
+    // restyle the one active match meant allocating a dictionary per match on
+    // every keystroke. Only a stale *active* class has to be undone, and there
+    // is at most one of those.
+    func carry(_ d: Decoration) {
+        out.append(d.attributes["class"] == activeMatchClass
+                   ? .inline(d.from, d.to, ["class": matchClass]) : d)
+    }
+    // Everything before the touched span survives unchanged...
+    for d in carried where d.to <= from { carry(d) }
+    // ...the touched span is searched again...
+    if from < to {
+        for m in cur.query.findAll(state, from, to) {
+            out.append(.inline(m.from, m.to, ["class": matchClass]))
+        }
+    }
+    // ...and everything after it survives too. A decoration straddling the
+    // boundary is dropped rather than carried: it was re-found above if it
+    // still exists, and carrying it as well would double it.
+    for d in carried where d.from >= to { carry(d) }
+    if let active = activeMatchIndex(out, state.selection) {
+        out[active] = .inline(out[active].from, out[active].to, ["class": activeMatchClass])
+    }
+    return DecorationSet(out)
+}
+
+/// Which decoration is styled as the active match under `sel`, if any.
+///
+/// The decorations come out of `findAll` in document order, so this is a binary
+/// search on `from` — it runs on every selection change, including every arrow
+/// key, and must not be a walk over every match.
+private func activeMatchIndex(_ deco: DecorationSet, _ sel: Selection) -> Int? {
+    activeMatchIndex(deco.decorations, sel)
+}
+
+private func activeMatchIndex(_ ds: [Decoration], _ sel: Selection) -> Int? {
+    var lo = 0, hi = ds.count
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if ds[mid].from < sel.from { lo = mid + 1 } else { hi = mid }
+    }
+    guard lo < ds.count, ds[lo].from == sel.from, ds[lo].to == sel.to else { return nil }
+    return lo
+}
+
+/// The same matches with only the active one's class changed.
+private func reclassify(_ deco: DecorationSet, active: Int?) -> DecorationSet {
+    DecorationSet(deco.decorations.enumerated().map { i, d in
+        .inline(d.from, d.to, ["class": i == active ? activeMatchClass : matchClass])
+    })
 }
 
 /// The prosemirror-search plugin: stores the current query + range and
@@ -435,24 +645,38 @@ public func searchQueryPlugin(initialQuery: SearchQuery? = nil, initialRange: Se
         stateField: PluginStateField(
             initialize: { _, state in
                 let query = initialQuery ?? SearchQuery(search: "")
-                return SearchQueryState(query: query, range: initialRange,
-                                        deco: buildMatchDeco(state, query, initialRange))
+                let deco = buildMatchDeco(state, query, initialRange)
+                return SearchQueryState(query: query, range: initialRange, deco: deco,
+                                        activeIndex: activeMatchIndex(deco, state.selection))
             },
             apply: { tr, value, _, state in
                 let cur = value as! SearchQueryState
                 if let action = tr.getMeta(searchQueryMeta) as? SetSearchAction {
-                    return SearchQueryState(query: action.query, range: action.range,
-                                            deco: buildMatchDeco(state, action.query, action.range))
+                    let deco = buildMatchDeco(state, action.query, action.range)
+                    return SearchQueryState(query: action.query, range: action.range, deco: deco,
+                                            activeIndex: activeMatchIndex(deco, state.selection))
                 }
-                if tr.docChanged || tr.selectionSet {
+                if tr.docChanged {
                     var range = cur.range
                     if let r = range {
                         let from = tr.mapping.map(r.from, 1)
                         let to = tr.mapping.map(r.to, -1)
                         range = from < to ? SearchRange(from: from, to: to) : nil
                     }
-                    return SearchQueryState(query: cur.query, range: range,
-                                            deco: buildMatchDeco(state, cur.query, range))
+                    let deco = updateMatchDeco(cur, tr, state, range)
+                    return SearchQueryState(query: cur.query, range: range, deco: deco,
+                                            activeIndex: activeMatchIndex(deco, state.selection))
+                }
+                if tr.selectionSet {
+                    // The document did not change, so neither did where the
+                    // matches are: only which one is active can have moved.
+                    // Searching again to discover that cost a full document
+                    // scan per arrow key.
+                    let active = activeMatchIndex(cur.deco, state.selection)
+                    guard active != cur.activeIndex else { return cur }
+                    return SearchQueryState(query: cur.query, range: cur.range,
+                                            deco: reclassify(cur.deco, active: active),
+                                            activeIndex: active)
                 }
                 return cur
             }),
