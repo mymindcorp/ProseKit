@@ -149,7 +149,9 @@ private func mathNodePos(_ state: EditorState, _ type: NodeType) -> Int? {
 
 /// Turn a typed `$…$` (or `$$…$$`) into a math node holding the enclosed source.
 private func mathInputRule(_ type: NodeType, pattern: String) -> InputRule {
-    InputRule(pattern) { state, match, start, end in
+    // Never inside a code span: a literal `$x$` there must stay text, not
+    // become a math node.
+    InputRule(pattern, inCodeMark: false) { state, match, start, end in
         guard let latex = match[1]?.trimmingCharacters(in: .whitespaces), !latex.isEmpty,
               let node = try? type.create(["latex": .string(latex)]) else { return nil }
         let tr = state.tr

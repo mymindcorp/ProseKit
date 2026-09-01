@@ -74,7 +74,8 @@ public final class WikiLinkExtension: NodeExtension {
     public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
         guard let type = ctx.nodeType else { return [] }
         // [[Target]] or [[Target|Label]] -> a wiki-link node.
-        return [InputRule("\\[\\[([^\\]|]+)(?:\\|([^\\]]+))?\\]\\]$") { state, match, start, end in
+        // Not inside a code span, where `[[Page]]` is literal text.
+        return [InputRule("\\[\\[([^\\]|]+)(?:\\|([^\\]]+))?\\]\\]$", inCodeMark: false) { state, match, start, end in
             let typed = (match[1] ?? "").trimmingCharacters(in: .whitespaces)
             if typed.isEmpty { return nil }
             // `[[Page|shown]]` reads as "shown": what a reader sees is the text.

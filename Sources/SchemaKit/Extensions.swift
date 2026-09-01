@@ -427,7 +427,7 @@ public final class LinkExtension: MarkExtension {
         // Autolink: typing whitespace right after a URL turns it into a link.
         // The handler must re-insert the typed character (rules replace the
         // default insertion).
-        return [InputRule("(?:^|\\s)((?:https?://|www\\.)[^\\s]+)(\\s)$") { state, match, start, end in
+        return [InputRule("(?:^|\\s)((?:https?://|www\\.)[^\\s]+)(\\s)$", inCodeMark: false) { state, match, start, end in
             guard let url = match[1], let typed = match[2] else { return nil }
             let full = match[0] ?? ""
             guard let urlRange = full.range(of: url) else { return nil }

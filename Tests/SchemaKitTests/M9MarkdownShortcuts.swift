@@ -1,5 +1,6 @@
 import Foundation
 import DocumentModel
+import DocumentTransform
 import EditorStateKit
 import SchemaKit
 import TestHarness
@@ -21,6 +22,22 @@ import TestHarness
 private func hasMark(_ editor: Editor, _ name: String) -> Bool {
     guard let type = editor.schema.marks[name] else { return false }
     return editor.doc.rangeHasMark(0, editor.doc.content.size, type)
+}
+
+/// Type `seed` into a paragraph, mark the whole of it as inline code, then fire
+/// `trigger` at the end the way the renderer does. Returns the editor and
+/// whether any input rule claimed the keystroke. When nothing claims it the
+/// view inserts the character itself, so a suppressed rule means `false` here
+/// and a document still holding exactly `seed`.
+@Sendable private func inCodeSpan(_ seed: String, _ trigger: String) throws -> (Editor, Bool) {
+    let editor = try Editor(extensions: fullKit())
+    guard let code = editor.schema.marks["code"] else { return (editor, false) }
+    let tr = editor.state.tr
+    try tr.insertText(seed, 1)
+    try tr.addMark(1, 1 + seed.count, code.create([:]))
+    editor.dispatch(tr)
+    let fired = textInput(editor, at: editor.doc.content.size - 1, trigger)
+    return (editor, fired)
 }
 
 private func topBlock(_ editor: Editor) -> Node? { editor.doc.firstChild }
@@ -161,4 +178,77 @@ func registerMarkdownShortcutTests() {
         let editor = try shortcut("don", "'")
         try expectEqual(editor.doc.textContent, "don\u{2019}")
     }
+
+    // MARK: Code spans are literal
+
+    // A code mark excludes every other mark, so a mark rule firing inside a
+    // code span used to strip the markers and then have its addMark dropped:
+    // the typed characters just vanished. Inline-node rules were worse, turning
+    // literal text into a math or wiki-link node. Nothing may fire in there.
+
+    for (seed, trigger, typed) in [("**b*", "*", "**b**"), ("__b_", "_", "__b__"),
+                                   ("*i", "*", "*i*"), ("_i", "_", "_i_"),
+                                   ("~~s~", "~", "~~s~~"), ("==h=", "=", "==h=="),
+                                   ("`c", "`", "`c`")] {
+        test("md shortcut: \(typed) stays literal inside a code span") {
+            let (editor, fired) = try inCodeSpan(seed, trigger)
+            try expect(!fired, "\(typed) fired inside a code span")
+            try expectEqual(editor.doc.textContent, seed)
+        }
+    }
+
+    test("md shortcut: $x$ stays literal inside a code span") {
+        let (editor, fired) = try inCodeSpan("$x", "$")
+        try expect(!fired, "the math rule fired inside a code span")
+        try expectEqual(editor.doc.textContent, "$x")
+        var mathNodes = 0
+        editor.doc.descendants { n, _, _, _ in
+            if n.type.name == "inlineMath" { mathNodes += 1 }
+            return true
+        }
+        try expectEqual(mathNodes, 0)
+    }
+
+    test("md shortcut: [[Page]] stays literal inside a code span") {
+        let (editor, fired) = try inCodeSpan("[[Page]", "]")
+        try expect(!fired, "the wiki-link rule fired inside a code span")
+        try expectEqual(editor.doc.textContent, "[[Page]")
+        var wikiNodes = 0
+        editor.doc.descendants { n, _, _, _ in
+            if n.type.name == "wikiLink" { wikiNodes += 1 }
+            return true
+        }
+        try expectEqual(wikiNodes, 0)
+    }
+
+    test("md shortcut: autolink does not fire inside a code span") {
+        let (editor, fired) = try inCodeSpan("see https://x.com", " ")
+        try expect(!fired, "the autolink rule fired inside a code span")
+        if let link = editor.schema.marks["link"] {
+            try expect(!editor.doc.rangeHasMark(0, editor.doc.content.size, link))
+        }
+    }
+
+    test("md shortcut: a code span keeps its code mark after a suppressed rule") {
+        let (editor, _) = try inCodeSpan("**b*", "*")
+        guard let code = editor.schema.marks["code"] else { return }
+        try expect(editor.doc.rangeHasMark(0, editor.doc.content.size, code))
+    }
+
+    // The suppression must key off the code mark, not merely being near one:
+    // bolding plain text that follows a code span still has to work.
+    test("md shortcut: **bold** still fires in plain text after a code span") {
+        let editor = try Editor(extensions: fullKit())
+        guard let code = editor.schema.marks["code"],
+              let bold = editor.schema.marks["bold"] else { return }
+        let tr = editor.state.tr
+        try tr.insertText("c **b*", 1)
+        try tr.addMark(1, 2, code.create([:])) // only the "c" is code
+        editor.dispatch(tr)
+        _ = textInput(editor, at: editor.doc.content.size - 1, "*")
+        try expectEqual(editor.doc.textContent, "c b")
+        try expect(editor.doc.rangeHasMark(0, editor.doc.content.size, bold))
+        try expect(editor.doc.rangeHasMark(0, editor.doc.content.size, code))
+    }
+
 }
