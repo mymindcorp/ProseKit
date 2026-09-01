@@ -232,5 +232,67 @@ final class HotPathProbe: XCTestCase {
             }
         }
     }
+
+    /// Typing inside a list. A list is a single top-level child, so the
+    /// incremental layout's prefix/suffix reuse — which works per child —
+    /// cannot help inside it; this measures what that costs as the list grows.
+    func testKeystrokeInsideLists() {
+        print("\n  --- one keystroke inside a list (item 3 of n) ---")
+        let words = Array(repeating: "lorem ipsum dolor sit amet", count: 6).joined(separator: " ")
+        for kind in ["bulletList", "orderedList", "taskList"] {
+            for n in [200, 1000, 3000] {
+                let editor = try! Editor(extensions: fullKit())
+                let s = editor.schema
+                let itemType = kind == "taskList" ? "taskItem" : "listItem"
+                let items = (0 ..< n).map { i -> Node in
+                    let p = try! s.node("paragraph", [:], content: Fragment.from([s.text("Item \(i): \(words)")]))
+                    let attrs: Attrs = kind == "taskList" ? ["checked": .bool(i % 3 == 0)] : [:]
+                    return try! s.node(itemType, attrs, content: Fragment.from([p]))
+                }
+                editor.setContent(try! s.node("doc", [:], content: Fragment.from([
+                    try! s.node(kind, [:], content: Fragment.from(items))])))
+                let view = EditorTextView(editor: editor)
+                view.frame = CGRect(x: 0, y: 0, width: Self.width, height: Self.viewport)
+                view.spellCheckingEnabled = false
+                view.layoutIfNeeded()
+                _ = view.ensureLayout()
+                // Caret inside the third item's paragraph.
+                let third = editor.doc.child(0)
+                var pos = 1 // into the list
+                for i in 0 ..< 2 { pos += third.child(i).nodeSize }
+                pos += 2 + 4 // into item, into paragraph, after "Item"
+                view.editor.dispatch(view.editor.state.tr.setSelection(TextSelection.create(view.editor.doc, pos)))
+                _ = view.becomeFirstResponder()
+
+                // Same schema instance: a node built by one editor's schema is
+                // not a document for another's.
+                let bare = try! Editor(extensions: fullKit())
+                let bs = bare.schema
+                let bareItems = (0 ..< n).map { i -> Node in
+                    let p = try! bs.node("paragraph", [:], content: Fragment.from([bs.text("Item \(i): \(words)")]))
+                    let attrs: Attrs = kind == "taskList" ? ["checked": .bool(i % 3 == 0)] : [:]
+                    return try! bs.node(itemType, attrs, content: Fragment.from([p]))
+                }
+                bare.setContent(try! bs.node("doc", [:], content: Fragment.from([
+                    try! bs.node(kind, [:], content: Fragment.from(bareItems))])))
+                bare.dispatch(bare.state.tr.setSelection(TextSelection.create(bare.doc, pos)))
+                let dispatchMs = bestMs(5) {
+                    for _ in 0 ..< 10 { let tr = bare.state.tr; _ = try? tr.insertText("x"); bare.dispatch(tr) }
+                } / 10
+                let keyMs = bestMs(5) { for _ in 0 ..< 10 { view.insertText("x") } } / 10
+                let paintMs = bestMs(5) {
+                    for _ in 0 ..< 5 {
+                        view.insertText("x")
+                        UIGraphicsBeginImageContextWithOptions(view.bounds.size, true, 1)
+                        view.draw(view.bounds)
+                        UIGraphicsEndImageContext()
+                    }
+                } / 5
+                row("\(kind) x\(n): dispatch", dispatchMs)
+                row("\(kind) x\(n): view keystroke", keyMs)
+                row("\(kind) x\(n): keystroke + paint", paintMs)
+            }
+        }
+    }
 }
 #endif

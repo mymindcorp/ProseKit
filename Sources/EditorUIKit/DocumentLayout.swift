@@ -204,6 +204,64 @@ final class TextBlockLayoutCache {
     }
     private var entries: [Key: Entry] = [:]
     private var generation = 0
+
+    /// A whole list item's laid-out output, in local coordinates (item top at
+    /// y = 0, item start at document position 0), so it can be re-emitted
+    /// wherever the item next sits. The incremental build reuses top-level
+    /// children this way; a list is one top-level child, so without this a
+    /// keystroke in one item re-laid out every item in the list — 30 ms for
+    /// 3000 items, against 2 ms for 3000 paragraphs.
+    struct ItemKey: Hashable {
+        let type: ObjectIdentifier
+        let attrs: Attrs
+        let marks: [Mark]
+        let buffer: UInt
+        let x: CGFloat
+        let width: CGFloat
+        /// The marker drawn beside it — an ordered list's number changes with
+        /// the item's index while the node itself does not.
+        let marker: String
+        let checkedContext: Bool
+        let align: String?
+    }
+    /// A class, unlike `Entry`: a hit bumps `generation` in place instead of
+    /// re-hashing the key to write the struct back, which a list pays per item
+    /// per keystroke.
+    private final class ItemEntry {
+        let node: Node
+        let entry: DocumentLayout.TopEntry
+        var generation: Int
+        init(node: Node, entry: DocumentLayout.TopEntry, generation: Int) {
+            self.node = node; self.entry = entry; self.generation = generation
+        }
+    }
+    private var items: [ItemKey: ItemEntry] = [:]
+
+    static func itemKey(_ node: Node, x: CGFloat, width: CGFloat, marker: String,
+                        checkedContext: Bool, align: String?) -> ItemKey {
+        let buffer = unsafe node.content.content.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
+        return ItemKey(type: ObjectIdentifier(node.type), attrs: node.attrs, marks: node.marks,
+                       buffer: buffer, x: x, width: width, marker: marker,
+                       checkedContext: checkedContext, align: align)
+    }
+    func lookupItem(_ key: ItemKey) -> DocumentLayout.TopEntry? {
+        guard let e = items[key] else { return nil }
+        e.generation = generation
+        debugItemHits += 1
+        return e.entry
+    }
+    func storeItem(_ key: ItemKey, node: Node, _ entry: DocumentLayout.TopEntry) {
+        items[key] = ItemEntry(node: node, entry: entry, generation: generation)
+    }
+    /// Marker widths, measured once per string: `NSString.size` is a CoreText
+    /// pass, and a list asked for one per item per layout.
+    private var markerWidths: [String: CGFloat] = [:]
+    func markerWidth(_ marker: String, _ attrs: [NSAttributedString.Key: Any]) -> CGFloat {
+        if let w = markerWidths[marker] { return w }
+        let w = (marker as NSString).size(withAttributes: attrs).width
+        markerWidths[marker] = w
+        return w
+    }
     /// The theme the cached blocks were typeset with. Colors and fonts are baked
     /// into each block's attributed string (not part of `Key`), so a theme change
     /// must drop the cache — otherwise a new theme reuses stale-styled blocks.
@@ -211,11 +269,18 @@ final class TextBlockLayoutCache {
     private(set) var lastFootnoteOrder: [String: Int]?
 
     var debugEntryCount: Int { entries.count }
+    var debugItemCount: Int { items.count }
+    /// Test hook: how many item lookups have hit, so a test can say exactly
+    /// which items a keystroke reused rather than time it.
+    private(set) var debugItemHits = 0
+    /// Test hook: drop the item entries and keep the blocks, to measure what
+    /// the item cache adds over the block cache alone.
+    func debugClearItems() { items.removeAll() }
 
     /// Drop all cached blocks when the theme changes (e.g. the user edits colors,
     /// fonts, or spacing live), so they're re-typeset with the new styling.
     func syncTheme(_ theme: DocumentTheme) {
-        if let lastTheme, lastTheme != theme { entries.removeAll() }
+        if let lastTheme, lastTheme != theme { entries.removeAll(); items.removeAll(); markerWidths.removeAll() }
         lastTheme = theme
     }
 
@@ -224,7 +289,7 @@ final class TextBlockLayoutCache {
     /// keyed on unchanged nodes are showing stale numbers and have to go. For a
     /// document without footnotes both sides stay empty and nothing is dropped.
     func syncFootnoteOrder(_ order: [String: Int]) {
-        if let lastFootnoteOrder, lastFootnoteOrder != order { entries.removeAll() }
+        if let lastFootnoteOrder, lastFootnoteOrder != order { entries.removeAll(); items.removeAll() }
         lastFootnoteOrder = order
     }
 
@@ -246,7 +311,7 @@ final class TextBlockLayoutCache {
     }
     func beginPass() { generation += 1 }
     /// Drop everything (e.g. when the syntax highlighter changes).
-    func clear() { entries.removeAll() }
+    func clear() { entries.removeAll(); items.removeAll() }
     /// Drop the blocks whose node matches — the paragraphs holding an inline
     /// image whose bytes have just arrived, say. The block is keyed by its node
     /// and width, neither of which changed when the bytes turned up, so without
@@ -255,16 +320,23 @@ final class TextBlockLayoutCache {
     /// each picture that loads.
     func evict(where matches: (Node) -> Bool) {
         entries = entries.filter { !matches($0.value.node) }
+        items = items.filter { !matches($0.value.node) }
     }
     /// Eviction is deliberately rare: a keystroke pass touches one block and
     /// must not churn the rest of the cache (incremental layout reuses whole
     /// entries without consulting it, so "unused this pass" means nothing).
     /// Only when the cache outgrows a generous cap, drop the older half.
     func endPass() {
-        guard entries.count > 4096 else { return }
-        let generations = entries.values.map(\.generation).sorted()
-        let threshold = generations[generations.count / 2]
-        entries = entries.filter { $0.value.generation >= threshold }
+        if entries.count > 4096 {
+            let generations = entries.values.map(\.generation).sorted()
+            let threshold = generations[generations.count / 2]
+            entries = entries.filter { $0.value.generation >= threshold }
+        }
+        if items.count > 4096 {
+            let generations = items.values.map(\.generation).sorted()
+            let threshold = generations[generations.count / 2]
+            items = items.filter { $0.value.generation >= threshold }
+        }
     }
 }
 
@@ -523,7 +595,7 @@ final class DocumentLayout {
         // so shifting the suffix past an edit is allocation-free per entry.
         return TopEntry(node: e.node, docStart: e.docStart + dPos, topY: e.topY + dy, height: e.height,
                         blocks: e.blocks.isEmpty ? e.blocks : e.blocks.map { shiftBlock($0, dPos: dPos, dy: dy) },
-                        decorations: e.decorations.isEmpty ? e.decorations : e.decorations.map { shiftDeco($0, dy: dy) },
+                        decorations: e.decorations.isEmpty || dy == 0 ? e.decorations : e.decorations.map { shiftDeco($0, dy: dy) },
                         checkboxes: e.checkboxes.isEmpty ? e.checkboxes : e.checkboxes.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos, checked: $0.checked) },
                         disclosures: e.disclosures.isEmpty ? e.disclosures : e.disclosures.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos, open: $0.open) },
                         mathTargets: e.mathTargets.isEmpty ? e.mathTargets : e.mathTargets.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos) },
@@ -1017,6 +1089,48 @@ final class DocumentLayout {
         return CGSize(width: CGFloat(width), height: CGFloat(height))
     }
 
+    /// Lay out one list item at (`x`, `y`), reusing its cached output when the
+    /// same node was laid out before in the same geometry and context. `body`
+    /// emits the item's gutter (marker or checkbox) and then its content, and
+    /// runs only on a miss; everything it appends is captured as the entry.
+    private func layoutListItem(_ item: Node, docPos: Int, x: CGFloat, width: CGFloat, y: CGFloat,
+                                marker: String, _ body: () -> CGFloat) -> CGFloat {
+        // Not cacheable: an item holding the `[[` being typed is styled per
+        // layout (as the text-block cache also refuses it), and one holding a
+        // picture would keep its placeholder past the load — the host evicts
+        // cached blocks for *inline* images only, since block images were
+        // never cached until now. Both are rare enough to lay out every time.
+        //
+        // The trigger is checked before the lookup — a cached item can come to
+        // hold it later. The image walk is not: only image-free items are ever
+        // stored, so a hit has already answered it, and walking every item's
+        // subtree per keystroke to re-answer it was a third of a hit's cost.
+        guard let blockCache,
+              !(wikiLinkTrigger.map { $0.range.overlaps(docPos ..< (docPos + item.nodeSize)) } ?? false)
+        else { return body() }
+        let key = TextBlockLayoutCache.itemKey(item, x: x, width: width, marker: marker,
+                                               checkedContext: inCheckedItem, align: inCellAlignment)
+        if let local = blockCache.lookupItem(key) {
+            let e = shiftEntry(local, dPos: docPos, dy: y)
+            append(e)
+            return y + e.height
+        }
+        guard !Self.containsImage(item, matching: { _ in true }) else { return body() }
+        let counts = (blocks.count, decorations.count, checkboxes.count, disclosures.count,
+                      mathTargets.count, highlights.count, codeBackgrounds.count, tables.count)
+        let endY = body()
+        let entry = TopEntry(node: item, docStart: docPos, topY: y, height: endY - y,
+                             blocks: Array(blocks[counts.0...]), decorations: Array(decorations[counts.1...]),
+                             checkboxes: Array(checkboxes[counts.2...]), disclosures: Array(disclosures[counts.3...]),
+                             mathTargets: Array(mathTargets[counts.4...]),
+                             highlights: Array(highlights[counts.5...]),
+                             codeBackgrounds: Array(codeBackgrounds[counts.6...]),
+                             tables: Array(tables[counts.7...]))
+        // Stored in local terms, so nothing absolute survives into a reuse.
+        blockCache.storeItem(key, node: item, shiftEntry(entry, dPos: -docPos, dy: -y))
+        return endY
+    }
+
     private func layoutList(_ node: Node, docPos: Int, x: CGFloat, width: CGFloat, y: CGFloat) -> CGFloat {
         var y = y
         var pos = docPos + 1
@@ -1032,10 +1146,14 @@ final class DocumentLayout {
             // aligned in the indent gutter — and clamped into the content
             // column, since a marker can outgrow the gutter at large type.
             let marker = ordered ? "\(start + i)." : "•"
-            let markerWidth = (marker as NSString).size(withAttributes: markerAttrs).width
-            let markerX = max(x, x + indent - markerWidth - gap)
-            decorations.append(.text(marker, CGPoint(x: markerX, y: y), markerAttrs))
-            y = layoutFragment(item.content, docPos: pos + 1, x: x + indent, width: width - indent, y: y)
+            let itemY = y, itemPos = pos
+            y = layoutListItem(item, docPos: itemPos, x: x, width: width, y: itemY, marker: marker) {
+                let markerWidth = blockCache?.markerWidth(marker, markerAttrs)
+                    ?? (marker as NSString).size(withAttributes: markerAttrs).width
+                let markerX = max(x, x + indent - markerWidth - gap)
+                decorations.append(.text(marker, CGPoint(x: markerX, y: itemY), markerAttrs))
+                return layoutFragment(item.content, docPos: itemPos + 1, x: x + indent, width: width - indent, y: itemY)
+            }
             pos += item.nodeSize
         }
         return y
@@ -1136,26 +1254,30 @@ final class DocumentLayout {
             // that text — both derived from the first line's font, so the box
             // tracks Dynamic Type instead of fitting one body size. The font is
             // enough; the line doesn't have to be typeset first.
-            let boxSize = Self.checkboxSize(for: theme, item: item)
-            // Clamped into the content column: a box sized from the text can
-            // outgrow its gutter, and it must never reach into the page margin
-            // — still less off the left edge of the view.
-            let boxRect = CGRect(x: max(x, x + indent - boxSize - gap),
-                                 y: y + Self.checkboxOffset(for: theme, item: item, boxSize: boxSize),
-                                 width: boxSize, height: boxSize)
-            // The checkbox itself is a managed UIView (see EditorTextView's
-            // checkbox-view recycling) positioned over this rect — the layout
-            // only reserves its (touch-padded) box for positioning + hit-test.
-            checkboxes.append((rect: boxRect.insetBy(dx: -6, dy: -6), pos: pos, checked: checked))
-            // The item's whole subtree is typeset in its checked style. Saved and
-            // restored rather than just set, so a nested list under a checked
-            // item is governed by its *own* item — an unchecked sub-task is still
-            // to do, whatever its parent says. (Tiptap's descendant selector
-            // strikes those too; this reads better.)
-            let outer = inCheckedItem
-            inCheckedItem = checked
-            y = layoutFragment(item.content, docPos: pos + 1, x: x + indent, width: width - indent, y: y)
-            inCheckedItem = outer
+            let itemY = y, itemPos = pos
+            y = layoutListItem(item, docPos: itemPos, x: x, width: width, y: itemY, marker: "") {
+                let boxSize = Self.checkboxSize(for: theme, item: item)
+                // Clamped into the content column: a box sized from the text can
+                // outgrow its gutter, and it must never reach into the page margin
+                // — still less off the left edge of the view.
+                let boxRect = CGRect(x: max(x, x + indent - boxSize - gap),
+                                     y: itemY + Self.checkboxOffset(for: theme, item: item, boxSize: boxSize),
+                                     width: boxSize, height: boxSize)
+                // The checkbox itself is a managed UIView (see EditorTextView's
+                // checkbox-view recycling) positioned over this rect — the layout
+                // only reserves its (touch-padded) box for positioning + hit-test.
+                checkboxes.append((rect: boxRect.insetBy(dx: -6, dy: -6), pos: itemPos, checked: checked))
+                // The item's whole subtree is typeset in its checked style. Saved and
+                // restored rather than just set, so a nested list under a checked
+                // item is governed by its *own* item — an unchecked sub-task is still
+                // to do, whatever its parent says. (Tiptap's descendant selector
+                // strikes those too; this reads better.)
+                let outer = inCheckedItem
+                inCheckedItem = checked
+                let endY = layoutFragment(item.content, docPos: itemPos + 1, x: x + indent, width: width - indent, y: itemY)
+                inCheckedItem = outer
+                return endY
+            }
             pos += item.nodeSize
         }
         return y
