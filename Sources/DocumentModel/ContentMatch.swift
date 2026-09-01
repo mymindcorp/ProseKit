@@ -172,9 +172,9 @@ enum ContentExpression {
         if stream.next != nil {
             throw ModelError.schemaError("Unexpected trailing text in content expression: \(string)")
         }
-        let nfaResult = nfa(expr)
-        try checkForDeadEnds(nfaResult, stream)
-        return dfa(nfaResult)
+        let match = dfa(nfa(expr))
+        try checkForDeadEnds(match, stream)
+        return match
     }
 
     // Tokenizer
@@ -283,6 +283,12 @@ enum ContentExpression {
         if !stream.eat("}") {
             throw ModelError.schemaError("Unclosed braced range")
         }
+        // Upstream lets `{2,1}` through and quietly treats it as `{2}`; here
+        // the NFA builder would trap on the inverted range instead. Neither is
+        // what the author meant.
+        if maxV != -1 && maxV < minV {
+            throw ModelError.schemaError("Invalid range {\(minV),\(maxV)}: the upper bound is below the lower (in content expression '\(stream.string)')")
+        }
         return .range(min: minV, max: maxV, expr: expr)
     }
 
@@ -301,6 +307,16 @@ enum ContentExpression {
         let types = resolveName(tok, stream.nodeTypes)
         if types.isEmpty {
             throw ModelError.schemaError("No node type or group '\(tok)' found")
+        }
+        // Whether a node holds inline content is read off the first edge of its
+        // content match, so an expression that mixes the two kinds would answer
+        // that by accident of ordering. Upstream refuses it at this point too.
+        for type in types {
+            if stream.inline == nil {
+                stream.inline = type.isInline
+            } else if stream.inline != type.isInline {
+                throw ModelError.schemaError("Mixing inline and block content (in content expression '\(stream.string)')")
+            }
         }
         stream.pos += 1
         let exprs = types.map { Expr.name($0) }
@@ -464,8 +480,28 @@ enum ContentExpression {
         return explore([0])
     }
 
-    static func checkForDeadEnds(_ nfa: NFA, _ stream: TokenStream) throws(ModelError) {
-        // Best-effort: no-op. ProseMirror warns on dead ends; we skip for now.
-        _ = nfa; _ = stream
+    /// Refuse an expression with a required position that nothing can be
+    /// generated for. `fillBefore` and `createAndFill` make up missing content
+    /// from types they can build without help — not text, and not a type with
+    /// a required attribute — so a state that is not a valid end and offers
+    /// only those has no way out: `createAndFill` comes back `nil` at
+    /// runtime, on a schema that looked fine when it was built.
+    static func checkForDeadEnds(_ match: ContentMatch, _ stream: TokenStream) throws(ModelError) {
+        var work: [ContentMatch] = [match]
+        var i = 0
+        while i < work.count {
+            let state = work[i]
+            i += 1
+            var dead = !state.validEnd
+            var nodes: [String] = []
+            for edge in state.next {
+                nodes.append(edge.type.name)
+                if dead, !(edge.type.isText || edge.type.hasRequiredAttrs) { dead = false }
+                if !work.contains(where: { $0 === edge.next }) { work.append(edge.next) }
+            }
+            if dead {
+                throw ModelError.schemaError("Only non-generatable nodes (\(nodes.joined(separator: ", "))) in a required position (in content expression '\(stream.string)')")
+            }
+        }
     }
 }
