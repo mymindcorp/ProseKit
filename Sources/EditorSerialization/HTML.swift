@@ -858,8 +858,12 @@ public enum HTMLParser {
                 // Document/section wrappers (incl. <html>/<body> from full-document
                 // clipboard HTML, e.g. Apple Notes): splice their children in.
                 if transparentWrappers.contains(tag) {
+                    // `max`, here and below: `matchingClose` answers a
+                    // self-closing tag with the tag's own index, so `<div/>`
+                    // (or `<html/>`, `<body/>`) made this an inverted range
+                    // and trapped — foreign markup pasted in took the app down.
                     let e = matchingClose(tokens, i, tag)
-                    result.append(contentsOf: parseBlocks(tokens[(i + 1)..<e], schema, config))
+                    result.append(contentsOf: parseBlocks(tokens[(i + 1)..<max(i + 1, e)], schema, config))
                     i = e + 1; continue
                 }
                 // <head>/<style>/<script>/… — drop entirely.
@@ -869,7 +873,7 @@ public enum HTMLParser {
                 if tag == "div", attrs["data-type"] == "footnoteDefinition",
                    let type = schema.nodes["footnoteDefinition"] {
                     let e = matchingClose(tokens, i, tag)
-                    var blocks = parseBlocks(tokens[(i + 1)..<e], schema, config)
+                    var blocks = parseBlocks(tokens[(i + 1)..<max(i + 1, e)], schema, config)
                     if blocks.isEmpty, let para = try? schema.node("paragraph") { blocks = [para] }
                     if let definition = try? type.createChecked(["label": .string(attrs["data-label"] ?? "")],
                                                                 content: Fragment.from(blocks)) {
@@ -881,7 +885,7 @@ public enum HTMLParser {
                 // otherwise treat its inline content as a paragraph (preserving marks).
                 if tag == "div" {
                     let e = matchingClose(tokens, i, tag)
-                    let inner = tokens[(i + 1)..<e]
+                    let inner = tokens[(i + 1)..<max(i + 1, e)]
                     if containsBlockTag(inner) {
                         result.append(contentsOf: parseBlocks(inner, schema, config))
                     } else {
@@ -989,7 +993,7 @@ public enum HTMLParser {
         while i < end {
             if case let .open(t, sAttrs, selfClosing) = tokens[i], t == "summary", !selfClosing, summaryTokens.isEmpty {
                 let sEnd = matchingClose(tokens, i, "summary")
-                summaryTokens = tokens[(i + 1)..<min(sEnd, end)]
+                summaryTokens = tokens[(i + 1)..<max(i + 1, min(sEnd, end))]
                 summaryAttrs = sAttrs
                 i = min(sEnd, end) + 1
                 continue

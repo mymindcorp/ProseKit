@@ -2,6 +2,7 @@ import Foundation
 import DocumentModel
 import DocumentTransform
 import EditorCollab
+import EditorHistory
 import EditorStateKit
 import SchemaKit
 import TestDocGen
@@ -156,6 +157,88 @@ func registerCollabFuzzTests() {
             }
         }
     }
+    test("collab fuzz: peers that undo and redo still converge, and only undo their own work") {
+        // Undo under collaboration is its own machine: the history has to rebase
+        // its stored inverses over remote steps as they arrive, and an undo has
+        // to take back *this* peer's edit and nothing a collaborator typed in
+        // the meantime. So each peer types markers carrying its own id into its
+        // own paragraph, everyone syncs, and every peer undoes and redoes at
+        // random. Convergence still has to hold, and the text an undo removes
+        // may only ever be that peer's own markers.
+        for seed in 1 ... fuzzOpSeeds {
+            var rng = SelRNG(seed &* 59 &+ 23)
+            let session = try FuzzSession(peers: 3, history: true)
+            for peer in session.peers {
+                // The paragraph each peer owns, and not an undo event: the
+                // sweep is about undoing *markers*.
+                let tr = peer.editor.state.tr
+                try tr.split(peer.editor.doc.content.size - 1, 1)
+                tr.setMeta("addToHistory", false)
+                peer.editor.dispatch(tr)
+                peer.sync()
+            }
+            session.settle()
+
+            var log: [String] = []
+            for op in 0 ..< fuzzCollabOps {
+                let index = Int.random(in: 0 ..< session.peers.count, using: &rng)
+                let peer = session.peers[index]
+                switch Int.random(in: 0 ..< 5, using: &rng) {
+                case 0, 1:
+                    let redo = Int.random(in: 0 ..< 3, using: &rng) == 0
+                    let before = peer.editor.doc.textContent
+                    let did = key(peer.editor, redo ? "Mod-y" : "Mod-z")
+                    log.append("peer \(peer.clientID) \(redo ? "redo" : "undo") -> \(did)")
+                    // Whatever text an undo (or redo) took out belonged to this
+                    // peer. Compared as marker sets: a marker names its author.
+                    let after = peer.editor.doc.textContent
+                    let removed = markers(in: before).subtracting(markers(in: after))
+                    let foreign = removed.filter { !$0.contains("p\(peer.clientID)x") }
+                    try expect(foreign.isEmpty,
+                               "peer \(peer.clientID)'s \(redo ? "redo" : "undo") removed another peer's text \(foreign.sorted()) at seed \(seed) — \(log.suffix(6).joined(separator: " | "))\n  steps: \(peer.lastTransaction?.steps.map { $0.toJSON() } ?? [])\n  before: \(before.debugDescription)\n  after:  \(after.debugDescription)")
+                case 2:
+                    peer.sync(); log.append("peer \(peer.clientID) sync")
+                default:
+                    let marker = "m\(seed)p\(peer.clientID)x\(op)z"
+                    guard let at = paragraphStart(peer.editor.doc, index) else { continue }
+                    let tr = peer.editor.state.tr
+                    guard (try? tr.insertText(marker, at)) != nil else { continue }
+                    peer.editor.dispatch(tr)
+                    peer.editor.dispatch(closeHistory(peer.editor.state.tr))
+                    log.append("peer \(peer.clientID) types \(marker)")
+                }
+                for other in session.peers {
+                    var invalid: (any Error)?
+                    do { try other.editor.doc.check() } catch { invalid = error }
+                    try expect(invalid == nil,
+                               "peer \(other.clientID) holds an invalid document at seed \(seed) — \(log.suffix(4).joined(separator: " | ")): \(invalid.map { "\($0)" } ?? "")")
+                    try checkSelectionValid(other.editor.state.selection, in: other.editor.doc,
+                                            "peer \(other.clientID) at seed \(seed) — \(log.suffix(4).joined(separator: " | "))")
+                }
+            }
+            session.settle()
+
+            let ctx = "seed \(seed) — \(log.suffix(8).joined(separator: " | "))"
+            for peer in session.peers {
+                try expect(peer.editor.doc.toJSON() == session.authority.doc.toJSON(),
+                           "peer \(peer.clientID) diverged from the authority at \(ctx)")
+                try expectNil(sendableSteps(peer.editor.state))
+            }
+        }
+    }
+
+}
+
+/// The markers in a text: `m<seed>p<peer>x<op>z`.
+private func markers(in text: String) -> Set<String> {
+    var out = Set<String>()
+    var rest = text[...]
+    while let m = rest.range(of: "m"), let z = rest[m.lowerBound...].firstIndex(of: "z") {
+        let candidate = rest[m.lowerBound ... z]
+        if candidate.contains("p"), candidate.contains("x") { out.insert(String(candidate)) }
+        rest = rest[rest.index(after: m.lowerBound)...]
+    }
+    return out
 }
 
 /// The first text position inside the `index`-th top-level paragraph, or nil if
@@ -222,14 +305,19 @@ final class FuzzPeer {
     let clientID: Int
     let authority: FuzzAuthority
 
-    init(clientID: Int, authority: FuzzAuthority) throws {
+    init(clientID: Int, authority: FuzzAuthority, history: Bool = false) throws {
         self.clientID = clientID
         self.authority = authority
-        // History off: an undo is a local edit like any other for these
-        // purposes, and the plugin's own transactions would only make the op
-        // log harder to read back.
-        editor = try Editor(extensions: fuzzKit() + [CollabExtension(clientID: clientID)], history: false)
+        // History off by default: an undo is a local edit like any other for
+        // the convergence properties, and the plugin's own transactions only
+        // make the op log harder to read back. The undo sweep turns it on.
+        editor = try Editor(extensions: fuzzKit() + [CollabExtension(clientID: clientID)], history: history)
+        editor.onTransaction = { [weak self] tr in self?.lastTransaction = tr }
     }
+
+    /// The last transaction this peer dispatched, for a failure message that
+    /// can say what the undo actually did.
+    private(set) var lastTransaction: Transaction?
 
     func edit(_ rng: inout SelRNG) -> String { fuzzStep(editor, &rng) }
 
@@ -261,10 +349,10 @@ final class FuzzSession {
     let authority: FuzzAuthority
     let peers: [FuzzPeer]
 
-    init(peers count: Int) throws {
+    init(peers count: Int, history: Bool = false) throws {
         let authority = try FuzzAuthority()
         self.authority = authority
-        peers = try (1 ... count).map { try FuzzPeer(clientID: $0, authority: authority) }
+        peers = try (1 ... count).map { try FuzzPeer(clientID: $0, authority: authority, history: history) }
     }
 
     /// Sync until nothing is left to send. Each full pass confirms at least one

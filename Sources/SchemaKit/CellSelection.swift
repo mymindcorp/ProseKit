@@ -262,7 +262,11 @@ public struct CellBookmark: SelectionBookmark {
         CellBookmark(anchor: mapping.map(anchor), head: mapping.map(head))
     }
     public func resolve(_ doc: Node) -> Selection {
-        let aCell = doc.resolve(anchor), hCell = doc.resolve(head)
+        // Clamped like every other bookmark: a redo's bookmark can sit a few
+        // positions past the document under collaboration, and `resolve`
+        // outside the document is a precondition, not an error.
+        let size = doc.content.size
+        let aCell = doc.resolve(min(max(anchor, 0), size)), hCell = doc.resolve(min(max(head, 0), size))
         if CellSelection.canSelectCells(aCell, hCell) { return CellSelection(aCell, hCell) }
         return Selection.near(hCell, 1)
     }

@@ -292,7 +292,12 @@ private struct RegExpQuery: QueryImpl {
             let hi = hay.distance(from: hay.startIndex, to: r.upperBound)
             groups.append(SearchMatchGroup(range: lo..<hi, text: String(hay[r])))
         }
-        guard let whole = groups.first?.range else { return nil }
+        // Empty *in document positions*, not only in the pattern's own units.
+        // The regex works in UTF-16; a document position is a character. `.`
+        // matches a lone combining mark inside `e\u{0301}`, and that is a
+        // non-empty NSRange whose two ends are the same character — a match
+        // 6..6 that no earlier guard could see, drawn as an empty highlight.
+        guard let whole = groups.first?.range, !whole.isEmpty else { return nil }
         return SearchResult(from: blockStart + whole.lowerBound, to: blockStart + whole.upperBound,
                             match: groups, matchStart: blockStart)
     }
@@ -313,9 +318,10 @@ private struct RegExpQuery: QueryImpl {
             // rather than a `firstMatch` per offset, which was quadratic in the
             // block on exactly the queries that produce empty matches.
             let searchRange = NSRange(hay.index(hay.startIndex, offsetBy: lo)..<hay.endIndex, in: hay)
-            guard let found = regex.matches(in: hay, options: [], range: searchRange)
-                    .first(where: { $0.range.length > 0 }) else { return nil }
-            return result(from: found, in: hay, blockStart: start)
+            // `result` is nil for a match with no width in document positions,
+            // so the first non-nil result is the first real match.
+            return regex.matches(in: hay, options: [], range: searchRange)
+                .lazy.compactMap { self.result(from: $0, in: hay, blockStart: start) }.first
         }
     }
 
@@ -352,17 +358,17 @@ private struct RegExpQuery: QueryImpl {
             guard hi > 0, hi <= content.count else { return nil }
             let hay = String(content[..<content.index(content.startIndex, offsetBy: hi)])
             // Like upstream: walk overlapping match starts and keep the last.
-            var best: NSTextCheckingResult?
+            var best: SearchResult?
             var off = 0
             while off <= hay.count {
                 let searchRange = NSRange(hay.index(hay.startIndex, offsetBy: off)..<hay.endIndex, in: hay)
                 guard let m = regex.firstMatch(in: hay, options: [], range: searchRange),
                       let r = Range(m.range, in: hay) else { break }
-                if !r.isEmpty { best = m } // see findNext: an empty match is not one
+                // Keep the last match with width; `result` decides width.
+                if let res = result(from: m, in: hay, blockStart: start) { best = res }
                 off = hay.distance(from: hay.startIndex, to: r.lowerBound) + 1
             }
-            guard let best else { return nil }
-            return result(from: best, in: hay, blockStart: start)
+            return best
         }
     }
 }

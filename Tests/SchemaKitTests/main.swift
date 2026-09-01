@@ -246,6 +246,8 @@ registerMarkFuzzTests()
 registerInputRuleFuzzTests()
 registerDecorationFuzzTests()
 registerSearchFuzzTests()
+registerIncrementalSearchFuzzTests()
+registerForeignMarkupFuzzTests()
 registerSelectionCommandFuzzTests()
 
 registerPMListTests(); registerPMTableMapTests(); registerPMTableCommandsTests(); registerPMCellCopyPasteTests(); registerPMTableExtraTests()
