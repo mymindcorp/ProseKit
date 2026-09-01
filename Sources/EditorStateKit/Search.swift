@@ -245,9 +245,17 @@ private struct RegExpQuery: QueryImpl {
             let hay = String(content[..<content.index(content.startIndex, offsetBy: hi)])
             let lo = max(0, from - start)
             guard lo <= hay.count else { return nil }
+            // The first match *with width*. An empty match is not a match: `a|`
+            // and `.*` match the empty string at every position, and a result
+            // whose `to` equals the `from` it was searched from sends every
+            // "find all" loop — the highlighter's included — round forever; the
+            // find bar spun until the process was killed. One enumeration pass
+            // rather than a `firstMatch` per offset, which was quadratic in the
+            // block on exactly the queries that produce empty matches.
             let searchRange = NSRange(hay.index(hay.startIndex, offsetBy: lo)..<hay.endIndex, in: hay)
-            guard let m = regex.firstMatch(in: hay, options: [], range: searchRange) else { return nil }
-            return result(from: m, in: hay, blockStart: start)
+            guard let found = regex.matches(in: hay, options: [], range: searchRange)
+                    .first(where: { $0.range.length > 0 }) else { return nil }
+            return result(from: found, in: hay, blockStart: start)
         }
     }
 
@@ -264,7 +272,7 @@ private struct RegExpQuery: QueryImpl {
                 let searchRange = NSRange(hay.index(hay.startIndex, offsetBy: off)..<hay.endIndex, in: hay)
                 guard let m = regex.firstMatch(in: hay, options: [], range: searchRange),
                       let r = Range(m.range, in: hay) else { break }
-                best = m
+                if !r.isEmpty { best = m } // see findNext: an empty match is not one
                 off = hay.distance(from: hay.startIndex, to: r.lowerBound) + 1
             }
             guard let best else { return nil }
@@ -422,7 +430,10 @@ private func buildMatchDeco(_ state: EditorState, _ query: SearchQuery, _ range:
         let cls = next.from == sel.from && next.to == sel.to
             ? "ProseMirror-active-search-match" : "ProseMirror-search-match"
         deco.append(.inline(next.from, next.to, ["class": cls]))
-        pos = next.to
+        // Always forward. This runs on every transaction while a query is set,
+        // so a matcher that ever handed back an empty match here would hang the
+        // editor on the next keystroke, not just the find bar.
+        pos = Swift.max(next.to, pos + 1)
     }
     return DecorationSet(deco)
 }

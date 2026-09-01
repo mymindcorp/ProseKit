@@ -1,4 +1,4 @@
-import DocumentModel
+public import DocumentModel
 public import DocumentTransform
 
 /// A visual decoration over a document range that does not change the document
@@ -64,7 +64,14 @@ public struct DecorationSet: Sendable, Equatable {
     }
 
     /// Remap all decorations through a mapping, dropping any that were deleted.
-    public func map(_ mapping: Mapping) -> DecorationSet {
+    ///
+    /// Pass the document the mapping leads to when there is one. A node
+    /// decoration promises to span exactly one node, and mapping its two ends
+    /// can't tell that the node was *split* — both ends survive, the span just
+    /// now covers two paragraphs — so with the document to hand, a node
+    /// decoration that no longer spans one node is dropped, as ProseMirror's
+    /// does. Without it, the ends are mapped and the caller is trusted.
+    public func map(_ mapping: Mapping, doc: Node? = nil) -> DecorationSet {
         let mapped = decorations.compactMap { d -> Decoration? in
             let from = mapping.map(d.from, 1)
             switch d.kind {
@@ -80,6 +87,11 @@ public struct DecorationSet: Sendable, Equatable {
                 let fromResult = mapping.mapResult(d.from, 1)
                 let toResult = mapping.mapResult(d.to, -1)
                 if fromResult.deleted || toResult.deleted || toResult.pos <= fromResult.pos { return nil }
+                if let doc {
+                    guard fromResult.pos <= doc.content.size,
+                          let node = doc.resolve(fromResult.pos).nodeAfter,
+                          fromResult.pos + node.nodeSize == toResult.pos else { return nil }
+                }
                 return Decoration(from: fromResult.pos, to: toResult.pos, kind: .node, attributes: d.attributes)
             }
         }

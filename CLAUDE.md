@@ -56,12 +56,20 @@ generated documents, which costs more than the rest of their suite put together.
 text-input sequences, is cheap, and always runs.)
 
 Model and state (selections, commands, history, mapping, steps, serialization,
-collaboration, copy/paste, track changes):
+collaboration, copy/paste, track changes, tables, marks, input rules,
+decorations, search):
 
 ```sh
 PROSEKIT_FUZZ=1 swift run SchemaKitTests
 PROSEKIT_FUZZ=1 PROSEKIT_FUZZ_DOCS=1000 swift run SchemaKitTests   # a deeper hunt
 PROSEKIT_FUZZ=1 PROSEKIT_FUZZ_OPS=200 swift run SchemaKitTests     # more editing seeds
+```
+
+The LaTeX parser and layout (random token soup, every prefix and one-character
+typo of the notation corpus, pathological nesting):
+
+```sh
+PROSEKIT_FUZZ=1 swift run EditorMathTests
 ```
 
 The two knobs scale different sweeps, because the sweeps take different input:
