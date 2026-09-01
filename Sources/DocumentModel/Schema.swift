@@ -127,7 +127,9 @@ public final class NodeType: @unchecked Sendable {
     /// over `blockquote` when filling `block+`.
     public internal(set) var schemaOrder: Int = 0
 
-    /// The default attribute values, or `nil` when there are required attrs.
+    /// The default value of every attribute that has one. Unlike upstream's,
+    /// this is never `nil`: a type with a required attribute gets the defaults
+    /// of its other attributes, and `hasRequiredAttrs` says the rest.
     public private(set) var defaultAttrs: Attrs = [:]
     public private(set) var hasRequiredAttrs: Bool = false
 
@@ -198,9 +200,10 @@ public final class NodeType: @unchecked Sendable {
     /// Like `create`, but check that the content matches the type's content
     /// expression, and throw if it does not.
     public func createChecked(_ attrs: Attrs = [:], content: Fragment = .empty, marks: [Mark] = []) throws(ModelError) -> Node {
-        if contentMatch.matchFragment(content)?.validEnd != true {
-            throw ModelError.invalidContent("Invalid content for node \(name)")
-        }
+        // `checkContent`, not the content expression alone: a code block
+        // holding bold text matches `text*` and is still invalid, because the
+        // marks a node allows are part of what makes its content valid.
+        try checkContent(content)
         return try create(attrs, content: content, marks: marks)
     }
 
@@ -292,12 +295,23 @@ public final class MarkType: @unchecked Sendable {
         }
     }
 
+    /// Create a mark of this type. Attributes not given take their defaults.
+    /// A required attribute that is not given is a programming error and
+    /// traps, naming the attribute; a mark arriving from JSON goes through
+    /// `Mark.fromJSON`, which throws for the same input instead.
     public func create(_ attrs: Attrs = [:]) -> Mark {
         if attrs.isEmpty && !hasRequiredAttrs {
             return Mark(type: self, attrs: defaultAttrs)
         }
-        let computed = (try? Schema.computeAttrs(self.attrs, attrs, what: "mark '\(name)'")) ?? defaultAttrs
-        return Mark(type: self, attrs: computed)
+        do {
+            return Mark(type: self, attrs: try Schema.computeAttrs(self.attrs, attrs, what: "mark '\(name)'"))
+        } catch {
+            // Falling back to the defaults here built a mark *without* the
+            // attribute — a link with no href — that nothing but `check()`
+            // would ever notice, long after the code that left it out had
+            // returned. ProseMirror throws; the node side already does.
+            preconditionFailure("\(error)")
+        }
     }
 
     public func checkAttrs(_ attrs: Attrs) throws(ModelError) {
@@ -343,6 +357,18 @@ public final class Schema: @unchecked Sendable {
             markOrder.append(pair.0)
         }
 
+        for name in nodeOrder where markTypes[name] != nil {
+            throw ModelError.schemaError("\(name) can not be both a node and a mark")
+        }
+        // `text` is the one type every schema is assumed to have — `Schema.text`
+        // and every parser reach for it by name — and a text node's text lives
+        // outside its attributes, which is why it may not declare any.
+        guard let textType = nodeTypes["text"] else {
+            throw ModelError.schemaError("Every schema needs a 'text' type")
+        }
+        if !textType.attrs.isEmpty {
+            throw ModelError.schemaError("The text node type should not have attributes")
+        }
         guard let top = nodeTypes[topNode] else {
             throw ModelError.schemaError("The top node type '\(topNode)' is not in the schema")
         }
@@ -408,8 +434,13 @@ public final class Schema: @unchecked Sendable {
         try type.create(attrs, content: content, marks: marks)
     }
 
-    /// Create a text node. Empty text is not allowed.
+    /// Create a text node. Empty text nodes are not allowed: a node of size
+    /// zero sits between two positions without occupying one, so a document
+    /// holding one is not in the joined form the rest of the model assumes
+    /// and compares unequal to itself rebuilt. That is a programming error
+    /// here; `Node.fromJSON` throws for the same input.
     public func text(_ text: String, _ marks: [Mark] = []) -> Node {
+        precondition(!text.isEmpty, "Empty text nodes are not allowed")
         let type = nodes["text"]!
         return Node(type: type, attrs: type.defaultAttrs, content: .empty, marks: Mark.setFrom(marks), text: text)
     }

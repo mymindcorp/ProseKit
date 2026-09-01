@@ -46,12 +46,6 @@ Use it to find what's new when re-auditing: read each package's CHANGELOG from t
   attribute. `SchemaKit`'s `DetailsExtension` always stores `open` in the
   document — there is no node view here to hold view-only state, and the
   CoreText renderer reads the attribute to decide whether to lay out the body.
-- **`Slice.insertAt` content check** (prosemirror-model): upstream's `insertInto`
-  refuses an insertion the parent's content expression rejects. The Swift
-  `insertAt` never had that check, so it accepts insertions upstream would turn
-  into a failed step. Narrower than it was — 1.25.5 dropped the check for open
-  nodes, which is most of the cases — and the invalid slice still fails in
-  `doc.replace`, which is what `ReplaceAroundStep` goes on to call.
 - **`splitBlock` on an `AllSelection`** (prosemirror-commands): upstream bails
   before deleting anything when the selection's `$from` sits at depth 0, which an
   `AllSelection` always does. In a browser that is not the end of it — the keymap
@@ -163,6 +157,28 @@ doesn't have to rediscover them.
 
 ## Ported-fix log
 
+- **2026-09-01** — `prosemirror-model` (no single release; the port had diverged
+  from behaviour upstream has always had): the model now refuses the invalid
+  input it used to accept. `MarkType.create` built a mark *without* a required
+  attribute — a link with no href — by falling back to the defaults; it traps
+  now, and `Mark.fromJSON` throws, which is the door a collab step or stored
+  document comes through. `Schema.text("")` and `Node.fromJSON` produced a text
+  node of size zero, which `check()` passed and which made a document compare
+  unequal to itself rebuilt; the first traps, the second throws.
+  `NodeType.createChecked` checked the content expression but not the node's
+  mark set, so a code block holding bold text was "checked". And the schema
+  compiler skipped upstream's build-time checks: `checkForDeadEnds` was a
+  no-op, so a required position only a non-generatable node could fill built
+  fine and `createAndFill` came back `nil` at runtime; an expression mixing
+  inline and block content was accepted and `inlineContent` decided by
+  whichever came first; a name could be both a node and a mark; a schema
+  without a `text` type built and trapped later in `Schema.text`; and an
+  inverted range like `{2,1}` trapped inside the NFA builder rather than
+  reporting the expression. `Sources/DocumentModel/{Schema,Node,Mark,ContentMatch}.swift`;
+  regression tests in `Tests/DocumentModelTests/Validation.swift`. The same
+  pass added direct tests for `textBetween`'s `leafText` (ported from
+  upstream's `test-node.ts`), the `ResolvedPos` helpers that only transform
+  and state tests had reached, and grapheme-cluster `findDiffStart`/`End`.
 - **2026-08-22** — `prosemirror-model` 1.25.3/1.25.5: `Slice.insertAt` asks the
   node the content lands in whether it may hold it, and returns `nil` when it may
   not. Without that check a `ReplaceAroundStep` could drop its gap anywhere the
