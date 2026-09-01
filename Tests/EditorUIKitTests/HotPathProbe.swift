@@ -32,7 +32,7 @@ final class HotPathProbe: XCTestCase {
         unsafe fflush(stdout)
     }
 
-    private func makeView(_ n: Int, taskList: Bool = false) -> EditorTextView {
+    private func makeView(_ n: Int, taskList: Bool = false, spell: Bool = false) -> EditorTextView {
         let editor = try! Editor(extensions: fullKit())
         let s = editor.schema
         let words = Array(repeating: "lorem ipsum dolor sit amet", count: 12).joined(separator: " ")
@@ -53,11 +53,29 @@ final class HotPathProbe: XCTestCase {
         editor.setContent(doc)
         let view = EditorTextView(editor: editor)
         view.frame = CGRect(x: 0, y: 0, width: Self.width, height: Self.viewport)
-        view.spellCheckingEnabled = false
+        view.spellCheckingEnabled = spell
         view.layoutIfNeeded()
         let l = view.ensureLayout()
         _ = l.realize(window: 0 ... .greatestFiniteMagnitude)
         view.contentOffsetY = max((l.height - Self.viewport) / 2, 0)
+        return view
+    }
+
+    /// One paragraph of `words` words (a wall of text), with the viewport
+    /// spell pass already done so keystrokes hit the steady state.
+    private func makeParagraphView(words: Int, spell: Bool) -> EditorTextView {
+        let editor = try! Editor(extensions: fullKit())
+        let s = editor.schema
+        let vocabulary = ["lorem", "ipsum", "dolor", "sit", "amet", "consectetur", "adipiscing", "elit", "teh", "recieve"]
+        let text = (0 ..< words).map { vocabulary[$0 % vocabulary.count] }.joined(separator: " ")
+        let para = try! s.node("paragraph", [:], content: Fragment.from([s.text(text)]))
+        editor.setContent(try! s.node("doc", [:], content: Fragment.from([para])))
+        let view = EditorTextView(editor: editor)
+        view.frame = CGRect(x: 0, y: 0, width: Self.width, height: Self.viewport)
+        view.spellCheckingEnabled = spell
+        view.layoutIfNeeded()
+        _ = view.ensureLayout()
+        view.runSpellPassIfNeeded()
         return view
     }
 
@@ -139,6 +157,34 @@ final class HotPathProbe: XCTestCase {
                     .setSelection(TextSelection.create(view.editor.doc, 4)))
                 let ms = bestMs(5) { for _ in 0 ..< 20 { view.insertText("x") } } / 20
                 row("\(n) paragraphs, find \(searching ? "open" : "closed")", ms)
+            }
+        }
+    }
+
+    /// Typing with spell checking on, against off. The edit re-checks spelling
+    /// synchronously on every keystroke, so its cost should follow the word
+    /// being typed — not the paragraph it is in, and not the document.
+    func testKeystrokeSpellCheck() {
+        print("\n  --- one keystroke, spell checking ---")
+        for n in [200, 3000] {
+            for spell in [false, true] {
+                let view = makeView(n, spell: spell)
+                view.contentOffsetY = 0
+                view.runSpellPassIfNeeded()
+                view.editor.dispatch(view.editor.state.tr
+                    .setSelection(TextSelection.create(view.editor.doc, 4)))
+                let ms = bestMs(5) { for _ in 0 ..< 20 { view.insertText("x") } } / 20
+                row("\(n) short paragraphs, spell \(spell ? "on" : "off")", ms)
+            }
+        }
+        for words in [60, 600, 3000] {
+            for spell in [false, true] {
+                let view = makeParagraphView(words: words, spell: spell)
+                let mid = view.editor.doc.content.size / 2
+                view.editor.dispatch(view.editor.state.tr
+                    .setSelection(TextSelection.create(view.editor.doc, mid)))
+                let ms = bestMs(5) { for _ in 0 ..< 20 { view.insertText("x") } } / 20
+                row("one \(words)-word paragraph, spell \(spell ? "on" : "off")", ms)
             }
         }
     }
