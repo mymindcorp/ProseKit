@@ -81,10 +81,10 @@ final class SpellCheckTests: XCTestCase {
                       "a deleted word's underline is dropped, not collapsed")
     }
 
-    func testOnlyTheEditedBlockIsRevalidated() throws {
-        // Two paragraphs; the cache holds a real underline in block 1 and a
-        // sentinel (whole-block range, which the word checker never produces)
-        // in block 2.
+    func testOnlyTheEditedWordIsRevalidated() throws {
+        // Two paragraphs. The cache holds a real underline in block 1, a real
+        // one on "paregraph" in block 2, and a sentinel inside "second" (a
+        // sub-word range the checker never produces).
         let editor = try Editor(extensions: fullKit())
         let s = editor.schema
         editor.setContent(try s.node("doc", [:], content: Fragment.from([
@@ -93,21 +93,80 @@ final class SpellCheckTests: XCTestCase {
         ])))
         let v = EditorTextView(editor: editor)
         v.frame = CGRect(x: 0, y: 0, width: 320, height: 480)
-        v.spellCache = [decoration(1, 9), decoration(15, 31)]
+        v.spellCache = [decoration(1, 9), decoration(17, 19), decoration(22, 31)]
 
         let tr = editor.state.tr
-        try tr.insertText("x", 16) // edit inside block 2
+        try tr.insertText("x", 16) // "sxecond paregraph"
         editor.dispatch(tr)
 
         let cache = v.spellCache
         // Block 1 untouched: the edit was after it, so its underline is identical.
         XCTAssertTrue(cache.contains { $0.from == 1 && $0.to == 9 }, "block-1 underline must survive unchanged")
-        // The block-2 sentinel (would map to 15...32) was replaced, not mapped.
-        XCTAssertFalse(cache.contains { $0.from == 15 && $0.to == 32 }, "block-2 cache must be re-checked, not mapped")
-        // Whatever the checker found in block 2 stays inside block 2.
-        XCTAssertTrue(cache.filter { $0.from >= 14 }.allSatisfy { $0.from >= 15 && $0.to <= 33 })
-        // "paregraph" is misspelled, so the immediate re-check flags it.
-        XCTAssertTrue(cache.contains { $0.from >= 23 }, "misspelling in the edited block is flagged immediately")
+        // "paregraph" was not re-checked, only shifted: its cached underline
+        // moved with the text rather than being regenerated.
+        XCTAssertTrue(cache.contains { $0.from == 23 && $0.to == 32 }, "the untouched word's underline is mapped, not dropped")
+        // The sentinel sat inside the edited word, so it was replaced, not mapped.
+        XCTAssertFalse(cache.contains { $0.to == 19 }, "the edited word's cache must be re-checked, not mapped")
+        // ...by what the checker says about the word now under the caret.
+        XCTAssertTrue(cache.contains { $0.from == 15 && $0.to == 22 }, "the misspelling just typed is flagged immediately")
+    }
+
+    // MARK: - Re-checking around an edit
+
+    private func paragraphs(_ texts: [String], code: Bool = false) throws -> Node {
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        let blocks = try texts.map { text in
+            try s.node(code ? "codeBlock" : "paragraph", [:], content: Fragment.from([s.text(text)]))
+        }
+        return try s.node("doc", [:], content: Fragment.from(blocks))
+    }
+
+    func testRecheckWidensToTheWordAroundTheEdit() throws {
+        let doc = try paragraphs(["aaa mispeled ccc"]) // "mispeled" at 5..13
+        let result = SpellCheck.recheck(doc, around: 7...8)
+        XCTAssertEqual(result.checked, [5...13], "the word containing the edit, and only that word")
+        XCTAssertEqual(result.decorations.map { ($0.from, $0.to) }.map { "\($0)-\($1)" }, ["5-13"])
+    }
+
+    func testRecheckCoversBothSidesOfASplitWord() throws {
+        // A space typed into "hello" leaves two new words: both are checked.
+        let doc = try paragraphs(["hel lo"])
+        XCTAssertEqual(SpellCheck.recheck(doc, around: 4...5).checked, [1...7])
+    }
+
+    func testRecheckAtAWordStartLeavesThePreviousWordAlone() throws {
+        let doc = try paragraphs(["foo baz"]) // "baz" at 5..8
+        XCTAssertEqual(SpellCheck.recheck(doc, around: 5...5).checked, [5...8])
+    }
+
+    func testRecheckOfWhitespaceOnlyChecksNothing() throws {
+        let doc = try paragraphs(["foo  bar"]) // two spaces: positions 4 and 5
+        let result = SpellCheck.recheck(doc, around: 5...5)
+        XCTAssertTrue(result.checked.isEmpty)
+        XCTAssertTrue(result.decorations.isEmpty)
+    }
+
+    func testRecheckSkipsCode() throws {
+        let doc = try paragraphs(["mispeled"], code: true)
+        XCTAssertTrue(SpellCheck.recheck(doc, around: 3...4).checked.isEmpty)
+    }
+
+    func testRecheckAcrossAParagraphSplitChecksTheWordsOnBothSides() throws {
+        // "hello" | "wrold": the edit that split them spans the boundary.
+        let doc = try paragraphs(["hello", "wrold"]) // block 2 content at 8..13
+        let result = SpellCheck.recheck(doc, around: 6...8)
+        XCTAssertEqual(result.checked, [1...6, 8...13])
+        XCTAssertEqual(result.decorations.map { ($0.from, $0.to) }.map { "\($0)-\($1)" }, ["8-13"])
+    }
+
+    func testRecheckMapsUTF16OffsetsToPositions() throws {
+        // An emoji is one position but two UTF-16 units; a misspelling after
+        // it must land on document positions, not string offsets.
+        let doc = try paragraphs(["😀 mispeled"]) // "mispeled" at 3..11
+        let result = SpellCheck.recheck(doc, around: 5...6)
+        XCTAssertEqual(result.checked, [3...11])
+        XCTAssertEqual(result.decorations.map { ($0.from, $0.to) }.map { "\($0)-\($1)" }, ["3-11"])
     }
 }
 #endif

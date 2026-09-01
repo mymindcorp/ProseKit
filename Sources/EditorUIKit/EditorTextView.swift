@@ -1130,14 +1130,6 @@ open class EditorTextView: UIView, UIKeyInput {
         return spellCache
     }
 
-    /// Keep the spelling cache in step with an edit, without a full re-check:
-    /// shift the cached underlines through the transaction's mapping, then
-    /// synchronously re-check ONLY the textblock(s) the edit touched and
-    /// splice the result in. The cache stays valid for the new revision, so
-    /// the debounced viewport pass isn't scheduled while typing — underlines
-    /// outside the edited paragraph never change, and the edited paragraph
-    /// updates immediately. The word being typed is hidden separately
-    /// (`visibleSpellingRanges` skips the decoration under the caret).
     /// Carry an in-progress composition through a change it didn't make.
     ///
     /// `markedRange` is held in document positions, and a transaction from
@@ -1162,14 +1154,26 @@ open class EditorTextView: UIView, UIKeyInput {
         markedRange = (from.pos, to.pos)
     }
 
+    /// Keep the spelling cache in step with an edit, without a full re-check:
+    /// shift the cached underlines through the transaction's mapping, then
+    /// synchronously re-check ONLY the words the edit touched and splice the
+    /// result in. The cache stays valid for the new revision, so the debounced
+    /// viewport pass isn't scheduled while typing — underlines outside the
+    /// edited words never change, and the word under the caret updates
+    /// immediately (though `visibleSpellingRanges` hides it until the caret
+    /// leaves). Checking the words rather than the paragraph is what keeps a
+    /// keystroke flat in a wall of text: the checker's cost follows the span
+    /// it is given.
     private func mapSpellCache(through tr: Transaction) {
         guard tr.docChanged else { return }
         if !spellCache.isEmpty {
             spellCache = DecorationSet(spellCache).map(tr.mapping).find()
         }
         if let range = spellCheckedRange {
-            let lo = tr.mapping.map(range.lowerBound, 1)
-            let hi = tr.mapping.map(range.upperBound, -1)
+            // Text inserted at either edge is re-checked below, so let the
+            // range grow over it rather than shrink away from it.
+            let lo = tr.mapping.map(range.lowerBound, -1)
+            let hi = tr.mapping.map(range.upperBound, 1)
             spellCheckedRange = lo <= hi ? lo...hi : nil
         }
         guard spellCheckingEnabled else { return }
@@ -1189,27 +1193,15 @@ open class EditorTextView: UIView, UIKeyInput {
             }
         }
         guard lo <= hi else { return }
-
-        // Expand to whole textblocks (the checker works word-by-word; a partial
-        // block could split a word at the boundary).
-        let doc = editor.doc
-        func textblockBounds(_ pos: Int) -> ClosedRange<Int>? {
-            let resolved = doc.resolve(min(max(pos, 0), doc.content.size))
-            guard resolved.parent.isTextblock else { return nil }
-            return resolved.start() ... resolved.end()
-        }
-        let from = textblockBounds(lo)?.lowerBound ?? lo
-        let to = max(textblockBounds(hi)?.upperBound ?? hi, from)
         // A huge edit (multi-page paste): leave it to the debounced viewport
         // pass rather than blocking the keystroke.
-        guard to - from <= 10_000 else { return }
+        guard hi - lo <= 10_000 else { return }
 
-        let fresh = SpellCheck.decorations(for: doc, in: from...to)
-        spellCache = spellCache.filter { $0.to < from || $0.from > to } + fresh
+        let (checked, fresh) = SpellCheck.recheck(editor.doc, around: lo...hi)
+        spellCache = spellCache.filter { deco in
+            !checked.contains { deco.to >= $0.lowerBound && deco.from <= $0.upperBound }
+        } + fresh
         spellCheckedVersion = docVersion
-        if let range = spellCheckedRange {
-            spellCheckedRange = min(range.lowerBound, from) ... max(range.upperBound, to)
-        }
     }
 
     /// Run a spell pass for the region visible *now*, if still needed. Runs on
