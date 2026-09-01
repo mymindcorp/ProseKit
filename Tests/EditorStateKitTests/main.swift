@@ -280,6 +280,8 @@ registerPMSelectionTests()
 registerPMStateTests()
 registerPMGapCursorTests()
 registerPMSearchTests()
+registerSearchRebuildTests()
+registerSearchIncrementalTests()
 
 registerSelectionJSONGuardTests()
 registerSelectionEndpointTests()

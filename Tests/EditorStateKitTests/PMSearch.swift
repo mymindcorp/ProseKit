@@ -32,6 +32,14 @@ private func queryTest(_ query: SearchQuery, _ d: TaggedNode) throws {
     }
     try expectEqual("\(forward)", "\(matches)")
 
+    // `findAll` walks the document once instead of once per match. It must
+    // produce exactly what the loop above does — including where the whole-word
+    // test rejects a match whose overlapping neighbour is still good, which is
+    // the case a non-overlapping scan would get wrong. Asserted here so every
+    // query case below (regexp, whole-word, case folding, nesting) covers it.
+    let all = query.findAll(state, 0, d.node.content.size).map { (from: $0.from, to: $0.to) }
+    try expectEqual("\(all)", "\(forward)")
+
     var backward: [(from: Int, to: Int)] = []
     pos = d.node.content.size
     while let next = query.findPrev(state, pos) {
@@ -132,6 +140,115 @@ private func footnoteCase(_ inner: String) -> TaggedNode {
     let paragraph = try! s.node("paragraph", [:],
                                 content: Fragment.from([s.text("text"), note]))
     return TaggedNode(node: try! s.node("doc", [:], content: Fragment.from([paragraph])), tags: tags)
+}
+
+private func searchStateAfterSelection(_ state: EditorState, _ pos: Int) -> EditorState {
+    state.apply(state.tr.setSelection(TextSelection.create(state.doc, pos)))
+}
+
+func registerSearchRebuildTests() {
+    // Moving the caret cannot move the matches, so the plugin must not search
+    // the document again to find that out. It used to rebuild on every
+    // `selectionSet`, which on a few thousand paragraphs took over a second per
+    // arrow key. `SearchQueryState` is a class, so identity is the proof.
+    test("search: moving the caret off any match does not rebuild the decorations") {
+        let d = doc(p("<a>one two one two"), p("one two one two"))
+        let state = mkSearchState(SearchQuery(search: "one"), d)
+        let before = searchQueryKey.getState(state)
+        try expect(before != nil)
+        try expect((before?.deco.decorations.count ?? 0) >= 4)
+
+        // Two different non-match positions in a row: neither changes which
+        // match is active (none is), so both must return the same state object.
+        let moved = searchStateAfterSelection(state, 2)
+        try expect(searchQueryKey.getState(moved) === before)
+        let movedAgain = searchStateAfterSelection(moved, 6)
+        try expect(searchQueryKey.getState(movedAgain) === before)
+    }
+
+    test("search: selecting a match still moves the active highlight") {
+        let d = doc(p("<a>one two one two"))
+        let state = mkSearchState(SearchQuery(search: "one"), d)
+        let before = searchQueryKey.getState(state)
+        let matches = before?.deco.decorations ?? []
+        try expect(matches.count >= 2)
+
+        // Land exactly on the second match: it becomes active, the first stops
+        // being active, and the positions are untouched.
+        let second = matches[1]
+        let onMatch = state.apply(state.tr.setSelection(
+            TextSelection.create(state.doc, second.from, second.to)))
+        let after = searchQueryKey.getState(onMatch)
+        try expect(after !== before)
+        try expectEqual(after?.deco.decorations.map(\.from) ?? [], matches.map(\.from))
+        try expectEqual(after?.deco.decorations[1].attributes["class"] ?? "",
+                        "ProseMirror-active-search-match")
+        try expectEqual(after?.deco.decorations[0].attributes["class"] ?? "",
+                        "ProseMirror-search-match")
+
+        // And moving off it again clears the active class rather than keeping
+        // a stale one.
+        let offMatch = searchStateAfterSelection(onMatch, 1)
+        let cleared = searchQueryKey.getState(offMatch)
+        try expect(cleared?.deco.decorations.allSatisfy {
+            $0.attributes["class"] == "ProseMirror-search-match"
+        } ?? false)
+    }
+}
+
+func registerSearchIncrementalTests() {
+    // The plugin re-searches only the blocks an edit touched and carries the
+    // rest forward through the mapping. That is only safe if it lands exactly
+    // where a full rebuild would, so the full rebuild is the oracle: a fresh
+    // state over the same document and query does one, and the two must agree
+    // after every edit.
+    test("search: an incremental update matches a full rebuild, edit after edit") {
+        let query = SearchQuery(search: "one")
+        // Deliberately a word that appears at block edges and can be created or
+        // destroyed by splitting and joining, not just typed over.
+        let d = doc(p("<a>one two one"), p("three one"), p("one one one"), p("nothing here"))
+        var state = mkSearchState(query, d)
+
+        // A tiny deterministic PRNG: seeded, so a failure is reproducible.
+        var seed: UInt64 = 0x5EED
+        func next(_ bound: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return bound <= 0 ? 0 : Int((seed >> 33) % UInt64(bound))
+        }
+
+        for step in 0 ..< 120 {
+            let size = state.doc.content.size
+            guard size > 4 else { break }
+            let tr = state.tr
+            let kind = next(4)
+            let at = 1 + next(max(size - 2, 1))
+            do {
+                switch kind {
+                case 0: _ = try tr.insertText("one", at, at)      // create matches
+                case 1: _ = try tr.insertText("x", at, at)        // break/shift them
+                case 2:                                            // delete a span
+                    let to = min(at + 1 + next(6), size - 1)
+                    if to > at { _ = try tr.delete(at, to) }
+                default:                                           // replace a span
+                    let to = min(at + 1 + next(4), size - 1)
+                    if to > at { _ = try tr.insertText("one two", at, to) }
+                }
+            } catch { continue }
+            guard tr.docChanged else { continue }
+            state = state.apply(tr)
+
+            // The oracle: the same document and query, searched from scratch.
+            let fresh = EditorState.create(EditorStateConfig(
+                schema: basicSchema, doc: state.doc, selection: state.selection,
+                plugins: [searchQueryPlugin(initialQuery: query)]))
+            let incremental = searchQueryKey.getState(state)?.deco.decorations ?? []
+            let full = searchQueryKey.getState(fresh)?.deco.decorations ?? []
+            try expectEqual("step \(step): \(incremental.map { [$0.from, $0.to] })",
+                            "step \(step): \(full.map { [$0.from, $0.to] })")
+            try expectEqual("step \(step) classes: \(incremental.map { $0.attributes["class"] ?? "" })",
+                            "step \(step) classes: \(full.map { $0.attributes["class"] ?? "" })")
+        }
+    }
 }
 
 func registerPMSearchTests() {
