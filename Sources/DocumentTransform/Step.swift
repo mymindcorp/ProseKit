@@ -52,6 +52,18 @@ func checkStepPositions(_ label: String, _ positions: Int...) throws(ModelError)
     }
 }
 
+/// Reject a decoded range that runs backwards.
+///
+/// `from > to` is not a step for some other document either — no step ever
+/// writes one — and applying it doesn't fail: `replace` builds *something*
+/// from an inverted range, and the step's inverse then doesn't restore the
+/// document. A peer's corrupted step would have edited every copy that way.
+func checkStepOrder(_ label: String, _ positions: Int...) throws(ModelError) {
+    for (a, b) in zip(positions, positions.dropFirst()) where a > b {
+        throw ModelError.invalidJSON("Positions out of order (\(a) > \(b)) in \(label)")
+    }
+}
+
 /// A step object represents an atomic change. It generally applies only to the
 /// document it was created for, since the positions stored in it will only make
 /// sense for that document.

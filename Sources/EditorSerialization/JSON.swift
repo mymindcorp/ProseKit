@@ -33,7 +33,14 @@ public enum DocumentJSON {
         guard case let .object(obj) = value else {
             throw ModelError.invalidJSON("Top-level document JSON must be an object")
         }
-        return try Node.fromJSON(schema, obj)
+        // `Node.fromJSON` builds what it is given, as upstream's does — a
+        // slice's open nodes are legitimately partial, and it serves those
+        // too. A *document* is not allowed to be partial: a file truncated to
+        // `{"type":"doc","content":[]}` loaded as an empty document that
+        // failed its own check on the first edit.
+        let doc = try Node.fromJSON(schema, obj)
+        try doc.check()
+        return doc
     }
 
     public static func decode(_ schema: Schema, _ string: String) throws -> Node {

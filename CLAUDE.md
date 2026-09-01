@@ -56,9 +56,10 @@ generated documents, which costs more than the rest of their suite put together.
 text-input sequences, is cheap, and always runs.)
 
 Model and state (selections, commands, history, mapping, steps, serialization,
-collaboration — with and without undo — copy/paste, foreign markup, track
-changes, tables, marks, input rules, decorations, search and its incremental
-highlighter):
+collaboration — with and without undo — copy/paste, foreign markup, the JSON
+loaders on corrupt input, the structural transforms and the predicates that gate
+them, track changes, tables, marks, input rules, decorations, task sorting,
+search and its incremental highlighter):
 
 ```sh
 PROSEKIT_FUZZ=1 swift run SchemaKitTests

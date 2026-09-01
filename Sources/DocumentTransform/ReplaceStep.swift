@@ -68,10 +68,14 @@ public struct ReplaceStep: Step {
             throw ModelError.invalidJSON("Invalid input for ReplaceStep.fromJSON")
         }
         try checkStepPositions("ReplaceStep", from, to)
+        try checkStepOrder("ReplaceStep", from, to)
         var sliceJSON: [String: AttributeValue]? = nil
         if case let .object(o)? = json["slice"] { sliceJSON = o }
-        return ReplaceStep(from, to, try Slice.fromJSON(schema, sliceJSON),
-                           structure: json["structure"]?.boolValue ?? false)
+        let slice = try Slice.fromJSON(schema, sliceJSON)
+        // A plain replace drops its slice's closed nodes into the document as
+        // they are; `replace` checks how they join, not what is inside them.
+        try slice.checkClosedNodes()
+        return ReplaceStep(from, to, slice, structure: json["structure"]?.boolValue ?? false)
     }
 }
 
@@ -159,9 +163,17 @@ public struct ReplaceAroundStep: Step {
             throw ModelError.invalidJSON("Invalid input for ReplaceAroundStep.fromJSON")
         }
         try checkStepPositions("ReplaceAroundStep", from, to, gapFrom, gapTo, insert)
+        try checkStepOrder("ReplaceAroundStep", from, gapFrom, gapTo, to)
         var sliceJSON: [String: AttributeValue]? = nil
         if case let .object(o)? = json["slice"] { sliceJSON = o }
-        return ReplaceAroundStep(from, to, gapFrom, gapTo, try Slice.fromJSON(schema, sliceJSON), insert,
+        let slice = try Slice.fromJSON(schema, sliceJSON)
+        guard insert <= slice.content.size else {
+            throw ModelError.invalidJSON("Insert offset \(insert) outside the slice in ReplaceAroundStep")
+        }
+        // The slice's closed nodes are complete, except the wrappers the gap
+        // fills — see `Slice.checkClosedNodes`.
+        try slice.checkClosedNodes(holeAt: insert)
+        return ReplaceAroundStep(from, to, gapFrom, gapTo, slice, insert,
                                  structure: json["structure"]?.boolValue ?? false)
     }
 }

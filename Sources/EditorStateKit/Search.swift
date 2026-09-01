@@ -679,7 +679,16 @@ public func searchQueryPlugin(initialQuery: SearchQuery? = nil, initialRange: Se
                         let to = tr.mapping.map(r.to, -1)
                         range = from < to ? SearchRange(from: from, to: to) : nil
                     }
-                    let deco = updateMatchDeco(cur, tr, state, range)
+                    // Carrying matches across an edit assumes the range only
+                    // *moved*. When the edit collapsed it — and the search is
+                    // now the whole document — every match outside the old
+                    // range is one the carried set never held and the touched
+                    // span never covers; the sweep found a match at the start
+                    // of the document that a delete near the end made
+                    // disappear. Nothing to carry: search from scratch.
+                    let deco = (cur.range == nil) == (range == nil)
+                        ? updateMatchDeco(cur, tr, state, range)
+                        : buildMatchDeco(state, cur.query, range)
                     return SearchQueryState(query: cur.query, range: range, deco: deco,
                                             activeIndex: activeMatchIndex(deco, state.selection))
                 }

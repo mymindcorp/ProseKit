@@ -39,6 +39,7 @@ func registerTableFuzzTests() {
             var rng = SelRNG(seed &* 43 &+ 5)
             let editor = try Editor(extensions: fuzzKit())
             var log: [String] = []
+
             _ = editor.insertTable(rows: Int.random(in: 1 ... 4, using: &rng),
                                    cols: Int.random(in: 1 ... 4, using: &rng),
                                    withHeaderRow: Bool.random(using: &rng))
@@ -54,8 +55,38 @@ func registerTableFuzzTests() {
                             Selection.near(editor.doc.resolve(Swift.min(cell + 2, editor.doc.content.size)))))
                         log.append("cursor(\(cell + 2))")
                     }
-                    let cmd = tableFuzzCommands.randomElement(using: &rng)!
-                    log.append("run(\(cmd)) -> \(editor.run(cmd))")
+                    switch Int.random(in: 0 ..< 6, using: &rng) {
+                    case 0 where !cells.isEmpty:
+                        // Move a row or a column, by index, from the table
+                        // under a random cell.
+                        let cell = cells.randomElement(using: &rng)!
+                        // `cell` is the position in front of the cell, inside
+                        // its row, so the table is one level up from there.
+                        let map = TableMap.get(editor.doc.resolve(cell).node(-1))
+                        let rows = Bool.random(using: &rng)
+                        let count = rows ? map.height : map.width
+                        let origin = Int.random(in: 0 ..< Swift.max(1, count), using: &rng)
+                        let target = Int.random(in: 0 ..< Swift.max(1, count), using: &rng)
+                        let tr = editor.state.tr
+                        let ok = rows ? moveRow(tr, originIndex: origin, targetIndex: target, pos: cell + 1)
+                                      : moveColumn(tr, originIndex: origin, targetIndex: target, pos: cell + 1)
+                        if ok { editor.dispatch(tr) }
+                        log.append("move\(rows ? "Row" : "Column")(\(origin) → \(target)) -> \(ok)")
+                    case 1 where !cells.isEmpty:
+                        // A column width on one cell — sometimes one that
+                        // doesn't match its colspan, which is a `problem` the
+                        // fixer has to square up.
+                        let cell = cells.randomElement(using: &rng)!
+                        let widths: AttributeValue = [.null, .array([.int(100)]), .array([.int(80), .int(120)]),
+                                                      .array([]), .array([.int(0)]), .array([.int(-5)])].randomElement(using: &rng)!
+                        let tr = editor.state.tr
+                        _ = try? tr.setNodeAttribute(cell, "colwidth", widths)
+                        editor.dispatch(tr)
+                        log.append("colwidth(\(cell)) = \(widths)")
+                    default:
+                        let cmd = tableFuzzCommands.randomElement(using: &rng)!
+                        log.append("run(\(cmd)) -> \(editor.run(cmd))")
+                    }
                 } else {
                     log.append(fuzzStep(editor, &rng))
                 }

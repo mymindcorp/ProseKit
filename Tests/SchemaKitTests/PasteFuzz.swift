@@ -216,6 +216,12 @@ private func pasteTargets(_ doc: Node, _ rng: inout SelRNG) -> [Selection] {
         let pos = Int.random(in: 0 ... size, using: &rng)
         out.append(Selection.near(doc.resolve(pos), 1))
     }
+    // A cell selection, where the document has a table: pasting *into* a
+    // rectangle of cells is its own path in the table layer.
+    let cells = fuzzCellPositions(doc)
+    if cells.count >= 2 {
+        out.append(CellSelection.create(doc, cells.randomElement(using: &rng)!, cells.randomElement(using: &rng)!))
+    }
     // A non-empty range, so the paste has something to replace.
     if size > 1 {
         let a = Int.random(in: 0 ... size, using: &rng), b = Int.random(in: 0 ... size, using: &rng)

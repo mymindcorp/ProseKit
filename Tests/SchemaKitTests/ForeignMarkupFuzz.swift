@@ -1,5 +1,7 @@
 import Foundation
 import DocumentModel
+import CoreText
+import EditorMath
 import EditorSerialization
 import SchemaKit
 import TestDocGen
@@ -44,6 +46,58 @@ func registerForeignMarkupFuzzTests() {
             for (what, mutated) in mutations(of: markdown, &rng) {
                 try checkParse("Markdown from \(seed), \(what)", mutated) { try MarkdownParser.parse($0, schema: schema) }
             }
+        }
+    }
+
+    test("foreign markup fuzz: MathML soup converts to LaTeX the typesetter can take") {
+        // `<math>` from a browser, a Word export or MathJax: the converter
+        // turns it into LaTeX and the typesetter lays that out. Neither may
+        // trap, whatever the nesting, and whatever the converter produces has
+        // to be something the parser either reads or rejects — a converter
+        // that emits an unbalanced brace turns every pasted formula into an
+        // error box.
+        let schema = try fuzzSchema()
+        var rng = SelRNG(111)
+        let typesetter = MathTypesetter(baseSize: 17, bodyFont: CTFontCreateWithName("Helvetica" as CFString, 17, nil))
+        // Well-formed MathML first: what the converter makes of it has to
+        // *parse*, or every formula pasted from a browser is an error box.
+        let wellFormed = [
+            "<math><mi>x</mi><mo>+</mo><mn>2</mn></math>",
+            "<math><mfrac><mi>a</mi><mi>b</mi></mfrac></math>",
+            "<math><msup><mi>x</mi><mn>2</mn></msup><msub><mi>y</mi><mi>i</mi></msub></math>",
+            "<math><msqrt><mi>x</mi></msqrt><mroot><mi>x</mi><mn>3</mn></mroot></math>",
+            "<math><mrow><mo>(</mo><mi>a</mi><mo>)</mo></mrow></math>",
+            "<math><munderover><mo>∑</mo><mi>i</mi><mi>n</mi></munderover><mi>x</mi></math>",
+            "<math><mtable><mtr><mtd><mn>1</mn></mtd><mtd><mn>2</mn></mtd></mtr></mtable></math>",
+            "<math><mover><mi>x</mi><mo>^</mo></mover><mtext>and</mtext></math>",
+        ]
+        for (i, mathml) in wellFormed.enumerated() {
+            let doc = try HTMLParser.parse("<p>\(mathml)</p>", schema: schema)
+            var latexes: [String] = []
+            doc.descendants { node, _, _, _ in if let l = node.attrs["latex"]?.stringValue { latexes.append(l) }; return true }
+            try expect(!latexes.isEmpty, "well-formed MathML \(i) produced no formula: \(mathml)")
+            for latex in latexes {
+                let result = typesetter.layout(latex, display: false)
+                try expect(!result.isError, "the converter's LaTeX for well-formed MathML \(i) doesn't parse: \(latex.debugDescription) — \(result.error ?? "")")
+            }
+        }
+        for i in 0 ..< 300 {
+            let html = "<p>a " + randomMathML(&rng) + " b</p>"
+            let doc: Node
+            do { doc = try HTMLParser.parse(html, schema: schema) } catch { continue }
+            var invalid: (any Error)?
+            do { try doc.check() } catch { invalid = error }
+            try expect(invalid == nil, "MathML soup \(i) parsed into an invalid document: \(invalid.map { "\($0)" } ?? "")\n  \(html.debugDescription)")
+            doc.descendants { node, _, _, _ in
+                guard let latex = node.attrs["latex"]?.stringValue else { return true }
+                let result = typesetter.layout(latex, display: node.type.name == "blockMath")
+                let box = result.box
+                if !(box.width.isFinite && box.ascent.isFinite && box.descent.isFinite) {
+                    invalid = ModelError.invalidContent("non-finite box for \(latex.debugDescription) from MathML soup \(i)")
+                }
+                return true
+            }
+            try expect(invalid == nil, "\(invalid.map { "\($0)" } ?? "")\n  \(html.debugDescription)")
         }
     }
 
@@ -136,6 +190,30 @@ private func randomHTML(_ rng: inout SelRNG) -> String {
         }
     }
     return out
+}
+
+private let mathmlTags = ["mi", "mo", "mn", "mrow", "mfrac", "msup", "msub", "msubsup", "msqrt", "mroot", "mtable", "mtr", "mtd",
+                          "mover", "munder", "munderover", "mtext", "mspace", "mfenced", "mstyle", "semantics", "annotation",
+                          "mpadded", "mphantom", "menclose", "mmultiscripts", "none", "mprescripts", "mglyph", "maligngroup"]
+private let mathmlText = ["x", "2", "+", "=", "(", ")", "∑", "∫", "α", "&alpha;", "&#x3B1;", "&InvisibleTimes;", " ", "\\frac", "{", "}", "^", "_", "🙂"]
+
+private func randomMathML(_ rng: inout SelRNG) -> String {
+    var out = "<math" + ["", " display=\"block\"", " xmlns=\"http://www.w3.org/1998/Math/MathML\""].randomElement(using: &rng)! + ">"
+    var open: [String] = []
+    for _ in 0 ..< Int.random(in: 1 ... 24, using: &rng) {
+        switch Int.random(in: 0 ..< 4, using: &rng) {
+        case 0, 1:
+            let tag = mathmlTags.randomElement(using: &rng)!
+            out += "<\(tag)" + ["", " mathvariant=\"bold\"", " stretchy=\"false\"", " encoding=\"application/x-tex\"", " linethickness=\"0\""].randomElement(using: &rng)! + ">"
+            open.append(tag)
+        case 2:
+            out += "</\(Bool.random(using: &rng) ? (open.popLast() ?? "mi") : mathmlTags.randomElement(using: &rng)!)>"
+        default:
+            out += mathmlText.randomElement(using: &rng)!
+        }
+    }
+    if Bool.random(using: &rng) { for tag in open.reversed() { out += "</\(tag)>" } }
+    return out + (Bool.random(using: &rng) ? "</math>" : "")
 }
 
 private let markdownPieces = ["# ", "## ", "- ", "* ", "1. ", "> ", "```", "```swift", "---", "***", "| a | b |", "|---|---|",

@@ -65,6 +65,7 @@ public struct AddMarkStep: Step {
             throw ModelError.invalidJSON("Invalid input for AddMarkStep.fromJSON")
         }
         try checkStepPositions("AddMarkStep", from, to)
+        try checkStepOrder("AddMarkStep", from, to)
         return AddMarkStep(from, to, try Mark.fromJSON(schema, markJSON))
     }
 }
@@ -115,6 +116,7 @@ public struct RemoveMarkStep: Step {
             throw ModelError.invalidJSON("Invalid input for RemoveMarkStep.fromJSON")
         }
         try checkStepPositions("RemoveMarkStep", from, to)
+        try checkStepOrder("RemoveMarkStep", from, to)
         return RemoveMarkStep(from, to, try Mark.fromJSON(schema, markJSON))
     }
 }
