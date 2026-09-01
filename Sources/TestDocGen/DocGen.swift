@@ -68,12 +68,43 @@ public struct DocGen {
         return set
     }
 
-    /// Required attributes get a placeholder; a couple of optional ones get
-    /// randomized so headings and task items aren't all identical.
+    /// Plausible values for attributes that carry the node's actual content.
+    ///
+    /// An attribute with a default was originally left at it, which sounds
+    /// harmless and isn't: a footnote's `label` defaults to the empty string,
+    /// so every generated footnote was an unlabelled one, and a formula's
+    /// `latex` defaults to empty, so every generated formula was blank. Those
+    /// are the degenerate cases, not the representative ones — a round-trip
+    /// property fed only blanks reports on how blanks travel and never on how a
+    /// footnote does. Each of these still gets an empty value some of the time,
+    /// because the blank *is* a real state (a formula the user hasn't typed
+    /// into yet) and worth covering — just not exclusively.
+    /// An array rather than a dictionary, because this is walked while drawing
+    /// from the RNG: Swift randomizes a `Dictionary`'s iteration order per
+    /// process, so the same seed would draw in a different order on every run
+    /// and a failure would stop reproducing from the seed printed with it.
+    private static let contentfulAttrs: [(name: String, choices: [AttributeValue])] = [
+        ("latex", [.string("x^2 + 1"), .string("\\frac{a}{b}"), .string("")]),
+        ("label", [.string("1"), .string("note"), .string("")]),
+        ("language", [.string("swift"), .string("json"), .string("")]),
+        ("href", [.string("https://example.com/a"), .string("#anchor")]),
+        ("src", [.string("image.png"), .string("https://example.com/i.png")]),
+        ("alt", [.string("a picture"), .string("")]),
+        ("title", [.string("a title"), .string("")]),
+        ("text", [.string("Some Page"), .string("x")]),
+        ("id", [.string("id-1"), .string("id-2")]),
+    ]
+
+    /// Required attributes get a placeholder, the ones that carry content get a
+    /// plausible value, and a couple of optional ones get randomized so headings
+    /// and task items aren't all identical.
     public mutating func randomAttrs(for type: NodeType) -> Attrs {
         var attrs: Attrs = [:]
         for (name, spec) in type.attrs where !spec.hasDefault {
             attrs[name] = .string(name == "src" ? "image.png" : "x")
+        }
+        for (name, choices) in Self.contentfulAttrs where type.attrs[name] != nil {
+            attrs[name] = choices.randomElement(using: &rng)!
         }
         if type.attrs["level"] != nil { attrs["level"] = .int(Int.random(in: 1 ... 6, using: &rng)) }
         if type.attrs["checked"] != nil { attrs["checked"] = .bool(Bool.random(using: &rng)) }

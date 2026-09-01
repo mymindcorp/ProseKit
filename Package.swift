@@ -85,7 +85,10 @@ let package = Package(
             name: "SchemaKitTests",
             // EditorMath so the MathML import can be checked against the very
             // parser that has to render its output.
-            dependencies: ["SchemaKit", "EditorHistory", "EditorMath", "TestHarness", "TestDocGen"],
+            // EditorCollab so the convergence fuzz runs against the real
+            // schema and the real commands, rather than the three-node schema
+            // the collab suite's own tests are written against.
+            dependencies: ["SchemaKit", "EditorHistory", "EditorMath", "EditorCollab", "TestHarness", "TestDocGen"],
             path: "Tests/SchemaKitTests",
             resources: [.copy("highlight-doc.json")]),
         .executableTarget(

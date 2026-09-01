@@ -197,9 +197,15 @@ public enum HTMLSerializer {
     /// An item's blocks, without the empty paragraph `listItem`'s "paragraph
     /// block*" shape forces in front of content that isn't one — a code block
     /// written as the first thing in an item, say.
+    ///
+    /// Only in front of content that *isn't* a paragraph. Where the next block
+    /// is another paragraph, the empty one ahead of it is a blank line someone
+    /// typed, not a placeholder the schema demanded, and dropping it turned two
+    /// paragraphs into one every time the document was written out.
     private static func itemBlocks(_ item: Node) -> [Node] {
         var blocks = (0..<item.content.childCount).map { item.content.child($0) }
-        if blocks.count > 1, blocks[0].type.name == "paragraph", blocks[0].content.size == 0 {
+        if blocks.count > 1, blocks[0].type.name == "paragraph", blocks[0].content.size == 0,
+           blocks[1].type.name != "paragraph" {
             blocks.removeFirst()
         }
         return blocks
@@ -729,7 +735,13 @@ public enum HTMLParser {
             if let cw = parseColwidth(attrs) { a["colwidth"] = .array(cw.map { .int($0) }) }
             if let align = parseCellAlign(attrs) { a["align"] = .string(align) }
             if let type = schema.nodes[nodeName!] {
-                if let n = try? type.create(a, content: Fragment.from(children)) { return ([n], end + 1) }
+                // `createChecked`, not `create`, throughout this parser: `create`
+                // validates the *attributes* and takes whatever content it is
+                // handed, so every "build it, or fall back to filling it in"
+                // pair here had a dead second line and shipped nodes the schema
+                // rejects — an empty `<li data-type="taskItem">` from our own
+                // serializer failed the whole parse on the way back in.
+                if let n = try? type.createChecked(a, content: Fragment.from(children)) { return ([n], end + 1) }
                 if let filled = type.createAndFill(a, content: Fragment.from(children)) { return ([filled], end + 1) }
             }
             return (parsed, end + 1)
@@ -753,7 +765,7 @@ public enum HTMLParser {
             let a = idAttrs(attrs, name, schema, config)
             if let type = schema.nodes[name] {
                 let children = fitContent(parsed, into: type, schema: schema)
-                if let n = try? type.create(a, content: Fragment.from(children)) { return ([n], end + 1) }
+                if let n = try? type.createChecked(a, content: Fragment.from(children)) { return ([n], end + 1) }
                 if let filled = type.createAndFill(a, content: Fragment.from(children)) { return ([filled], end + 1) }
             }
             // The element itself has no place here; keep what was inside it.
@@ -859,8 +871,8 @@ public enum HTMLParser {
                     let e = matchingClose(tokens, i, tag)
                     var blocks = parseBlocks(tokens[(i + 1)..<e], schema, config)
                     if blocks.isEmpty, let para = try? schema.node("paragraph") { blocks = [para] }
-                    if let definition = try? type.create(["label": .string(attrs["data-label"] ?? "")],
-                                                         content: Fragment.from(blocks)) {
+                    if let definition = try? type.createChecked(["label": .string(attrs["data-label"] ?? "")],
+                                                                content: Fragment.from(blocks)) {
                         result.append(definition)
                         i = e + 1; continue
                     }
@@ -873,9 +885,17 @@ public enum HTMLParser {
                     if containsBlockTag(inner) {
                         result.append(contentsOf: parseBlocks(inner, schema, config))
                     } else {
+                        // Through the splitter, not straight into a paragraph:
+                        // `<img>` is an inline *tag* but a block *node* in this
+                        // schema, so a div holding nothing but one produced a
+                        // paragraph the schema rejects — and the whole parse
+                        // with it. The splitter lifts those back out, the way
+                        // `flushInline` already does for the same run.
                         let inline = parseInline(inner, schema, config)
-                        if !inline.isEmpty, let para = try? schema.node("paragraph", [:], content: Fragment.from(inline)) {
-                            result.append(para)
+                        if !inline.isEmpty {
+                            result.append(contentsOf: textblockSplittingBlocks(inline) {
+                                try? schema.node("paragraph", [:], content: Fragment.from($0))
+                            })
                         }
                     }
                     i = e + 1; continue
@@ -905,7 +925,7 @@ public enum HTMLParser {
                     i = liEnd + 1
                 } else { i += 1 }
             }
-            if !items.isEmpty, let n = try? listType.create(idAttrs(attrs, "taskList", schema, config), content: Fragment.from(items)) { return n }
+            if !items.isEmpty, let n = try? listType.createChecked(idAttrs(attrs, "taskList", schema, config), content: Fragment.from(items)) { return n }
         }
         let name = config.tagToNode[tag] ?? "bulletList"
         let parsed = parseBlocks(tokens[(start + 1)..<end], schema, config)
@@ -926,7 +946,7 @@ public enum HTMLParser {
            !tokensHaveItemParagraph(tokens, start, end) {
             a["tight"] = .bool(true)
         }
-        if let n = try? type.create(a, content: Fragment.from(children)) { return n }
+        if let n = try? type.createChecked(a, content: Fragment.from(children)) { return n }
         return type.createAndFill(a, content: Fragment.from(children))
     }
 
@@ -984,20 +1004,22 @@ public enum HTMLParser {
               let contentType = schema.nodes["detailsContent"] else {
             // No details in this schema: keep the text rather than dropping it.
             var out: [Node] = []
-            if !summaryInline.isEmpty, let para = try? schema.node("paragraph", [:], content: Fragment.from(summaryInline)) {
-                out.append(para)
+            if !summaryInline.isEmpty {
+                out.append(contentsOf: textblockSplittingBlocks(summaryInline) {
+                    try? schema.node("paragraph", [:], content: Fragment.from($0))
+                })
             }
             return out + body
         }
         let summaryNodeAttrs = idAttrs(summaryAttrs, "detailsSummary", schema, config)
-        guard let summary = (try? summaryType.create(summaryNodeAttrs, content: Fragment.from(summaryInline)))
+        guard let summary = (try? summaryType.createChecked(summaryNodeAttrs, content: Fragment.from(summaryInline)))
                 ?? summaryType.createAndFill(summaryNodeAttrs),
-              let content = (try? contentType.create([:], content: Fragment.from(body)))
+              let content = (try? contentType.createChecked([:], content: Fragment.from(body)))
                 ?? contentType.createAndFill([:], content: Fragment.from(body))
         else { return body }
         var a: Attrs = ["open": .bool(attrs["open"] != nil)]
         a.merge(idAttrs(attrs, "details", schema, config)) { _, new in new }
-        guard let node = try? detailsType.create(a, content: Fragment.from([summary, content])) else { return body }
+        guard let node = try? detailsType.createChecked(a, content: Fragment.from([summary, content])) else { return body }
         return [node]
     }
 
@@ -1021,7 +1043,7 @@ public enum HTMLParser {
         let children = parseBlocks(inner[...], schema, config)
         var a: Attrs = ["checked": .bool(checked)]
         a.merge(idAttrs(liAttrs, "taskItem", schema, config)) { _, new in new }
-        if let n = try? itemType.create(a, content: Fragment.from(children)) { return n }
+        if let n = try? itemType.createChecked(a, content: Fragment.from(children)) { return n }
         return itemType.createAndFill(a, content: Fragment.from(children))
     }
 

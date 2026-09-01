@@ -3,6 +3,17 @@ public import DocumentModel
 
 // MARK: - Serialize
 
+/// What Markdown means by whitespace at the ends of a line.
+///
+/// `CharacterSet.whitespaces` is not it: Foundation still classifies U+200B
+/// ZERO WIDTH SPACE as a space separator, a category Unicode moved it out of
+/// long ago. Trimming a list item's line with that set silently ate any
+/// zero-width space at its end — `1. a\u{200B}` came back as `a` — while the
+/// same character in a plain paragraph survived, because paragraphs don't trim.
+let markdownSpaces = CharacterSet.whitespaces.subtracting(zeroWidthSpace)
+let markdownSpacesAndNewlines = CharacterSet.whitespacesAndNewlines.subtracting(zeroWidthSpace)
+private let zeroWidthSpace = CharacterSet(charactersIn: "\u{200B}")
+
 public enum MarkdownSerializer {
     public static func serialize(_ doc: Node) -> String {
         serializeBlocks(doc.content, indent: "")
@@ -218,6 +229,13 @@ public enum MarkdownSerializer {
                 if i > 0 { body += "\n\n" }
                 body += serializeBlock(block, indent: indent)
             }
+            // An unlabelled note has no spelling, the way an empty formula
+            // doesn't: `[^]:` is not a footnote to any reader, ours included —
+            // it reads back as the four characters, which the next save then
+            // escapes, and the note's blocks are a level further out every
+            // time. Writing the blocks plainly loses the note wrapper once and
+            // then holds still.
+            guard !label.isEmpty else { return body }
             return "[^\(label)]: "
                 + prefixLines(body, with: "    ", skippingFirst: true, blankLines: false)
         case "table":
@@ -413,15 +431,7 @@ public enum MarkdownSerializer {
     /// of a multi-line block (a `$$` formula, a fenced code block) sitting at
     /// column 0, where it reads as a sibling of the list rather than part of it.
     static func listItemText(_ item: Node, continuation: String, tight: Bool = false) -> String {
-        // A `listItem` must begin with a paragraph, so an item whose real
-        // content is a code block carries an empty one that `fitContent` added.
-        // Writing it out would put a blank line after the marker, which reads
-        // back as a different document — and the reader re-inserts the empty
-        // paragraph anyway.
-        var children = item.content.content[...]
-        if children.count > 1, children[0].type.name == "paragraph", children[0].content.size == 0 {
-            children.removeFirst()
-        }
+        let children = writtenItemBlocks(item)
         // Blocks are separated by a blank line here as everywhere else, or two
         // paragraphs in one item would read back as a single paragraph. Not in a
         // tight item: a blank line between two blocks is exactly what would make
@@ -438,13 +448,33 @@ public enum MarkdownSerializer {
         return prefixLines(body, with: continuation, skippingFirst: true, blankLines: false)
     }
 
+    /// The blocks of an item that actually get written.
+    ///
+    /// A `listItem` must begin with a paragraph, so an item whose real content
+    /// is a code block carries an empty one that `fitContent` added. Writing it
+    /// out would put a blank line after the marker, which reads back as a
+    /// different document — and the reader re-inserts the empty paragraph
+    /// anyway.
+    private static func writtenItemBlocks(_ item: Node) -> ArraySlice<Node> {
+        var children = item.content.content[...]
+        if children.count > 1, children[0].type.name == "paragraph", children[0].content.size == 0 {
+            children.removeFirst()
+        }
+        return children
+    }
+
     /// A loose list normally shows it with a blank line between two items — but
     /// a one-item list has no gap to put one in, and neither has an item holding
     /// a single block. Its other spelling is a blank line after the marker,
     /// which is how such a list is usually written in the first place.
+    ///
+    /// Counted over the blocks that get *written*, not the ones the item holds:
+    /// an item of `[empty paragraph, task list]` writes as just the task list,
+    /// so without this the only mark of looseness went out with the paragraph
+    /// and every export turned such a list tight.
     private static func needsGapAfterMarker(_ list: Node) -> Bool {
         list.attrs["tight"]?.boolValue == false && list.childCount == 1
-            && list.child(0).childCount == 1
+            && writtenItemBlocks(list.child(0)).count == 1
     }
 
     /// What goes between two items. A loose list keeps the blank line that made
@@ -918,7 +948,9 @@ public enum MarkdownSerializer {
         case "wikiLink":
             out += "[[\(node.type.spec.leafText?(node) ?? "")]]"
         case "footnoteReference":
-            out += "[^\(node.attrs["label"]?.stringValue ?? "")]"
+            // Same as the note itself: `[^]` is not a reference, so writing one
+            // only produces literal brackets that grow a backslash per save.
+            if let label = node.attrs["label"]?.stringValue, !label.isEmpty { out += "[^\(label)]" }
         case "inlineMath":
             // An empty formula has no spelling: "$$" opens display math, and no
             // dialect accepts "$$" as empty inline math. Emitting nothing beats
@@ -1161,7 +1193,7 @@ public enum MarkdownParser {
         var found: [String: LinkDefinition] = [:]
         var quoted: [String] = []
         for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let trimmed = line.trimmingCharacters(in: markdownSpaces)
             guard trimmed.hasPrefix(">") else {
                 if !quoted.isEmpty {
                     for (key, value) in collectDefinitions(quoted).1 where found[key] == nil {
@@ -1204,7 +1236,7 @@ public enum MarkdownParser {
         var i = 0
         while i < lines.count {
             let line = lines[i]
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let trimmed = line.trimmingCharacters(in: markdownSpaces)
             if trimmed.isEmpty { i += 1; continue }
 
             // Indented code block: four columns of indentation at the start of a
@@ -1218,7 +1250,7 @@ public enum MarkdownParser {
                 var blanks: [String] = []
                 while i < lines.count {
                     let l = lines[i]
-                    if l.trimmingCharacters(in: .whitespaces).isEmpty {
+                    if l.trimmingCharacters(in: markdownSpaces).isEmpty {
                         // A blank line belongs to the block only if indented
                         // code follows it, so hold it until we know. Its own
                         // spaces past the fourth column are content.
@@ -1278,19 +1310,19 @@ public enum MarkdownParser {
                 let opening = trimmed.prefix { $0 == "^" }.count
                 // Markdig accepts the caption on either fence; prefer the
                 // closing one, which is what we write.
-                var caption = String(trimmed.dropFirst(opening)).trimmingCharacters(in: .whitespaces)
+                var caption = String(trimmed.dropFirst(opening)).trimmingCharacters(in: markdownSpaces)
                 var body: [String] = []
                 i += 1
                 func closesFigure(_ line: String) -> Bool {
-                    line.trimmingCharacters(in: .whitespaces).prefix { $0 == "^" }.count >= opening
+                    line.trimmingCharacters(in: markdownSpaces).prefix { $0 == "^" }.count >= opening
                 }
                 while i < lines.count, !closesFigure(lines[i]) {
                     body.append(lines[i])
                     i += 1
                 }
                 if i < lines.count {
-                    let closing = lines[i].trimmingCharacters(in: .whitespaces)
-                    let trailing = String(closing.drop { $0 == "^" }).trimmingCharacters(in: .whitespaces)
+                    let closing = lines[i].trimmingCharacters(in: markdownSpaces)
+                    let trailing = String(closing.drop { $0 == "^" }).trimmingCharacters(in: markdownSpaces)
                     if !trailing.isEmpty { caption = trailing }
                     i += 1  // consume the closing fence
                 }
@@ -1310,7 +1342,7 @@ public enum MarkdownParser {
                 } else {
                     var body: [String] = rest.isEmpty ? [] : [rest]
                     i += 1
-                    while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("$$") {
+                    while i < lines.count, !lines[i].trimmingCharacters(in: markdownSpaces).hasPrefix("$$") {
                         body.append(unescapeBlockMathLine(lines[i])); i += 1
                     }
                     i += 1 // consume the closing fence
@@ -1319,7 +1351,7 @@ public enum MarkdownParser {
                 // An empty formula is a valid node — the editor makes one every
                 // time a formula is inserted before anything is typed — so an
                 // empty fence has to survive the round trip rather than vanish.
-                latex = latex.trimmingCharacters(in: .whitespacesAndNewlines)
+                latex = latex.trimmingCharacters(in: markdownSpacesAndNewlines)
                 if let math = try? schema.node("blockMath", ["latex": .string(latex)]) {
                     blocks.append(math)
                 }
@@ -1333,7 +1365,7 @@ public enum MarkdownParser {
                 i += 1
                 var depth = 1
                 while i < lines.count {
-                    let t = lines[i].trimmingCharacters(in: .whitespaces).lowercased()
+                    let t = lines[i].trimmingCharacters(in: markdownSpaces).lowercased()
                     if t.hasPrefix("<details") { depth += 1 }
                     if t.hasPrefix("</details>") {
                         depth -= 1
@@ -1355,12 +1387,12 @@ public enum MarkdownParser {
                 i += 1
                 while i < lines.count {
                     let raw = lines[i]
-                    let t = raw.trimmingCharacters(in: .whitespaces)
+                    let t = raw.trimmingCharacters(in: markdownSpaces)
                     if t.isEmpty {
                         // A blank line belongs to the note only if indented
                         // content follows it.
                         var j = i + 1
-                        while j < lines.count, lines[j].trimmingCharacters(in: .whitespaces).isEmpty { j += 1 }
+                        while j < lines.count, lines[j].trimmingCharacters(in: markdownSpaces).isEmpty { j += 1 }
                         guard j < lines.count, indentWidth(lines[j]) >= 4 else { break }
                         body.append(contentsOf: repeatElement("", count: j - i))
                         i = j
@@ -1410,7 +1442,7 @@ public enum MarkdownParser {
                 var rows: [[String]] = [header]
                 i += 2
                 while i < lines.count {
-                    let t = lines[i].trimmingCharacters(in: .whitespaces)
+                    let t = lines[i].trimmingCharacters(in: markdownSpaces)
                     guard !t.isEmpty, t.contains("|"), !startsBlock(t) else { break }
                     // A short row is padded and a long one truncated, which is
                     // what the header row promised the width would be.
@@ -1450,7 +1482,7 @@ public enum MarkdownParser {
                 // is what an unprefixed line is allowed to continue.
                 var inParagraph = false
                 while i < lines.count {
-                    let t = lines[i].trimmingCharacters(in: .whitespaces)
+                    let t = lines[i].trimmingCharacters(in: markdownSpaces)
                     if t.hasPrefix(">") {
                         var l = t
                         l.removeFirst()
@@ -1461,7 +1493,7 @@ public enum MarkdownParser {
                         if l.hasPrefix(" ") { l.removeFirst() }
                         else if l.hasPrefix("\t") { l = expandLeadingTabs(" " + l).dropFirst(2).description }
                         quote.append(l)
-                        let inner = l.trimmingCharacters(in: .whitespaces)
+                        let inner = l.trimmingCharacters(in: markdownSpaces)
                         // Indented content inside the quote is code, which
                         // leaves no paragraph for a later line to continue. A
                         // nested quote may leave one open inside itself, and
@@ -1527,7 +1559,7 @@ public enum MarkdownParser {
             var para: [String] = [String(lines[i].drop(while: { $0 == " " || $0 == "\t" }))]
             i += 1
             while i < lines.count {
-                let t = lines[i].trimmingCharacters(in: .whitespaces)
+                let t = lines[i].trimmingCharacters(in: markdownSpaces)
                 // Four columns in would be code, and code can't interrupt a
                 // paragraph — so an indented line continues this one, whatever
                 // it would otherwise start.
@@ -1593,7 +1625,7 @@ public enum MarkdownParser {
         var summaryText = ""
         var body: [String] = []
         for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let trimmed = line.trimmingCharacters(in: markdownSpaces)
             if summaryText.isEmpty, trimmed.lowercased().hasPrefix("<summary>") {
                 var s = String(trimmed.dropFirst("<summary>".count))
                 if let close = s.range(of: "</summary>", options: [.backwards, .caseInsensitive]) {
@@ -1621,10 +1653,10 @@ public enum MarkdownParser {
             return out + liftedFromSummary + (0..<bodyDoc.childCount).map { bodyDoc.child($0) }
         }
         let bodyBlocks = liftedFromSummary + (0..<bodyDoc.childCount).map { bodyDoc.child($0) }
-        guard let summary = (try? summaryType.create([:], content: Fragment.from(summaryInline))) ?? summaryType.createAndFill(),
-              let content = (try? contentType.create([:], content: Fragment.from(fitContent(bodyBlocks, into: contentType, schema: schema))))
+        guard let summary = (try? summaryType.createChecked([:], content: Fragment.from(summaryInline))) ?? summaryType.createAndFill(),
+              let content = (try? contentType.createChecked([:], content: Fragment.from(fitContent(bodyBlocks, into: contentType, schema: schema))))
                 ?? contentType.createAndFill(),
-              let node = try? detailsType.create(["open": .bool(open)], content: Fragment.from([summary, content]))
+              let node = try? detailsType.createChecked(["open": .bool(open)], content: Fragment.from([summary, content]))
         else { return nil }
         return [node]
     }
@@ -1646,13 +1678,13 @@ public enum MarkdownParser {
         // `dropFirst` already clamps, so the old `min(level + 1, line.count)`
         // only bought another walk of the line.
         var text = String(line.dropFirst(level + 1))
-            .trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: markdownSpaces)
         // An optional closing run of "#" is decoration, not content — but only
         // when it's a run on its own, so "# foo #bar" keeps its hash.
         if text.hasSuffix("#") {
             let withoutRun = String(text.reversed().drop(while: { $0 == "#" }).reversed())
             if withoutRun.isEmpty || withoutRun.hasSuffix(" ") {
-                text = withoutRun.trimmingCharacters(in: .whitespaces)
+                text = withoutRun.trimmingCharacters(in: markdownSpaces)
             }
         }
         return (level, text)
@@ -1713,7 +1745,7 @@ public enum MarkdownParser {
         guard let character = rest.first, character == "`" || character == "~" else { return nil }
         let length = rest.prefix(while: { $0 == character }).count
         guard length >= 3 else { return nil }
-        let info = String(rest.dropFirst(length)).trimmingCharacters(in: .whitespaces)
+        let info = String(rest.dropFirst(length)).trimmingCharacters(in: markdownSpaces)
         if character == "`", info.contains("`") { return nil }
         return CodeFence(character: character, length: length, indent: indent, info: info)
     }
@@ -1723,7 +1755,7 @@ public enum MarkdownParser {
     /// string, which is what lets a block hold a shorter run of its own fence.
     static func closesFence(_ line: String, _ fence: CodeFence) -> Bool {
         guard indentWidth(line) <= 3 else { return false }
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        let trimmed = line.trimmingCharacters(in: markdownSpaces)
         return trimmed.count >= fence.length && trimmed.allSatisfy { $0 == fence.character }
     }
 
@@ -1761,7 +1793,7 @@ public enum MarkdownParser {
         var i = 0
         while i < lines.count {
             let line = lines[i]
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let trimmed = line.trimmingCharacters(in: markdownSpaces)
             if let open = fence {
                 if trimmed.hasPrefix(open) { fence = nil }
                 remaining.append(line); i += 1; continue
@@ -1778,7 +1810,7 @@ public enum MarkdownParser {
             // other block — a heading, say — so what matters is whether the
             // line before it was paragraph text rather than whether it was
             // blank.
-            let previous = remaining.last?.trimmingCharacters(in: .whitespaces) ?? ""
+            let previous = remaining.last?.trimmingCharacters(in: markdownSpaces) ?? ""
             let startsABlock = previous.isEmpty || startsBlock(previous)
             // The label itself may run across lines, so join until it closes.
             let labelExtra = (indentWidth(line) < 4 && startsABlock)
@@ -1786,7 +1818,7 @@ public enum MarkdownParser {
             let head = labelExtra.map { extra -> String in
                 guard extra > 0 else { return line }
                 return ([line] + lines[(i + 1)...(i + extra)]
-                    .map { $0.trimmingCharacters(in: .whitespaces) }).joined(separator: " ")
+                    .map { $0.trimmingCharacters(in: markdownSpaces) }).joined(separator: " ")
             }
             guard let head, let (label, rest) = parseDefinitionHead(head),
                   // `[^1]: …` is a footnote, not a link: the labels share a
@@ -1801,7 +1833,7 @@ public enum MarkdownParser {
             // rather than assumed to be on this one. A blank line ends it.
             var following: [String] = []
             var j = i + 1 + labelConsumed
-            while j < lines.count, !lines[j].trimmingCharacters(in: .whitespaces).isEmpty {
+            while j < lines.count, !lines[j].trimmingCharacters(in: markdownSpaces).isEmpty {
                 following.append(lines[j])
                 j += 1
             }
@@ -1913,35 +1945,35 @@ public enum MarkdownParser {
     /// them: `[\nfoo\n]: /url` is a label of "foo". Nil when the label never
     /// closes, which means this isn't a definition.
     static func labelLines(_ lines: [String], from start: Int) -> Int? {
-        guard lines[start].trimmingCharacters(in: .whitespaces).hasPrefix("[") else { return nil }
+        guard lines[start].trimmingCharacters(in: markdownSpaces).hasPrefix("[") else { return nil }
         var joined = lines[start]
         var extra = 0
         while parseDefinitionHead(joined) == nil, start + extra + 1 < lines.count, extra < 8 {
             let next = lines[start + extra + 1]
-            if next.trimmingCharacters(in: .whitespaces).isEmpty { return nil }
-            joined += " " + next.trimmingCharacters(in: .whitespaces)
+            if next.trimmingCharacters(in: markdownSpaces).isEmpty { return nil }
+            joined += " " + next.trimmingCharacters(in: markdownSpaces)
             extra += 1
         }
         return parseDefinitionHead(joined) == nil ? nil : extra
     }
 
     private static func parseDefinitionHead(_ line: String) -> (label: String, rest: String)? {
-        let t = line.trimmingCharacters(in: .whitespaces)
+        let t = line.trimmingCharacters(in: markdownSpaces)
         guard t.hasPrefix("[") else { return nil }
         let bytes = Array(t.utf8)
         guard let close = findUnescaped(bytes, 1, UInt8(ascii: "]")), close > 1,
               close + 1 < bytes.count, bytes[close + 1] == UInt8(ascii: ":") else { return nil }
         let label = slice(bytes, 1..<close)
-        guard !label.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        guard !label.trimmingCharacters(in: markdownSpaces).isEmpty else { return nil }
         // An unescaped bracket can't appear in a label, so this isn't one.
         guard findUnescaped(Array(label.utf8), 0, UInt8(ascii: "[")) == nil else { return nil }
         return (label, slice(bytes, (close + 2)..<bytes.count)
-            .trimmingCharacters(in: .whitespaces))
+            .trimmingCharacters(in: markdownSpaces))
     }
 
     /// The contents of a line that is nothing but a quoted title.
     private static func titleOnly(_ s: String) -> String? {
-        let t = s.trimmingCharacters(in: .whitespaces)
+        let t = s.trimmingCharacters(in: markdownSpaces)
         for (open, close) in [("\"", "\""), ("'", "'"), ("(", ")")]
         where t.hasPrefix(open) && t.hasSuffix(close) && t.count >= 2 {
             return String(t.dropFirst().dropLast())
@@ -1991,7 +2023,7 @@ public enum MarkdownParser {
     /// the row's edge rather than an empty cell. A "\|" stays as written: the
     /// inline parser resolves the escape, the same as anywhere else.
     static func pipeCells(_ line: String) -> [String] {
-        var body = Substring(line.trimmingCharacters(in: .whitespaces))
+        var body = Substring(line.trimmingCharacters(in: markdownSpaces))
         if body.hasPrefix("|") { body = body.dropFirst() }
         // Only an unescaped pipe closes the row.
         if body.hasSuffix("|"), !body.dropLast().hasSuffix("\\") { body = body.dropLast() }
@@ -2001,10 +2033,10 @@ public enum MarkdownParser {
         for c in body {
             if escaped { current.append(c); escaped = false; continue }
             if c == "\\" { current.append(c); escaped = true; continue }
-            if c == "|" { cells.append(current.trimmingCharacters(in: .whitespaces)); current = ""; continue }
+            if c == "|" { cells.append(current.trimmingCharacters(in: markdownSpaces)); current = ""; continue }
             current.append(c)
         }
-        cells.append(current.trimmingCharacters(in: .whitespaces))
+        cells.append(current.trimmingCharacters(in: markdownSpaces))
         return cells
     }
 
@@ -2049,7 +2081,7 @@ public enum MarkdownParser {
         // Foundation's generic substring search, which was a quarter of the
         // time spent parsing a document that contains hardly any tables.
         guard lines[i].utf8.contains(UInt8(ascii: "|")), indentWidth(lines[i]) < 4 else { return false }
-        let header = lines[i].trimmingCharacters(in: .whitespaces)
+        let header = lines[i].trimmingCharacters(in: markdownSpaces)
         return isPipeDelimiterRow(lines[i + 1], columns: pipeCells(header).count)
     }
 
@@ -2080,10 +2112,10 @@ public enum MarkdownParser {
     /// number…" stays one paragraph, and an empty item never interrupts, so a
     /// lone "*" under a line of prose is part of it.
     private static func interruptingList(_ trimmed: String) -> Bool {
-        if let content = bulletMatch(trimmed) { return !content.trimmingCharacters(in: .whitespaces).isEmpty }
+        if let content = bulletMatch(trimmed) { return !content.trimmingCharacters(in: markdownSpaces).isEmpty }
         guard let number = orderedMatch(trimmed) else { return false }
         let content = listMarker(trimmed, ordered: true)?.content ?? ""
-        return number == 1 && !content.trimmingCharacters(in: .whitespaces).isEmpty
+        return number == 1 && !content.trimmingCharacters(in: markdownSpaces).isEmpty
     }
 
     /// Undo the backslash `MarkdownSerializer.blockMathSource` puts in front of
@@ -2103,7 +2135,7 @@ public enum MarkdownParser {
     /// anywhere else.
     static func setextUnderline(_ line: String) -> Int? {
         guard indentWidth(line) <= 3 else { return nil }
-        let t = line.trimmingCharacters(in: .whitespaces)
+        let t = line.trimmingCharacters(in: markdownSpaces)
         guard let first = t.first, first == "=" || first == "-",
               t.allSatisfy({ $0 == first }) else { return nil }
         return first == "=" ? 1 : 2
@@ -2214,18 +2246,18 @@ public enum MarkdownParser {
         }
         func continues(_ line: String) -> Bool {
             guard let indent = indents.last,
-                  !line.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+                  !line.trimmingCharacters(in: markdownSpaces).isEmpty else { return false }
             return indentWidth(line) >= indent
         }
         while i < lines.count {
             let raw = lines[i]
-            let t = raw.trimmingCharacters(in: .whitespaces)
+            let t = raw.trimmingCharacters(in: markdownSpaces)
             if t.isEmpty {
                 // A blank line continues the list when another item follows, or
                 // when the next line is still indented inside the current item
                 // (a loose item holding more than one block).
                 var j = i + 1
-                while j < lines.count, lines[j].trimmingCharacters(in: .whitespaces).isEmpty { j += 1 }
+                while j < lines.count, lines[j].trimmingCharacters(in: markdownSpaces).isEmpty { j += 1 }
                 guard j < lines.count else { break }
                 if continues(lines[j]) {
                     // Every blank line, not one standing for the run: inside an
@@ -2237,7 +2269,7 @@ public enum MarkdownParser {
                     i = j
                     continue
                 }
-                if isItem(lines[j].trimmingCharacters(in: .whitespaces)) {
+                if isItem(lines[j].trimmingCharacters(in: markdownSpaces)) {
                     tight = false
                     i = j
                     continue
@@ -2276,11 +2308,11 @@ public enum MarkdownParser {
         let inner = (try? parse(body.joined(separator: "\n"), schema: schema, depth: depth))?.content
         var children = inner.map { frag in (0..<frag.childCount).map { frag.child($0) } } ?? []
         if !caption.isEmpty, let captionType = schema.nodes["figcaption"],
-           let node = try? captionType.create([:], content: Fragment.from(parseInline(caption, schema))) {
+           let node = try? captionType.createChecked([:], content: Fragment.from(parseInline(caption, schema))) {
             children.append(node)
         }
         let fitted = fitContent(children, into: figureType, schema: schema)
-        if let figure = try? figureType.create([:], content: Fragment.from(fitted)) { return figure }
+        if let figure = try? figureType.createChecked([:], content: Fragment.from(fitted)) { return figure }
         return figureType.createAndFill([:], content: Fragment.from(fitted))
     }
 
@@ -2335,11 +2367,16 @@ public enum MarkdownParser {
             guard let marker = taskMarker(lines[0]) else { return nil }
             lines[0] = marker.rest
             let content = fitContent(try itemBlocks(lines, schema: schema, depth: depth), into: itemType, schema: schema)
-            guard let item = try? itemType.create(["checked": .bool(marker.checked)],
-                                                  content: Fragment.from(content)) else { return nil }
+            // `createChecked`, not `create`: `create` only validates attributes,
+            // so it accepts content the schema doesn't and the `createAndFill`
+            // fallback beside it never ran. See the same note in `HTMLParser`.
+            guard let item = (try? itemType.createChecked(["checked": .bool(marker.checked)],
+                                                          content: Fragment.from(content)))
+                ?? itemType.createAndFill(["checked": .bool(marker.checked)], content: Fragment.from(content))
+            else { return nil }
             itemNodes.append(item)
         }
-        return try? listType.create([:], content: Fragment.from(itemNodes))
+        return try? listType.createChecked([:], content: Fragment.from(itemNodes))
     }
 
     /// The blocks of one list item. An item that carried continuation lines is
@@ -2348,7 +2385,7 @@ public enum MarkdownParser {
         // Indented content is a block even on its own line: a marker followed by
         // five or more spaces leaves the content four columns in, which is code.
         if lines.count > 1 || indentWidth(lines[0]) >= 4
-            || startsAnyBlock(lines[0].trimmingCharacters(in: .whitespaces)) {
+            || startsAnyBlock(lines[0].trimmingCharacters(in: markdownSpaces)) {
             let inner = try parse(lines.joined(separator: "\n"), schema: schema, depth: depth).content
             return (0..<inner.childCount).map { inner.child($0) }
         }
@@ -2370,13 +2407,14 @@ public enum MarkdownParser {
             // blocks; this used to repeat that test and so never saw the
             // indented single-line case.
             let content = fitContent(try itemBlocks(lines, schema: schema, depth: depth), into: itemType, schema: schema)
-            guard let item = try? itemType.create([:], content: Fragment.from(content)) else { continue }
+            guard let item = (try? itemType.createChecked([:], content: Fragment.from(content)))
+                ?? itemType.createAndFill([:], content: Fragment.from(content)) else { continue }
             itemNodes.append(item)
         }
         let listName = ordered ? "orderedList" : "bulletList"
         var attrs: Attrs = ordered ? ["order": .int(start)] : [:]
         if schema.nodes[listName]?.spec.attrs["tight"] != nil { attrs["tight"] = .bool(tight) }
-        return try? schema.node(listName, attrs, content: Fragment.from(itemNodes))
+        return try? schema.nodeType(listName).createChecked(attrs, content: Fragment.from(itemNodes))
     }
 
     // Inline parser: handles **bold**, *italic*/_italic_, `code`, ~~strike~~,
@@ -2734,7 +2772,7 @@ public enum MarkdownParser {
                     .map { (close: $0, parts: slice(chars, (i + 2)..<$0).split(separator: "|", maxSplits: 1).map(String.init)) }
                 // `[[Page|shown]]` reads as "shown".
                 if let inner, let target = inner.parts.count > 1 ? inner.parts[1] : inner.parts.first,
-                   !target.trimmingCharacters(in: .whitespaces).isEmpty,
+                   !target.trimmingCharacters(in: markdownSpaces).isEmpty,
                    let wl = try? type.create(["text": .string(target)]) {
                     flush()
                     appendNode(wl)
@@ -2940,7 +2978,7 @@ public enum MarkdownParser {
                 }
             }
         }
-        return mergeAdjacentText(result, schema)
+        return withoutTrailingBreaks(mergeAdjacentText(result, schema))
     }
 
     /// Emphasis leaves runs of text that carry the same marks side by side —
@@ -2976,6 +3014,20 @@ public enum MarkdownParser {
         }
         flush()
         return merged
+    }
+
+    /// Drop hard breaks at the end of a textblock's inline content.
+    ///
+    /// The serializer holds a hard break back until something follows it,
+    /// because Markdown has no spelling for one at the end of a block — so a
+    /// heading of `[hardBreak]` writes out as `## `. The parser used to read
+    /// `## <br>` back into that same block, which made the pair a cycle rather
+    /// than a round-trip: every save dropped the break, every load put it back.
+    /// The two now agree that a break with nothing after it isn't one.
+    private static func withoutTrailingBreaks(_ nodes: [Node]) -> [Node] {
+        var nodes = nodes
+        while nodes.last?.type.name == "hardBreak" { nodes.removeLast() }
+        return nodes
     }
 
     /// An autolink's contents: a scheme, then anything but spaces or angles.
@@ -3203,7 +3255,7 @@ public enum MarkdownParser {
         // Without this, `[a](url &quot;tit&quot;)` — whose "title" is spelled
         // with entities, so isn't one — would still parse as a link.
         if title == nil, url.contains(" "),
-           !inside.trimmingCharacters(in: .whitespaces).hasPrefix("<") { return nil }
+           !inside.trimmingCharacters(in: markdownSpaces).hasPrefix("<") { return nil }
         // A code span binds more tightly than a link, so one that opens inside
         // the label and closes past it takes the brackets with it.
         if codeSpanEscapes(bytes, (start + 1)..<closeBracket) { return nil }
@@ -3373,7 +3425,7 @@ public enum MarkdownParser {
             guard let closeSecond = brackets.close(openingAt: closeBracket + 1) else { return nil }
             let second = slice(bytes, (closeBracket + 2)..<closeSecond)
             // `[text][]` is collapsed: the text is its own label.
-            label = second.trimmingCharacters(in: .whitespaces).isEmpty ? first : second
+            label = second.trimmingCharacters(in: markdownSpaces).isEmpty ? first : second
             next = closeSecond + 1
         }
         guard let definition = definitions[normalizeLabel(label)] else { return nil }
