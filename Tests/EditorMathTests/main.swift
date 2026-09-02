@@ -39,6 +39,7 @@ func ruleRects(_ box: MathBox) -> [CGRect] {
 func ruleCount(_ box: MathBox) -> Int { ruleRects(box).count }
 
 registerParserTests()
+registerParserEdgeTests()
 registerLayoutTests()
 registerCorpusTests()
 registerNotationTests()

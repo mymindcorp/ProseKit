@@ -340,4 +340,5 @@ registerValidationTests()
 registerLeafTextTests()
 registerResolvedPosTests()
 
+registerModelAPIEdgeTests()
 TestSuite.main("DocumentModelTests", collector.all)

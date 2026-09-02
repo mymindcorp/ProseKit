@@ -168,6 +168,6 @@ test("ReplaceStep JSON round-trip") {
     try expectEqual(restored.apply(doc).doc, s.apply(doc).doc)
 }
 
-registerPMStructureTests(); registerPMTransformTests(); registerPMReplaceTests(); registerPMContentTests(); registerPMSliceTests(); registerPMMarkTests(); registerPMNodeTests(); registerPMMappingTests(); registerPMResolveTests(); registerPMStepTests(); registerPMDiffTests(); registerStepAttrAndNodeMarkTests(); registerMarkStepEdgeTests(); registerAdversarialStepTests(); registerSliceInsertAtTests()
+registerPMStructureTests(); registerPMTransformTests(); registerPMReplaceTests(); registerPMContentTests(); registerPMSliceTests(); registerPMMarkTests(); registerPMNodeTests(); registerPMMappingTests(); registerPMResolveTests(); registerPMStepTests(); registerPMDiffTests(); registerStepAttrAndNodeMarkTests(); registerMarkStepEdgeTests(); registerAdversarialStepTests(); registerSliceInsertAtTests(); registerPMReplaceRangeTests()
 
 TestSuite.main("DocumentTransformTests", collector.all)

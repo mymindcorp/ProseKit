@@ -631,5 +631,6 @@ registerPMMergeTests()
 registerPMDiffTests()
 registerPMSimplifyTests()
 registerPMChangedRangeTests()
+registerChangedRangeEdgeTests()
 
 TestSuite.main("EditorChangesetTests", collector.all)

@@ -259,6 +259,8 @@ registerFootnoteTests(); registerPMColumnResizingTests(); registerTableOptionTes
 registerSuggestionModeTests()
 registerPolishCoverageTests()
 registerFigureTests()
+registerEdgeCommandTests()
+registerMathMLShapeTests()
 
 // Shared builders for the checklist-import tests below.
 private let clSchema = try! makeFullEditor().schema
