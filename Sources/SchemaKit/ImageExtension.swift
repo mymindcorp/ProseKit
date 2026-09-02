@@ -8,10 +8,26 @@ import DocumentTransform
 /// Block by default — each image takes up its own row. Pass `inline: true` for a
 /// schema whose documents place images within a line of text (the editor renders
 /// either mode; the only difference is whether an image can sit inside a textblock).
+///
+/// A schema can register this twice to have both at once: the `image` node
+/// configured however that document wants it, and `imageBlock` (see
+/// ``imageBlockExtension()``) always in a row of its own. The two are the same
+/// node in every other respect — same attributes, same commands, same rendering
+/// and export — so nothing downstream has to know which one it is holding.
 public final class ImageExtension: NodeExtension {
-    public let name = "image"
+    public let name: String
     public let inline: Bool
-    public init(inline: Bool = false) { self.inline = inline }
+
+    /// - Parameters:
+    ///   - name: The node name. One of ``imageNodeNames`` — anything else is
+    ///     invisible to the renderer and the serializers, which recognize an
+    ///     image by name.
+    ///   - inline: Whether the node sits within a line of text rather than in a
+    ///     block of its own.
+    public init(name: String = "image", inline: Bool = false) {
+        self.name = name
+        self.inline = inline
+    }
 
     public var nodeSpec: NodeSpec {
         NodeSpec(
@@ -40,6 +56,15 @@ public final class ImageExtension: NodeExtension {
             draggable: true)
     }
     public var html: HTMLSpec { HTMLSpec(tag: "img") }
+}
+
+/// The `imageBlock` node: an image that always takes a row of its own.
+///
+/// Identical to ``ImageExtension`` in every way but the name and the guarantee
+/// that it is never inline. A schema that keeps `image` inline registers this
+/// alongside it to also offer full-width images.
+public func imageBlockExtension() -> ImageExtension {
+    ImageExtension(name: "imageBlock", inline: false)
 }
 
 /// The original image behind an `image` node's presentation.
@@ -137,13 +162,49 @@ public func setImageModel(_ type: NodeType, _ model: ImageModel?, pos: Int? = ni
     }
 }
 
+/// Set the displayed size of whichever image the selection addresses, whether
+/// that is an `image` or an `imageBlock`. See `setImageSize(_:width:height:pos:)`
+/// for what a nil dimension means.
+public func setImageSize(width: Int?, height: Int?, pos: Int? = nil) -> Command {
+    { state, dispatch, _ in
+        guard let target = pos ?? imageNodePos(state),
+              let node = state.doc.nodeAt(target), node.isImage else { return false }
+        if let dispatch {
+            let tr = state.tr
+            _ = try? tr.setNodeAttribute(target, "width", width.map { .int($0) } ?? .null)
+            _ = try? tr.setNodeAttribute(target, "height", height.map { .int($0) } ?? .null)
+            dispatch(tr.scrollIntoView())
+        }
+        return true
+    }
+}
+
+/// Set (or clear) the original-image model on whichever image the selection
+/// addresses, whether that is an `image` or an `imageBlock`.
+public func setImageModel(_ model: ImageModel?, pos: Int? = nil) -> Command {
+    { state, dispatch, _ in
+        guard let target = pos ?? imageNodePos(state),
+              let node = state.doc.nodeAt(target), node.isImage else { return false }
+        if let dispatch,
+           let tr = try? state.tr.setNodeAttribute(target, "model", model?.attributeValue ?? .null) {
+            dispatch(tr.scrollIntoView())
+        }
+        return true
+    }
+}
+
 /// The position of the image the selection addresses: the node a
 /// `NodeSelection` covers, else the one immediately after or before the cursor.
-private func imageNodePos(_ state: EditorState, _ type: NodeType) -> Int? {
-    if let sel = state.selection as? NodeSelection, sel.node.type === type { return sel.from }
+///
+/// With no `type`, any image node matches — a host driving the editor addresses
+/// "the image at the cursor" without first having to know which of the two node
+/// names it turned out to be.
+private func imageNodePos(_ state: EditorState, _ type: NodeType? = nil) -> Int? {
+    func matches(_ node: Node) -> Bool { type.map { node.type === $0 } ?? node.isImage }
+    if let sel = state.selection as? NodeSelection, matches(sel.node) { return sel.from }
     let from = state.selection.resolvedFrom
-    if let after = from.nodeAfter, after.type === type { return from.pos }
-    if let before = from.nodeBefore, before.type === type { return from.pos - before.nodeSize }
+    if let after = from.nodeAfter, matches(after) { return from.pos }
+    if let before = from.nodeBefore, matches(before) { return from.pos - before.nodeSize }
     return nil
 }
 
@@ -160,19 +221,28 @@ public extension Editor {
                                          width: width, height: height, model: model))
     }
 
-    /// Record (or clear) the original image behind the addressed image node.
+    /// Insert an `imageBlock` — an image in a row of its own — at the current
+    /// selection. Otherwise identical to `insertImage`.
     @discardableResult
-    func setImageModel(_ model: ImageModel?, at pos: Int? = nil) -> Bool {
-        guard let type = schema.nodes["image"] else { return false }
-        return run(SchemaKit.setImageModel(type, model, pos: pos))
+    func insertImageBlock(src: String, alt: String? = nil, title: String? = nil,
+                          width: Int? = nil, height: Int? = nil, model: ImageModel? = nil) -> Bool {
+        guard let type = schema.nodes["imageBlock"] else { return false }
+        return run(SchemaKit.insertImage(type, src: src, alt: alt, title: title,
+                                         width: width, height: height, model: model))
     }
 
-    /// Set the displayed size of the addressed image. A nil dimension is
-    /// derived from the other and the image's aspect ratio; nil for both
-    /// restores its natural size.
+    /// Record (or clear) the original image behind the addressed image node,
+    /// whichever of the two image nodes it is.
+    @discardableResult
+    func setImageModel(_ model: ImageModel?, at pos: Int? = nil) -> Bool {
+        run(SchemaKit.setImageModel(model, pos: pos))
+    }
+
+    /// Set the displayed size of the addressed image, whichever of the two
+    /// image nodes it is. A nil dimension is derived from the other and the
+    /// image's aspect ratio; nil for both restores its natural size.
     @discardableResult
     func setImageSize(width: Int?, height: Int?, at pos: Int? = nil) -> Bool {
-        guard let type = schema.nodes["image"] else { return false }
-        return run(SchemaKit.setImageSize(type, width: width, height: height, pos: pos))
+        run(SchemaKit.setImageSize(width: width, height: height, pos: pos))
     }
 }

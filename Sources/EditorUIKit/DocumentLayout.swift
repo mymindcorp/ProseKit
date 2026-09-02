@@ -646,7 +646,7 @@ final class DocumentLayout {
         // have made every unrealized image a single line tall. Size it by the
         // same rule that lays it out, which needs no bytes: an article of
         // photographs is then as tall before it is typeset as after.
-        if child.type.name == "image" { return estimatedImageHeight(child) }
+        if child.isImage { return estimatedImageHeight(child) }
         let font = theme.blockFont(child)
         let lineHeight = theme.lineHeight(for: child, naturalHeight: font.lineHeight)
         let avgChar = max(font.pointSize * 0.5, 1)
@@ -704,7 +704,7 @@ final class DocumentLayout {
                parent.type.name == "details", !(parent.attrs["open"]?.boolValue ?? false) {
                 return false
             }
-            guard node.type.name == "image" else { return true }
+            guard node.isImage else { return true }
             let box = estimatedImageHeight(node)
             extra += node.type.spec.inline ? max(0, box - lineHeight) : box
             return false
@@ -794,11 +794,11 @@ final class DocumentLayout {
 
     /// Whether `node` is, or contains, an image the predicate accepts.
     static func containsImage(_ node: Node, matching predicate: (Node) -> Bool) -> Bool {
-        if node.type.name == "image" { return predicate(node) }
+        if node.isImage { return predicate(node) }
         var found = false
         node.descendants { child, _, _, _ in
             if found { return false }
-            if child.type.name == "image", predicate(child) { found = true; return false }
+            if child.isImage, predicate(child) { found = true; return false }
             return true
         }
         return found
@@ -950,7 +950,7 @@ final class DocumentLayout {
                                             width: max(width - inset * 2, 0), height: rule.thickness),
                                      rule.color ?? theme.hairlineColor))
             return lineY + rule.thickness + theme.points(rule.spacingAfter)
-        case "image":
+        case "image", "imageBlock":
             let src = node.attrs["src"]?.stringValue ?? ""
             let image = imageProvider(node)
             let size = Self.imageDisplaySize(node, natural: image?.size, available: width)
@@ -1770,7 +1770,7 @@ final class DocumentLayout {
                 mathAtoms.append((attrIndex: attrStart, docOffset: docPos, rendering: rendering))
                 segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: 1, text: nil))
                 docPos += 1
-            } else if child.type.name == "image", let image = imageProvider(child) {
+            } else if child.isImage, let image = imageProvider(child) {
                 // Inline image: reserve its box via a run delegate, and record it
                 // to draw at its run position after line breaking. Sized by the
                 // same rule as a block image — `width`/`height` mean the same
@@ -1893,7 +1893,7 @@ final class DocumentLayout {
                 }
                 segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: result.length - attrStart, text: nil))
                 docPos += 1
-                if child.type.name == "image", let src = child.attrs["src"]?.stringValue, !src.isEmpty {
+                if child.isImage, let src = child.attrs["src"]?.stringValue, !src.isEmpty {
                     pendingImages.append(child)
                 }
             }
@@ -2148,7 +2148,7 @@ final class DocumentLayout {
     /// and hit-testing resize handles.
     var imageRects: [(pos: Int, rect: CGRect)] {
         entries.compactMap { e in
-            e.node.type.name == "image" ? blockImageRect(e).map { (e.docStart, $0) } : nil
+            e.node.isImage ? blockImageRect(e).map { (e.docStart, $0) } : nil
         }
     }
 
@@ -2157,7 +2157,7 @@ final class DocumentLayout {
     /// an image. Inline images live inside text blocks and are found via
     /// `position(at:)` instead.
     func blockImage(at point: CGPoint) -> Int? {
-        for e in entries where e.node.type.name == "image" {
+        for e in entries where e.node.isImage {
             if let rect = blockImageRect(e), rect.contains(point) { return e.docStart }
         }
         return nil
@@ -2173,7 +2173,7 @@ final class DocumentLayout {
         for e in entries where !e.estimated && e.node.isLeaf && !e.node.isText
             && e.node.type.spec.selectable {
             let hit: CGRect?
-            if e.node.type.name == "image" {
+            if e.node.isImage {
                 hit = blockImageRect(e)
             } else {
                 hit = CGRect(x: 0, y: e.topY, width: width, height: e.height)
@@ -2188,7 +2188,7 @@ final class DocumentLayout {
     /// lines, so `selectionRects` has nothing to say about them.
     func blockAtomRect(at pos: Int) -> CGRect? {
         for e in entries where e.docStart == pos && !e.estimated && e.node.isLeaf && !e.node.isText {
-            if e.node.type.name == "image", let rect = blockImageRect(e) { return rect }
+            if e.node.isImage, let rect = blockImageRect(e) { return rect }
             return CGRect(x: 0, y: e.topY, width: width, height: e.height)
         }
         return nil

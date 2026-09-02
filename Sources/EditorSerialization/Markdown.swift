@@ -172,7 +172,7 @@ public enum MarkdownSerializer {
                                              continuation: String(repeating: " ", count: marker.count),
                                              tight: tight)
             }.joined(separator: itemSeparator(node))
-        case "image":
+        case "image", "imageBlock":
             // An image is block-level in the default schema, and without a case
             // here it fell through to serializing an atom's content — which is
             // empty, so every image simply disappeared.
@@ -934,7 +934,7 @@ public enum MarkdownSerializer {
         switch node.type.name {
         case "hardBreak":
             out += "\\\n"
-        case "image":
+        case "image", "imageBlock":
             // An image can sit inline as well as in its own block, so the title
             // has to be written on both paths.
             let src = node.attrs["src"]?.stringValue ?? ""
@@ -2533,7 +2533,7 @@ public enum MarkdownParser {
             if node.isText { return node.text ?? "" }
             // An image inside the label contributes the words of its own alt
             // text, which is all a nested image has to give.
-            if node.type.name == "image" { return node.attrs["alt"]?.stringValue ?? "" }
+            if node.isImage { return node.attrs["alt"]?.stringValue ?? "" }
             return node.textContent
         }.joined()
     }
@@ -2708,7 +2708,7 @@ public enum MarkdownParser {
                 }
                 if tag.name == "img", !tag.isClosing,
                    let source = tag.attrs["src"], let src = sanitizeURL(source, for: .image),
-                   let type = schema.nodes["image"] {
+                   let type = schema.imageNodeType {
                     var attrs: Attrs = ["src": .string(src), "alt": .string(tag.attrs["alt"] ?? "")]
                     if let title = tag.attrs["title"] { attrs["title"] = .string(title) }
                     if let img = try? type.create(attrs) {
@@ -2791,7 +2791,7 @@ public enum MarkdownParser {
                                     "alt": .string(renderedText(alt, schema, definitions))]
                 if let title = definition.title { attrs["title"] = .string(title) }
                 if let src = sanitizeURL(definition.destination, for: .image),
-                   let type = schema.nodes["image"] {
+                   let type = schema.imageNodeType {
                     attrs["src"] = .string(src)
                     if let img = try? type.create(attrs) { appendNode(img) }
                 }
@@ -2804,7 +2804,7 @@ public enum MarkdownParser {
                     var attrs: Attrs = ["src": .null,
                                         "alt": .string(renderedText(alt, schema, definitions))]
                     if let title { attrs["title"] = .string(title) }
-                    if let src = sanitizeURL(url, for: .image), let type = schema.nodes["image"] {
+                    if let src = sanitizeURL(url, for: .image), let type = schema.imageNodeType {
                         attrs["src"] = .string(src)
                         if let img = try? type.create(attrs) { appendNode(img) }
                     }

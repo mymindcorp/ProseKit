@@ -137,9 +137,9 @@ final class DocumentImageStore {
             nodes.insert(node)
             srcs.insert(src(of: node))
         }
-        if doc.type.name == "image" { note(doc) }
+        if doc.isImage { note(doc) }
         doc.descendants { node, _, _, _ in
-            if node.type.name == "image" { note(node) }
+            if node.isImage { note(node) }
             return true
         }
         for (key, entry) in entries {

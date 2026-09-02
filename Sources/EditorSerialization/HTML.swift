@@ -24,7 +24,7 @@ public struct HTMLConfig: Sendable {
         let nodeTags: [String: String] = [
             "paragraph": "p", "blockquote": "blockquote",
             "bulletList": "ul", "orderedList": "ol", "listItem": "li",
-            "horizontalRule": "hr", "hardBreak": "br", "image": "img",
+            "horizontalRule": "hr", "hardBreak": "br", "image": "img", "imageBlock": "img",
             "table": "table", "tableRow": "tr", "tableCell": "td", "tableHeader": "th",
             "taskList": "ul", "taskItem": "li",
             "details": "details", "detailsSummary": "summary", "detailsContent": "div",
@@ -309,7 +309,7 @@ public enum HTMLSerializer {
             out += "<hr>"
         case "hardBreak":
             out += "<br>"
-        case "image":
+        case "image", "imageBlock":
             out += "<img src=\""
             escapeAttribute(node.attrs["src"]?.stringValue ?? "", into: &out)
             out += "\""
@@ -321,6 +321,13 @@ public enum HTMLSerializer {
             }
             if let w = node.attrs["width"]?.intValue { out += " width=\"\(w)\"" }
             if let h = node.attrs["height"]?.intValue { out += " height=\"\(h)\"" }
+            // Which of the two image nodes this is. Only worth writing for the
+            // block variant: without it an `imageBlock` exported and re-imported
+            // comes back as a plain `image`, which in a schema whose `image` is
+            // inline quietly demotes a full-width picture into a line of text.
+            if node.type.name != "image" {
+                out += " data-node=\""; escapeAttribute(node.type.name, into: &out); out += "\""
+            }
             // The original behind this rendition, as flat `data-` attributes —
             // readable markup, and no JSON to escape inside an attribute.
             if case let .object(model)? = node.attrs["model"],
@@ -1452,7 +1459,11 @@ public enum HTMLParser {
     private static func makeImage(_ attrs: [String: String], _ schema: Schema) -> Node? {
         // A `data:text/html` or `data:image/svg+xml` source is a script the
         // moment anything renders it; an unsafe source drops the image.
-        guard let type = schema.nodes["image"], let raw = attrs["src"],
+        // `data-node` names the image node the markup came from; a schema
+        // without that one (or markup from elsewhere, which carries no such
+        // attribute) falls back to whichever image node it does have.
+        let named = attrs["data-node"].flatMap { imageNodeNames.contains($0) ? schema.nodes[$0] : nil }
+        guard let type = named ?? schema.imageNodeType, let raw = attrs["src"],
               let src = sanitizeURL(raw, for: .image) else { return nil }
         var a: Attrs = ["src": .string(src)]
         if let alt = attrs["alt"] { a["alt"] = .string(alt) }
