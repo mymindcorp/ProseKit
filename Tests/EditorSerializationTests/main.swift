@@ -3792,6 +3792,7 @@ registerPMMarkdownTests()
 registerAppleNotesDocTests()
 registerRTFTests()
 registerSerializerEdgeTests()
+registerRTFEdgeTests()
 registerJSONReaderTests()
 registerJSONByteFuzzTests()
 
