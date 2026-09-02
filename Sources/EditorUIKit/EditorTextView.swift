@@ -824,7 +824,8 @@ open class EditorTextView: UIView, UIKeyInput {
 
     /// Test hook: the resolved load URL for an image with the given `src`.
     func imageURLForTesting(_ src: String) -> URL? {
-        guard let node = try? editor.schema.node("image", ["src": .string(src)]) else { return nil }
+        guard let type = editor.schema.imageNodeType,
+              let node = try? type.create(["src": .string(src)]) else { return nil }
         return resolveImageURL(node, resolver: imageURLResolver)
     }
 
@@ -2100,7 +2101,7 @@ open class EditorTextView: UIView, UIKeyInput {
     /// dragging the handle resizes the image rather than distorting it.
     func setImageWidth(_ pos: Int, to width: CGFloat) {
         let clamped = max(40, min(width, ensureLayout().contentWidth))
-        guard let node = editor.doc.nodeAt(pos), node.type.name == "image" else { return }
+        guard let node = editor.doc.nodeAt(pos), node.isImage else { return }
         let tr = editor.state.tr
         let newWidth = Int(clamped.rounded())
         guard (try? tr.setNodeAttribute(pos, "width", .int(newWidth))) != nil else { return }
@@ -3248,10 +3249,10 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
         guard let pos = ensureLayout().position(at: point) else { return nil }
         let p = min(max(pos, 0), editor.doc.content.size)
         let resolved = editor.doc.resolve(p)
-        if let after = resolved.nodeAfter, after.type.name == "image" {
+        if let after = resolved.nodeAfter, after.isImage {
             return (after, p, p + after.nodeSize)
         }
-        if let before = resolved.nodeBefore, before.type.name == "image" {
+        if let before = resolved.nodeBefore, before.isImage {
             return (before, p - before.nodeSize, p)
         }
         return nil
@@ -3410,7 +3411,7 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
     /// bytes and returning a `src`; otherwise the bytes are embedded as a `data:`
     /// URL. Internal so paste and tests can reuse it.
     func insertDroppedImage(_ data: Data, typeIdentifier: String?, suggestedName: String?, at dropPos: Int) {
-        guard let type = editor.schema.nodes["image"] else { return }
+        guard let type = editor.schema.imageNodeType else { return }
         let dropped = DroppedImage(data: data, typeIdentifier: typeIdentifier, suggestedName: suggestedName)
         let attrs = onImageDrop?(dropped) ?? Self.dataURLAttrs(for: data, typeIdentifier: typeIdentifier)
         guard let node = try? type.create(attrs) else { return }

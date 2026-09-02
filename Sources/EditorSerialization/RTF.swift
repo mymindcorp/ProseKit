@@ -1109,7 +1109,7 @@ private struct RTFReader {
 
     mutating func appendPicture() {
         guard config.embedImages, let mediaType = group.pict.mediaType,
-              let type = schema.nodes["image"] else { return }
+              let type = schema.imageNodeType else { return }
         var bytes = group.pict.binary
         bytes.reserveCapacity(bytes.count + group.buffer.unicodeScalars.count / 2)
         var high: Int?

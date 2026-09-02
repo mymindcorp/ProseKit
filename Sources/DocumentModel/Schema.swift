@@ -494,3 +494,34 @@ public final class Schema: @unchecked Sendable {
         return result
     }
 }
+
+// MARK: - Images
+
+/// The node names that carry an image.
+///
+/// Two of them do: `image`, which a schema configures as either inline or block,
+/// and `imageBlock`, which is always a block of its own. They are otherwise the
+/// same node — same attributes, same rendering, same export — so everything that
+/// draws, measures, exports or fetches an image asks `isImage` rather than
+/// comparing against a name, and a schema is free to define either or both.
+public let imageNodeNames: Set<String> = ["image", "imageBlock"]
+
+public extension NodeType {
+    /// Whether this type is one of the schema's image nodes.
+    var isImage: Bool { imageNodeNames.contains(name) }
+}
+
+public extension Node {
+    /// Whether this node is one of the schema's image nodes.
+    var isImage: Bool { type.isImage }
+}
+
+public extension Schema {
+    /// The type to build an image with: `image` when the schema defines it,
+    /// else `imageBlock`.
+    ///
+    /// Importers use this rather than `nodes["image"]`, so a schema that only
+    /// registers the block variant still gets images out of HTML, Markdown and
+    /// RTF instead of dropping them on the floor.
+    var imageNodeType: NodeType? { nodes["image"] ?? nodes["imageBlock"] }
+}
