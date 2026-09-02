@@ -229,9 +229,10 @@ open class EditorTextView: UIView, UIKeyInput {
         editor.onTransaction = { [weak self] tr in
             self?.mapSpellCache(through: tr)
             self?.mapMarkedRange(through: tr)
+            if tr.scrolledIntoView { self?.revealRequested = true }
             if tr.docChanged { self?.onDocumentChange?(tr) }
         }
-        editor.onChange = { [weak self] _ in self?.setNeedsRebuild(); self?.fireSelectionChange() }
+        editor.onChange = { [weak self] _ in self?.stateDidChange(); self?.fireSelectionChange() }
         // Let async suggestion sources (e.g. a DB-backed `[[`) repaint the popup
         // when their results arrive, by re-pulling the active source.
         for source in editor.suggestionSources {
@@ -441,7 +442,30 @@ open class EditorTextView: UIView, UIKeyInput {
 
     // MARK: - Layout lifecycle
 
-    private func setNeedsRebuild() {
+    /// The selection as of the last state update, so the next one can tell
+    /// whether it moved. A change that leaves the caret where it was is not a
+    /// reason to scroll to it.
+    private var lastSelection: Selection?
+    /// Set by a transaction that called `scrollIntoView()`; consumed by the
+    /// state update that follows it.
+    private var revealRequested = false
+
+    /// The editor applied a transaction. Everything is re-derived from the new
+    /// state; the caret is *revealed* only when this update moved the selection
+    /// or asked for it. A document change elsewhere — ticking a task off far
+    /// below the caret, a collaborator's edit, an undo of either — must leave
+    /// the page where the reader put it, not jump back to wherever they last
+    /// typed.
+    private func stateDidChange() {
+        let selection = editor.state.selection
+        let moved = lastSelection.map { !$0.eq(selection) } ?? true
+        lastSelection = selection
+        let reveal = moved || revealRequested
+        revealRequested = false
+        setNeedsRebuild(revealCaret: reveal)
+    }
+
+    private func setNeedsRebuild(revealCaret: Bool = true) {
         // Tell the system input system about changes it didn't initiate (caret
         // moves, key edits) so autocorrect / marked text stay in sync.
         if !applyingTextInput { textInputDelegate?.selectionDidChange(self) }
@@ -451,7 +475,7 @@ open class EditorTextView: UIView, UIKeyInput {
         // reuse the existing layout (avoiding a full relayout per keystroke move).
         setNeedsDisplay()
         invalidateIntrinsicContentSize()
-        updateCaret()
+        updateCaret(reveal: revealCaret)
         // Checkbox views track the document; reposition/re-sync after the
         // deferred layout rebuild (keeps the per-keystroke layout lazy).
         setNeedsLayout()
@@ -1302,13 +1326,16 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Test hook: the caret's current on-screen rect (the caret layer's path).
     var caretViewRectForTesting: CGRect? { caretLayer.path?.boundingBoxOfPath }
 
-    private func updateCaret() {
+    /// Redraw the caret for the current selection and, when `reveal` is set,
+    /// scroll it on screen. Pass `reveal: false` for an update the reader did
+    /// not aim at the caret (see `stateDidChange`).
+    private func updateCaret(reveal: Bool = true) {
         let l = ensureLayout()
         realizeCaretRegionIfNeeded() // make an off-screen (estimated) caret target real
         let sel = editor.state.selection
         guard isFirstResponder, sel.empty, let rect = selectionCaretRect(l) else {
             caretLayer.path = nil
-            if isFirstResponder, let rect = l.caretRect(at: editor.state.selection.head) {
+            if reveal, isFirstResponder, let rect = l.caretRect(at: editor.state.selection.head) {
                 revealRect(rect) // keep the active end of a range visible too
             }
             return
@@ -1318,7 +1345,7 @@ open class EditorTextView: UIView, UIKeyInput {
         caretLayer.path = UIBezierPath(rect: rect.offsetBy(dx: 0, dy: -contentOffsetY)).cgPath
         caretLayer.fillColor = theme.selection.caret.cgColor
         caretLayer.opacity = 1
-        revealRect(rect)
+        if reveal { revealRect(rect) }
     }
 
     /// Scroll the nearest enclosing scroll view so the document-coordinate rect
