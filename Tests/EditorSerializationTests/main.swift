@@ -3792,6 +3792,7 @@ registerPMMarkdownTests()
 registerAppleNotesDocTests()
 registerRTFTests()
 registerJSONReaderTests()
+registerJSONByteFuzzTests()
 
 // MARK: - CommonMark long tail, second batch
 

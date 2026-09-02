@@ -32,6 +32,14 @@ extension DocumentJSON {
     /// Two equal keys keep the first, as Foundation kept it. Anything
     /// malformed throws `ModelError.invalidJSON`.
     ///
+    /// Two things read differently, both on purpose. An integer past `Int`'s
+    /// range is a `Double` here, where Foundation's wrapped it; and a decimal
+    /// with more digits than a `Double` holds is correctly rounded, where
+    /// Foundation's could land a few ulps off. (Foundation also lets the odd
+    /// stray continuation byte through as U+FFFD while refusing every other
+    /// kind of broken UTF-8; that is a quirk rather than a rule, and this
+    /// reader refuses them all.)
+    ///
     /// Input that isn't UTF-8 — UTF-16 or UTF-32 with a byte-order mark — is
     /// handed to Foundation, which knows how to read it, and bridged the old
     /// way; nothing in this codebase writes it, so that path exists for the
