@@ -29,7 +29,7 @@ public enum DocumentJSON {
     }
 
     public static func decode(_ schema: Schema, _ data: Data) throws -> Node {
-        let value = try attributeValue(from: try JSONSerialization.jsonObject(with: data))
+        let value = try parse(data)
         guard case let .object(obj) = value else {
             throw ModelError.invalidJSON("Top-level document JSON must be an object")
         }
@@ -54,6 +54,11 @@ public enum DocumentJSON {
     /// arrays and strings — the cases it reaches last. Foundation's parser already
     /// knows the type, so going through it and switching on the result decodes a
     /// 200 KB document in 18ms rather than 124ms.
+    ///
+    /// The document loader no longer comes this way — `parse(_:)` reads the
+    /// bytes directly, and is faster again — but this remains for a caller
+    /// that already holds Foundation's tree, and for the encodings `parse`
+    /// hands to Foundation.
     public static func attributeValue(from json: Any) throws -> AttributeValue {
         switch json {
         case let dict as [String: Any]:

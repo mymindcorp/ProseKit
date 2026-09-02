@@ -61,8 +61,9 @@ func registerBench() {
             try time("DocumentJSON.decode") { _ = try DocumentJSON.decode(schema, json) }
             let jsonData = Data(json.utf8)
             var decoded: AttributeValue!
-            try time("  of which: JSONSerialization + bridge") {
-                decoded = try DocumentJSON.attributeValue(
+            try time("  of which: the reader") { decoded = try DocumentJSON.parse(jsonData) }
+            try time("  was: JSONSerialization + bridge") {
+                _ = try DocumentJSON.attributeValue(
                     from: try JSONSerialization.jsonObject(with: jsonData))
             }
             guard case let .object(decodedObj) = decoded! else { fatalError("not an object") }
