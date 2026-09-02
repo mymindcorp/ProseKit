@@ -85,11 +85,6 @@ final class DocumentTokenizer: NSObject, UITextInputTokenizer {
             utf16Offsets = offsets
         }
 
-        /// Character index → UTF-16 offset.
-        func utf16(forCharacter index: Int) -> Int {
-            utf16Offsets[min(max(index, 0), chars.count)]
-        }
-
         /// UTF-16 offset → character index, rounding down to the character that
         /// contains it (a UTF-16 offset can land inside a surrogate pair).
         func character(forUTF16 offset: Int) -> Int {
@@ -218,14 +213,22 @@ final class DocumentTokenizer: NSObject, UITextInputTokenizer {
 
     private func isWord(_ g: UITextGranularity) -> Bool { g == .word }
 
+    /// Whether `direction` means forwards.
+    ///
+    /// `UITextDirection` is a raw `Int` that carries either a
+    /// `UITextStorageDirection` (forward/backward) or a
+    /// `UITextLayoutDirection` (right/left/up/down), with no tag saying
+    /// which. There is no way to tell them apart, and no need to: only
+    /// `.forward` is forwards. Every layout direction — including `.right`
+    /// and `.down` — is treated as backward, which is what
+    /// `UITextInputStringTokenizer` itself does; `TokenizerParityTests`
+    /// sweeps all four and holds us to that oracle. Do not "fix" this into
+    /// mapping `.right`/`.down` to forwards: it would break parity, and it
+    /// could never have run anyway — `UITextStorageDirection(rawValue:)` is
+    /// an imported Objective-C enum initializer, which succeeds for any
+    /// integer, so a `UITextLayoutDirection` fallback is unreachable.
     private func forward(_ direction: UITextDirection) -> Bool {
-        if let storage = UITextStorageDirection(rawValue: direction.rawValue) {
-            return storage == .forward
-        }
-        if let layout = UITextLayoutDirection(rawValue: direction.rawValue) {
-            return layout == .right || layout == .down
-        }
-        return true
+        direction.rawValue == UITextStorageDirection.forward.rawValue
     }
 
     private func offset(_ position: UITextPosition) -> Int? {
