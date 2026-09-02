@@ -28,7 +28,7 @@ private func usesMark(_ doc: Node, _ name: String) -> Bool {
 }
 
 /// A document that uses every node type and every mark.
-private func everythingDocument() -> Node {
+func everythingDocument() -> Node {
     doc(
         h(1, "The Document Object Model"),
         p(t("Plain, "), strong("bold"), t(", "), em("italic"), t(", "), codeMark("code"),

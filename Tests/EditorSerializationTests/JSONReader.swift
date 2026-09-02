@@ -76,12 +76,21 @@ func registerJSONReaderTests() {
         try expectEqual(try parse("-45"), .int(-45))
         try expectEqual(try parse("9223372036854775807"), .int(Int.max))
         try expectEqual(try parse("-9223372036854775808"), .int(Int.min))
+        try expectEqual(try parse("1.0"), .double(1))
+        try expectEqual(try parse("-0.0"), .double(0))
         try expectEqual(try parse("1.5"), .double(1.5))
         try expectEqual(try parse("-0.25"), .double(-0.25))
         try expectEqual(try parse("1e2"), .double(100))
         try expectEqual(try parse("1E+2"), .double(100))
         try expectEqual(try parse("25e-1"), .double(2.5))
         try expectEqual(try parse("1e100"), .double(1e100))
+        // An exponent past what a Double can hold: underflow is zero, as it
+        // is in IEEE arithmetic, and overflow is refused in either sign.
+        // (Foundation refused `1e-1000` and read `-1e1000` as an infinity;
+        // neither is an answer worth keeping.)
+        try expectEqual(try parse("1e-1000"), .double(0))
+        try expectEqual(try parse("1e-99999999999"), .double(0))
+        try expectThrows { _ = try parse("-1e1000") }
         // Too big for an Int is still a number.
         try expectEqual(try parse("9223372036854775808"), .double(9223372036854775808))
         try expectEqual(try parse("-9223372036854775809"), .double(-9.223372036854776e18))
@@ -103,6 +112,41 @@ func registerJSONReaderTests() {
         try expectEqual(try parse("[1 , ]"), .array([.int(1)]))
         try expectEqual(try parse("\"top-level string\""), .string("top-level string"))
         try expectEqual(try parse("[]"), .array([]))
+        // A key goes through the same string path as a value, escapes and all.
+        try expectEqual(try parse(#"{"a\"b\u0041\n":1}"#), .object(["a\"bA\n": .int(1)]))
+        // Whitespace JSON doesn't allow: vertical tab, form feed, a no-break
+        // space, a next-line character.
+        for bad in ["[1\u{0B}]", "[\u{0C}1]", "\u{A0}[1]", "[1]\u{85}", "{\"a\"\u{0B}:1}"] {
+            try expectThrows { _ = try parse(bad) }
+        }
+    }
+
+    test("JSON reader: bytes that aren't UTF-8 are refused, on both string paths") {
+        // Foundation refused these too — all but a stray continuation byte
+        // in the 0xA0 range, which it let through as U+FFFD while refusing
+        // 0x80 and 0xFF beside it. That is a quirk, not a rule, and the
+        // reader refuses the lot.
+        for bytes in [
+            [0x22, 0x61, 0xFF, 0x62, 0x22],
+            [0x22, 0xC3, 0x22],
+            [0x22, 0x61, 0x80, 0x62, 0x22],
+            [0x22, 0x61, 0x5C, 0x6E, 0xFF, 0x22],
+            [0x22, 0xE2, 0x82, 0x22],
+            [0x7B, 0x22, 0x6B, 0xFF, 0x22, 0x3A, 0x31, 0x7D],
+        ] as [[UInt8]] {
+            let data = Data(bytes)
+            try expectThrows { _ = try DocumentJSON.parse(data) }
+            try expectThrows { _ = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) }
+        }
+    }
+
+    test("JSON reader: a long string that turns out to need unescaping") {
+        // The fast path scans for the closing quote and gives up at the first
+        // escape; here that is thousands of bytes in, so the slow path has to
+        // pick up everything already scanned.
+        let head = String(repeating: "x", count: 10_000)
+        try expectEqual(try parse("\"" + head + "\\n\\u00e9tail\""), .string(head + "\né" + "tail"))
+        try expectEqual(try parse("\"" + head + "\""), .string(head))
     }
 
     test("JSON reader: other encodings load exactly when Foundation reads them") {
@@ -160,7 +204,8 @@ func registerJSONReaderTests() {
             "{}", "[]", "\"\"", "0", "-0", "-1.5e3", "1E+2", "{\"a\":{\"b\":[[]]}}", "{\"a\":1,}", "[1,]",
             "[,1]", "{,}", "[1,,2]", "{\"a\":1,,}", "{\"a\"}", "{\"a\":1 \"b\":2}", "{\"a\":1,\"a\":2}",
             "\"\\ud83d\\ude00\"", "\"\\u00e9\"", "\"\\u0000\"", "\"\\ud83d\"", "\"\\ude00\"",
-            "  [ ]  ", "\u{FEFF}[1]", "[1] [2]", "1 2", "01", "1.", ".5", "+1", "-", "NaN", "Infinity", "1e400",
+            "  [ ]  ", "\u{FEFF}[1]", "[1] [2]", "1 2", "01", "1.", "1.0", "-0.0", ".5", "+1", "-", "NaN", "Infinity", "1e400",
+            "[1\u{0B}]", "[\u{0C}1]", "\u{A0}[1]", "[1]\u{85}", #"{"a\"b\u0041":1}"#,
             "\"a\\/b\"", "\"\\x\"", "\"tab\there\"", "'a'", "[1]//c", "nul", "True", "[", " ",
         ]
         for input in inputs {
