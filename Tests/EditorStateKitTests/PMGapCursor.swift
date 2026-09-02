@@ -151,3 +151,57 @@ func registerPMGapCursorTests() {
         try expect(!GapCursor.valid(d.resolve(1))) // would be valid, but overridden off
     }
 }
+
+// The search's two walks — up out of the block the cursor leaves, and down
+// into the next one — plus the paths `replace` takes for block content. The
+// arrow tests above only reach a gap at the top level.
+func registerGapCursorSearchTests() {
+    test("gapcursor search: walks down into a wrapper to find a gap between its atoms") {
+        let d = gcDoc(gcP("hi"), gcNode("section", [gcNode("uatom_block"), gcNode("uatom_block")]))
+        let s0 = gcState(d, TextSelection.create(d, 3))
+        let s1 = pressArrow(s0, "ArrowRight")
+        try expect(s1.selection is GapCursor, "got \(type(of: s1.selection))")
+        try expectEqual(s1.selection.head, 6) // inside the section, between its atoms
+    }
+
+    test("gapcursor search: walks up out of a wrapper and on to the gap after the next atom") {
+        let d = gcDoc(gcNode("section", [gcP("hi")]), gcNode("uatom_block"), gcNode("uatom_block"))
+        let s0 = gcState(d, TextSelection.create(d, 4)) // end of "hi"
+        let s1 = pressArrow(s0, "ArrowRight")
+        try expect(s1.selection is GapCursor, "got \(type(of: s1.selection))")
+        try expectEqual(s1.selection.head, 7) // between the two trailing atoms
+    }
+
+    test("gapcursor search: walking left out of a wrapper climbs to the gap between the atoms before it") {
+        // The position right before the section isn't a gap — the section
+        // opens with text — so the search climbs out and skips the
+        // unselectable atom to the gap before it.
+        let d = gcDoc(gcNode("uatom_block"), gcNode("uatom_block"), gcNode("section", [gcP("hi")]))
+        let s0 = gcState(d, TextSelection.create(d, 4)) // start of "hi"
+        let s1 = pressArrow(s0, "ArrowLeft")
+        try expect(s1.selection is GapCursor, "got \(type(of: s1.selection))")
+        try expectEqual(s1.selection.head, 1) // between the two atoms
+    }
+
+    test("gapcursor valid: a wrapper is closed when its last descendant is") {
+        let d = gcDoc(gcNode("section", [atom()]), atom())
+        try expect(GapCursor.valid(d.resolve(3)), "after a section ending in an atom, before an atom")
+        let open = gcDoc(gcNode("section", [gcP("x")]), atom())
+        try expect(!GapCursor.valid(open.resolve(5)), "a section ending in text is open")
+    }
+
+    test("gapcursor content: a gap holds nothing") {
+        let d = gcDoc(atom(), atom())
+        try expectEqual(GapCursor(d.resolve(1)).content().content.size, 0)
+    }
+
+    test("gapcursor replace: block content is inserted as is, and deleting a gap is a no-op") {
+        let d = gcDoc(atom(), atom())
+        let s0 = gcState(d, GapCursor(d.resolve(1)))
+        let tr = s0.tr.replaceSelectionWith(atom())
+        let s1 = s0.apply(tr)
+        try expectEqual(s1.doc, gcDoc(atom(), atom(), atom()))
+        let del = s0.tr.deleteSelection()
+        try expectEqual(s0.apply(del).doc, d)
+    }
+}
