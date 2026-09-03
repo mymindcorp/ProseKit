@@ -176,8 +176,24 @@ public struct DocGen {
 
     /// Tables get built by hand rather than from the content expression: a
     /// random `tableRow+` walk produces ragged rows, which are schema-valid but
-    /// not a table any `TableMap` consumer is meant to see. Every cell here
-    /// spans one column and one row, so the map is rectangular.
+    /// not a table any `TableMap` consumer is meant to see.
+    ///
+    /// Some of the cells span. That is the whole reason this can't be a plain
+    /// nested loop: a merged cell is where every table position stops being
+    /// derivable from `(row, column)` — `TableMap` has to look it up, a
+    /// `CellSelection` over one has to grow to a rectangle, and a column delete
+    /// under one has to narrow it rather than remove it. The corpus had none.
+    /// Every sweep that walks a *static* document — the selection sweeps, the
+    /// serializer round-trips, the structural predicates — was therefore only
+    /// ever shown the uniform grid, while the only spanning tables in the
+    /// package were the ones a live fuzz built with `mergeCells`, which no
+    /// static sweep ever sees.
+    ///
+    /// The occupancy grid is what keeps the result a table rather than a mess:
+    /// a span is only taken when the slots it would cover are free and inside
+    /// the grid, so every row still adds up to the same width and the map stays
+    /// rectangular — which is the invariant `TableMap` is written against, and
+    /// the one a ragged random walk breaks.
     private mutating func randomTable(attrs: Attrs, depth: Int) -> Node? {
         guard let table = schema.nodes["table"], let row = schema.nodes["tableRow"],
               let cell = schema.nodes["tableCell"], let header = schema.nodes["tableHeader"] else { return nil }
@@ -193,13 +209,40 @@ public struct DocGen {
         let rows = Int.random(in: 1 ... 3, using: &rng)
         let cols = Int.random(in: 1 ... 3, using: &rng)
         let headerRow = wantsHeader || Bool.random(using: &rng)
+        // One in three tables merges; the rest stay uniform, because the plain
+        // grid is still the common case and a corpus of nothing but merged
+        // tables would be as lopsided as one with none.
+        let spanning = rows > 1 && cols > 1 && Int.random(in: 0 ..< 3, using: &rng) == 0
+
+        var taken = Array(repeating: false, count: rows * cols)
         var rowNodes: [Node] = []
         for r in 0 ..< rows {
             var cells: [Node] = []
-            for _ in 0 ..< cols {
+            for c in 0 ..< cols where !taken[r * cols + c] {
+                var colspan = 1, rowspan = 1
+                if spanning, Bool.random(using: &rng) {
+                    let wantCols = Int.random(in: 1 ... Swift.min(2, cols - c), using: &rng)
+                    // A header row that spans downward would put a header cell
+                    // in a body row, which is a table no command in the kit can
+                    // produce and not the shape this is here to cover.
+                    let wantRows = headerRow && r == 0 ? 1 : Int.random(in: 1 ... Swift.min(2, rows - r), using: &rng)
+                    var free = true
+                    for rr in r ..< r + wantRows {
+                        for cc in c ..< c + wantCols where taken[rr * cols + cc] { free = false }
+                    }
+                    // Only take the span when every slot under it is still free;
+                    // otherwise this cell stays 1×1 and the grid stays square.
+                    if free { colspan = wantCols; rowspan = wantRows }
+                }
+                for rr in r ..< r + rowspan {
+                    for cc in c ..< c + colspan { taken[rr * cols + cc] = true }
+                }
                 let type = (headerRow && r == 0) ? header : cell
+                var cellAttrs: Attrs = [:]
+                if colspan > 1 { cellAttrs["colspan"] = .int(colspan) }
+                if rowspan > 1 { cellAttrs["rowspan"] = .int(rowspan) }
                 let body = randomContent(of: type, depth: Swift.max(1, depth - 3)) ?? .empty
-                guard let node = type.createAndFill([:], content: body) else { return nil }
+                guard let node = type.createAndFill(cellAttrs, content: body) else { return nil }
                 cells.append(node)
             }
             guard let node = try? row.createChecked([:], content: Fragment.from(cells)) else { return nil }

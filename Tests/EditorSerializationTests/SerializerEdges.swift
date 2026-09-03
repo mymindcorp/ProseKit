@@ -21,6 +21,40 @@ private func rtf(_ body: String) -> String { "{\\rtf1\\ansi\\deff0 " + body + "}
 func registerSerializerEdgeTests() {
     // MARK: Markdown
 
+    test("md: a hard break followed by a node that writes nothing isn't written") {
+        // A break is held back until something follows it, because a `\` at the
+        // end of a line reads back as a literal backslash rather than as a
+        // break. But it was flushed by the next child that *arrived*, not by
+        // the next one that wrote anything — and several inline nodes write
+        // nothing: an empty formula, a footnote reference with no label. Every
+        // save then added another backslash to the user's text. Found by the
+        // serialization fuzz.
+        let d = doc(p(t("a"), node("hardBreak"), node("footnoteReference", ["label": .string("")])))
+        let md = d.toMarkdown()
+        try expect(!md.hasSuffix("\\"), "a trailing hard break was written: \(md.debugDescription)")
+        let back = try MarkdownParser.parse(md, schema: schema)
+        try expect(!back.textContent.contains("\\"),
+                   "a backslash came back as text: \(back.textContent.debugDescription)")
+        // A break with real content after it is still a break.
+        let kept = doc(p(t("a"), node("hardBreak"), t("b")))
+        let keptBack = try MarkdownParser.parse(kept.toMarkdown(), schema: schema)
+        try expectEqual(keptBack, kept)
+    }
+
+    test("md: a mention is exported as its name rather than dropped") {
+        // Markdown has no mention, so this is lossy by nature — it comes back
+        // as the text it looks like. Writing nothing was lossier: `@jane` is
+        // something a person typed, and an export that drops it leaves a hole
+        // in the sentence.
+        let d = doc(p(t("hi "), node("mention", ["id": .string("u1"), "label": .string("jane")])))
+        try expect(d.toMarkdown().contains("@jane"), "got: \(d.toMarkdown())")
+        // With no label it falls back to the id, rather than to a bare "@" —
+        // which is not a mention on the way back, it is an at-sign in a
+        // sentence.
+        let bare = doc(p(node("mention", ["id": .string("u1"), "label": .string("")])))
+        try expect(bare.toMarkdown().contains("@u1"), "got: \(bare.toMarkdown())")
+    }
+
     test("md: an image title containing a double quote is written in single quotes") {
         let d = doc(p(node("image", ["src": .string("a.png"), "alt": .string("x"), "title": .string("say \"hi\"")])))
         let md = d.toMarkdown()

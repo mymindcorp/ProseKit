@@ -98,7 +98,7 @@ func registerSerializationFuzzTests() {
                 let parsed = what == "HTML" ? try HTMLParser.parse(text, schema: schema)
                                             : try MarkdownParser.parse(text, schema: schema)
                 let got = collapsed(typedText(parsed))
-                try expect(got.contains(want) || want.contains(got) || got == want,
+                try expect(isSubsequence(want, of: got) || isSubsequence(got, of: want),
                            "\(what) lost text at \(seed)\n  wanted: \(want.debugDescription)\n  got:    \(got.debugDescription)\n  via:    \(text.debugDescription)")
             }
         }
@@ -130,6 +130,28 @@ private func typedText(_ doc: Node) -> String {
         return true
     }
     return out
+}
+
+/// Whether every character of `needle` appears in `haystack`, in order.
+///
+/// A subsequence rather than a substring, because an atom is allowed to spell
+/// itself as text on the way out and there is no rule about where its spelling
+/// lands. A mention exports as `@jane` — Markdown has no mention, and writing
+/// nothing at all was the alternative — so the round-trip's text is the
+/// document's own text with the atoms' names interleaved through it, and a
+/// substring test reads that as the paragraph having been eaten.
+///
+/// It is still a real constraint: it says every character the user typed comes
+/// back, in the order they typed it. What it stops asserting is that nothing
+/// was *added* between them, which is not something an export owes.
+private func isSubsequence(_ needle: String, of haystack: String) -> Bool {
+    var i = needle.startIndex
+    guard i != needle.endIndex else { return true }
+    for character in haystack where character == needle[i] {
+        i = needle.index(after: i)
+        if i == needle.endIndex { return true }
+    }
+    return false
 }
 
 /// The text with its whitespace removed.

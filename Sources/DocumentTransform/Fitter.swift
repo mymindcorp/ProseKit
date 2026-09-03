@@ -4,6 +4,13 @@ public import DocumentModel
 /// `slice`, fitting the slice's open ends to the surrounding document
 /// structure. Returns `nil` when the replacement is a no-op.
 public func replaceStep(_ doc: Node, _ from: Int, _ to: Int? = nil, _ slice: Slice = .empty) -> (any Step)? {
+    // The second of the two doors described on `clampingOpenDepths`. `Slice`'s
+    // initializer takes the depths it is handed, so a slice built in code —
+    // by a host inserting content, by the paste layer, by anything that didn't
+    // come through `Slice.fromJSON` — can claim more open depth than it has
+    // content. The Fitter below walks that claim literally, and a slice with a
+    // negative `size` makes its loop never end.
+    let slice = slice.clampingOpenDepths()
     let to = to ?? from
     if from == to && slice.size == 0 { return nil }
     let resolvedFrom = doc.resolve(from)
@@ -58,7 +65,28 @@ final class Fitter {
     var depth: Int { frontier.count - 1 }
 
     func fit() -> (any Step)? {
-        while unplaced.size != 0 {
+        // Re-clamped every round, not just on the way in. `openStart` is a
+        // claim about the leading spine of `unplaced.content` — "descend
+        // `firstChild` this many times and you will find a node each time" —
+        // and every walk in here, `findFittable` and `contentAt` included,
+        // takes it literally and force-unwraps on the strength of it.
+        //
+        // The claim can be true on entry and false a round later. `placeNodes`
+        // drops the first child at `fit.sliceDepth` while carrying `openStart`
+        // across unchanged, so placing the outermost node of a two-deep slice
+        // leaves the depth claiming two levels over content that has none.
+        // Upstream carries the same arithmetic and never trips it, because the
+        // slices it is given always have a spine to match; a slice assembled in
+        // code — by a host, by the paste layer, by anything that didn't come
+        // through `Slice.fromJSON` — need not, and a wrong claim here is a trap
+        // rather than a rejection.
+        //
+        // `> 0` rather than `!= 0` for the same reason: a slice whose depths
+        // outrun its content reports a *negative* size, which `!= 0` reads as
+        // work still to do and loops on forever.
+        while unplaced.size > 0 {
+            unplaced = unplaced.clampingOpenDepths()
+            guard unplaced.size > 0 else { break }
             if let fit = findFittable() {
                 placeNodes(fit)
             } else if !openMore() {

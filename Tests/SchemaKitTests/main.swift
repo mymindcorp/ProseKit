@@ -252,6 +252,7 @@ registerJSONFuzzTests()
 registerStructureFuzzTests()
 registerTaskSortFuzzTests()
 registerSelectionCommandFuzzTests()
+registerChangeSetFuzzTests()
 
 registerPMListTests(); registerPMTableMapTests(); registerPMTableCommandsTests(); registerPMCellCopyPasteTests(); registerPMTableExtraTests()
 registerPMTableMoveTests()

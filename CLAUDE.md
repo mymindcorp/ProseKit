@@ -58,8 +58,8 @@ text-input sequences, is cheap, and always runs.)
 Model and state (selections, commands, history, mapping, steps, serialization,
 collaboration — with and without undo — copy/paste, foreign markup, the JSON
 loaders on corrupt input, the structural transforms and the predicates that gate
-them, track changes, tables, marks, input rules, decorations, task sorting,
-search and its incremental highlighter):
+them, track changes, changesets, tables, marks, input rules, decorations, task
+sorting, search and its incremental highlighter):
 
 ```sh
 PROSEKIT_FUZZ=1 swift run SchemaKitTests
@@ -81,9 +81,16 @@ The two knobs scale different sweeps, because the sweeps take different input:
   the serialization round-trips.
 - `PROSEKIT_FUZZ_OPS` is how many *seeds* of a random editing session each sweep
   runs. It deepens everything that drives a live editor — steps, history,
-  collaboration and track changes. Those share one op driver
+  collaboration, changesets and track changes. Those share one op driver
   (`Tests/SchemaKitTests/FuzzOps.swift`), so an operation added there deepens
   all of them at once.
+
+An operation is only worth adding there if it reaches the library by a route
+nothing else takes. What the driver produces is checked rather than assumed:
+*transform fuzz: the sweep really does drive every kind of step* fails when a
+kind of `Step` stops coming out the other end, which is how the two node-mark
+steps were found to be arriving only by accident — and, once they arrived
+reliably, how they were found to be duplicating the node's content.
 
 Add a new node type's commands to `fuzzOpCommands`, and its extension to
 `fuzzKit()`. Both defaults are the *whole* kit, opt-in extensions included: the

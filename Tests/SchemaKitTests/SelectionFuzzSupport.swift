@@ -75,14 +75,41 @@ private func gapNeighboursAreClosed(_ pos: ResolvedPos) -> Bool {
 /// content in a one-cell row of its own — and `fixTables` squares it up in an
 /// appended transaction. `TableMap` reads a ragged table as best it can, so the
 /// positions it hands back are only meaningful once the table is square again.
+///
+/// Counted through an occupancy grid rather than by summing each row's
+/// colspans, because a row under a `rowspan` genuinely holds fewer cells than
+/// the table is wide — the cell above is still standing in that row. Summing
+/// colspans called every such table ragged, which quietly turned off the cell
+/// checks below for exactly the tables they matter most for.
 private func tableIsRectangular(_ table: Node) -> Bool {
+    let rows = table.childCount
+    guard rows > 0 else { return true }
+    var occupied: [[Bool]] = Array(repeating: [], count: rows)
     var width: Int?
-    for r in 0 ..< table.childCount {
+    for r in 0 ..< rows {
         let row = table.child(r)
-        var cols = 0
-        for c in 0 ..< row.childCount { cols += row.child(c).attrs["colspan"]?.intValue ?? 1 }
-        if let width, width != cols { return false }
-        width = cols
+        var col = 0
+        for c in 0 ..< row.childCount {
+            let cell = row.child(c)
+            let colspan = cell.attrs["colspan"]?.intValue ?? 1
+            let rowspan = cell.attrs["rowspan"]?.intValue ?? 1
+            guard colspan >= 1, rowspan >= 1 else { return false }
+            while col < occupied[r].count, occupied[r][col] { col += 1 }
+            for rr in r ..< Swift.min(r + rowspan, rows) {
+                for cc in col ..< col + colspan {
+                    while occupied[rr].count <= cc { occupied[rr].append(false) }
+                    if occupied[rr][cc] { return false } // two cells in one slot
+                    occupied[rr][cc] = true
+                }
+            }
+            col += colspan
+        }
+    }
+    for r in 0 ..< rows {
+        let filled = occupied[r].count
+        guard occupied[r].allSatisfy({ $0 }) else { return false } // a hole in the grid
+        if let width, width != filled { return false }
+        width = filled
     }
     return true
 }

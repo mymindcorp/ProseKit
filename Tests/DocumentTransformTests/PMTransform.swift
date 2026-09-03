@@ -150,6 +150,51 @@ func registerPMTransformTests() {
     markupT("can change a textblock", doc("<a>", p("foo")), doc(h1("foo")), "heading", ["level": .int(1)])
     markupT("can change an inline node", doc(p("foo<a>", img(), "bar")), doc(p("foo", img(src: "bar", alt: "y"), "bar")), "image", ["src": .string("bar"), "alt": .string("y")])
 
+    // Retyping an *empty* node to a leaf. The gap-replace this used to emit
+    // applied cleanly and then could not be inverted — `apply` refused its own
+    // inverse as a gap-replace that would overwrite content — so the edit
+    // landed and undo silently declined it. Found by the transform fuzz, which
+    // asks every step it sees to invert. A leaf takes the plain-replace route
+    // instead, which inverts like any other.
+    test("PM setNodeMarkup: retyping an empty node to a leaf inverts") {
+        let before = doc(p("keep"), "<a>", p()).node
+        let tr = Transform(before)
+        try tr.setNodeMarkup(6, basicSchema.nodes["horizontal_rule"]!)
+        try expectEqual(tr.doc, doc(p("keep"), hr()).node)
+        // Every step it produced has to undo itself, which is the property that
+        // was failing.
+        var current = tr.doc
+        for i in stride(from: tr.steps.count - 1, through: 0, by: -1) {
+            let inverted = tr.steps[i].invert(tr.docs[i])
+            let result = inverted.apply(current)
+            try expectNil(result.failed)
+            guard let doc = result.doc else { break }
+            current = doc
+        }
+        try expectEqual(current, before)
+    }
+
+    test("PM setNodeMarkup: retyping a leaf to a container fills it") {
+        // The mirror of the case above. A leaf has no content to hand the new
+        // node, and `NodeType.create` doesn't ask whether the type it is
+        // building can stand empty — so retyping a rule to a list produced an
+        // empty `bullet_list`, a document the schema rejects. It reached the
+        // collaborating peers and it came back out of undo, and in neither
+        // place is there anywhere left to report it. Found by the collab and
+        // history fuzzes on the same edit.
+        let before = doc(p("keep"), hr()).node
+        let tr = Transform(before)
+        try tr.setNodeMarkup(6, basicSchema.nodes["bullet_list"]!)
+        try tr.doc.check()
+        try expectEqual(tr.doc.child(1).type.name, "bullet_list")
+        try expect(tr.doc.child(1).childCount > 0, "the list came back empty")
+    }
+
+    test("PM setNodeMarkup: a leaf type still refuses a node that holds content") {
+        let tr = Transform(doc(p("text")).node)
+        try expectThrows { try tr.setNodeMarkup(0, basicSchema.nodes["horizontal_rule"]!) }
+    }
+
     // MARK: replace
     func repl(_ name: String, _ d: TaggedNode, _ source: TaggedNode?, _ e: TaggedNode) {
         test("PM replace: \(name)") {

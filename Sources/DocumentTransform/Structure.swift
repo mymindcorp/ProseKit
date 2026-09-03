@@ -176,10 +176,34 @@ public extension Transform {
         let type = type ?? node.type
         let newNode = try type.create(attrs, content: .empty, marks: marks ?? node.marks)
         if node.isLeaf {
-            return try replaceWith(pos, pos + node.nodeSize, newNode)
+            // Filled, not bare. The gap-replace below hands the new node the old
+            // one's content; this branch has none to hand it, because the old
+            // node was a leaf — so whatever goes in has to be able to stand on
+            // its own, and `create` does not check that. Retyping an inline
+            // formula to a `taskList` produced an empty `taskList`, which is a
+            // document the schema rejects: it reached the collaborating peers
+            // and it came back out of undo, and in neither place is there
+            // anywhere left to report it.
+            guard let filled = type.createAndFill(attrs, marks: marks ?? node.marks) else {
+                throw TransformError.failed("Cannot build a valid \(type.name) here")
+            }
+            return try replaceWith(pos, pos + node.nodeSize, filled)
         }
         if !type.validContent(node.content) {
             throw TransformError.failed("Invalid content for node type \(type.name)")
+        }
+        // Retyping *to* a leaf takes the same route as retyping from one, and
+        // for a reason the gap-replace below can't survive. That step keeps the
+        // old node's content and threads it back through the new node's gap,
+        // which is only meaningful for a node that has an inside. For a leaf
+        // the slice is one token wide, so `insert` lands past the whole node
+        // and the step's own inverse comes out spanning it — `apply` then
+        // refuses the inverse as a gap-replace that would overwrite content,
+        // and an edit that can't be undone is worse than one that was refused.
+        // Reachable only when the old node is empty, since anything else is
+        // content a leaf can't take and `validContent` has already thrown.
+        if type.isLeaf {
+            return try replaceWith(pos, pos + node.nodeSize, newNode)
         }
         return try step(ReplaceAroundStep(pos, pos + node.nodeSize, pos + 1, pos + node.nodeSize - 1,
             Slice(content: Fragment.from(newNode), openStart: 0, openEnd: 0), 1, structure: true))
@@ -294,6 +318,14 @@ public extension Transform {
     /// to fit better.
     @discardableResult
     func replaceRange(_ from: Int, _ to: Int, _ slice: Slice) throws -> Self {
+        // Clamped before anything reads the depths, for the reason spelled out
+        // on `Slice.clampingOpenDepths`. This is a third door alongside
+        // `Slice.fromJSON` and `replaceStep`, and it needs its own: the walk
+        // just below descends `openStart` levels into the slice and then
+        // indexes back up through what it found, so a slice claiming more depth
+        // than it has runs off the end of that list rather than reaching the
+        // `replace` at the bottom of this function.
+        let slice = slice.clampingOpenDepths()
         if slice.size == 0 { return try deleteRange(from, to) }
         let rFrom = doc.resolve(from)
         let rTo = doc.resolve(to)

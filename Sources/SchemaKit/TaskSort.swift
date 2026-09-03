@@ -118,6 +118,17 @@ func checkedItemPositions(_ trs: [Transaction]) -> [Int] {
         if tr.getMeta(taskHomesMeta) != nil { continue }
         for (si, step) in tr.steps.enumerated() {
             guard let attrStep = step as? AttrStep, attrStep.attr == "checked" else { continue }
+            // A write that changes nothing is not a check. Everything below
+            // reads "the batch wrote `checked` here" as "the user just ticked
+            // this box", and sinks the item to the bottom of its list on the
+            // strength of it — so re-stating the flag an item already had moved
+            // a *completed* task down past its neighbours, in a list nobody had
+            // touched. Only the routes this plugin exists to catch can do that:
+            // a person tapping a checkbox always flips it, but a collab step, a
+            // paste and a script setting the attribute all re-state it happily.
+            if let was = tr.docs[si].nodeAt(attrStep.pos)?.attrs["checked"], was == attrStep.value {
+                continue
+            }
             // Through the rest of this transaction, then through the ones after it.
             var pos = tr.mapping.slice(si + 1).map(attrStep.pos, 1)
             for later in trs[(ti + 1)...] { pos = later.mapping.map(pos, 1) }

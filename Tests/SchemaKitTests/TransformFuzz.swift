@@ -150,6 +150,30 @@ func registerTransformFuzzTests() {
             }
         }
     }
+
+    // MARK: coverage
+
+    test("transform fuzz: the sweep really does drive every kind of step") {
+        // The properties above are only as good as the steps they are handed,
+        // and nothing was checking which ones those were. Asked the question,
+        // the sweep turned out to be running on five of the seven kinds it can
+        // produce: `addNodeMark` never once, `removeMark` only by accident, and
+        // a driver change that stopped producing either would have quietly
+        // narrowed every property in this file without failing anything.
+        //
+        // Coverage was not the finding, it was how the finding was reached: the
+        // two node-mark steps, once they arrived reliably, turned out to be
+        // duplicating the content of any node that had some.
+        //
+        // `docAttr` is the exception, and deliberately: the kit's `doc` node
+        // declares no attributes, so there is no `DocAttrStep` for a sweep to
+        // produce. Asserting it would be asserting a schema fact in a step test.
+        let seen = try eachFuzzStep("coverage") { _, _, _, _ in }
+        let want: Set<String> = ["replace", "replaceAround", "addMark", "removeMark",
+                                 "addNodeMark", "removeNodeMark", "attr"]
+        try expect(want.isSubset(of: seen),
+                   "the sweep never produced \(want.subtracting(seen).sorted()) — it only saw \(seen.sorted())")
+    }
 }
 
 // MARK: - Driving the sweeps
@@ -163,13 +187,16 @@ func registerTransformFuzzTests() {
 let fuzzOpSeeds = UInt64(ProcessInfo.processInfo.environment["PROSEKIT_FUZZ_OPS"].flatMap(Int.init) ?? 40)
 let fuzzOpCount = 60
 
-/// Run `check` over every step the editor produces across every seed.
+/// Run `check` over every step the editor produces across every seed, and
+/// report which kinds of step went past.
 ///
 /// The recent operation log goes into the context: a property that fails 40 ops
 /// into a seed is unreadable without knowing what got it there, and re-deriving
 /// that from the seed means replaying the RNG by hand.
+@discardableResult
 private func eachFuzzStep(_ label: String,
-                          _ check: (any Step, Node, Schema, () -> String) throws -> Void) throws {
+                          _ check: (any Step, Node, Schema, () -> String) throws -> Void) throws -> Set<String> {
+    var kinds: Set<String> = []
     for seed in 1 ... fuzzOpSeeds {
         var rng = SelRNG(seed)
         let recorder = try FuzzRecorder()
@@ -178,12 +205,14 @@ private func eachFuzzStep(_ label: String,
             let (what, trs) = recorder.step(&rng)
             log.append(what)
             for (step, doc) in fuzzSteps(trs) {
+                kinds.insert(step.jsonID)
                 try check(step, doc, recorder.editor.schema) {
                     "\(label) seed \(seed) on \(step.jsonID) — \(log.suffix(4).joined(separator: " | "))"
                 }
             }
         }
     }
+    return kinds
 }
 
 /// The same, over consecutive pairs of steps — the shape `merge` is defined on:

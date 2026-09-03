@@ -196,6 +196,54 @@ func registerStepAttrAndNodeMarkTests() {
                         before)
     }
 
+    // Every case above marks an *image* — a leaf, with no content to lose. That
+    // was the whole hand-written coverage of these two steps, and it hid the
+    // bug below: a node-mark step on a node that holds content duplicated it.
+    // The slice these steps build is deliberately half a node — the marked node
+    // with its content dropped, open at the end so the document's own copy
+    // flows back in as the step is applied. Handing that slice a node that
+    // still carries its content puts the content in twice: once inside the
+    // slice, once from the document. Found by the transform fuzz, which started
+    // driving these two steps once the shared op driver could produce them.
+
+    test("RemoveNodeMarkStep: a node that holds content keeps it") {
+        // The fuzz's own case: remove a mark the node doesn't carry. Nothing
+        // about the document should change — and before the fix the paragraph
+        // came back holding "hellohello", because the slice carried the content
+        // the document was about to hand back.
+        let before = doc(p("hello"), p("world")).node
+        let after = try applied(RemoveNodeMarkStep(0, basicSchema.mark("em")), before)
+        try expectEqual(after, before)
+    }
+
+    test("RemoveNodeMarkStep: removing from a nested container keeps its blocks") {
+        // A container two levels deep, so a duplicated content fragment would
+        // have somewhere to go rather than being refused by the schema.
+        let before = doc(blockquote(p("one"), p("two"))).node
+        let after = try applied(RemoveNodeMarkStep(0, basicSchema.mark("strong")), before)
+        try expectEqual(after, before)
+        try expectEqual(after.child(0).childCount, 2)
+    }
+
+    test("node mark steps on a node with content invert exactly") {
+        // The promise undo rests on, in the case the leaf tests couldn't reach.
+        let before = doc(p("hello"), p("world")).node
+        for step: any Step in [RemoveNodeMarkStep(0, basicSchema.mark("em")),
+                               RemoveNodeMarkStep(7, basicSchema.mark("strong"))] {
+            let after = try applied(step, before)
+            try expectEqual(after.content.size, before.content.size)
+            try expectEqual(try applied(step.invert(before), after), before)
+        }
+    }
+
+    test("node mark steps: a text node is refused rather than retyped") {
+        // `nodeAt` hands back a text node as readily as any other, and a text
+        // node cannot be rebuilt through `NodeType.create`.
+        let before = doc(p("hello")).node
+        try expectNotNil(AddNodeMarkStep(1, basicSchema.mark("em")).apply(before).failed)
+        try expectNotNil(RemoveNodeMarkStep(1, basicSchema.mark("em")).apply(before).failed)
+    }
+
     test("node mark steps: an insertion ahead of them moves their position") {
         let before = imageDoc()
         let insert = ReplaceStep(0, 0, Slice(content: Fragment.from(p("new").node),
