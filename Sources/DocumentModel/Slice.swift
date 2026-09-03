@@ -99,13 +99,33 @@ public struct Slice: Hashable, Sendable {
         let openStart = json["openStart"]?.intValue ?? 0
         let openEnd = json["openEnd"]?.intValue ?? 0
         let content = try Fragment.fromJSON(schema, contentArr)
-        // Clamp the (untrusted) open depths to the fragment's actual nesting so a
-        // malformed slice can't make the replace Fitter descend past real content
-        // and trap on `firstChild!`/`lastChild!`.
+        return Slice(content: content, openStart: openStart, openEnd: openEnd).clampingOpenDepths()
+    }
+
+    /// The same slice with its open depths brought inside its own content.
+    ///
+    /// A slice's open depths are a claim about its content: "the first
+    /// `openStart` nodes down the leading spine are cut through". Every
+    /// consumer takes the claim at its word — the replace Fitter walks
+    /// `firstChild!` exactly `openStart` times, and `size` subtracts both
+    /// depths without asking whether there was that much content to subtract.
+    /// A slice that overstates them is therefore not merely wrong, it is
+    /// unsurvivable: the walk traps on the first `nil`, and a slice claiming
+    /// more depth than it has content reports a *negative* size, which a
+    /// consumer draining it by size reads as "still work to do" and loops on.
+    ///
+    /// Neither is hypothetical. The depths arrive from a pasteboard, from a
+    /// collaborating peer, and from a stored document — none of them a source
+    /// that owes us a well-formed number — and `Slice`'s initializer takes them
+    /// as given, because a slice is built once per keystroke on the fitter's own
+    /// hot path and cannot afford to re-derive them. So the clamp lives at the
+    /// doors instead: here, and at the entry to the replace machinery.
+    public func clampingOpenDepths() -> Slice {
         let limit = Slice.maxOpen(content)
-        return Slice(content: content,
-                     openStart: max(0, min(openStart, limit.openStart)),
-                     openEnd: max(0, min(openEnd, limit.openEnd)))
+        let start = Swift.max(0, Swift.min(openStart, limit.openStart))
+        let end = Swift.max(0, Swift.min(openEnd, limit.openEnd))
+        if start == openStart, end == openEnd { return self }
+        return Slice(content: content, openStart: start, openEnd: end)
     }
 
     /// Every node the slice holds *whole* is a valid node.

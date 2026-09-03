@@ -58,11 +58,13 @@ public enum MarkdownSerializer {
         }
     }
 
-    /// A heading's inline content on one line. A hard break wrote `\` and a
-    /// newline; the backslash alone reads back as a literal backslash — a stray
-    /// `\` in the title — so the break is spelled the way a table cell spells
-    /// one instead. Any other newline is a soft wrap and reads as a space.
-    private static func flattenHeadingLines(_ text: String) -> String {
+    /// Inline content squeezed onto one line, for the three constructs that
+    /// have only one to give: a heading, a `<summary>`, and the caption that
+    /// trails a figure's closing fence. A hard break wrote `\` and a newline;
+    /// the backslash alone reads back as a literal backslash — a stray `\` in
+    /// the title — so the break is spelled the way a table cell spells one
+    /// instead. Any other newline is a soft wrap and reads as a space.
+    private static func flattenToOneLine(_ text: String) -> String {
         var out = ""
         out.reserveCapacity(text.count)
         // A literal backslash in the text is written as two, so only an odd run
@@ -122,7 +124,7 @@ public enum MarkdownSerializer {
             // a mark spanning a soft wrap can carry — reads as a space.
             var text = serializeInline(node.content)
             if text.utf8.contains(UInt8(ascii: "\n")) {
-                text = flattenHeadingLines(text)
+                text = flattenToOneLine(text)
             }
             // A trailing run of "#" reads as a closing sequence, so escape it.
             if text.hasSuffix("#") {
@@ -199,7 +201,11 @@ public enum MarkdownSerializer {
             for i in 0..<node.childCount {
                 let child = node.child(i)
                 if child.type.name == "figcaption" {
-                    caption = serializeInline(child.content)
+                    // A caption trails the closing fence, so it is one line by
+                    // construction: a break inside it would push the rest of
+                    // the caption onto a line of its own, where it reads as the
+                    // paragraph after the figure rather than as its caption.
+                    caption = flattenToOneLine(serializeInline(child.content))
                 } else {
                     body.append(serializeBlock(child, indent: indent))
                 }
@@ -215,7 +221,12 @@ public enum MarkdownSerializer {
             // Markdown has no collapsible section; emit the HTML block form that
             // GitHub-flavored Markdown (and our parser) understands.
             let open = node.attrs["open"]?.boolValue ?? false
-            let summary = node.childCount > 0 ? serializeInline(node.child(0).content) : ""
+            // Flattened for the same reason a heading is: `<summary>` and its
+            // closing tag are written on one line, and a hard break at the end
+            // of the summary put the `</summary>` on the next one — where the
+            // parser, which looks for the close on the line it opened, read the
+            // tag itself back as summary text.
+            let summary = node.childCount > 0 ? flattenToOneLine(serializeInline(node.child(0).content)) : ""
             let content = node.childCount > 1 ? node.child(1) : nil
             let body = content.map { serializeBlocks($0.content, indent: indent) } ?? ""
             return "<details\(open ? " open" : "")>\n<summary>\(summary)</summary>\n\n\(body)\n\n</details>"
@@ -569,6 +580,9 @@ public enum MarkdownSerializer {
     }
 
     static func writeInline(_ fragment: Fragment, into out: inout String) {
+        // Where this call's own output starts, so the trailing-break trim at the
+        // bottom can't reach back into whatever the caller had already written.
+        let written = out.count
         let children = fragment.content
         // Marks currently open, outermost first, and whether each was opened as
         // an HTML tag rather than as a delimiter run.
@@ -899,6 +913,20 @@ public enum MarkdownSerializer {
         // Whatever is still held at the end is dropped rather than written: no
         // parser keeps trailing spaces on a line, and two of them would read
         // back as a hard break.
+        //
+        // Holding it is not quite enough, though, because a break is flushed by
+        // the next child that *arrives*, not by the next one that writes
+        // anything — and several inline nodes write nothing at all: an empty
+        // formula, a footnote reference with no label. A break in front of one
+        // of those was written out and then had nothing after it, which is the
+        // one thing a `\` at the end of a line cannot survive: the parser reads
+        // it as a literal backslash, so every save added one. So whatever was
+        // appended here gives its trailing break back.
+        while out.count > written {
+            if out.hasSuffix("\\\n") { out.removeLast(2) }
+            else if out.hasSuffix("<br>") { out.removeLast(4) }
+            else { break }
+        }
     }
 
     /// A node's own text, with the marks that don't wrap a run — currently only
@@ -947,6 +975,21 @@ public enum MarkdownSerializer {
             }
         case "wikiLink":
             out += "[[\(node.type.spec.leafText?(node) ?? "")]]"
+        case "mention":
+            // Markdown has no mention, so this is lossy by nature — it comes
+            // back as the text it looks like. Writing nothing was lossier
+            // still: `@jane` is something a person typed, and an export that
+            // drops it hands them a sentence with a hole in it.
+            //
+            // The label, or the id when there is no label. Not the node's own
+            // `leafText`, which falls back to the id only when the label is
+            // *absent* and not when it is empty — so a mention picked from a
+            // source that supplies no display name spelled as a bare "@", which
+            // is not a mention on the way back, it is an at-sign in the middle
+            // of a sentence.
+            let name = node.attrs["label"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+                ?? node.attrs["id"]?.stringValue ?? ""
+            if !name.isEmpty { escapeInline("@" + name, into: &out) }
         case "footnoteReference":
             // Same as the note itself: `[^]` is not a reference, so writing one
             // only produces literal brackets that grow a backslash per save.

@@ -90,6 +90,25 @@ func registerTaskSortTests() {
         try expectEqual(editor.schema.nodes["taskItem"]?.defaultAttrs.count, 1)
     }
 
+    test("task sort: re-writing the flag an item already has moves nothing") {
+        // Only a person tapping a checkbox is guaranteed to *flip* it. The
+        // routes this plugin's `appendTransaction` exists to catch — a collab
+        // step, a paste, a script ticking a whole list — all re-state a flag
+        // happily, and the sort read "the batch wrote `checked` here" as "the
+        // user just ticked this box". A completed task then sank past its
+        // neighbours in a list nobody had touched. Found by the task-sort fuzz.
+        let editor = try sortingEditor([("a", true), ("b", false), ("c", true)], sorting: true)
+        let before = editor.doc
+        setChecked(editor, 0, true)      // already checked
+        try expectEqual(texts(editor), ["a", "b", "c"])
+        try expect(editor.doc == before, "re-writing a set flag moved something")
+        setChecked(editor, 1, false)     // already unchecked
+        try expect(editor.doc == before, "re-writing a clear flag moved something")
+        // And a real check still sinks, so the guard didn't switch sorting off.
+        setChecked(editor, 1, true)
+        try expectEqual(texts(editor), ["a", "c", "b"])
+    }
+
     test("task sort: a checked item drops to the bottom") {
         let editor = try sortingEditor([("a", false), ("b", false), ("c", false)])
         setChecked(editor, 0, true)

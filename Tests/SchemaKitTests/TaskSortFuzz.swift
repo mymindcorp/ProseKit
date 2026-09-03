@@ -113,6 +113,51 @@ func registerTaskSortFuzzTests() {
         // sorting; the corpus is steered at task items.
         try expect(moved > 0, "no check ever moved an item across \(fuzzOpSeeds) sessions")
     }
+
+    test("task sort fuzz: writing the flag an item already has moves nothing") {
+        // The sweep above only ever *flips* a checkbox, because that is what a
+        // person does. Nothing else that writes the attribute is under that
+        // constraint: a collab peer replays whatever its author sent, a paste
+        // re-states the item it carried, a script sets `checked = true` on a
+        // list to tick the lot. Every one of those can write a flag onto an
+        // item that already has it — and the plugin's own comment names them as
+        // the case its `appendTransaction` exists for.
+        //
+        // A write that changes no attribute value has to change no order.
+        // Anything else is a completed task jumping down its list because a
+        // peer echoed a checkbox nobody touched, which the user sees as the app
+        // shuffling their list on its own.
+        for seed in 1 ... fuzzOpSeeds {
+            var rng = SelRNG(seed &* 67 &+ 31)
+            let editor = try Editor(extensions: fuzzKit(sorting: true))
+            var gen = DocGen(schema: editor.schema, seed: seed)
+            gen.focus = typePath(to: editor.schema.nodes["taskItem"]!, in: editor.schema) ?? []
+            editor.setContent(gen.randomDoc(depth: 4, budget: 60))
+            var log: [String] = []
+
+            for _ in 0 ..< fuzzOpCount {
+                let items = taskItemPositions(editor.doc)
+                if items.isEmpty || Int.random(in: 0 ..< 3, using: &rng) == 0 {
+                    log.append(fuzzStep(editor, &rng))
+                    continue
+                }
+                let pos = items.randomElement(using: &rng)!
+                let node = editor.doc.nodeAt(pos)!
+                let checked = node.attrs["checked"]?.boolValue ?? false
+                let before = editor.doc
+                let tr = editor.state.tr
+                _ = try? tr.setNodeAttribute(pos, "checked", .bool(checked))
+                editor.dispatch(tr)
+                log.append("rewrite(\(pos), checked: \(checked))")
+                try expect(editor.doc == before, """
+                    re-writing the flag an item already had moved something — seed \(seed) — \(log.suffix(4).joined(separator: " | "))
+                      before:
+                    \(fuzzOutline(before))  after:
+                    \(fuzzOutline(editor.doc))
+                    """)
+            }
+        }
+    }
 }
 
 /// The kit with completed-task sorting switched on.

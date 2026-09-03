@@ -93,6 +93,71 @@ func registerAdversarialStepTests() {
         try expectNotNil(step.apply(doc).failed)      // and is refused, not fatal, on this one
     }
 
+    // MARK: - Slices whose open depths overstate their content
+
+    // A slice's open depths are a claim about its content, and `Slice`'s
+    // initializer takes them as given — it is built once per keystroke on the
+    // replace path and cannot afford to re-derive them. So a slice built in
+    // code, rather than decoded through `Slice.fromJSON` (which clamps), can
+    // claim more depth than it has. Every one of these crashed or hung the
+    // process: the Fitter walks the claim literally, and a slice that claims
+    // more depth than it has content reports a *negative* size, which its
+    // `while unplaced.size != 0` loop reads as work still to do.
+
+    test("adversarial: an empty slice claiming open depth doesn't hang the fitter") {
+        // size == -3. Found by the transform fuzz driving `replaceRange`.
+        let slice = Slice(content: .empty, openStart: 0, openEnd: 3)
+        let tr = Transform(doc)
+        _ = try? tr.replaceRange(1, 3, slice)
+        try tr.doc.check()
+    }
+
+    test("adversarial: a flat slice claiming to be nested doesn't trap") {
+        // One text node, so nothing is open; the slice says four levels are.
+        let slice = Slice(content: Fragment.from(B.t("hi")), openStart: 4, openEnd: 4)
+        let tr = Transform(doc)
+        _ = try? tr.replace(1, 3, slice)
+        try tr.doc.check()
+    }
+
+    test("adversarial: over-open depths are clamped, not silently obeyed") {
+        // The clamp is what the paragraph's own nesting allows: one level in
+        // from each side, no more.
+        let slice = Slice(content: Fragment.from(B.p("in")), openStart: 5, openEnd: 5)
+        let clamped = slice.clampingOpenDepths()
+        try expectEqual(clamped.openStart, 1)
+        try expectEqual(clamped.openEnd, 1)
+        try expectEqual(clamped.content, slice.content)
+        // And a slice that was already honest comes back untouched.
+        let honest = Slice(content: Fragment.from(B.p("in")), openStart: 1, openEnd: 0)
+        try expectEqual(honest.clampingOpenDepths(), honest)
+    }
+
+    test("adversarial: a slice whose spine runs out mid-fit doesn't trap") {
+        // `openStart` claims a leading spine — descend `firstChild` this many
+        // times and a node is there each time. The Fitter walks that claim
+        // literally, and `placeNodes` can consume the spine while carrying the
+        // claim across, so a slice that was honest on the way in stops being
+        // honest a round later. Two children that can't be siblings is the
+        // shortest way to reach it: the list item is placed, the depth of two
+        // stays, and the bare text left behind has no spine at all.
+        let inner = Slice(content: Fragment.from([B.li(B.p("a")), B.t("tail")]),
+                          openStart: 2, openEnd: 0)
+        let target = B.doc(B.ul(B.li(B.p("one"))), B.p("two"))
+        for from in 0 ... target.content.size {
+            let tr = Transform(target)
+            _ = try? tr.replace(from, target.content.size, inner)
+            try tr.doc.check()
+        }
+    }
+
+    test("adversarial: replaceStep declines an over-open slice rather than trapping") {
+        let slice = Slice(content: .empty, openStart: 2, openEnd: 2)
+        // Clamped to a genuinely empty slice, so replacing nothing with it is
+        // the no-op `replaceStep` reports as nil.
+        try expectNil(replaceStep(doc, 3, 3, slice))
+    }
+
     // MARK: - Valid steps still work
 
     test("adversarial: the bounds check leaves valid steps alone") {

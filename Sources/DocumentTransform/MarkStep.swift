@@ -123,6 +123,13 @@ public struct RemoveMarkStep: Step {
 
 /// Add a mark to a single (block or atom) node.
 public struct AddNodeMarkStep: Step {
+    // Both node-mark steps build the same slice: the node with its marks
+    // changed and its content *dropped*, open at the end so the document's own
+    // copy of that content flows back in as the step is applied. Handing the
+    // slice a node that still carries its content would put the content in
+    // twice — once from the slice, once from the document — which is why these
+    // rebuild the node through `create` rather than through `Node.mark`. The
+    // same reason `AttrStep` passes `content: .empty`.
     public let pos: Int
     public let mark: Mark
 
@@ -132,7 +139,9 @@ public struct AddNodeMarkStep: Step {
 
     public func apply(_ doc: Node) -> StepResult {
         guard let node = doc.nodeAt(pos) else { return .fail("No node at mark step's position") }
-        let updated = node.mark(mark.addToSet(node.marks))
+        guard let updated = try? node.type.create(node.attrs, content: .empty, marks: mark.addToSet(node.marks)) else {
+            return .fail("Cannot create node with updated marks")
+        }
         return .fromReplace(doc, pos, pos + 1, Slice(content: Fragment.from(updated), openStart: 0, openEnd: node.isLeaf ? 0 : 1))
     }
 
@@ -175,7 +184,9 @@ public struct RemoveNodeMarkStep: Step {
 
     public func apply(_ doc: Node) -> StepResult {
         guard let node = doc.nodeAt(pos) else { return .fail("No node at mark step's position") }
-        let updated = node.mark(mark.removeFromSet(node.marks))
+        guard let updated = try? node.type.create(node.attrs, content: .empty, marks: mark.removeFromSet(node.marks)) else {
+            return .fail("Cannot create node with updated marks")
+        }
         return .fromReplace(doc, pos, pos + 1, Slice(content: Fragment.from(updated), openStart: 0, openEnd: node.isLeaf ? 0 : 1))
     }
 
