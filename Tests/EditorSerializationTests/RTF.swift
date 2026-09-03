@@ -505,6 +505,26 @@ func registerRTFTests() {
         try expectEqual(image.attrs["height"], .int(36))
     }
 
+    test("RTF: a half-written display size pins one dimension, not two units") {
+        // `picwgoal` is twips and `pich` is pixels. Taking one of each pinned a
+        // 600×400 picture at 300 wide by 400 tall — a stretch. The dimension the
+        // author actually wrote is kept; the other is left for the renderer to
+        // derive from the picture's own aspect.
+        let d = try RTFParser.parse(rtf(
+            #"\pard {\*\shppict{\pict\pngblip\picw600\pich400\picwgoal6000 "# + pngHex + "}}\\par"),
+            schema: schema)
+        let image = d.child(0).child(0)
+        try expectEqual(image.attrs["width"], .int(300))
+        try expectEqual(image.attrs["height"], .null)
+
+        // …and the same the other way round.
+        let tall = try RTFParser.parse(rtf(
+            #"\pard {\*\shppict{\pict\pngblip\picw600\pich400\pichgoal4000 "# + pngHex + "}}\\par"),
+            schema: schema)
+        try expectEqual(tall.child(0).child(0).attrs["width"], .null)
+        try expectEqual(tall.child(0).child(0).attrs["height"], .int(200))
+    }
+
     test("RTF: a picture in a format we can't name is dropped, not inlined") {
         let d = try RTFParser.parse(rtf(#"\pard {\pict\wmetafile8\picw1\pich1 0102030405}x\par"#), schema: schema)
         try expectEqual(d, doc(p("x")))

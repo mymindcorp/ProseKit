@@ -1112,10 +1112,17 @@ private struct RTFReader {
         }
         guard !bytes.isEmpty, bytes.count <= config.maxImageBytes else { return }
         var attrs: Attrs = ["src": .string("data:\(mediaType);base64,\(Data(bytes).base64EncodedString())")]
-        // `picwgoal` is the displayed size in twips, which is what the author
-        // chose; `picw` is the intrinsic pixel size, which is the fallback.
-        let width = group.pict.widthTwips > 0 ? group.pict.widthTwips / 20 : group.pict.pixelWidth
-        let height = group.pict.heightTwips > 0 ? group.pict.heightTwips / 20 : group.pict.pixelHeight
+        // `picwgoal`/`pichgoal` are the displayed size in twips, which is what
+        // the author chose; `picw`/`pich` are the intrinsic pixel size, which is
+        // the fallback. The two dimensions have to come from the *same* pair or
+        // they don't describe a shape: taking one of each — a `picwgoal` with no
+        // `pichgoal` beside it — sized a 600×400 picture 300 wide and 400 tall,
+        // a stretch rather than a scale. With only one goal written, that one
+        // dimension is pinned alone and the renderer derives the other from the
+        // picture itself.
+        let scaled = group.pict.widthTwips > 0 || group.pict.heightTwips > 0
+        let width = scaled ? group.pict.widthTwips / 20 : group.pict.pixelWidth
+        let height = scaled ? group.pict.heightTwips / 20 : group.pict.pixelHeight
         if width > 0, type.defaultAttrs["width"] != nil { attrs["width"] = .int(width) }
         if height > 0, type.defaultAttrs["height"] != nil { attrs["height"] = .int(height) }
         guard let node = try? type.create(attrs) else { return }
