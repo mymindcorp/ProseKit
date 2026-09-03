@@ -783,12 +783,6 @@ private struct RTFReader {
         return max(1, tableDepth(group.para))
     }
 
-    /// `\*\` destinations we do read rather than drop.
-    var parsedIgnorableDestinations: Set<String> {
-        ["fldinst", "listtext", "pntext", "shppict", "pict", "listtable", "listoverridetable",
-         "nesttableprops"]
-    }
-
     // MARK: - Characters
 
     /// True when this character is one of the fallbacks a `\uN` told us to
@@ -913,12 +907,6 @@ private struct RTFReader {
             // tables is control words, and none of it is document text.
             if group.listRole == .levelText { group.buffer.unicodeScalars.append(scalar) }
         }
-    }
-
-    mutating func appendText(_ text: String) {
-        guard !text.isEmpty else { return }
-        startRun()
-        runText += text
     }
 
     mutating func appendScalar(_ scalar: Unicode.Scalar) {
