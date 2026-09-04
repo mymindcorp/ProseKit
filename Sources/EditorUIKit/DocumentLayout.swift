@@ -1027,16 +1027,10 @@ final class DocumentLayout {
         // it, an image sized only by its width has to guess its own shape.
         let original = originalImageSize(node)
 
-        // Prefer the loaded image's aspect, then the original's, then a
-        // plausible default for a placeholder with nothing else to go on.
-        let aspect: CGFloat
-        if let natural, natural.width > 0, natural.height > 0 {
-            aspect = natural.width / natural.height
-        } else if let original, original.width > 0, original.height > 0 {
-            aspect = original.width / original.height
-        } else {
-            aspect = placeholderSize.width / placeholderSize.height
-        }
+        // The picture's own shape when something has measured it, else a
+        // plausible default for a placeholder with nothing to go on.
+        let aspect = imageAspect(node, natural: natural)
+            ?? placeholderSize.width / placeholderSize.height
 
         var width: CGFloat, height: CGFloat
         switch (attrWidth, attrHeight) {
@@ -1056,7 +1050,53 @@ final class DocumentLayout {
             height *= available / width
             width = available
         }
+        // A degenerate box still has to be drawable, but flooring the two sides
+        // apart is itself a way to squash a picture: a 3×1-pixel image on a 3×
+        // screen measures 1×0.33 points, and two independent floors would draw
+        // it as a square. Lift both by the same factor instead, and keep the
+        // column cap ahead of it — an aspect extreme enough that one point of
+        // height overflows the column is a hairline either way, and a picture
+        // wider than its column is worse than a thin one.
+        if width > 0, height > 0, width < 1 || height < 1 {
+            let lift = max(1 / width, 1 / height)
+            if width * lift <= available {
+                width *= lift
+                height *= lift
+            }
+        }
         return CGSize(width: max(1, width), height: max(1, height))
+    }
+
+    /// The picture's own aspect ratio: from the loaded bytes, else from the
+    /// original recorded in `model`.
+    ///
+    /// Nil when nothing has measured it yet — which is what tells a caller it
+    /// would be guessing. `imageDisplaySize` guesses (a placeholder has to draw
+    /// *something*); the resize drag doesn't, because a guess written back to
+    /// the node freezes the wrong shape into the document.
+    static func imageAspect(_ node: Node, natural: CGSize?) -> CGFloat? {
+        if let natural, natural.width > 0, natural.height > 0 {
+            return natural.width / natural.height
+        }
+        if let original = originalImageSize(node), original.width > 0, original.height > 0 {
+            return original.width / original.height
+        }
+        return nil
+    }
+
+    /// `size` centered in `box` at its own proportions.
+    ///
+    /// The square a chip reserves for its glyph is a budget, not a shape: a
+    /// host's icon is whatever it is — an SF Symbol is rarely square, a favicon
+    /// needn't be — and drawing it into the square outright is how a wide logo
+    /// arrives squashed. An unmeasurable icon keeps the whole box, which is what
+    /// it always got.
+    static func aspectFit(_ size: CGSize?, in box: CGRect) -> CGRect {
+        guard let size, size.width > 0, size.height > 0 else { return box }
+        let scale = min(box.width / size.width, box.height / size.height)
+        let fitted = CGSize(width: size.width * scale, height: size.height * scale)
+        return CGRect(x: box.midX - fitted.width / 2, y: box.midY - fitted.height / 2,
+                      width: fitted.width, height: fitted.height)
     }
 
     /// The box an image with neither a size nor bytes yet falls back to.
@@ -1880,6 +1920,9 @@ final class DocumentLayout {
                     }
                     let padY = wikiStyle.background != nil ? theme.points(wikiStyle.paddingY) : 0
                     let iconBox = theme.points(wikiStyle.iconSize)
+                    let iconSquare = CGRect(x: wikiStyle.background != nil ? theme.points(wikiStyle.paddingX) : 0,
+                                            y: -(blockFont.capHeight + iconBox) / 2,
+                                            width: iconBox, height: iconBox)
                     wikiLinkChips.append(WikiLinkChip(
                         attrStart: attrStart, attrEnd: result.length,
                         background: wikiStyle.background,
@@ -1887,9 +1930,7 @@ final class DocumentLayout {
                         top: -blockFont.ascender - padY,
                         height: blockFont.ascender - blockFont.descender + padY * 2,
                         icon: chipIcon,
-                        iconRect: CGRect(x: wikiStyle.background != nil ? theme.points(wikiStyle.paddingX) : 0,
-                                         y: -(blockFont.capHeight + iconBox) / 2,
-                                         width: iconBox, height: iconBox)))
+                        iconRect: Self.aspectFit(chipIcon?.size, in: iconSquare)))
                 }
                 segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: result.length - attrStart, text: nil))
                 docPos += 1

@@ -2125,17 +2125,38 @@ open class EditorTextView: UIView, UIKeyInput {
     /// Internal so the resize gesture can be exercised in tests.
     ///
     /// An image whose height is also pinned has it scaled by the same factor —
-    /// dragging the handle resizes the image rather than distorting it.
+    /// dragging the handle resizes the image rather than distorting it. Which
+    /// factor that is depends on where the current shape comes from, and there
+    /// are three cases rather than the one it looks like:
+    ///
+    /// - Both dimensions pinned: the pair *is* the shape, so scale the height
+    ///   by the width's ratio and whatever the model asked for survives.
+    /// - Only the height pinned: there is no width beside it to divide by — the
+    ///   renderer derives one from the picture's own aspect — so take the ratio
+    ///   from the picture. Reading the attributes alone left the height where it
+    ///   was while the width moved, which dragged a 2:1 photo into a square.
+    /// - Only the height pinned and nothing has measured the picture yet: clear
+    ///   the height and let the renderer derive it once the bytes land, rather
+    ///   than freezing the placeholder's guessed shape into the document.
     func setImageWidth(_ pos: Int, to width: CGFloat) {
         let clamped = max(40, min(width, ensureLayout().contentWidth))
         guard let node = editor.doc.nodeAt(pos), node.isImage else { return }
         let tr = editor.state.tr
         let newWidth = Int(clamped.rounded())
         guard (try? tr.setNodeAttribute(pos, "width", .int(newWidth))) != nil else { return }
-        if let oldWidth = node.attrs["width"]?.intValue, oldWidth > 0,
-           let oldHeight = node.attrs["height"]?.intValue {
-            let scaled = Int((CGFloat(oldHeight) * clamped / CGFloat(oldWidth)).rounded())
-            _ = try? tr.setNodeAttribute(pos, "height", .int(max(1, scaled)))
+        // An unpinned height needs no help: the renderer derives it from the new
+        // width and the aspect ratio, so it is already in proportion.
+        if let oldHeight = node.attrs["height"]?.intValue {
+            let newHeight: AttributeValue
+            if let oldWidth = node.attrs["width"]?.intValue, oldWidth > 0 {
+                newHeight = .int(max(1, Int((CGFloat(oldHeight) * clamped / CGFloat(oldWidth)).rounded())))
+            } else if let aspect = DocumentLayout.imageAspect(node, natural: imageStore.image(for: node)?.size),
+                      aspect > 0 {
+                newHeight = .int(max(1, Int((clamped / aspect).rounded())))
+            } else {
+                newHeight = .null
+            }
+            _ = try? tr.setNodeAttribute(pos, "height", newHeight)
         }
         editor.dispatch(tr)
     }

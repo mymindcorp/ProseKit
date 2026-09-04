@@ -204,6 +204,72 @@ final class ImageSizeModelTests: XCTestCase {
         XCTAssertEqual(image.attrs["height"], .null)
     }
 
+    func testDraggingWidthKeepsTheShapeWhenOnlyTheHeightIsPinned() throws {
+        // A height pinned on its own is already in proportion — the renderer
+        // derives the width beside it from the picture's aspect. So the drag has
+        // to take its ratio from the picture, not from the two attributes: with
+        // no `width` to divide by, the old rule left the height untouched and
+        // dragged this 2:1 photo into a square.
+        let view = try blockView(["height": .int(100)], bytes: png())
+        let pos = try XCTUnwrap(view.ensureLayout().imageRects.first?.pos)
+        XCTAssertEqual(try drawnRect(view).width, 200, accuracy: 0.5, "200×100 drawn at height 100")
+        view.setImageWidth(pos, to: 100)
+        let image = try XCTUnwrap(view.editor.doc.nodeAt(pos))
+        XCTAssertEqual(image.attrs["width"], .int(100))
+        XCTAssertEqual(image.attrs["height"], .int(50), "half as wide is half as tall")
+        view.setNeedsLayout(); view.layoutIfNeeded()
+        let rect = try drawnRect(view)
+        XCTAssertEqual(rect.width / rect.height, 2, accuracy: 0.01, "and it is still a 2:1 picture")
+    }
+
+    func testDraggingWidthUsesTheOriginalsAspectBeforeAnyBytesLoad() throws {
+        // Nothing has decoded, but the node records what it was made from, so
+        // the drag knows the shape it has to keep.
+        let model = ImageModel(path: "originals/a.raw", width: 4000, height: 1000)
+        let view = try blockView(["height": .int(100), "model": model.attributeValue])
+        let pos = try XCTUnwrap(view.ensureLayout().imageRects.first?.pos)
+        view.setImageWidth(pos, to: 200)
+        let image = try XCTUnwrap(view.editor.doc.nodeAt(pos))
+        XCTAssertEqual(image.attrs["height"], .int(50), "4:1 original, so 200 wide is 50 tall")
+    }
+
+    func testDraggingWidthOnAnUnmeasuredImageClearsTheHeightRatherThanGuessing() throws {
+        // No bytes and no model: the box on screen is the placeholder's guessed
+        // shape. Writing a height derived from that guess would freeze it into
+        // the document and squash the picture when it finally arrives — so the
+        // height goes back to being derived.
+        let view = try blockView(["height": .int(100)])
+        let pos = try XCTUnwrap(view.ensureLayout().imageRects.first?.pos)
+        view.setImageWidth(pos, to: 100)
+        let image = try XCTUnwrap(view.editor.doc.nodeAt(pos))
+        XCTAssertEqual(image.attrs["width"], .int(100))
+        XCTAssertEqual(image.attrs["height"], .null)
+    }
+
+    // MARK: - The minimum-size floor
+
+    func testASubPointPictureKeepsItsShape() throws {
+        // A 3×1-pixel image on a 3× screen decodes to 1×0.33 points. Flooring
+        // the two sides apart would draw that as a square.
+        let editor = try Editor(extensions: fullKit())
+        let node = try editor.schema.node("image", ["src": .string("a.png")])
+        let size = DocumentLayout.imageDisplaySize(node, natural: CGSize(width: 1, height: 1.0 / 3),
+                                                   available: 300)
+        XCTAssertEqual(size.width / size.height, 3, accuracy: 0.01)
+        XCTAssertGreaterThanOrEqual(size.height, 1, "and is still big enough to draw")
+    }
+
+    func testTheColumnCapStillWinsOverTheFloor() throws {
+        // An aspect extreme enough that one point of height overflows the column
+        // keeps the column: a hairline either way, but never wider than its page.
+        let editor = try Editor(extensions: fullKit())
+        let node = try editor.schema.node("image", ["src": .string("a.png"),
+                                                    "width": .int(4000), "height": .int(10)])
+        let size = DocumentLayout.imageDisplaySize(node, natural: nil, available: 100)
+        XCTAssertEqual(size.width, 100, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(size.height, 1)
+    }
+
     // MARK: - The original-image model
 
     func testTheOriginalsAspectSizesAPlaceholderBeforeAnyBytesExist() throws {

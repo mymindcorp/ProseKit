@@ -34,11 +34,11 @@ final class WikiLinkChipTests: XCTestCase {
     }
 
     /// A solid glyph, so "was it drawn" and "how big" are both answerable.
-    private func glyph() -> UIImage {
+    private func glyph(_ size: CGSize = CGSize(width: 40, height: 40)) -> UIImage {
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
-        return UIGraphicsImageRenderer(size: CGSize(width: 40, height: 40), format: format).image { ctx in
-            UIColor.black.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 40, height: 40))
+        return UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+            UIColor.black.setFill(); ctx.fill(CGRect(origin: .zero, size: size))
         }
     }
 
@@ -165,6 +165,26 @@ final class WikiLinkChipTests: XCTestCase {
         view.wikiLinkIcon = { [glyph = glyph()] _ in glyph }
         XCTAssertEqual(icons(view).count, 1, "the cached block kept the glyph-less layout")
         XCTAssertGreaterThan(try XCTUnwrap(pills(view).first).width, width)
+    }
+
+    /// A host glyph that isn't square keeps its proportions inside the square
+    /// box the chip reserves for it.
+    func testAWideGlyphIsFittedRatherThanStretched() throws {
+        let view = try makeView { $0.wikiLink.background = .secondarySystemFill }
+        view.wikiLinkIcon = { [wide = glyph(CGSize(width: 40, height: 10))] _ in wide }
+        let icon = try XCTUnwrap(icons(view).first)
+        let box = view.theme.points(view.theme.wikiLink.iconSize)
+        XCTAssertEqual(icon.width, box, accuracy: 0.5, "the wider side fills the box")
+        XCTAssertEqual(icon.height, box / 4, accuracy: 0.5, "and 4:1 stays 4:1")
+
+        // A tall one the other way round, and centered in the box either way.
+        let tallView = try makeView { $0.wikiLink.background = .secondarySystemFill }
+        tallView.wikiLinkIcon = { [tall = glyph(CGSize(width: 10, height: 40))] _ in tall }
+        let tallIcon = try XCTUnwrap(icons(tallView).first)
+        XCTAssertEqual(tallIcon.height, box, accuracy: 0.5)
+        XCTAssertEqual(tallIcon.width, box / 4, accuracy: 0.5)
+        XCTAssertEqual(tallIcon.midX, try XCTUnwrap(icons(view).first).midX, accuracy: 0.5,
+                       "both sit centered on the same square")
     }
 
     /// A glyph with no chip behind it: the box is still reserved, so the label
