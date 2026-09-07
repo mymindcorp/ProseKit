@@ -194,6 +194,35 @@ final class GeometryFuzzTests: XCTestCase {
         }
     }
 
+    // MARK: - The order the page is in
+
+    func testEntriesRunDownThePageAndHoldTheirOwnBlocks() throws {
+        // What every clip band is searched against. `blocks` is in document
+        // order, which a table breaks away from vertical order — its cells sit
+        // side by side, so a row walks down column one and jumps back up for
+        // column two. Only the top-level children tile the page top to bottom,
+        // each holding the blocks laid out inside its own band, and that is
+        // what `forEachLineFragment` and `positionRange` binary-search.
+        try FuzzViews.forEachView { name, v in
+            let layout = v.ensureLayout()
+            var y = -CGFloat.greatestFiniteMagnitude
+            var fromEntries: [Int] = []
+            for entry in layout.entries {
+                XCTAssertGreaterThanOrEqual(entry.topY, y - 0.001, "a child starts above the one before it in \(name)")
+                y = entry.topY + entry.height
+                for block in entry.blocks {
+                    fromEntries.append(block.contentStart)
+                    XCTAssertGreaterThanOrEqual(block.frame.minY, entry.topY - 0.5,
+                                                "a block sits above the child holding it in \(name)")
+                    XCTAssertLessThanOrEqual(block.frame.maxY, entry.topY + entry.height + 0.5,
+                                             "a block sits below the child holding it in \(name)")
+                }
+            }
+            XCTAssertEqual(fromEntries, layout.blocks.map(\.contentStart),
+                           "`blocks` isn't the children's blocks, in order, in \(name)")
+        }
+    }
+
     // MARK: - Selection geometry
 
     func testSelectionRectsAreSaneAndClippingOnlyDropsWhatIsOutsideTheBand() throws {
