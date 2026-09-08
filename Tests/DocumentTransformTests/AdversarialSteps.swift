@@ -158,6 +158,29 @@ func registerAdversarialStepTests() {
         try expectNil(replaceStep(doc, 3, 3, slice))
     }
 
+    // MARK: - Marks on a node the slice is cut through
+
+    test("adversarial: a cut-through node's marks are checked, not trusted") {
+        // `checkClosedNodes` lets a cut node off its *content* rule — half a
+        // paragraph is not a whole one — but not off its marks. A node arriving
+        // with the same mark twice is a set no schema could have produced, and
+        // it has to be refused here rather than becoming a document that can't
+        // be serialized back.
+        let em = basicSchema.mark("em")
+        let doubled = try! basicSchema.node("paragraph", [:],
+                                            content: Fragment.from(B.t("hi")), marks: [em, em])
+        let cut = Slice(content: Fragment.from(doubled), openStart: 1, openEnd: 1)
+        try expectThrows { try cut.checkClosedNodes() }
+        // The same node with a set that *is* a set passes, so the check is
+        // about the marks rather than about being open at all.
+        let once = try! basicSchema.node("paragraph", [:],
+                                         content: Fragment.from(B.t("hi")), marks: [em])
+        try Slice(content: Fragment.from(once), openStart: 1, openEnd: 1).checkClosedNodes()
+        // And a wrapper on the hole path is held to the same rule.
+        let wrapper = Slice(content: Fragment.from(doubled), openStart: 0, openEnd: 0)
+        try expectThrows { try wrapper.checkClosedNodes(holeAt: 1) }
+    }
+
     // MARK: - Valid steps still work
 
     test("adversarial: the bounds check leaves valid steps alone") {

@@ -581,7 +581,8 @@ public enum HTMLParser {
         // HTML arrives in fragments, so the top level can hold things no schema
         // allows there — a bare `<li>` or `<td>` from a partial copy. Fit them
         // to the document's content instead of building something invalid.
-        var blocks = fitContent(parsed, into: schema.topNodeType, schema: schema)
+        var blocks = conformMarks(fitContent(parsed, into: schema.topNodeType, schema: schema),
+                                  in: schema.topNodeType)
         if blocks.isEmpty, let p = schema.nodes["paragraph"]?.createAndFill() {
             blocks = [p]
         }

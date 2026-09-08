@@ -378,6 +378,28 @@ func registerLayoutTests() {
         }
     }
 
+    test("layout: a math alphabet renders its digits too") {
+        // Only some alphabets have digits of their own — bold, double-struck,
+        // sans and monospace live in their own Unicode runs, while italic and
+        // script have none and fall back to the ordinary figures. Either way a
+        // styled digit has to come out as a digit rather than as nothing.
+        let plain = try layout("2")
+        for command in ["\\mathbf", "\\mathbb", "\\mathsf", "\\mathtt",
+                        "\\mathit", "\\mathcal", "\\mathfrak", "\\mathrm"] {
+            let one = try layout("\(command){2}")
+            try expect(one.width > 0, "\(command){2} produced no width")
+            try expect(one.ascent > 0, "\(command){2} produced no ink")
+            // A run of them is a run, not a single glyph or an empty box.
+            let three = try layout("\(command){123}")
+            try expect(three.width > one.width * 1.8,
+                       "\(command){123} is \(three.width), barely wider than one digit \(one.width)")
+        }
+        // Digits and letters mix inside one styled group.
+        let mixed = try layout("\\mathbb{R2}")
+        try expect(mixed.width > (try layout("\\mathbb{R}").width))
+        try expect(mixed.width > plain.width)
+    }
+
     test("layout: geometry scales with the base size") {
         let small = try layout("\\frac{a}{b}", baseSize: 12)
         let large = try layout("\\frac{a}{b}", baseSize: 24)

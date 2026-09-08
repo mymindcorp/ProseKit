@@ -136,7 +136,17 @@ extension AppleNotesPasteboard {
         while let f = blocks.first, isEmptyParagraph(f) { blocks.removeFirst() }
         while let l = blocks.last, isEmptyParagraph(l) { blocks.removeLast() }
         guard !blocks.isEmpty else { return nil }
-        return schema.topNodeType.createAndFill([:], content: Fragment.from(blocks))
+        // Like the other importers: drop the marks this schema won't allow in
+        // the node they landed in. `createAndFill` supplies missing content but
+        // validates neither content nor marks, and this one returns its
+        // document rather than throwing — so without this a note pasted into a
+        // schema that restricts, say, a paragraph's marks came back as an
+        // invalid document with nothing to say so, for the caller to trip over
+        // later.
+        let conformed = conformMarks(fitContent(blocks, into: schema.topNodeType, schema: schema),
+                                     in: schema.topNodeType)
+        guard !conformed.isEmpty else { return nil }
+        return schema.topNodeType.createAndFill([:], content: Fragment.from(conformed))
     }
 
     /// Consume the run of consecutive list lines starting at `startIdx`, building

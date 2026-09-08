@@ -9,6 +9,11 @@ import TestHarness
 // attributes, block-level stray text and images, `aria-hidden` wrappers at
 // the top level, wiki-link target types, RTF's hyphen controls, and what each
 // parser's errors say.
+//
+// Plus the ones a coverage sweep named: a heading carrying a line break or
+// ending in a "#", a hard break caught inside emphasis, a link definition
+// written inside a quote, a table whose schema declares the nodes but won't
+// hold the shape, and emphasis flanked by non-ASCII punctuation.
 
 private let minimalSchema: Schema = try! Schema(nodes: [
     ("doc", NodeSpec(content: "block+")),
@@ -39,6 +44,250 @@ func registerSerializerEdgeTests() {
         let kept = doc(p(t("a"), node("hardBreak"), t("b")))
         let keptBack = try MarkdownParser.parse(kept.toMarkdown(), schema: schema)
         try expectEqual(keptBack, kept)
+    }
+
+    test("md: a heading carrying a line break is flattened to one line") {
+        // A heading is one line by construction, so a break inside its content
+        // can't be written as one. A hard break becomes "<br>" — the only
+        // spelling that survives — and a bare newline, which a mark spanning a
+        // soft wrap can carry in, becomes the space it reads as.
+        let broken = doc(node("heading", ["level": .int(1)], [t("a"), node("hardBreak"), t("b")]))
+        try expectEqual(broken.toMarkdown(), "# a<br>b")
+        let wrapped = doc(node("heading", ["level": .int(1)], [t("a\nb")]))
+        try expectEqual(wrapped.toMarkdown(), "# a b")
+        // Either way it comes back as a heading rather than as two blocks.
+        for d in [broken, wrapped] {
+            let back = try MarkdownParser.parse(d.toMarkdown(), schema: schema)
+            try expectEqual(back.childCount, 1)
+            try expectEqual(back.child(0).type.name, "heading")
+        }
+    }
+
+    test("md: a heading ending in # escapes the closing run") {
+        // "## C#" reads back as a heading of "C": a trailing run of hashes is a
+        // closing sequence, not text. Escaping the run keeps the sharp.
+        try expectEqual(doc(h(2, "C#")).toMarkdown(), "## C\\#")
+        try expectEqual(doc(h(1, "###")).toMarkdown(), "# \\###")
+        for text in ["C#", "###", "F# and C#"] {
+            let back = try MarkdownParser.parse(doc(h(2, text)).toMarkdown(), schema: schema)
+            try expectEqual(back.child(0).textContent, text)
+        }
+    }
+
+    test("md: a hard break inside emphasis moves out of the closing delimiter") {
+        // "*a\<newline>*" closes nothing — a delimiter run preceded by
+        // whitespace can't close, and the newline of a break is whitespace. The
+        // break has to be expelled past the closer, or the asterisks come back
+        // as literal text.
+        let italic = schema.mark("italic")
+        let d = doc(p(em("a"), node("hardBreak").mark([italic]), t("b")))
+        let md = d.toMarkdown()
+        try expect(md.hasPrefix("*a*"), "the break stayed inside: \(md.debugDescription)")
+        let back = try MarkdownParser.parse(md, schema: schema)
+        try expect(!back.textContent.contains("*"),
+                   "an asterisk came back as text: \(back.textContent.debugDescription)")
+        try expectEqual(back.child(0).childCount, 3)
+        try expectEqual(back.child(0).child(1).type.name, "hardBreak")
+    }
+
+    test("md: emphasis flanked by non-ASCII punctuation still closes") {
+        // Whether a delimiter run may open or close is decided by the character
+        // beside it, and "punctuation" there is Unicode's, not ASCII's. Guillemets
+        // and a dash are punctuation; the emphasis between them is emphasis.
+        for (source, text) in [("«*a*»", "«a»"), ("—*a*—", "—a—"), ("*a*…", "a…")] {
+            let back = try MarkdownParser.parse(source, schema: schema)
+            try expectEqual(back.textContent, text, source)
+            let marked = back.child(0).content.content.filter { !$0.marks.isEmpty }
+            try expectEqual(marked.count, 1, source)
+            try expectEqual(marked.first?.text, "a", source)
+        }
+    }
+
+    test("md: a link definition written inside a quote resolves outside it") {
+        // A reference resolves against every definition in the document, not
+        // only the ones at the top level — the quote is where a footnote-style
+        // author tends to park them.
+        let d = try MarkdownParser.parse("""
+        > [ref]: https://example.test/x "T"
+
+        see [ref]
+        """, schema: schema)
+        let paragraph = d.child(d.childCount - 1)
+        let link = paragraph.child(paragraph.childCount - 1).marks.first
+        try expectEqual(link?.type.name, "link")
+        try expectEqual(link?.attrs["href"], .string("https://example.test/x"))
+        try expectEqual(link?.attrs["title"], .string("T"))
+    }
+
+    test("every parser: a mark the schema won't allow in a node is dropped, not fatal") {
+        // `create` computes attributes but checks neither content nor marks, so
+        // a mark a node's spec forbids only surfaced at the document's own
+        // `check()` — and every parser then threw the whole paste away over
+        // formatting the schema merely didn't want. `marks: ""` on a heading is
+        // an ordinary thing for a host to ask for; the standard code block here
+        // already asks for it. Keep the words, lose the emphasis.
+        func narrowed(_ node: String, _ marks: String) throws -> Schema {
+            var specs: [(String, NodeSpec)] = []
+            for name in schema.nodes.keys.sorted() {
+                guard let t = schema.nodes[name] else { continue }
+                let s = t.spec
+                specs.append((name, NodeSpec(content: s.content, marks: name == node ? marks : s.marks,
+                                             group: s.group, inline: s.inline, atom: s.atom, attrs: s.attrs,
+                                             selectable: s.selectable, draggable: s.draggable, code: s.code,
+                                             defining: s.defining, isolating: s.isolating, leafText: s.leafText)))
+            }
+            var marksList: [(String, MarkSpec)] = []
+            for name in schema.marks.keys.sorted() {
+                if let m = schema.marks[name] { marksList.append((name, m.spec)) }
+            }
+            return try Schema(nodes: specs, marks: marksList, topNode: "doc")
+        }
+        let plainHeadings = try narrowed("heading", "")
+        let boldOnlyParagraphs = try narrowed("paragraph", "bold")
+        let rtfHeader = #"{\rtf1\ansi\deff0{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}"#
+
+        let cases: [(String, Schema, String, (String, Schema) throws -> Node, String)] = [
+            ("md heading+bold", plainHeadings, "# **bold** title",
+             { try MarkdownParser.parse($0, schema: $1) }, "bold title"),
+            ("md heading+link", plainHeadings, "# [x](https://e.test)",
+             { try MarkdownParser.parse($0, schema: $1) }, "x"),
+            ("md heading+code", plainHeadings, "# `c` title",
+             { try MarkdownParser.parse($0, schema: $1) }, "c title"),
+            ("md para+italic", boldOnlyParagraphs, "*it* plain",
+             { try MarkdownParser.parse($0, schema: $1) }, "it plain"),
+            ("html h1+strong", plainHeadings, "<h1><strong>b</strong> t</h1>",
+             { try HTMLParser.parse($0, schema: $1) }, "b t"),
+            ("html p+em", boldOnlyParagraphs, "<p><em>i</em> plain</p>",
+             { try HTMLParser.parse($0, schema: $1) }, "i plain"),
+            ("rtf heading+bold", plainHeadings, rtfHeader + #"\pard\outlinelevel0 \b bold\b0  title\par}"#,
+             { try RTFParser.parse($0, schema: $1) }, "bold title"),
+            ("rtf para+italic", boldOnlyParagraphs, rtfHeader + #"\pard \i it\i0  plain\par}"#,
+             { try RTFParser.parse($0, schema: $1) }, "it plain"),
+        ]
+        for (name, narrow, source, parse, text) in cases {
+            let d = try parse(source, narrow)
+            try d.check()   // the point: a document the schema accepts
+            try expectEqual(d.textContent, text, "\(name): the text didn't survive")
+            // `check()` above is what proves the forbidden mark is gone: a
+            // node's type validates the marks of its children. What it can't
+            // prove is that the case had a mark to lose in the first place, so
+            // parse it again with the full schema and insist one survives there.
+            let full = try parse(source, schema)
+            try full.check()
+            var marks: [String] = []
+            func walk(_ n: Node) {
+                marks.append(contentsOf: n.marks.map(\.type.name))
+                for i in 0 ..< n.childCount { walk(n.child(i)) }
+            }
+            walk(full)
+            try expect(!marks.isEmpty, "\(name): no mark even with the full schema — the case proves nothing")
+        }
+    }
+
+    test("md: an indented </details> closes its own block, not the one around it") {
+        // The `<details>` scan counted its depth off the *trimmed* line, so a
+        // closing tag belonging to a nested block — one indented four columns
+        // as a footnote's continuation — closed the outer section instead. The
+        // section's real `</details>` was then left over as literal text, and
+        // since the serializer writes that text back out escaped, every save
+        // added another one. A document that grows by ten characters each time
+        // it is written is the kind of thing nobody notices until it is large.
+        //
+        // Found by the round-trip fuzz at PROSEKIT_FUZZ_DOCS=1000, seed 986.
+        let source = """
+        <details>
+        <summary>o</summary>
+
+        [^n]: <details>
+            <summary>s</summary>
+
+            b
+
+            </details>
+
+        </details>
+        """
+        let once = try MarkdownParser.parse(source, schema: schema)
+        try once.check()
+        try expectEqual(once.childCount, 1, "a stray block was left outside the section")
+        try expectEqual(once.child(0).type.name, "details")
+        try expect(!once.textContent.contains("</details>"),
+                   "a closing tag came back as text: \(once.textContent.debugDescription)")
+
+        // And it settles: four passes, same document and the same size every
+        // time, which is the property the growth broke.
+        var doc = once
+        var markdown = MarkdownSerializer.serialize(doc)
+        for pass in 1 ... 4 {
+            let next = try MarkdownParser.parse(markdown, schema: schema)
+            try expectEqual(next, doc, "the document changed on pass \(pass)")
+            try expectEqual(next.textContent.count, once.textContent.count,
+                            "the document grew on pass \(pass)")
+            doc = next
+            markdown = MarkdownSerializer.serialize(doc)
+        }
+    }
+
+    test("md: a quote the schema can't hold degrades instead of failing the parse") {
+        // Parsing must either produce a valid document or fail with a *parse*
+        // error. It must never build a document that fails its own `check()` —
+        // that throws the whole paste away rather than degrading the one block
+        // it couldn't hold. The quote was the last block here that did: it was
+        // built unchecked, so a schema whose blockquote takes paragraphs only
+        // got an invalid quote and lost the entire document. The HTML parser
+        // already degraded on the same input.
+        let quotesParagraphsOnly: Schema = try Schema(nodes: [
+            ("doc", NodeSpec(content: "block+")),
+            ("paragraph", NodeSpec(content: "inline*", group: "block")),
+            ("heading", NodeSpec(content: "inline*", group: "block",
+                                 attrs: ["level": AttributeSpec(default: .int(1))], defining: true)),
+            ("blockquote", NodeSpec(content: "paragraph+", group: "block", defining: true)),
+            ("bulletList", NodeSpec(content: "listItem+", group: "block")),
+            ("listItem", NodeSpec(content: "paragraph block*", defining: true)),
+            ("codeBlock", NodeSpec(content: "text*", marks: "", group: "block", code: true, defining: true)),
+            ("horizontalRule", NodeSpec(group: "block")),
+            ("text", NodeSpec(group: "inline")),
+        ])
+        let cases: [(String, String, String)] = [
+            ("heading", "> # Title\n>\n> body", "Title"),
+            ("list", "> - a\n> - b", "a"),
+            ("code", "> ```\n> x\n> ```", "x"),
+            ("nested quote", "> > deep", "deep"),
+            ("rule", "> ---\n>\n> after", "after"),
+        ]
+        for (name, source, keeps) in cases {
+            let d = try MarkdownParser.parse(source, schema: quotesParagraphsOnly)
+            try d.check()   // the point: it is a document the schema accepts
+            try expect(d.textContent.contains(keeps),
+                       "\(name): lost the quote's content — \(d.textContent.debugDescription)")
+        }
+        // With a schema that *can* hold them, they stay inside the quote.
+        for (_, source, _) in cases {
+            let d = try MarkdownParser.parse(source, schema: schema)
+            try d.check()
+            try expectEqual(d.child(0).type.name, "blockquote", source.debugDescription)
+        }
+    }
+
+    test("md: a pipe table the schema declares but can't hold reads as paragraphs") {
+        // The nodes exist, so the table branch is entered — but this schema's
+        // row won't take a header cell, so the table can't be built. The lines
+        // are then what they look like: paragraphs, not a swallowed table.
+        let noHeaderRows: Schema = try Schema(nodes: [
+            ("doc", NodeSpec(content: "block+")),
+            ("paragraph", NodeSpec(content: "inline*", group: "block")),
+            ("text", NodeSpec(group: "inline")),
+            ("table", NodeSpec(content: "tableRow+", group: "block", isolating: true)),
+            ("tableRow", NodeSpec(content: "tableCell+")),
+            ("tableCell", NodeSpec(content: "block+", isolating: true)),
+            ("tableHeader", NodeSpec(content: "block+", isolating: true)),
+        ])
+        let d = try MarkdownParser.parse("| a | b |\n| - | - |\n| c | d |", schema: noHeaderRows)
+        try d.check()
+        try expect(!(0..<d.childCount).contains { d.child($0).type.name == "table" },
+                   "a table was built anyway")
+        try expect(d.textContent.contains("a"), "the header row was dropped: \(d.textContent)")
+        try expect(d.textContent.contains("d"), "the body row was dropped: \(d.textContent)")
     }
 
     test("md: a mention is exported as its name rather than dropped") {
@@ -128,6 +377,18 @@ func registerSerializerEdgeTests() {
         try expectEqual(found?.attrs["targetId"], .string("42"))
     }
 
+    test("html: an empty parse is an empty paragraph, not an empty document") {
+        // `doc` is `block+`, so a paste that yields nothing has to become
+        // something — a document with no children wouldn't pass its own check.
+        for html in ["", "   ", "<!-- just a comment -->", "<style>.a{}</style>"] {
+            let d = try HTMLParser.parse(html, schema: schema)
+            try d.check()
+            try expectEqual(d.childCount, 1, html.debugDescription)
+            try expectEqual(d.child(0).type.name, "paragraph", html.debugDescription)
+            try expectEqual(d.textContent, "", html.debugDescription)
+        }
+    }
+
     test("html: the parser's errors describe themselves") {
         try expect("\(HTMLParseError.nestingTooDeep(depth: 9, limit: 8))".contains("9"))
         try expect("\(HTMLParseError.invalidDocument("why"))".contains("why"))
@@ -138,6 +399,41 @@ func registerSerializerEdgeTests() {
     }
 
     // MARK: RTF
+
+    test("rtf: a narrow schema keeps the content of blocks it can't build") {
+        // The RTF on the pasteboard doesn't know what the host's schema holds.
+        // A code block, a heading and a table all have to survive as the text
+        // they are made of. Each case is checked against the full schema too,
+        // so it pins the degradation rather than passing for both.
+        let fonts = #"{\rtf1\ansi\deff0{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}"#
+        let codeSource = fonts + #"\pard\f1 let x = 1\par\pard\f1 let y = 2\par}"#
+        try expectEqual(try RTFParser.parse(codeSource, schema: schema).child(0).type.name, "codeBlock")
+        let code = try RTFParser.parse(codeSource, schema: minimalSchema)
+        try code.check()
+        try expectEqual(code.childCount, 2)
+        try expectEqual(code.child(0).type.name, "paragraph")
+        try expectEqual(code.child(0).textContent, "let x = 1")
+        try expectEqual(code.child(1).textContent, "let y = 2")
+
+        let headingSource = rtf(#"\pard\outlinelevel1 Sub\par\pard Body\par"#)
+        try expectEqual(try RTFParser.parse(headingSource, schema: schema).child(0).type.name, "heading")
+        let heading = try RTFParser.parse(headingSource, schema: minimalSchema)
+        try heading.check()
+        try expectEqual(heading.child(0).type.name, "paragraph")
+        try expectEqual(heading.textContent, "SubBody")
+
+        let tableSource = rtf(
+            #"\trowd\trhdr\cellx2880\cellx5760\pard\intbl A\cell\pard\intbl B\cell\row"# +
+            #"\trowd\cellx2880\cellx5760\pard\intbl C\cell\pard\intbl D\cell\row\pard end\par"#)
+        try expectEqual(try RTFParser.parse(tableSource, schema: schema).child(0).type.name, "table")
+        let table = try RTFParser.parse(tableSource, schema: minimalSchema)
+        try table.check()
+        try expect(!(0..<table.childCount).contains { table.child($0).type.name == "table" },
+                   "a table was built in a schema without one")
+        for cell in ["A", "B", "C", "D", "end"] {
+            try expect(table.textContent.contains(cell), "lost \(cell): \(table.textContent)")
+        }
+    }
 
     test("rtf: the hyphen controls — non-breaking kept, optional dropped, and a non-breaking space") {
         let d = try RTFParser.parse(rtf("\\pard a\\_b\\-c\\~d\\par"), schema: schema)

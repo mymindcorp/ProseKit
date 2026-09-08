@@ -265,7 +265,6 @@ public final class NodeType: @unchecked Sendable {
         return marks.filter { allowsMarkType($0.type) }
     }
 
-    func isInGroup(_ name: String) -> Bool { groups.contains(name) }
 }
 
 // MARK: - MarkType

@@ -160,3 +160,56 @@ func textblockSplittingBlocks(_ inline: [Node], wrap: ([Node]) -> Node?) -> [Nod
     flush()
     return out
 }
+
+/// Drop the marks a node's parent won't accept, all the way down `nodes`.
+///
+/// `fitContent` above fits the *shape* of a paste; this fits its formatting.
+/// `NodeType.create` computes attributes but checks neither content nor marks,
+/// so a `heading` declared `marks: ""` accepted the bold text a parser handed
+/// it and only failed at the document's own `check()` — throwing away the whole
+/// paste over emphasis the schema merely didn't want. Losing the emphasis and
+/// keeping the words is what every parser here would rather do, and it is what
+/// the editor does when the same content arrives by any other route.
+func conformMarks(_ nodes: [Node], in container: NodeType) -> [Node] {
+    guard nodes.contains(where: { hasForbiddenMark($0, in: container) }) else { return nodes }
+    return nodes.map { conformed($0, in: container) }
+}
+
+/// Whether anything in this subtree carries a mark its parent won't take.
+///
+/// Read-only and allocation-free, because it is the answer for nearly every
+/// document that reaches here: asking first costs one walk, while rebuilding
+/// unconditionally would copy every fragment in the paste to discover it had
+/// nothing to change.
+private func hasForbiddenMark(_ node: Node, in container: NodeType) -> Bool {
+    if container.allowedMarks(node.marks).count != node.marks.count { return true }
+    for i in 0 ..< node.content.childCount
+    where hasForbiddenMark(node.content.child(i), in: node.type) { return true }
+    return false
+}
+
+/// The rebuild, run only where `hasForbiddenMark` found something. `Fragment.from`
+/// rejoins the text nodes a dropped mark leaves adjacent, so the result stays in
+/// the canonical form the rest of the model expects.
+private func conformed(_ node: Node, in container: NodeType) -> Node {
+    var result = node
+    let kept = container.allowedMarks(node.marks)
+    if kept.count != node.marks.count { result = node.mark(kept) }
+    let count = node.content.childCount
+    if count > 0 {
+        var kids: [Node] = []
+        kids.reserveCapacity(count)
+        var changed = false
+        for i in 0 ..< count {
+            let child = node.content.child(i)
+            if hasForbiddenMark(child, in: node.type) {
+                kids.append(conformed(child, in: node.type))
+                changed = true
+            } else {
+                kids.append(child)
+            }
+        }
+        if changed { result = result.copy(content: Fragment.from(kids)) }
+    }
+    return result
+}

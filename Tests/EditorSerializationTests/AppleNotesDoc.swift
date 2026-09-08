@@ -45,6 +45,16 @@ private func noteProto(_ text: String, _ runs: [[UInt8]]) -> Data {
     Data(chunk(2, Array(text.utf8)) + runs.flatMap { chunk(5, $0) })
 }
 
+/// Prose only — no code block, no list, no task item. What the Notes importer
+/// has to degrade to when the host's schema is narrower than a note.
+private let noCodeSchema: Schema = try! Schema(nodes: [
+    ("doc", NodeSpec(content: "block+")),
+    ("paragraph", NodeSpec(content: "inline*", group: "block")),
+    ("heading", NodeSpec(content: "inline*", group: "block",
+                         attrs: ["level": AttributeSpec(default: .int(1))], defining: true)),
+    ("text", NodeSpec(group: "inline")),
+], marks: [], topNode: "doc")
+
 func registerAppleNotesDocTests() {
     test("Notes proto doc: title/heading/body lines") {
         let data = noteProto("Title\nHead\nbody\n", [
@@ -170,6 +180,97 @@ func registerAppleNotesDocTests() {
         let plain = AppleNotesPasteboard.parseNoteDocument(noteProto("u\n", [runProto(2, underline: true)]), schema: bare)
         try expectEqual(plain?.textContent, "u")
         try expectEqual(plain?.child(0).child(0).marks.count, 0)
+    }
+
+    test("Notes proto doc: a schema with no code block keeps the monospaced lines") {
+        // Consecutive monospaced lines normally merge into one code block. A
+        // schema without one has to keep the text anyway — one paragraph per
+        // line, rather than the whole run vanishing.
+        let data = noteProto("x = 1\ny = 2\n", [
+            runProto(6, style: styleProto(type: 4)),
+            runProto(6, style: styleProto(type: 4)),
+        ])
+        let d = AppleNotesPasteboard.parseNoteDocument(data, schema: noCodeSchema)
+        try expectEqual(d?.childCount, 2)
+        try expectEqual(d?.child(0).type.name, "paragraph")
+        try expectEqual(d?.child(0).textContent, "x = 1")
+        try expectEqual(d?.child(1).textContent, "y = 2")
+        try d?.check()
+    }
+
+    test("Notes proto doc: a schema with no list keeps the items as paragraphs") {
+        // The list can't be built, so the run degrades line by line rather than
+        // dropping — a checklist pasted into a plain schema is still its text.
+        let data = noteProto("a\nb\n", [
+            runProto(2, style: styleProto(type: 103, done: true)),
+            runProto(2, style: styleProto(type: 100)),
+        ])
+        let d = AppleNotesPasteboard.parseNoteDocument(data, schema: noCodeSchema)
+        try expectEqual(d?.childCount, 2)
+        try expectEqual(d?.textContent, "ab")
+        for i in 0..<(d?.childCount ?? 0) {
+            try expectEqual(d?.child(i).type.name, "paragraph")
+        }
+        try d?.check()
+    }
+
+    test("Notes proto doc: an archive holding no readable note is nil") {
+        // The archive walk tries each blob it finds and gives up rather than
+        // returning an empty document, so the caller can fall back to RTF.
+        try expect(AppleNotesPasteboard.document(fromArchive: Data(), schema: schema) == nil)
+        try expect(AppleNotesPasteboard.document(fromArchive: Data(repeating: 0, count: 64),
+                                                 schema: schema) == nil)
+    }
+
+    test("Notes proto doc: what it returns is always a document the schema accepts") {
+        // This importer returns its document rather than throwing, and
+        // `createAndFill` supplies missing content without validating what it
+        // was given — so an invalid document came back with nothing to say so,
+        // for the caller to trip over later. A schema that restricts a
+        // paragraph's marks is enough to produce one: a note's bold run landed
+        // in a paragraph that doesn't take bold.
+        func withoutParagraphMarks() throws -> Schema {
+            var specs: [(String, NodeSpec)] = []
+            for name in schema.nodes.keys.sorted() {
+                guard let t = schema.nodes[name] else { continue }
+                let sp = t.spec
+                specs.append((name, NodeSpec(content: sp.content, marks: name == "paragraph" ? "" : sp.marks,
+                                             group: sp.group, inline: sp.inline, atom: sp.atom, attrs: sp.attrs,
+                                             selectable: sp.selectable, draggable: sp.draggable, code: sp.code,
+                                             defining: sp.defining, isolating: sp.isolating, leafText: sp.leafText)))
+            }
+            var marksList: [(String, MarkSpec)] = []
+            for name in schema.marks.keys.sorted() {
+                if let m = schema.marks[name] { marksList.append((name, m.spec)) }
+            }
+            return try Schema(nodes: specs, marks: marksList, topNode: "doc")
+        }
+        let plainParagraphs = try withoutParagraphMarks()
+        // Bold, struck through, and linked runs, plus a heading and a checklist,
+        // so the sweep covers marks arriving on more than one kind of line.
+        let notes: [(String, Data)] = [
+            ("bold", noteProto("ab cd\n", [runProto(2, weight: 1), runProto(4)])),
+            ("strike", noteProto("ab\n", [runProto(3, strike: true)])),
+            ("link", noteProto("go\n", [runProto(3, link: "https://x.dev")])),
+            ("heading+bold", noteProto("H\nb\n", [runProto(2, style: styleProto(type: 1)),
+                                                  runProto(2, weight: 1)])),
+            ("checklist+bold", noteProto("a\n", [runProto(2, style: styleProto(type: 103), weight: 1)])),
+        ]
+        for (name, data) in notes {
+            for target in [schema, plainParagraphs] {
+                guard let d = AppleNotesPasteboard.parseNoteDocument(data, schema: target) else { continue }
+                try d.check()   // never an invalid document, whatever the schema allows
+                try expect(!d.textContent.isEmpty, "\(name): the text didn't survive")
+            }
+        }
+        // The text is kept and only the mark is lost, so the narrowing costs
+        // formatting rather than content.
+        let bold = AppleNotesPasteboard.parseNoteDocument(notes[0].1, schema: plainParagraphs)
+        try expectEqual(bold?.textContent, "ab cd")
+        try expectEqual(bold?.child(0).child(0).marks.count, 0)
+        // And with the full schema the mark is still there.
+        let kept = AppleNotesPasteboard.parseNoteDocument(notes[0].1, schema: schema)
+        try expectEqual(kept?.child(0).child(0).marks.first?.type.name, "bold")
     }
 
     test("Notes proto fuzz: random, truncated, and bit-flipped inputs never crash") {
