@@ -53,7 +53,9 @@ open class EditorTextView: UIView, UIKeyInput {
     private var caretLayer = CAShapeLayer()
     /// Insertion-point indicator shown while a drag session hovers the view.
     private var dropCursorLayer = CAShapeLayer()
-    private var blinkTimer: Timer?
+    // Internal rather than private so tests can drive a blink without waiting on
+    // a real half-second of wall clock.
+    var blinkTimer: Timer?
     /// Native selection UI (loupe, handles, edit menu, tap-to-place caret).
     private var textInteraction: UITextInteraction?
     // Internal rather than private so tests can drive the gesture wiring: the
@@ -1400,8 +1402,13 @@ open class EditorTextView: UIView, UIKeyInput {
     private func startBlink() {
         blinkTimer?.invalidate()
         blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor in self.caretLayer.opacity = self.caretLayer.opacity > 0 ? 0 : 1 }
+            // The run loop this timer is scheduled on is the main one, so the
+            // toggle happens on the tick itself rather than a hop later — one
+            // less scheduling delay between the timer and the caret.
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.caretLayer.opacity = self.caretLayer.opacity > 0 ? 0 : 1
+            }
         }
     }
 

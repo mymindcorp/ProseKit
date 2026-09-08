@@ -364,17 +364,27 @@ final class EditorTextViewResponderTests: XCTestCase {
 
         let shapes = try XCTUnwrap(view.layer.sublayers?.compactMap { $0 as? CAShapeLayer })
         XCTAssertFalse(shapes.isEmpty)
-        let start = shapes.map(\.opacity)
-        let blinked = expectation(description: "a layer changed opacity")
-        Task { @MainActor in
-            for _ in 0 ..< 25 {
-                try? await Task.sleep(for: .milliseconds(100))
-                if shapes.map(\.opacity) != start { break }
-            }
-            blinked.fulfill()
-        }
-        wait(for: [blinked], timeout: 6)
-        XCTAssertNotEqual(shapes.map(\.opacity), start, "the blink timer toggled the caret")
+
+        // The blink is driven here rather than waited for. A first responder
+        // gets a repeating half-second timer on the main run loop; firing it
+        // asserts the same thing a two-second wait did — the tick toggles the
+        // caret — without staking the result on a shared runner delivering a
+        // real timer on time.
+        let timer = try XCTUnwrap(view.blinkTimer, "becoming first responder schedules the blink")
+        XCTAssertTrue(timer.isValid)
+        XCTAssertEqual(timer.timeInterval, 0.5, accuracy: 0.001)
+
+        let lit = shapes.map(\.opacity)
+        timer.fire()
+        let dark = shapes.map(\.opacity)
+        XCTAssertNotEqual(dark, lit, "the blink timer toggled the caret")
+        timer.fire()
+        XCTAssertEqual(shapes.map(\.opacity), lit, "and toggled it back on the next tick")
+
+        // Resigning stops the blink and leaves the caret visible.
+        XCTAssertTrue(view.resignFirstResponder())
+        XCTAssertNil(view.blinkTimer, "the timer is torn down with first responder status")
+        XCTAssertEqual(shapes.map(\.opacity), lit, "and the caret is left lit, not mid-blink")
     }
 }
 #endif

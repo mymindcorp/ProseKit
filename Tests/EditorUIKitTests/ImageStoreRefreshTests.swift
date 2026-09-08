@@ -118,6 +118,10 @@ final class ImageStoreRefreshTests: XCTestCase {
         s.load([node])
         pump(until: { s.image(for: node) != nil })
         XCTAssertEqual(pixelWidth(s.image(for: node)), 180)
+        // The announcement is coalesced onto the *next* turn of the run loop, so
+        // an image can be resident a turn before its source is announced —
+        // pumping until the image arrived is not pumping until the callback ran.
+        pump(until: { !announced.isEmpty })
         XCTAssertEqual(announced.first, [src], "the view is told which sources arrived")
 
         s.maxPointWidth = 720
