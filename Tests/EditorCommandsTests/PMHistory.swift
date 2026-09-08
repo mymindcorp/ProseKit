@@ -211,6 +211,81 @@ func registerPMHistoryTests() {
             try expectEqual(s.doc, doc(p("yyytop"), p("zero one twoxxx three")).node)
         }
     }
+
+    // MARK: compression
+
+    // `Branch.compress` merges adjacent items, and the merge has to respect
+    // that a branch's steps are replayed newest-first. It used to combine them
+    // in forward order, so a held Delete key undid "abcde" as "abdce". These
+    // run through `_compressHistory`, but nothing here is test-only: `rebased`
+    // compresses on its own once 500 remote changes have piled up on a branch.
+    test("PM history: compressing a run of deletes still undoes in order") {
+        var s = mkState(doc(p("abcde")))
+        for _ in 0 ..< 3 { s = s.apply(try! s.tr.delete(2, 3)) }
+        try expectEqual(s.doc, doc(p("ae")).node)
+        try expectEqual(undoDepth(s), 1, "one event")
+
+        _compressHistory(s)
+        try expectEqual(_undoItemCount(s), 1, "the three inserts collapse into one item")
+        try expectEqual(undoDepth(s), 1)
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(p("abcde")).node)
+        s = command(s, redo)
+        try expectEqual(s.doc, doc(p("ae")).node)
+    }
+
+    test("PM history: compressing a run of deletes survives interleaved remote changes") {
+        // The map-only items a remote change leaves are what compression is
+        // for, and they sit between the deletes it merges.
+        var s = mkState(doc(p("abcde")))
+        for _ in 0 ..< 3 {
+            s = s.apply(try! s.tr.delete(2, 3))
+            // At the far end, so the remote change doesn't move the next delete.
+            s = s.apply(try! s.tr.insertText("*", s.doc.content.size - 1).setMeta("addToHistory", false))
+        }
+        try expectEqual(s.doc, doc(p("ae***")).node)
+        _compressHistory(s)
+        try expectEqual(_undoItemCount(s), 1, "the map-only items compress away too")
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(p("abcde***")).node)
+    }
+
+    test("PM history: compression merges a run of typing") {
+        // The forward-order merge didn't just scramble deletes: for ordinary
+        // typing it found no join at all and left every keystroke its own item,
+        // so compression wasn't compressing the commonest case.
+        var s = mkState()
+        for ch in "hello" { s = s.apply(try! s.tr.insertText(String(ch))) }
+        try expectEqual(undoDepth(s), 1, "one event")
+        _compressHistory(s)
+        try expectEqual(_undoItemCount(s), 1, "five keystrokes collapse into one item")
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(p()).node)
+        s = command(s, redo)
+        try expectEqual(s.doc, doc(p("hello")).node)
+    }
+
+    test("PM history: compression doesn't merge across an event boundary") {
+        // A merge takes the older item's place in the branch, so it may only
+        // absorb a newer item that isn't the start of the next event —
+        // otherwise a change slides from one undo into the next.
+        var s = mkState()
+        s = typeText(s, "ab")
+        s = typeText(s, "cd")
+        s = s.apply(closeHistory(s.tr))
+        s = typeText(s, "ef")
+        s = typeText(s, "gh")
+        try expectEqual(s.doc, doc(p("abcdefgh")).node)
+        try expectEqual(undoDepth(s), 2)
+
+        _compressHistory(s)
+        try expectEqual(undoDepth(s), 2, "still two events")
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(p("abcd")).node, "the second event undoes exactly its own typing")
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(p()).node)
+    }
+
     test("PM history: restores selection on undo") {
         var s = mkState()
         s = typeText(s, "hi")
