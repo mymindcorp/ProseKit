@@ -694,10 +694,9 @@ public enum HTMLParser {
             let inline = parseInline(tokens[(start + 1)..<end], schema, config)
             var a: Attrs = ["level": .int(level)]
             a.merge(idAttrs(attrs, "heading", schema, config)) { _, new in new }
-            return (textblockSplittingBlocks(inline) { try? schema.node("heading", a, content: Fragment.from($0)) }, end + 1)
+            return (textblocks(inline, as: "heading", a, schema: schema), end + 1)
         case "codeBlock":
             let text = innerText(tokens, start + 1, end)
-            let content = text.isEmpty ? Fragment.empty : Fragment.from([schema.text(text)])
             // `<pre><code class="language-x">` is where the language lives; the
             // class sits on the inner <code>, so look there too.
             var language: String?
@@ -718,16 +717,16 @@ public enum HTMLParser {
                schema.nodes["codeBlock"]?.spec.attrs["language"] != nil {
                 var a: Attrs = ["language": .string(language)]
                 a.merge(idAttrs(attrs, "codeBlock", schema, config)) { _, new in new }
-                return (one(try? schema.node("codeBlock", a, content: content)), end + 1)
+                return (codeBlocks(text, a, schema: schema), end + 1)
             }
-            return (one(try? schema.node("codeBlock", idAttrs(attrs, "codeBlock", schema, config), content: content)), end + 1)
+            return (codeBlocks(text, idAttrs(attrs, "codeBlock", schema, config), schema: schema), end + 1)
         case "paragraph":
             let inline = parseInline(tokens[(start + 1)..<end], schema, config)
             let a = idAttrs(attrs, "paragraph", schema, config)
             return (textblockSplittingBlocks(inline) { try? schema.node("paragraph", a, content: Fragment.from($0)) }, end + 1)
         case "bulletList", "orderedList":
             // ul/ol may actually be a task list (Tiptap data-type, or items with checkboxes).
-            return (one(parseList(tag, attrs, tokens, start, end, schema, config)), end + 1)
+            return (parseList(tag, attrs, tokens, start, end, schema, config), end + 1)
         case "details":
             return (parseDetails(attrs, tokens, start, end, schema, config), end + 1)
         case "tableCell", "tableHeader":
@@ -925,7 +924,14 @@ public enum HTMLParser {
     /// Parse a `<ul>`/`<ol>` as a task list (Tiptap `data-type`, or `<li>`s with
     /// checkboxes — e.g. pasted from Apple Notes) when applicable, else a bullet/
     /// ordered list.
-    private static func parseList(_ tag: String, _ attrs: [String: String], _ tokens: Tokens, _ start: Int, _ end: Int, _ schema: Schema, _ config: HTMLConfig) -> Node? {
+    ///
+    /// Returns the list as one node, or — for a schema with no list nodes — the
+    /// items' own blocks, spliced in where the list would have gone. Splicing
+    /// rather than inventing anything: a `<li>` already degrades to the blocks
+    /// it held (see the `"listItem"` case above), so the paragraphs are there
+    /// for the taking. Returning nil here dropped them along with the list, and
+    /// `<ul><li>KEEPME</li></ul>` parsed to nothing at all.
+    private static func parseList(_ tag: String, _ attrs: [String: String], _ tokens: Tokens, _ start: Int, _ end: Int, _ schema: Schema, _ config: HTMLConfig) -> [Node] {
         let isTask = attrs["data-type"] == "taskList" || listLooksLikeTasks(tokens, start, end)
         if isTask, let listType = schema.nodes["taskList"], schema.nodes["taskItem"] != nil {
             var items: [Node] = []
@@ -937,11 +943,11 @@ public enum HTMLParser {
                     i = liEnd + 1
                 } else { i += 1 }
             }
-            if !items.isEmpty, let n = try? listType.createChecked(idAttrs(attrs, "taskList", schema, config), content: Fragment.from(items)) { return n }
+            if !items.isEmpty, let n = try? listType.createChecked(idAttrs(attrs, "taskList", schema, config), content: Fragment.from(items)) { return [n] }
         }
         let name = config.tagToNode[tag] ?? "bulletList"
         let parsed = parseBlocks(tokens[(start + 1)..<end], schema, config)
-        guard let type = schema.nodes[name] else { return nil }
+        guard let type = schema.nodes[name] else { return parsed }
         // A `<ul>` can contain things that aren't list items — real pages put
         // stray paragraphs and nested markup in there.
         let children = fitContent(parsed, into: type, schema: schema)
@@ -958,8 +964,9 @@ public enum HTMLParser {
            !tokensHaveItemParagraph(tokens, start, end) {
             a["tight"] = .bool(true)
         }
-        if let n = try? type.createChecked(a, content: Fragment.from(children)) { return n }
-        return type.createAndFill(a, content: Fragment.from(children))
+        if let n = try? type.createChecked(a, content: Fragment.from(children)) { return [n] }
+        if let filled = type.createAndFill(a, content: Fragment.from(children)) { return [filled] }
+        return parsed
     }
 
     /// Whether any `<li>` directly under this list wraps its content in a `<p>`.

@@ -23,7 +23,100 @@ private let minimalSchema: Schema = try! Schema(nodes: [
 
 private func rtf(_ body: String) -> String { "{\\rtf1\\ansi\\deff0 " + body + "}" }
 
+/// `schema` with `dropped` node types removed, for asking what a parser does
+/// when the host's schema simply has no such node.
+///
+/// Rebuilding is the only way to ask: a `Schema` validates its content
+/// expressions on construction, so the types that *referred* to the dropped
+/// ones have to go with them — dropping `listItem` leaves `bulletList`
+/// describing content that can no longer exist.
+private func schemaWithout(_ dropped: Set<String>) throws -> Schema {
+    var specs: [(String, NodeSpec)] = []
+    for name in schema.nodes.keys.sorted() where !dropped.contains(name) {
+        guard let type = schema.nodes[name] else { continue }
+        let s = type.spec
+        // A content expression naming a dropped type would fail to compile, and
+        // one naming only dropped types would leave the node uninhabitable.
+        if let content = s.content,
+           dropped.contains(where: { content.range(of: "\\b\($0)\\b", options: .regularExpression) != nil }) {
+            continue
+        }
+        specs.append((name, s))
+    }
+    var marks: [(String, MarkSpec)] = []
+    for name in schema.marks.keys.sorted() {
+        if let m = schema.marks[name] { marks.append((name, m.spec)) }
+    }
+    return try Schema(nodes: specs, marks: marks, topNode: "doc")
+}
+
 func registerSerializerEdgeTests() {
+    test("every parser: a block the schema has no node for keeps its text") {
+        // The schema decides which nodes exist, and a host that ships no
+        // `heading` is an ordinary configuration rather than a broken one. What
+        // it must not mean is that the words vanish: every build site here sat
+        // inside a `textblockSplittingBlocks` wrap closure, `schema.node(_:)`
+        // throws for a type the schema doesn't declare, and the closure
+        // returning nil dropped the whole run. "# Title" parsed to nothing at
+        // all — no heading, and no title either.
+        //
+        // RTF and the Apple Notes importer already degraded to a paragraph and
+        // kept the text, so this only settles Markdown and HTML the same way.
+        // The trailing "tail" is the tell: it proves the parse ran and produced
+        // a document, so a missing "KEEPME" is a dropped block rather than a
+        // thrown error.
+        let listTypes: Set<String> = ["bulletList", "orderedList", "listItem"]
+        let rtfHead = #"{\rtf1\ansi\deff0{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}"#
+        var lost: [String] = []
+        let cases: [(String, Set<String>, String, String, String)] = [
+            ("heading", ["heading"],
+             "# KEEPME\n\ntail",
+             "<h1>KEEPME</h1><p>tail</p>",
+             rtfHead + #"\pard\outlinelevel0 KEEPME\par\pard\outlinelevel0\s0 tail\par}"#),
+            ("codeBlock", ["codeBlock"],
+             "```\nKEEPME\n```\n\ntail",
+             "<pre><code>KEEPME</code></pre><p>tail</p>",
+             rtfHead + #"\pard\f1 KEEPME\par\pard\f0 tail\par}"#),
+            ("lists", listTypes,
+             "- KEEPME\n\ntail",
+             "<ul><li>KEEPME</li></ul><p>tail</p>",
+             rtfHead + #"\pard{\pntext\f0 \'B7\tab}KEEPME\par\pard tail\par}"#),
+            // Half a list: the container is gone but `listItem` remains, which
+            // is the other side of a guard that needs both. Whatever the items
+            // end up wrapped in, the words have to still be there.
+            ("bulletList only", ["bulletList"],
+             "- KEEPME\n\ntail",
+             "<ul><li>KEEPME</li></ul><p>tail</p>",
+             rtfHead + #"\pard{\pntext\f0 \'B7\tab}KEEPME\par\pard tail\par}"#),
+        ]
+        for (label, dropped, md, html, rtfSource) in cases {
+            let narrow = try schemaWithout(dropped)
+            for name in dropped {
+                try expect(narrow.nodes[name] == nil, "\(label): \(name) survived the narrowing")
+            }
+            let parsers: [(String, () throws -> Node)] = [
+                ("markdown", { try MarkdownParser.parse(md, schema: narrow) }),
+                ("html", { try HTMLParser.parse(html, schema: narrow) }),
+                ("rtf", { try RTFParser.parse(rtfSource, schema: narrow) }),
+            ]
+            for (parser, parse) in parsers {
+                let d = try parse()
+                let site = "\(label) missing, \(parser)"
+                if !d.textContent.contains("KEEPME") {
+                    lost.append("\(site): got \(d.textContent.debugDescription)")
+                }
+                // The rest of the document has to survive too, and the result
+                // has to be a document the editor would accept.
+                try expect(d.textContent.contains("tail"), "\(site): the following block was dropped")
+                try d.check()
+            }
+        }
+        // Reported together: the same closure returning nil drops a block at
+        // every one of these sites, so a fix at one of them says nothing about
+        // the others, and stopping at the first would hide five.
+        try expect(lost.isEmpty, "blocks dropped:\n  " + lost.joined(separator: "\n  "))
+    }
+
     // MARK: Markdown
 
     test("md: a hard break followed by a node that writes nothing isn't written") {

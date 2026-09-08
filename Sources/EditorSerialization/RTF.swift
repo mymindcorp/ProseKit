@@ -1618,16 +1618,28 @@ private struct RTFReader {
         }
 
         func pop() {
-            guard let level = stack.popLast(),
-                  let list = schema.nodes[listName(level.kind)]?
-                      .createAndFill(listAttrs(level.kind, start: level.start),
-                                     content: Fragment.from(level.items))
-            else { return }
+            guard let level = stack.popLast() else { return }
+            // The list node, when the schema has one to build. Otherwise the
+            // items' own blocks — paragraphs already, since that is what the
+            // item was built around above.
+            //
+            // The guard on building an *item* below catches a schema with no
+            // `listItem`, but a schema can have the item and not the list that
+            // holds it, and this used to drop the level and every word in it.
+            let built: [Node]
+            if let list = schema.nodes[listName(level.kind)]?
+                .createAndFill(listAttrs(level.kind, start: level.start),
+                               content: Fragment.from(level.items)) {
+                built = [list]
+            } else {
+                built = level.items.flatMap { item in (0..<item.childCount).map { item.child($0) } }
+            }
+            guard !built.isEmpty else { return }
             if let parent = stack.last, let lastItem = parent.items.last {
-                let kids = (0..<lastItem.childCount).map { lastItem.child($0) } + [list]
+                let kids = (0..<lastItem.childCount).map { lastItem.child($0) } + built
                 stack[stack.count - 1].items[parent.items.count - 1] = lastItem.copy(content: Fragment.from(kids))
             } else {
-                out.append(list)
+                out.append(contentsOf: built)
             }
         }
 

@@ -1268,8 +1268,7 @@ public enum MarkdownParser {
                 }
                 i -= blanks.count  // trailing blanks are not part of the block
                 let text = code.joined(separator: "\n")
-                let content = text.isEmpty ? Fragment.empty : Fragment.from([schema.text(text)])
-                if let cb = try? schema.node("codeBlock", [:], content: content) { blocks.append(cb) }
+                blocks.append(contentsOf: codeBlocks(text, schema: schema))
                 continue
             }
 
@@ -1288,7 +1287,6 @@ public enum MarkdownParser {
                 // An unclosed fence runs to the end of the document.
                 if i < lines.count { i += 1 }
                 let text = code.joined(separator: "\n")
-                let content = text.isEmpty ? Fragment.empty : Fragment.from([schema.text(text)])
                 var attrs: Attrs = [:]
                 // The info string names the language, when the schema keeps one.
                 if !fence.info.isEmpty,
@@ -1298,7 +1296,7 @@ public enum MarkdownParser {
                         attrs["language"] = .string(resolveEscapes(String(language)))
                     }
                 }
-                if let cb = try? schema.node("codeBlock", attrs, content: content) { blocks.append(cb) }
+                blocks.append(contentsOf: codeBlocks(text, attrs, schema: schema))
                 continue
             }
             // Figure fence: `^^^` opens a figure that runs to the closing `^^^`,
@@ -1474,9 +1472,8 @@ public enum MarkdownParser {
             // Heading
             if let m = headingMatch(trimmed) {
                 let inline = parseInline(m.text, schema, definitions)
-                blocks.append(contentsOf: textblockSplittingBlocks(inline) {
-                    try? schema.node("heading", ["level": .int(m.level)], content: Fragment.from($0))
-                })
+                blocks.append(contentsOf: textblocks(inline, as: "heading",
+                                                    ["level": .int(m.level)], schema: schema))
                 i += 1; continue
             }
             // Blockquote
@@ -1552,9 +1549,11 @@ public enum MarkdownParser {
             // Lists
             if let bullet = bulletMatch(trimmed) {
                 let (items, next, tight) = collectList(lines, i, ordered: false)
-                if let list = try makeTaskList(items, schema: schema, depth: depth + 1)
-                    ?? makeList(items, ordered: false, schema: schema, tight: tight, depth: depth + 1) {
-                    blocks.append(list)
+                if let tasks = try makeTaskList(items, schema: schema, depth: depth + 1) {
+                    blocks.append(tasks)
+                } else {
+                    blocks.append(contentsOf: try makeList(items, ordered: false, schema: schema,
+                                                           tight: tight, depth: depth + 1))
                 }
                 i = next
                 _ = bullet
@@ -1562,10 +1561,8 @@ public enum MarkdownParser {
             }
             if let ordered = orderedMatch(trimmed) {
                 let (items, next, tight) = collectList(lines, i, ordered: true)
-                if let list = try makeList(items, ordered: true, schema: schema,
-                                       start: ordered, tight: tight, depth: depth + 1) {
-                    blocks.append(list)
-                }
+                blocks.append(contentsOf: try makeList(items, ordered: true, schema: schema,
+                                                       start: ordered, tight: tight, depth: depth + 1))
                 i = next
                 continue
             }
@@ -1598,9 +1595,8 @@ public enum MarkdownParser {
             // first, and the block loop only sees a "---" that starts a block.
             if i < lines.count, let level = setextUnderline(lines[i]) {
                 i += 1
-                blocks.append(contentsOf: textblockSplittingBlocks(inline) {
-                    try? schema.node("heading", ["level": .int(level)], content: Fragment.from($0))
-                })
+                blocks.append(contentsOf: textblocks(inline, as: "heading",
+                                                    ["level": .int(level)], schema: schema))
                 continue
             }
             // `![alt](src)` reads as inline content, but an image is block-level
@@ -2413,23 +2409,35 @@ public enum MarkdownParser {
         }
     }
 
+    /// The blocks a list becomes: one list node, or — for a schema with no list
+    /// nodes — the items' own blocks spliced in where the list would have gone.
+    ///
+    /// Splicing rather than inventing anything, because an item's content is
+    /// already paragraphs by the time `itemBlocks` returns it. Dropping the list
+    /// used to drop those too, so "- KEEPME" parsed to nothing at all.
     private static func makeList(_ items: [[String]], ordered: Bool, schema: Schema,
-                                 start: Int = 1, tight: Bool = false, depth: Int) throws -> Node? {
-        guard let itemType = schema.nodes["listItem"] else { return nil }
+                                 start: Int = 1, tight: Bool = false, depth: Int) throws -> [Node] {
+        // `itemBlocks` decides whether the content is inline or its own blocks;
+        // this used to repeat that test and so never saw the indented
+        // single-line case.
+        let itemContents = try items.map { try itemBlocks($0, schema: schema, depth: depth) }
+        let listName = ordered ? "orderedList" : "bulletList"
+        guard let itemType = schema.nodes["listItem"], let listType = schema.nodes[listName] else {
+            return itemContents.flatMap { $0 }
+        }
         var itemNodes: [Node] = []
-        for lines in items {
-            // `itemBlocks` decides whether the content is inline or its own
-            // blocks; this used to repeat that test and so never saw the
-            // indented single-line case.
-            let content = fitContent(try itemBlocks(lines, schema: schema, depth: depth), into: itemType, schema: schema)
-            guard let item = (try? itemType.createChecked([:], content: Fragment.from(content)))
-                ?? itemType.createAndFill([:], content: Fragment.from(content)) else { continue }
+        for content in itemContents {
+            let fitted = fitContent(content, into: itemType, schema: schema)
+            guard let item = (try? itemType.createChecked([:], content: Fragment.from(fitted)))
+                ?? itemType.createAndFill([:], content: Fragment.from(fitted)) else { continue }
             itemNodes.append(item)
         }
-        let listName = ordered ? "orderedList" : "bulletList"
         var attrs: Attrs = ordered ? ["order": .int(start)] : [:]
-        if schema.nodes[listName]?.spec.attrs["tight"] != nil { attrs["tight"] = .bool(tight) }
-        return try? schema.nodeType(listName).createChecked(attrs, content: Fragment.from(itemNodes))
+        if listType.spec.attrs["tight"] != nil { attrs["tight"] = .bool(tight) }
+        guard let list = try? listType.createChecked(attrs, content: Fragment.from(itemNodes)) else {
+            return itemContents.flatMap { $0 }
+        }
+        return [list]
     }
 
     // Inline parser: handles **bold**, *italic*/_italic_, `code`, ~~strike~~,
