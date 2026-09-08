@@ -10,6 +10,53 @@ struct LineLayout {
     let stringRange: NSRange      // range into the block's attributed string
     let height: CGFloat
     let ascent: CGFloat
+
+    /// How far along the line a string index sits, measured from the line's
+    /// own origin. `CTLineGetOffsetForStringIndex` with one correction.
+    ///
+    /// The shaper deletes the characters that render nothing — a zero-width
+    /// space, a soft hyphen, a byte-order mark, a bidi mark — so no glyph
+    /// carries their index. CoreText still answers for one in the middle of a
+    /// line, by lending it the position of the glyph that follows. At the *end*
+    /// of a line there is no glyph to borrow from, and rather than say so it
+    /// answers 0: the left margin, drawn before every position that precedes
+    /// it. A code block ending in a zero-width space is enough to see it.
+    ///
+    /// Those characters take up no width, so the one place a caret among them
+    /// can go is where the line ends — which is also the correct end for a line
+    /// that reads right to left, where "the end" is the left edge and 0 is the
+    /// honest answer after all.
+    func offset(forStringIndex index: Int) -> CGFloat {
+        let offset = CTLineGetOffsetForStringIndex(ctLine, index, nil)
+        // Three compares reject the ordinary case before the runs are walked,
+        // because this runs per caret and per selection rect. Only a 0 from
+        // strictly inside the line can be the false one: 0 at the line's own
+        // start is the truth, and the index just past its end already answers
+        // with the line's width.
+        guard offset == 0,
+              index > stringRange.location,
+              index < stringRange.location + stringRange.length,
+              let lastGlyph = lastGlyphStringIndex, index > lastGlyph
+        else { return offset }
+        return CTLineGetOffsetForStringIndex(ctLine, stringRange.location + stringRange.length, nil)
+    }
+
+    /// The largest string index this line draws a glyph for, or nil if it draws
+    /// none at all. Every index past it was dropped in shaping.
+    private var lastGlyphStringIndex: Int? {
+        guard let runs = CTLineGetGlyphRuns(ctLine) as? [CTRun] else { return nil }
+        var last: Int?
+        for run in runs {
+            let count = CTRunGetGlyphCount(run)
+            guard count > 0 else { continue }
+            // Ascending in a left-to-right run and descending in a right-to-left
+            // one, so both ends are candidates and neither is the answer alone.
+            var indices = [CFIndex](repeating: 0, count: count)
+            unsafe CTRunGetStringIndices(run, CFRange(location: 0, length: count), &indices)
+            if let high = indices.max(), high > last ?? Int.min { last = high }
+        }
+        return last
+    }
 }
 
 /// Maps document positions to attributed-string indices within a block. Text
@@ -2006,7 +2053,7 @@ final class DocumentLayout {
         guard let line else {
             return CGRect(x: block.frame.minX, y: block.frame.minY, width: 2, height: block.frame.height)
         }
-        let xOffset = CTLineGetOffsetForStringIndex(line.ctLine, attrIndex, nil)
+        let xOffset = line.offset(forStringIndex: attrIndex)
         let top = line.baselineOrigin.y - line.ascent
         return CGRect(x: line.baselineOrigin.x + xOffset, y: top, width: 2, height: line.height)
     }
@@ -2307,8 +2354,8 @@ final class DocumentLayout {
                 // two offset lookups are what a rect costs, so skip them here
                 // rather than let the caller throw the rect away.
                 if let clipY, top > clipY.upperBound || top + line.height < clipY.lowerBound { continue }
-                let xStart = CTLineGetOffsetForStringIndex(line.ctLine, s, nil)
-                let xEnd = CTLineGetOffsetForStringIndex(line.ctLine, e, nil)
+                let xStart = line.offset(forStringIndex: s)
+                let xEnd = line.offset(forStringIndex: e)
                 body(CGRect(x: line.baselineOrigin.x + xStart, y: top, width: xEnd - xStart, height: line.height),
                      block, s, e)
             }

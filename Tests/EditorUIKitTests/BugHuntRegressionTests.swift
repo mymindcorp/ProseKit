@@ -11,6 +11,58 @@ import SchemaKit
 @MainActor
 final class BugHuntRegressionTests: XCTestCase {
 
+    // MARK: a character the shaper deletes, at the end of a line
+
+    /// Consecutive document positions on one line are drawn left to right. A
+    /// character that renders nothing — a zero-width space here — used to break
+    /// that when it fell at the *end* of a line: shaping deletes it, so no glyph
+    /// carries its index, and where CoreText lends such an index the position of
+    /// the glyph after it, at the end of a line there is no glyph to borrow from
+    /// and it answers 0 instead. The caret jumped to the left margin, drawn
+    /// before every position that precedes it on the line.
+    ///
+    /// Found by `GeometryFuzzTests.testCaretsAdvanceAcrossALine` at a corpus of
+    /// 250 documents: seeds 99 and 115 both generate a code block whose text
+    /// ends in U+200B, and neither is in the 8 documents a routine run sweeps.
+    func testTheCaretForATrailingZeroWidthSpaceSitsAtTheEndOfTheLine() throws {
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            try s.node("codeBlock", [:], content: Fragment.from([s.text("ab\u{200B}")])),
+        ])))
+        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme())
+        let block = try XCTUnwrap(layout.blocks.first)
+        XCTAssertEqual(block.lines.count, 1, "the line must not wrap")
+
+        // Four positions: before "a", before "b", before the zero-width space,
+        // and the end. The last two are the same place on screen, because the
+        // character between them draws nothing.
+        let x = try (0 ... 3).map { try XCTUnwrap(layout.caretRect(at: block.contentStart + $0)).minX }
+        XCTAssertLessThan(x[0], x[1], "the caret advances across \"a\"")
+        XCTAssertLessThan(x[1], x[2], "the caret for the zero-width space is past \"b\", not at the margin")
+        XCTAssertEqual(x[2], x[3], accuracy: 0.5, "a character with no width has no width")
+    }
+
+    /// The same false offset, read by the other caller. Selecting the
+    /// zero-width space alone used to highlight the whole line: its start came
+    /// back as the line's origin and its end as the line's width.
+    func testSelectingATrailingZeroWidthSpaceHighlightsNothingWide() throws {
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            try s.node("paragraph", [:], content: Fragment.from([s.text("ab\u{200B}")])),
+        ])))
+        let layout = DocumentLayout(doc: editor.doc, width: 320, theme: DocumentTheme())
+        let block = try XCTUnwrap(layout.blocks.first)
+        let all = layout.selectionRects(from: block.contentStart, to: block.contentEnd)
+        let zeroWidth = layout.selectionRects(from: block.contentStart + 2, to: block.contentEnd)
+        XCTAssertEqual(all.count, 1, "one line, one rect")
+        for rect in zeroWidth {
+            XCTAssertLessThan(rect.width, 1, "selecting a character with no width covered \(rect.width)pt")
+            XCTAssertGreaterThanOrEqual(rect.minX, all[0].maxX - 0.5, "and it sits at the end of the line")
+        }
+    }
+
     // MARK: an emoji at a soft wrap
 
     /// ↓ and ↑ move by one line. The clamp that stops the caret bouncing past a
