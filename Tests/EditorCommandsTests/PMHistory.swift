@@ -332,4 +332,40 @@ func registerPMHistoryTests() {
         s = s.apply(rebase)
         s = command(s, undo) // must not trap or corrupt
     }
+
+    test("PM history: undo survives a branch buried under hundreds of remote maps") {
+        // Every remote change during collab leaves a map-only item in the
+        // branch, and our own events have to be remapped through all of them to
+        // undo at the right place. Nothing else in this suite pushes more than a
+        // handful, so a branch this deep — an afternoon in a shared document —
+        // was never exercised.
+        var s = mkState()
+        s = typeText(s, "hello")
+        s = s.apply(closeHistory(s.tr))
+        s = typeText(s, " world")
+        try expectEqual(undoDepth(s), 2)
+
+        // 520 remote inserts at the front, none of them ours to undo.
+        let remotes = 520
+        for _ in 0..<remotes {
+            s = s.apply(try! s.tr.insertText("x", 1).setMeta("addToHistory", false))
+        }
+        let prefix = String(repeating: "x", count: remotes)
+        try expectEqual(s.doc, doc(p(prefix + "hello world")).node)
+        try expectEqual(undoDepth(s), 2, "a remote change consumed one of our events")
+
+        // Both of our events still undo, at the positions the remote work moved
+        // them to — and neither undo touches the remote text.
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(p(prefix + "hello")).node)
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(p(prefix)).node)
+        try expectEqual(undoDepth(s), 0)
+        // And redo puts them back in order.
+        s = command(s, redo)
+        try expectEqual(s.doc, doc(p(prefix + "hello")).node)
+        s = command(s, redo)
+        try expectEqual(s.doc, doc(p(prefix + "hello world")).node)
+    }
+
 }

@@ -1487,7 +1487,8 @@ private struct RTFReader {
         // blocks of their own, and belong at the end.
         out.append(contentsOf: footnoteDefinitions)
 
-        var content = fitContent(out, into: schema.topNodeType, schema: schema)
+        var content = conformMarks(fitContent(out, into: schema.topNodeType, schema: schema),
+                                   in: schema.topNodeType)
         if content.isEmpty, let empty = schema.nodes["paragraph"]?.createAndFill() { content = [empty] }
         let doc = try schema.node(schema.topNodeType, [:], content: Fragment.from(content))
         do {

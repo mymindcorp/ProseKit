@@ -176,4 +176,38 @@ func registerPMTableCommandsTests() {
         let s = runCmd(d, tableArrow(.horiz, 1))
         try expect(!(s.selection is CellSelection), "cell selection collapsed")
     }
+
+    // MARK: - Asked outside a table
+
+    test("PM table: every table command is a no-op outside a table") {
+        // `selectedRect` looks for the cell the selection is in, and when there
+        // is none it searches the nodes either side of the caret for one. Both
+        // of those walks — forward from the caret and back from it — have to
+        // come up empty on ordinary prose rather than finding a cell that isn't
+        // there. A caret at the start of a paragraph exercises the forward
+        // walk; one at the end exercises the backward one.
+        let d = doc(p("hello"), p("world")).node
+        let commands: [(String, Command)] = [
+            ("addColumnBefore", addColumnBefore), ("addColumnAfter", addColumnAfter),
+            ("deleteColumn", deleteColumn), ("addRowBefore", addRowBefore),
+            ("addRowAfter", addRowAfter), ("deleteRow", deleteRow),
+            ("mergeCells", mergeCells), ("splitCell", splitCell),
+            ("mergeOrSplit", mergeOrSplit), ("toggleHeaderRow", toggleHeaderRow),
+            ("toggleHeaderColumn", toggleHeaderColumn), ("toggleHeaderCell", toggleHeaderCell),
+            ("goToNextCellOrAddRow", goToNextCellOrAddRow),
+            ("goToNextCell(1)", goToNextCell(1)), ("goToNextCell(-1)", goToNextCell(-1)),
+        ]
+        for (position, at) in [("start", 1), ("end", d.content.size - 1)] {
+            for (name, command) in commands {
+                var state = EditorState.create(EditorStateConfig(
+                    schema: basicSchema, doc: d, selection: TextSelection(d.resolve(at))))
+                let before = state.doc
+                let ran = command(state, { tr in state = state.apply(tr) }, nil)
+                try expect(ran == false, "\(name) claimed to run at the \(position)")
+                try expectEqual(state.doc, before, "\(name) edited the document at the \(position)")
+            }
+        }
+        try expect(selectedRect(EditorState.create(EditorStateConfig(
+            schema: basicSchema, doc: d, selection: TextSelection(d.resolve(1))))) == nil)
+    }
 }

@@ -29,10 +29,27 @@ import TestHarness
 // the ratio then climbs on a curve that is perfectly flat. Measured over three
 // runs here, every payload lands between 0.65 and 1.94.
 
-private func parseSeconds(_ markdown: String) -> Double {
-    let start = Date()
+/// CPU time this thread actually spent, rather than wall-clock time.
+///
+/// The question here is how the parser's *work* scales, and wall-clock answers
+/// a different one: it counts the time the scheduler gave the machine to
+/// something else. On a busy box that landed almost entirely on the large
+/// payload — one long parse has fewer quiet slices to hide in than four short
+/// ones — so the ratio climbed on a curve that was perfectly flat. Thread CPU
+/// time doesn't count what was stolen, so the measurement is the same on an
+/// idle machine and under a parallel build.
+private func cpuSeconds() -> Double {
+    var ts = timespec()
+    unsafe clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts)
+    return Double(ts.tv_sec) + Double(ts.tv_nsec) / 1_000_000_000
+}
+
+/// CPU seconds spent parsing, and the wall-clock seconds it took — the ratio
+/// wants the first, and "is this a hang" wants the second.
+private func parseSeconds(_ markdown: String) -> (cpu: Double, wall: Double) {
+    let startCPU = cpuSeconds(), startWall = Date()
     _ = try? MarkdownParser.parse(markdown, schema: schema)
-    return Date().timeIntervalSince(start)
+    return (cpuSeconds() - startCPU, Date().timeIntervalSince(startWall))
 }
 
 /// Healthy is ~1 and quadratic is ~4, so this sits between them with room on
@@ -51,26 +68,39 @@ private let smallFloor = 0.050
 /// Assert that four parses of `build(n)` cost about as much as one of
 /// `build(n * 4)`.
 ///
-/// Measured twice before failing: one load spike landing across a pair of
-/// samples is not an algorithmic regression, and the second measurement costs
-/// nothing on the passing path.
+/// Each side is the *fastest* of several rounds, not that round's sample.
+///
+/// Equal exposure alone wasn't enough. The small side is a sum of four parses,
+/// so its noise averages out, while the large side is one parse with nowhere to
+/// hide — a load spike landing on it went straight into the ratio. Under a
+/// parallel build that failed about half of every six runs, always a different
+/// payload, always a ratio a hair over the bound (2.54, 2.81).
+///
+/// The fastest sample is the least contended one, which is what makes a minimum
+/// the right summary here: work the machine stole is excluded rather than
+/// averaged in. It costs the algorithm nothing to hide behind — quadratic work
+/// is quadratic in its best round too, and these payloads ran 1.7s that way
+/// against the ~200ms they run now.
 private func expectLinearGrowth(_ build: @Sendable (Int) -> String, _ n: Int,
                                 file: StaticString = #file, line: UInt = #line) throws {
+    let smallInput = build(n), largeInput = build(n * 4)
+    var bestSmall = Double.infinity, bestLarge = Double.infinity
     var report = ""
-    for _ in 1...2 {
-        let smallInput = build(n), largeInput = build(n * 4)
+    for _ in 1...3 {
         var small = 0.0
-        for _ in 0..<4 { small += parseSeconds(smallInput) }
-        small = max(small, smallFloor)
-        let large = parseSeconds(largeInput)
+        for _ in 0..<4 { small += parseSeconds(smallInput).cpu }
+        bestSmall = min(bestSmall, max(small, smallFloor))
+        let (largeCPU, large) = parseSeconds(largeInput)
+        bestLarge = min(bestLarge, largeCPU)
         // Say what was measured, so a failure doesn't need a rerun to diagnose.
-        report = "4 × \(smallInput.utf8.count / 1024) KB took \(Int(small * 1000))ms, "
-            + "1 × \(largeInput.utf8.count / 1024) KB took \(Int(large * 1000))ms "
-            + "— a ratio of \((large / small * 100).rounded() / 100) against the \(growthBound) bound"
-        // A hang gets no second measurement: it already took long enough.
+        report = "4 × \(smallInput.utf8.count / 1024) KB took \(Int(bestSmall * 1000))ms, "
+            + "1 × \(largeInput.utf8.count / 1024) KB took \(Int(bestLarge * 1000))ms "
+            + "(fastest of each) — a ratio of "
+            + "\((bestLarge / bestSmall * 100).rounded() / 100) against the \(growthBound) bound"
+        // A hang gets no further rounds: it already took long enough.
         try expect(large <= hangBound, "\(report); one parse taking \(Int(large)) seconds is a hang",
                    file: file, line: line)
-        if large < small * growthBound { return }
+        if bestLarge < bestSmall * growthBound { return }
     }
     try expect(false, "\(report); the same characters should cost about the same either way",
                file: file, line: line)

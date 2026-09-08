@@ -22,9 +22,6 @@ public final class ContentMatch: @unchecked Sendable {
     /// A content match state that matches nothing and is not a valid end.
     public static let empty = ContentMatch(validEnd: true)
 
-    var edgeCount: Int { next.count }
-    func edge(_ n: Int) -> Edge { next[n] }
-
     /// The node types reachable directly from this match state, in order.
     public var edgeTypes: [NodeType] { next.map { $0.type } }
 

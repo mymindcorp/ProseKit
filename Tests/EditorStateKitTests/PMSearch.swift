@@ -458,4 +458,40 @@ func registerPMSearchTests() {
                         doc(p("this one"), p("that ", em("two")), blockquote(p("another ", em("two")))),
                         replaceAll)
     }
+
+    // MARK: - Queries that match nothing, and replacements that are all literal
+
+    test("PM search: an invalid query finds nothing rather than everything") {
+        // An empty search, or a regexp that doesn't compile, resolves to a query
+        // whose every lookup is empty — including `findAll`, which walks the
+        // document itself rather than going through `findNext`. A find bar with
+        // a half-typed pattern in it asks all three of these on every keystroke.
+        let state = EditorState.create(EditorStateConfig(
+            schema: basicSchema, doc: doc(p("one two"), p("three")).node))
+        for query in [SearchQuery(search: ""),
+                      SearchQuery(search: "(unclosed", regexp: true),
+                      SearchQuery(search: "*", regexp: true)] {
+            try expect(!query.valid, "expected an invalid query")
+            try expectNil(query.findNext(state, 0))
+            try expectNil(query.findPrev(state))
+            try expectEqual(query.findAll(state).count, 0)
+        }
+        // A valid query over the same document does find things, so the
+        // emptiness above is the query's and not the document's.
+        try expectEqual(SearchQuery(search: "e").findAll(state).count, 3)
+    }
+
+    test("PM search: a replacement of literal dollars is one run of text") {
+        // "$$" is an escaped dollar, so "$$$$" is two of them back to back —
+        // and they have to coalesce into a single piece of replacement text
+        // rather than accumulating as separate runs.
+        try testCommand(SearchQuery(search: "x", replace: "$$$$"),
+                        p("a x b"), p("a $$ b"), replaceAll)
+        try testCommand(SearchQuery(search: "x", replace: "a$$b$$c"),
+                        p("n x"), p("n a$b$c"), replaceAll)
+        // A group reference between literals still splits them, and the
+        // literals either side survive.
+        try testCommand(SearchQuery(search: "(\\d)", regexp: true, replace: "$$$1$$"),
+                        p("n 7"), p("n $7$"), replaceAll)
+    }
 }

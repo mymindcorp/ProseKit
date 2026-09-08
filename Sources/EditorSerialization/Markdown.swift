@@ -1005,20 +1005,6 @@ public enum MarkdownSerializer {
         }
     }
 
-    /// Backslash-escape the characters this parser treats as inline markup, so
-    /// text comes back as text. CommonMark allows any ASCII punctuation to be
-    /// escaped, so the output stays portable.
-    ///
-    /// Without this, a document loses content on a save/load cycle:
-    /// `snake_case_name` came back as `snakecasename`, `2 * 3 * 4` as `2  3  4`,
-    /// and `====` as nothing at all — the delimiters were consumed as (empty)
-    /// marks rather than read as text.
-    static func escapeInline(_ text: String) -> String {
-        var out = ""
-        escapeInline(text, into: &out)
-        return out
-    }
-
     /// A backslash has to be escaped too, or it would escape whatever we add.
     private static func alwaysEscaped(_ b: UInt8) -> Bool {
         switch b {
@@ -1035,6 +1021,15 @@ public enum MarkdownSerializer {
         b == UInt8(ascii: "=") || b == UInt8(ascii: "~")
     }
 
+    /// Backslash-escape the characters this parser treats as inline markup, so
+    /// text comes back as text. CommonMark allows any ASCII punctuation to be
+    /// escaped, so the output stays portable.
+    ///
+    /// Without this, a document loses content on a save/load cycle:
+    /// `snake_case_name` came back as `snakecasename`, `2 * 3 * 4` as `2  3  4`,
+    /// and `====` as nothing at all — the delimiters were consumed as (empty)
+    /// marks rather than read as text.
+    ///
     /// Every character this looks for is ASCII, so it scans UTF-8 bytes: a
     /// multi-byte character's bytes are all above 0x7F and can never be mistaken
     /// for one, and the text never has to be broken into grapheme clusters —
@@ -1131,42 +1126,6 @@ public enum MarkdownSerializer {
 
     static func titleText(_ title: String) -> String {
         title.replacingOccurrences(of: "\\", with: "\\\\")
-    }
-
-    static func applyMarks(_ text: String, _ marks: [Mark]) -> String {
-        var result = text
-        // link is outermost; code innermost-ish
-        if marks.contains(where: { $0.type.name == "code" }) {
-            var longest = 0, current = 0
-            for ch in result {
-                current = ch == "`" ? current + 1 : 0
-                longest = max(longest, current)
-            }
-            let fence = String(repeating: "`", count: longest + 1)
-            // Pad when the content would otherwise start or end with a
-            // backtick (which would extend the fence) or with a space (which
-            // the reader strips). Content that is nothing but spaces is left
-            // alone — the reader only strips when there's something between.
-            let allSpaces = !result.isEmpty && result.allSatisfy { $0 == " " }
-            let edgy = result.hasPrefix("`") || result.hasSuffix("`")
-                || result.hasPrefix(" ") || result.hasSuffix(" ")
-            let pad = (!allSpaces && edgy) ? " " : ""
-            result = "\(fence)\(pad)\(result)\(pad)\(fence)"
-        }
-        if marks.contains(where: { $0.type.name == "highlight" }) { result = "==\(result)==" }
-        if marks.contains(where: { $0.type.name == "strike" }) { result = "~~\(result)~~" }
-        if marks.contains(where: { $0.type.name == "bold" }) { result = "**\(result)**" }
-        if marks.contains(where: { $0.type.name == "italic" }) { result = "*\(result)*" }
-        if let link = marks.first(where: { $0.type.name == "link" }) {
-            let href = link.attrs["href"]?.stringValue ?? ""
-            if let title = link.attrs["title"]?.stringValue, !title.isEmpty {
-                let q = title.contains("\"") ? "'" : "\""
-                result = "[\(result)](\(destination(href)) \(q)\(titleText(title))\(q))"
-            } else {
-                result = "[\(result)](\(destination(href)))"
-            }
-        }
-        return result
     }
 }
 
@@ -1409,10 +1368,12 @@ public enum MarkdownParser {
                 var depth = 1
                 while i < lines.count {
                     let t = lines[i].trimmingCharacters(in: markdownSpaces).lowercased()
-                    if t.hasPrefix("<details") { depth += 1 }
-                    if t.hasPrefix("</details>") {
-                        depth -= 1
-                        if depth == 0 { i += 1; break }
+                    if indentWidth(lines[i]) < 4 {
+                        if t.hasPrefix("<details") { depth += 1 }
+                        if t.hasPrefix("</details>") {
+                            depth -= 1
+                            if depth == 0 { i += 1; break }
+                        }
                     }
                     inner.append(lines[i]); i += 1
                 }
@@ -1573,7 +1534,19 @@ public enum MarkdownParser {
                 }
                 let inner = try parseNested(quote.joined(separator: "\n"), schema: schema, definitions: definitions,
                                             depth: depth + 1)
-                if let bq = try? schema.node("blockquote", [:], content: inner.content) { blocks.append(bq) }
+                // Checked, not just created: `create` takes whatever it is given,
+                // so a quote holding something this schema won't allow inside one
+                // — a heading, a list, a nested quote — sailed through here and
+                // only failed at the document's own `check()`, throwing away the
+                // whole parse. A quote that can't be built degrades to its own
+                // contents, which is what every other block here does and what
+                // the HTML parser already did for the same input.
+                if let bq = try? schema.nodeType("blockquote")
+                    .createChecked([:], content: inner.content) {
+                    blocks.append(bq)
+                } else {
+                    blocks.append(contentsOf: (0..<inner.childCount).map { inner.child($0) })
+                }
                 continue
             }
             // Lists
@@ -1642,7 +1615,8 @@ public enum MarkdownParser {
         // the paragraph built around it would be invalid. Fit the blocks the
         // same way the HTML parser does rather than returning something the
         // editor can't use.
-        var fitted = fitContent(blocks, into: schema.topNodeType, schema: schema)
+        var fitted = conformMarks(fitContent(blocks, into: schema.topNodeType, schema: schema),
+                                  in: schema.topNodeType)
         if fitted.isEmpty, let p = schema.nodes["paragraph"]?.createAndFill() { fitted = [p] }
         let doc = try schema.node("doc", [:], content: Fragment.from(fitted))
         // `create` computes attributes but doesn't check content, so without
@@ -2014,16 +1988,6 @@ public enum MarkdownParser {
             .trimmingCharacters(in: markdownSpaces))
     }
 
-    /// The contents of a line that is nothing but a quoted title.
-    private static func titleOnly(_ s: String) -> String? {
-        let t = s.trimmingCharacters(in: markdownSpaces)
-        for (open, close) in [("\"", "\""), ("'", "'"), ("(", ")")]
-        where t.hasPrefix(open) && t.hasSuffix(close) && t.count >= 2 {
-            return String(t.dropFirst().dropLast())
-        }
-        return nil
-    }
-
     /// Whether a line begins a block of its own, rather than continuing the
     /// paragraph above it. Shared by the paragraph gather and by a blockquote's
     /// lazy continuation, so the two always agree on where a paragraph ends.
@@ -2048,16 +2012,24 @@ public enum MarkdownParser {
                 if column < alignments.count, let align = alignments[column] {
                     attrs["align"] = .string(align)
                 }
-                guard let paragraph = try? schema.node("paragraph", [:], content: Fragment.from(inline)),
-                      let cell = try? schema.node(cellType, attrs, content: Fragment.from([paragraph]))
+                // Checked, not just created: `create` takes whatever it is
+                // given, so an unchecked build of a shape this schema can't
+                // hold would sail past the guards below and only fail at the
+                // document's own `check()` — throwing away the whole parse
+                // instead of degrading to the paragraphs the lines look like.
+                guard let paragraph = try? schema.nodeType("paragraph")
+                        .createChecked([:], content: Fragment.from(inline)),
+                      let cell = try? schema.nodeType(cellType)
+                        .createChecked(attrs, content: Fragment.from([paragraph]))
                 else { return nil }
                 cellNodes.append(cell)
             }
-            guard let row = try? schema.node("tableRow", [:], content: Fragment.from(cellNodes))
+            guard let row = try? schema.nodeType("tableRow")
+                .createChecked([:], content: Fragment.from(cellNodes))
             else { return nil }
             rowNodes.append(row)
         }
-        return try? schema.node("table", [:], content: Fragment.from(rowNodes))
+        return try? schema.nodeType("table").createChecked([:], content: Fragment.from(rowNodes))
     }
 
     /// A pipe-table row's cells, split on the "|" that aren't escaped.
@@ -3678,24 +3650,6 @@ public enum MarkdownParser {
             let run = runLength(bytes, i, tick)
             if run == length { return i }
             i += run
-        }
-        return nil
-    }
-
-    /// The start of the next run of `byte` at least `length` long that can close
-    /// emphasis, skipping escaped delimiters.
-    private static func findClosingRun(_ bytes: [UInt8], _ from: Int,
-                                       _ byte: UInt8, _ length: Int) -> Int? {
-        var i = from
-        while i < bytes.count {
-            if bytes[i] == UInt8(ascii: "\\") { i += 2; continue }
-            if bytes[i] == byte {
-                let run = runLength(bytes, i, byte)
-                if run >= length, flanking(bytes, i, i + run).canClose { return i }
-                i += run
-                continue
-            }
-            i += 1
         }
         return nil
     }
