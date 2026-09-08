@@ -99,13 +99,27 @@ build a figure or a footnote, while the corpus was full of them.
 
 Layout geometry (`GeometryFuzzTests`: caret rects, hit testing, vertical
 movement) and the `UITextInput` surface (`TextInputFuzzTests`) are iOS-only, and
-gated by a *compilation condition* rather than an environment variable —
-xcodebuild's `TEST_RUNNER_` prefix doesn't reach an SPM scheme's test runner.
-The condition compiles both in; drop the `-only-testing:` to run them together:
+gated by a *compilation condition* rather than an environment variable. The
+condition compiles both in; drop the `-only-testing:` to run them together:
 
 ```sh
 xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests/GeometryFuzzTests -destination 'platform=iOS Simulator,name=iPhone 17 Pro' SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ'
 ```
+
+**These deepen too.** A plain environment variable doesn't survive the trip into
+the simulator, but xcodebuild's `TEST_RUNNER_` prefix does reach an SPM scheme's
+test runner, with the prefix stripped — `TEST_RUNNER_PROSEKIT_FUZZ_DOCS=250`
+arrives as `PROSEKIT_FUZZ_DOCS=250`, and `FuzzViews` builds its corpus through
+the same `Sources/TestDocGen` the headless sweeps use, so the knob lands:
+
+```sh
+TEST_RUNNER_PROSEKIT_FUZZ_DOCS=250 xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests/GeometryFuzzTests -destination 'platform=iOS Simulator,name=iPhone 17 Pro' SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ'
+```
+
+Worth doing, and cheap — the corpus defaults to 8 documents, and 250 of them
+costs seconds. `testCaretsAdvanceAcrossALine` fails only past about 100: two
+positions on one line drawn in the wrong order, which nothing at the default
+depth sees.
 
 `PROSEKIT_TEST_FILTER=<substring>` narrows any headless suite to matching cases.
 
@@ -131,7 +145,7 @@ PROSEKIT_BENCH=1 swift run -c release DocumentModelTests
 PROSEKIT_BENCH=1 swift run -c release EditorStateKitTests
 ```
 
-The renderer's are compiled out instead, for the same `TEST_RUNNER_` reason as
+The renderer's are compiled out instead, the same way as
 the geometry fuzzer, and want the optimizer turned on explicitly. There are
 four, and they split the paint path between them: `RealizeBench` (what
 `DocumentLayout.realize` costs per paint), `DrawBench` (what `draw(in:clipY:)`
