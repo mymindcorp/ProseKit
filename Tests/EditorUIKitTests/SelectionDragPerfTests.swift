@@ -33,31 +33,48 @@ final class SelectionDragPerfTests: XCTestCase {
         return v
     }
 
-    /// Per-step cost of a handle drag over the first ~430 steps, best of a few
-    /// runs so a scheduler hiccup doesn't decide the outcome.
-    private func dragStepMs(_ v: EditorTextView) -> Double {
-        var best = Double.infinity
-        for _ in 0 ..< 3 {
-            let t = CFAbsoluteTimeGetCurrent()
-            var steps = 0
-            for head in stride(from: 2, to: 3000, by: 7) {
-                v.selectedTextRange = DocTextRange(1, head)
-                steps += 1
-            }
-            best = min(best, (CFAbsoluteTimeGetCurrent() - t) * 1000 / Double(steps))
+    /// Per-step cost of one pass of a handle drag over the first ~430 steps.
+    private func dragStepPass(_ v: EditorTextView) -> Double {
+        let t = CFAbsoluteTimeGetCurrent()
+        var steps = 0
+        for head in stride(from: 2, to: 3000, by: 7) {
+            v.selectedTextRange = DocTextRange(1, head)
+            steps += 1
         }
-        return best
+        return (CFAbsoluteTimeGetCurrent() - t) * 1000 / Double(steps)
     }
 
     func testDragStepCostDoesNotGrowWithTheDocument() {
-        let small = dragStepMs(bigView(100))
-        let large = dragStepMs(bigView(3200))
+        // Both views exist before either is measured, so the large document's
+        // allocation is not charged to the large document's timings.
+        let smallView = bigView(100)
+        let largeView = bigView(3200)
+        _ = dragStepPass(smallView) // warm the caches a first pass populates
+        _ = dragStepPass(largeView)
+
+        // Measured in alternating rounds rather than one side and then the
+        // other, each side keeping its cheapest round. A shared CI runner's
+        // contention comes and goes and can only ever make a round *dearer*, so
+        // the cheapest round is the best estimate of what a step really costs —
+        // and alternating gives both documents the same chance at a quiet one.
+        // (Timing all of the small passes first, as this did, let a runner that
+        // got busy halfway through compare a quiet small against a contended
+        // large, which is how a ratio test fails on a machine that has not
+        // regressed at all.)
+        var small = Double.infinity, large = Double.infinity
+        for _ in 0 ..< 5 {
+            small = min(small, dragStepPass(smallView))
+            large = min(large, dragStepPass(largeView))
+        }
         print(unsafe "DRAGSTEP small=\(String(format: "%.4f", small))ms "
             + "large=\(String(format: "%.4f", large))ms")
         // Ratio with a floor, as the scroll perf tests do: the claim is that a
         // 32× document does not make a drag step meaningfully dearer, not that
-        // two tiny numbers are identical.
-        XCTAssertLessThan(large, small * 3 + 0.05,
+        // two tiny numbers are identical. The floor is generous enough to cover
+        // the fixed per-step work on a slow, contended runner (~0.18ms a step
+        // has been seen on CI) while staying far below the ~1ms/step the walk
+        // this pins cost at 3200 paragraphs.
+        XCTAssertLessThan(large, small * 3 + 0.2,
                           "a selection drag step got more expensive as the document grew")
     }
 }
