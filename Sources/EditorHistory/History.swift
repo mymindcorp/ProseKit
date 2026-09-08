@@ -32,6 +32,21 @@ struct HistoryItem {
 
     /// Merge with a newer step item that doesn't start an event (upstream
     /// Item.merge) — used by compression to collapse adjacent typing steps.
+    ///
+    /// The argument order matters and is not symmetric: `self` is the *older*
+    /// item, `other` the newer one directly after it. Three things depend on
+    /// that. A branch's steps are the *inverses*, replayed newest-first, so the
+    /// combined step is `other` applied before `self` — which is why the call
+    /// below is `otherStep.merge(step)`, matching `ReplaceStep.merge`'s "self
+    /// applied first, then other" contract. The merged item inherits the older
+    /// item's position in the branch, so it keeps `self`'s selection. And it
+    /// may only swallow `other` if `other` doesn't start an event, or two
+    /// events would collapse into one.
+    ///
+    /// Upstream's `compress` passes these the other way round (its `addTransform`
+    /// gets it right, which is why the bug hides in the collab-only path). That
+    /// scrambles a merged run: for three deletes at one spot it undoes "abcde"
+    /// to "abdce".
     func merge(_ other: HistoryItem) -> HistoryItem? {
         guard let step, let otherStep = other.step, other.selection == nil,
               let merged = otherStep.merge(step) else { return nil }
@@ -231,7 +246,13 @@ struct Branch {
                     let selection = item.selection.map { $0.map(remap.slice(mapFrom)) }
                     if selection != nil { events += 1 }
                     let newItem = HistoryItem(map: map!.invert(), step: step, selection: selection)
-                    if let last = newItems.last, let merged = last.merge(newItem) {
+                    // `newItem` is the older of the two: this walks the branch
+                    // backwards, so whatever is already at the end of
+                    // `newItems` was appended from a higher index. `merge`
+                    // wants the older one as its receiver — upstream calls it
+                    // the other way round here (see the note on
+                    // `HistoryItem.merge`).
+                    if let last = newItems.last, let merged = newItem.merge(last) {
                         newItems[newItems.count - 1] = merged
                     } else {
                         newItems.append(newItem)
@@ -429,6 +450,13 @@ public let redo: @Sendable (EditorState, ((Transaction) -> Void)?) -> Bool = { s
 public func _compressHistory(_ state: EditorState) {
     guard let hist = historyKey.getState(state) else { return }
     hist.done = hist.done.compress()
+}
+
+/// The number of items on the undo branch — steps plus the map-only entries
+/// remote changes leave behind. Not a user-facing measure (that is `undoDepth`);
+/// it exists so tests can see what compression actually collapsed.
+public func _undoItemCount(_ state: EditorState) -> Int {
+    historyKey.getState(state)?.done.items.count ?? 0
 }
 
 /// The number of undoable events.

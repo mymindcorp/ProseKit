@@ -89,6 +89,61 @@ func registerHistoryFuzzTests() {
         }
     }
 
+    test("history fuzz: compressing the undo branch doesn't change what undo does") {
+        // Compression is a *rewrite* of the undo branch: it drops the map-only
+        // items remote changes leave behind, remaps the steps through them, and
+        // merges whatever ends up adjacent. All of that is supposed to be
+        // invisible — the same undos, giving back the same documents.
+        //
+        // It wasn't. `Branch.compress` merged adjacent items in forward order
+        // when a branch replays its steps newest-first, so a merged run came
+        // back scrambled: three deletes at one spot undid "abcde" to "abdce".
+        // Every history property above still held, because they all ran on
+        // *uncompressed* branches — nothing compared the two.
+        //
+        // Compression isn't opt-in in production either: `Branch.rebased` runs
+        // it once 500 remote changes have piled up, so this is a long
+        // collaborative session plus a held Delete key.
+        //
+        // Both walks start from one saved `EditorState`, rather than replaying
+        // the session twice: undo builds a fresh `HistoryState` instead of
+        // touching the one it read, so the saved state can be undone, then
+        // compressed, then undone again.
+        //
+        // And no `closeHistory` here, unlike the sweeps above — this one wants
+        // ops to *group*, because items within one event are what merge.
+        var collapsed = 0
+        for seed in 1 ... fuzzOpSeeds {
+            var rng = SelRNG(seed &* 17 &+ 9)
+            let editor = try Editor(extensions: fuzzKit())
+            var log: [String] = []
+            for _ in 0 ..< fuzzOpHistoryCount { log.append(fuzzStep(editor, &rng)) }
+            let saved = editor.state
+            let ctx = "seed \(seed) — \(log.suffix(4).joined(separator: " | "))"
+
+            let plainItems = _undoItemCount(saved)
+            let plain = try undoAll(saved, ctx)
+
+            _compressHistory(saved)
+            collapsed += plainItems - _undoItemCount(saved)
+            let packed = try undoAll(saved, ctx)
+
+            try expect(plain.last == packed.last,
+                       "undoing everything landed somewhere else after compression — \(ctx)")
+            let a = squashed(plain), b = squashed(packed)
+            try expect(a.count == b.count,
+                       "compression changed how many documents the undos walk through: \(a.count) became \(b.count) — \(ctx)")
+            for (i, (x, y)) in zip(a, b).enumerated() {
+                try expect(x == y, "undo landed on a different document at position \(i) after compression — \(ctx)")
+            }
+        }
+        // An invariant nothing can break asserts nothing: had compression never
+        // merged an item, every comparison above would be between two branches
+        // that were already identical.
+        try expect(collapsed > 0,
+                   "compression didn't collapse a single item across \(fuzzOpSeeds) sessions — the property never ran")
+    }
+
     test("history fuzz: the selection undo restores is one the document can hold") {
         // Undo puts back the selection the event was made at, mapped through
         // everything since. That selection is resolved against a document that
@@ -124,3 +179,34 @@ func registerHistoryFuzzTests() {
 /// redo, and the default history depth is 100 events — a longer run would start
 /// dropping the oldest ones and the round-trip would stop being a round-trip.
 let fuzzOpHistoryCount = 40
+
+/// Undo `state` to the bottom of its branch, returning the document at the
+/// start and after every undo.
+private func undoAll(_ state: EditorState, _ ctx: String) throws -> [Node] {
+    var s = state
+    var docs = [s.doc]
+    while undoDepth(s) > 0 {
+        try expect(docs.count <= fuzzOpHistoryCount * 4, "undo isn't terminating at \(ctx)")
+        var next: EditorState?
+        guard undo(s, { tr in next = s.apply(tr) }), let n = next else { break }
+        s = n
+        docs.append(s.doc)
+    }
+    return docs
+}
+
+/// A document trail with consecutive repeats removed.
+///
+/// The counts themselves are allowed to differ, and legitimately do: an item
+/// whose step no longer maps onto the document is dropped by compression along
+/// with the event it started, while an uncompressed branch keeps that event and
+/// spends an undo on it. That undo moves nothing — it only restores a
+/// selection — so it shows up here as a repeated document rather than as a
+/// different one. What may not differ is the sequence of documents the user
+/// actually sees, which is what this compares. (That asymmetry is upstream's
+/// and predates the merge-order fix; it is not what this property is hunting.)
+private func squashed(_ docs: [Node]) -> [Node] {
+    var out: [Node] = []
+    for d in docs where out.last != d { out.append(d) }
+    return out
+}
