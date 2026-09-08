@@ -49,7 +49,7 @@ func registerTaskSortFuzzTests() {
                         let c = listBefore.child(i).attrs["checked"]?.boolValue ?? false
                         if c { seenChecked = true } else if seenChecked { sortedBefore = false }
                     }
-                    let itemsBefore = taskItems(in: before)
+                    let itemsBefore = taskItemsOwnText(in: before)
                     let tr = editor.state.tr
                     _ = try? tr.setNodeAttribute(pos, "checked", .bool(!wasChecked))
                     editor.dispatch(tr)
@@ -59,10 +59,10 @@ func registerTaskSortFuzzTests() {
                     // Nothing lost, nothing invented: the same items, with one
                     // flag flipped.
                     var expected = itemsBefore
-                    if let i = expected.firstIndex(of: "\(wasChecked)|\(node.textContent)") {
-                        expected[i] = "\(!wasChecked)|\(node.textContent)"
+                    if let i = expected.firstIndex(of: "\(wasChecked)|\(taskItemOwnText(node))") {
+                        expected[i] = "\(!wasChecked)|\(taskItemOwnText(node))"
                     }
-                    try expectEqual(taskItems(in: editor.doc).sorted(), expected.sorted(), "the set of items changed — \(ctx)")
+                    try expectEqual(taskItemsOwnText(in: editor.doc).sorted(), expected.sorted(), "the set of items changed — \(ctx)")
                     try expectEqual(editor.doc.content.size, before.content.size, "the document changed size — \(ctx)")
 
                     if !wasChecked {
@@ -99,7 +99,7 @@ func registerTaskSortFuzzTests() {
                         if sortedBefore {
                             try expect(editor.doc == before, "check then uncheck didn't restore the document — \(ctx)\n  before:\n\(fuzzOutline(before))  after:\n\(fuzzOutline(editor.doc))")
                         } else {
-                            try expectEqual(taskItems(in: editor.doc).sorted(), itemsBefore.sorted(), "check then uncheck changed the set of items — \(ctx)")
+                            try expectEqual(taskItemsOwnText(in: editor.doc).sorted(), itemsBefore.sorted(), "check then uncheck changed the set of items — \(ctx)")
                         }
                     }
                 }
@@ -172,11 +172,35 @@ private func taskItemPositions(_ doc: Node) -> [Int] {
 }
 
 /// Every task item as "checked|text", so a sort can be checked as a permutation.
-private func taskItems(in doc: Node) -> [String] {
+///
+/// The text is the item's *own*: `textContent` on a task item is the text of
+/// everything below it, a nested list's items included, so an item holding a
+/// sublist reads as its children concatenated. Sorting that sublist — the whole
+/// feature — then reorders the ancestor's aggregated text without touching a
+/// single item, which this sweep read as content moving between items and
+/// reported as the sort editing an item's insides. `TaskSort`'s "a nested sort
+/// moves whole items" is that case, reduced.
+///
+/// Own text also says more than the aggregate: text moved out of a nested item
+/// into its parent leaves the aggregate identical and changes both own texts.
+func taskItemsOwnText(in doc: Node) -> [String] {
     var out: [String] = []
     doc.descendants { node, _, _, _ in
-        if node.type.name == "taskItem" { out.append("\(node.attrs["checked"]?.boolValue ?? false)|\(node.textContent)") }
+        if node.type.name == "taskItem" {
+            out.append("\(node.attrs["checked"]?.boolValue ?? false)|\(taskItemOwnText(node))")
+        }
         return true
     }
     return out
+}
+
+/// One item's text, stopping at any list nested inside it.
+func taskItemOwnText(_ item: Node) -> String {
+    var text = ""
+    item.descendants { node, _, _, _ in
+        if node.type.name == "taskList" { return false }
+        if let t = node.text { text += t }
+        return true
+    }
+    return text
 }

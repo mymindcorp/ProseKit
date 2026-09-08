@@ -225,6 +225,51 @@ func registerTaskSortTests() {
         try expectEqual(checks(editor).filter { $0 }.count, 2, "only A and a1 are checked")
     }
 
+    test("task sort: a nested sort moves whole items, and only the parent's text reads reordered") {
+        // The reduction of a task-sort fuzz failure that looked like the sort
+        // editing the *inside* of an item: after one check, an item's text went
+        // from "ab🙂" to "🙂ab". It was neither the sort nor the emoji.
+        //
+        // `textContent` on a task item is the text of everything below it,
+        // including the items of a nested list. So reordering a nested list —
+        // which is the whole feature — legitimately reorders the aggregated
+        // text of the *ancestor* item, while every item's own text is untouched.
+        // A sweep that identified items by `textContent` read that as content
+        // being shuffled between items and failed. It now compares own text,
+        // which is what this pins down.
+        let editor = try Editor(extensions: fullKit(
+            taskListOptions: TaskListOptions(sortCompletedToBottom: true)))
+        try editor.setContent(html: """
+        <ul data-type="taskList">\
+        <li data-type="taskItem" data-checked="false"><p>parent</p>\
+        <ul data-type="taskList">\
+        <li data-type="taskItem" data-checked="false"><p></p></li>\
+        <li data-type="taskItem" data-checked="false"><p>🙂</p></li>\
+        </ul></li>\
+        </ul>
+        """)
+        // One insert, into the empty nested item — a multi-byte neighbour is
+        // what made this look like position arithmetic.
+        let tr = editor.state.tr
+        try tr.insertText("ab", itemPos(editor, 1) + 2)
+        editor.dispatch(tr)
+        try expectEqual(taskItemsOwnText(in: editor.doc), ["false|parent", "false|ab", "false|🙂"])
+
+        let before = editor.doc
+        setChecked(editor, 1, true)     // the "ab" item sinks below "🙂"
+        try expectEqual(taskItemsOwnText(in: editor.doc), ["false|parent", "false|🙂", "true|ab"],
+                        "whole items moved; no item's own text changed")
+        try expectEqual(editor.doc.content.size, before.content.size, "the sort neither added nor removed content")
+        // And the thing that fooled the sweep: the parent aggregates its
+        // children, so its `textContent` really does read differently.
+        try expectEqual(texts(editor)[0], "parent🙂ab")
+        try expectEqual(before.firstChild?.child(0).textContent, "parentab🙂")
+
+        // Unchecking sends it home, and the document comes back exactly.
+        setChecked(editor, 2, false)
+        try expect(editor.doc == before, "check then uncheck didn't restore the document")
+    }
+
     test("task sort: sorting an outer list carries the inner sort with it") {
         let editor = try nestedEditor()
         setChecked(editor, 1, true)     // a1, inside A
