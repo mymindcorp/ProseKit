@@ -213,3 +213,71 @@ private func conformed(_ node: Node, in container: NodeType) -> Node {
     }
     return result
 }
+
+// MARK: - Degrading to a paragraph
+
+// A schema decides which nodes exist, and one that ships no `heading` or no
+// `codeBlock` is an ordinary configuration rather than a broken one. What it
+// must not mean is that the words disappear.
+//
+// They did. `schema.node(_:)` throws for a type the schema doesn't declare, and
+// every heading and code-block build site in the Markdown and HTML parsers sat
+// inside a `textblockSplittingBlocks` wrap closure — whose nil return drops the
+// run it was called with. So against a schema with no `heading`, "# Title"
+// parsed to nothing at all: no heading, and no title either. Six combinations
+// of parser and missing node behaved that way.
+//
+// The RTF parser and the Apple Notes importer already kept the text and
+// degraded to a paragraph, so the intended behaviour was settled; these are the
+// helpers that let the other two spell it the same way once each rather than at
+// every site.
+
+/// A paragraph holding `content`, or nil for a schema without one.
+///
+/// The bottom of every degrade here. A schema with no `paragraph` is out of
+/// scope — `fitContent` and the parsers' own empty-document fallbacks already
+/// assume one — so nil means the caller should keep whatever it had.
+func degradedParagraph(_ content: Fragment, schema: Schema) -> Node? {
+    guard let type = schema.nodes["paragraph"] else { return nil }
+    return (try? type.createChecked([:], content: content))
+        ?? type.createAndFill([:], content: content)
+}
+
+/// `inline` as blocks of type `name`, or as paragraphs carrying the same words
+/// when the schema has no such node.
+///
+/// Splitting around block-level nodes is `textblockSplittingBlocks`'s job and is
+/// unchanged; this only decides what each run is wrapped in. Building with
+/// `create` rather than `createChecked` is deliberate: it is what these sites
+/// already did, so nothing changes for a schema that *has* the node.
+func textblocks(_ inline: [Node], as name: String, _ attrs: Attrs = [:], schema: Schema) -> [Node] {
+    let type = schema.nodes[name]
+    return textblockSplittingBlocks(inline) { run in
+        let content = Fragment.from(run)
+        if let type, let node = try? type.create(attrs, content: content) { return node }
+        return degradedParagraph(content, schema: schema)
+    }
+}
+
+/// A code block holding `text`, or — for a schema with no `codeBlock` — one
+/// paragraph per line of it.
+///
+/// Per line, because that is the shape the lines already had and what the RTF
+/// parser settled on for the same input. Folding them into a single paragraph
+/// would leave newlines inside a text node, which every other route into the
+/// model spells as separate blocks.
+func codeBlocks(_ text: String, _ attrs: Attrs = [:], schema: Schema) -> [Node] {
+    let content = text.isEmpty ? Fragment.empty : Fragment.from([schema.text(text)])
+    if let type = schema.nodes["codeBlock"], let node = try? type.create(attrs, content: content) {
+        return [node]
+    }
+    // An empty code block still stood for something; keep an empty paragraph so
+    // it doesn't silently vanish.
+    guard !text.isEmpty else {
+        return degradedParagraph(.empty, schema: schema).map { [$0] } ?? []
+    }
+    return text.split(separator: "\n", omittingEmptySubsequences: false).compactMap { line in
+        degradedParagraph(line.isEmpty ? .empty : Fragment.from([schema.text(String(line))]),
+                          schema: schema)
+    }
+}
