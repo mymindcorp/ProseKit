@@ -26,6 +26,35 @@ import TestHarness
 //
 // Opt-in for the same reason as the selection sweeps; see `SelectionFuzz`.
 func registerSuggestionFuzzTests() {
+    // Pinned out of the sweep below, and run whether or not the sweep is: the
+    // seed that found it is deterministic, and the shape it needs — a change
+    // whose range crosses two cells of a table whose own insertion is still
+    // only suggested — takes twenty-five generated edits to reach, so nothing
+    // hand-written stands in for it.
+    test("suggestion: a reject that reports success moves the document") {
+        var rng = SelRNG(50 &* 37 &+ 17)
+        let editor = try suggestionFuzzEditor()
+        editor.dispatch(setSuggestionMode(editor.state.tr, enabled: true))
+        for _ in 0 ..< fuzzSuggestionOps { _ = fuzzStep(editor, &rng) }
+        var declined = Set<Int>()
+        while suggestionChanges(editor).count > declined.count {
+            let count = suggestionChanges(editor).count
+            guard let index = (0 ..< count).shuffled(using: &rng).first(where: { !declined.contains($0) })
+            else { break }
+            let before = editor.doc
+            if editor.run(rejectSuggestion(index)) {
+                // Reverting a range the editor puts straight back — `fixTables`
+                // replaces the cell the reject deleted — used to report success
+                // and leave the note untouched, so the suggestion stayed on
+                // screen and clicking reject again did nothing again.
+                try expect(editor.doc != before, "a reject reported success and changed nothing")
+                declined = []
+            } else {
+                declined.insert(index)
+            }
+        }
+    }
+
     guard ProcessInfo.processInfo.environment["PROSEKIT_FUZZ"] != nil else { return }
 
     test("suggestion fuzz: rejecting every suggestion restores the document") {
