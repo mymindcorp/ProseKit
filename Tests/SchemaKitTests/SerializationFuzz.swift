@@ -84,6 +84,33 @@ func registerSerializationFuzzTests() {
         }
     }
 
+    test("serialization fuzz: HTML keeps every node a document was built from") {
+        // Stronger than "the text survives", and weaker than equality: HTML is
+        // the clipboard format, so what it may lose is an attribute Markdown
+        // has no word for, not a *node*. A dropped wrapper is a figure that
+        // came back as a loose image and a stray paragraph; an invented one is
+        // a bullet list that pasted back as a checklist.
+        //
+        // Compared as a multiset of type names, so nothing here asserts an
+        // order the serializer never promised, and attribute drift — a loose
+        // list of empty items reading back tight — stays out of it.
+        let schema = try fuzzSchema()
+        for (seed, doc) in fuzzCorpus(schema, count: 40) {
+            let html = HTMLSerializer.serialize(doc)
+            let back = try HTMLParser.parse(html, schema: schema)
+            let before = nodeCensus(doc), after = nodeCensus(back)
+            guard before != after else { continue }
+            let dropped = before.filter { after[$0.key, default: 0] < $0.value }
+                .map { "\($0.key) \($0.value)→\(after[$0.key, default: 0])" }
+            let invented = after.filter { before[$0.key, default: 0] < $0.value }
+                .map { "\($0.key) \(before[$0.key, default: 0])→\($0.value)" }
+            try expect(false, "HTML changed which nodes the document has at \(seed)"
+                + "\n  dropped: \(dropped.sorted().joined(separator: ", "))"
+                + "\n  invented: \(invented.sorted().joined(separator: ", "))"
+                + "\n  via: \(html.debugDescription)")
+        }
+    }
+
     test("serialization fuzz: a document's text survives HTML and Markdown") {
         // Formatting is allowed to be lost. Words are not — that is the line
         // between "this export doesn't carry underlines" and "this export ate a
@@ -114,6 +141,17 @@ private func checkParsed(_ doc: Node, schema: Schema, source: String, what: Stri
     try expect(invalid == nil,
                "\(what) parsed into an invalid document at \(seed): \(invalid.map { "\($0)" } ?? "")\n  \(source.debugDescription)")
     for pos in 0 ... doc.content.size { _ = doc.resolve(pos) }
+}
+
+/// How many of each node type a document holds, text nodes aside — those split
+/// and join freely as marks change and say nothing about structure.
+private func nodeCensus(_ doc: Node) -> [String: Int] {
+    var counts: [String: Int] = [:]
+    doc.descendants { node, _, _, _ in
+        if !node.isText { counts[node.type.name, default: 0] += 1 }
+        return true
+    }
+    return counts
 }
 
 /// The characters actually in text nodes.

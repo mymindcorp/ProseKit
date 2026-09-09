@@ -573,7 +573,7 @@ public enum HTMLParser {
     public static let maxNestingDepth = 256
 
     public static func parse(_ html: String, schema: Schema, config: HTMLConfig = .default) throws -> Node {
-        let tokens = inlineClassStyles(tokenize(html))
+        let tokens = closeImpliedElements(inlineClassStyles(tokenize(html)))
         if let depth = excessiveNestingDepth(tokens[...]) {
             throw HTMLParseError.nestingTooDeep(depth: depth, limit: maxNestingDepth)
         }
@@ -632,9 +632,20 @@ public enum HTMLParser {
         "head", "style", "script", "title", "noscript", "colgroup",
         "iframe", "frame", "frameset", "object", "embed", "applet", "svg", "template",
     ]
+    /// The block-level elements, which is how a `<div>` decides whether what it
+    /// holds is blocks or a run of text.
+    ///
+    /// It has to name every one of them: a tag missing here sends the div's
+    /// content through `parseInline`, which keeps an element's text and drops
+    /// the element — so `<div><figure><img><figcaption>cap</figcaption></figure></div>`
+    /// came back as a bare image and a loose paragraph, the figure gone. That
+    /// div is one we write ourselves (`data-type="detailsContent"`), so a
+    /// figure inside a disclosure section did not survive its own round-trip.
     private static let blockTags: Set<String> = [
         "p", "div", "ul", "ol", "li", "table", "tr", "td", "th", "tbody", "thead", "tfoot",
         "blockquote", "pre", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article",
+        "figure", "figcaption", "details", "summary", "dl", "dt", "dd", "caption",
+        "header", "footer", "main", "nav", "aside", "address", "fieldset", "form", "hgroup",
     ]
 
     private static func containsBlockTag(_ tokens: Tokens) -> Bool {
@@ -935,13 +946,9 @@ public enum HTMLParser {
         let isTask = attrs["data-type"] == "taskList" || listLooksLikeTasks(tokens, start, end)
         if isTask, let listType = schema.nodes["taskList"], schema.nodes["taskItem"] != nil {
             var items: [Node] = []
-            var i = start + 1
-            while i < end {
-                if case let .open(t, liAttrs, _) = tokens[i], t == "li" {
-                    let liEnd = matchingClose(tokens, i, "li")
-                    if let item = parseTaskItem(tokens, i, liEnd, liAttrs, schema, config) { items.append(item) }
-                    i = liEnd + 1
-                } else { i += 1 }
+            for (open, close) in directItems(tokens, start, end) {
+                guard case let .open(_, liAttrs, _) = tokens[open] else { continue }
+                if let item = parseTaskItem(tokens, open, close, liAttrs, schema, config) { items.append(item) }
             }
             if !items.isEmpty, let n = try? listType.createChecked(idAttrs(attrs, "taskList", schema, config), content: Fragment.from(items)) { return [n] }
         }
@@ -1005,13 +1012,23 @@ public enum HTMLParser {
         var summaryAttrs: [String: String] = [:]
         var bodyTokens: [Token] = []
         var i = start + 1
+        // A `<summary>` belongs to the `<details>` it is a child of. Taking the
+        // first one anywhere under this element meant a section with no summary
+        // of its own stole the one out of a section nested inside it — and left
+        // that one blank.
+        var nested = 0
         while i < end {
-            if case let .open(t, sAttrs, selfClosing) = tokens[i], t == "summary", !selfClosing, summaryTokens.isEmpty {
-                let sEnd = matchingClose(tokens, i, "summary")
-                summaryTokens = tokens[(i + 1)..<max(i + 1, min(sEnd, end))]
-                summaryAttrs = sAttrs
-                i = min(sEnd, end) + 1
-                continue
+            if case let .open(t, sAttrs, selfClosing) = tokens[i], !selfClosing {
+                if nested == 0, t == "summary", summaryTokens.isEmpty {
+                    let sEnd = matchingClose(tokens, i, "summary")
+                    summaryTokens = tokens[(i + 1)..<max(i + 1, min(sEnd, end))]
+                    summaryAttrs = sAttrs
+                    i = min(sEnd, end) + 1
+                    continue
+                }
+                if t == "details" { nested += 1 }
+            } else if case let .close(t) = tokens[i], t == "details" {
+                nested = max(0, nested - 1)
             }
             bodyTokens.append(tokens[i])
             i += 1
@@ -1045,13 +1062,25 @@ public enum HTMLParser {
     private static func parseTaskItem(_ tokens: Tokens, _ liStart: Int, _ liEnd: Int, _ liAttrs: [String: String], _ schema: Schema, _ config: HTMLConfig) -> Node? {
         guard let itemType = schema.nodes["taskItem"] else { return nil }
         var checked = liAttrs["data-checked"] == "true"
-        // Drop the checkbox <input> from the item's content, recording its state.
+        // Drop the checkbox <input> from the item's content, recording its
+        // state. Only the item's own checkbox: one belonging to a nested list's
+        // item is that item's, and taking it both checked this box and left the
+        // sub-list with nothing to recognize itself by.
         var inner: [Token] = []
+        var nested = 0
         var k = liStart + 1
         while k < liEnd {
-            if case let .open(t, a, _) = tokens[k], t == "input", (a["type"] ?? "") == "checkbox" {
-                if a["checked"] != nil { checked = true }
-                k += 1; continue
+            switch tokens[k] {
+            case let .open(t, a, selfClosing):
+                if nested == 0, t == "input", (a["type"] ?? "") == "checkbox" {
+                    if a["checked"] != nil { checked = true }
+                    k += 1
+                    continue
+                }
+                if !selfClosing, t == "ul" || t == "ol" { nested += 1 }
+            case let .close(t) where t == "ul" || t == "ol":
+                nested = max(0, nested - 1)
+            default: break
             }
             inner.append(tokens[k]); k += 1
         }
@@ -1066,14 +1095,53 @@ public enum HTMLParser {
         return itemType.createAndFill(a, content: Fragment.from(children))
     }
 
-    private static func listLooksLikeTasks(_ tokens: Tokens, _ start: Int, _ end: Int) -> Bool {
+    /// The `<li>` elements directly inside this list, as (open, close) index
+    /// pairs. A nested `<ul>`/`<ol>` is skipped whole: what a sub-list holds is
+    /// that list's business, and reading it as this one's made a bullet list
+    /// containing a checklist into a checklist.
+    private static func directItems(_ tokens: Tokens, _ start: Int, _ end: Int) -> [(open: Int, close: Int)] {
+        var items: [(open: Int, close: Int)] = []
         var i = start + 1
         while i < end {
-            if case let .open(t, a, _) = tokens[i] {
-                if t == "input", (a["type"] ?? "") == "checkbox" { return true }
-                if t == "li", a["data-checked"] != nil { return true }
+            guard case let .open(tag, _, selfClosing) = tokens[i] else { i += 1; continue }
+            if tag == "li" {
+                let close = selfClosing ? i : min(matchingClose(tokens, i, "li"), end)
+                items.append((i, close))
+                i = close + 1
+            } else if !selfClosing, tag == "ul" || tag == "ol" {
+                // A sub-list written outside an `<li>`, which is malformed but
+                // arrives all the same.
+                i = min(matchingClose(tokens, i, tag), end) + 1
+            } else {
+                i += 1
             }
-            i += 1
+        }
+        return items
+    }
+
+    /// Whether an item's *own* content holds a checkbox `<input>`. Content
+    /// inside a nested list belongs to that list's items, not to this one.
+    private static func hasItemCheckbox(_ tokens: Tokens, _ liStart: Int, _ liEnd: Int) -> Bool {
+        var nested = 0
+        var k = liStart + 1
+        while k < liEnd {
+            switch tokens[k] {
+            case let .open(t, a, selfClosing):
+                if nested == 0, t == "input", (a["type"] ?? "") == "checkbox" { return true }
+                if !selfClosing, t == "ul" || t == "ol" { nested += 1 }
+            case let .close(t) where t == "ul" || t == "ol":
+                nested = max(0, nested - 1)
+            default: break
+            }
+            k += 1
+        }
+        return false
+    }
+
+    private static func listLooksLikeTasks(_ tokens: Tokens, _ start: Int, _ end: Int) -> Bool {
+        for (open, close) in directItems(tokens, start, end) {
+            if case let .open(_, a, _) = tokens[open], a["data-checked"] != nil { return true }
+            if hasItemCheckbox(tokens, open, close) { return true }
         }
         return false
     }
@@ -1743,6 +1811,82 @@ public enum HTMLParser {
     }
 
     private static let voidTags: Set<String> = ["br", "hr", "img", "input", "col", "wbr", "source", "area", "meta", "link"]
+
+    // MARK: Implied end tags
+
+    /// The elements HTML lets an author leave the end tag off: the next one of
+    /// its kind, or the end of its parent, closes it.
+    private static let impliedEndTags: Set<String> = [
+        "p", "li", "dt", "dd", "td", "th", "tr", "tbody", "thead", "tfoot", "option",
+    ]
+
+    /// Which open elements a start tag closes before it opens.
+    ///
+    /// Only elements at the same level: the walk stops at the first open tag
+    /// this one doesn't close, so a `<li>` closes the item above it and never
+    /// reaches through the `<ul>` its parent item holds.
+    private static func impliedCloses(_ tag: String, _ open: String) -> Bool {
+        switch tag {
+        case "li": return open == "li"
+        case "dt", "dd": return open == "dt" || open == "dd"
+        case "td", "th": return open == "td" || open == "th"
+        case "tr": return open == "td" || open == "th" || open == "tr"
+        case "tbody", "thead", "tfoot":
+            return open == "td" || open == "th" || open == "tr"
+                || open == "tbody" || open == "thead" || open == "tfoot"
+        case "option": return open == "option"
+        default: return false
+        }
+    }
+
+    /// A `<p>` is closed by any block-level element opening inside it, which is
+    /// most of how the tag gets left off in practice: `<p>one<p>two`.
+    private static func closesParagraph(_ tag: String) -> Bool {
+        blockTags.contains(tag) || impliedEndTags.contains(tag)
+    }
+
+    /// Write the end tags the author was allowed to leave out.
+    ///
+    /// `<ul><li>a<li>b</ul>` and `<table><tr><td>a<td>b</table>` are ordinary
+    /// HTML — the spec closes each item and cell when the next one opens. This
+    /// parser reads structure off the token stream, where an unclosed `<li>`
+    /// simply runs to the end of its list, so both of those came back *nested*:
+    /// one item holding a sub-list, one cell holding a whole table.
+    ///
+    /// Purely additive — it inserts `.close` tokens and changes nothing else —
+    /// so markup that closes its own tags comes through untouched.
+    private static func closeImpliedElements(_ tokens: [Token]) -> [Token] {
+        var out: [Token] = []
+        out.reserveCapacity(tokens.count)
+        var open: [String] = []
+        for token in tokens {
+            switch token {
+            case let .open(tag, _, selfClosing):
+                while let top = open.last, impliedCloses(tag, top) || (top == "p" && closesParagraph(tag)) {
+                    out.append(.close(tag: top))
+                    open.removeLast()
+                }
+                out.append(token)
+                if !selfClosing { open.append(tag) }
+            case let .close(tag):
+                // Everything still open inside this element ends with it — but
+                // only the tags whose end may be left out. An unclosed `<b>` is
+                // malformed rather than elided, and inventing a close for it
+                // would change how the existing repair handles it.
+                if let depth = open.lastIndex(of: tag) {
+                    while open.count > depth + 1 {
+                        let top = open.removeLast()
+                        if impliedEndTags.contains(top) { out.append(.close(tag: top)) }
+                    }
+                    open.removeLast()
+                }
+                out.append(token)
+            case .text:
+                out.append(token)
+            }
+        }
+        return out
+    }
 
     /// The named character references that actually turn up in web article text.
     ///

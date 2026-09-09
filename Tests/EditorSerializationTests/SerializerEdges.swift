@@ -51,6 +51,155 @@ private func schemaWithout(_ dropped: Set<String>) throws -> Schema {
 }
 
 func registerSerializerEdgeTests() {
+    // A list nested inside another list belongs to itself. Every one of these
+    // reads a sub-list's markup as the outer list's own, which is what the
+    // three checks below pin down.
+    test("HTML: a checklist nested in a plain list leaves the outer list plain") {
+        // The detector scanned the whole subtree for a checkbox, so any list
+        // holding a checklist anywhere under it became a checklist — its items
+        // turned into task items, and an ordered list lost its numbering.
+        for (outer, tag) in [("bulletList", "ul"), ("orderedList", "ol")] {
+            let html = "<\(tag)><li><p>outer</p>"
+                + "<ul data-type=\"taskList\"><li data-type=\"taskItem\" data-checked=\"true\">"
+                + "<input type=\"checkbox\" checked=\"checked\">inner</li></ul></li></\(tag)>"
+            let parsed = try HTMLParser.parse(html, schema: schema)
+            try expectEqual(parsed.child(0).type.name, outer, html)
+            let item = parsed.child(0).child(0)
+            try expectEqual(item.type.name, "listItem")
+            let sub = item.child(1)
+            try expectEqual(sub.type.name, "taskList")
+            try expectEqual(sub.child(0).attrs["checked"], .bool(true))
+        }
+    }
+
+    test("HTML: a task item's checked state is its own, not a nested item's") {
+        // `<input checked>` inside a sub-list was read as this item's box, so
+        // an unchecked item holding a checked one came back checked.
+        let html = "<ul data-type=\"taskList\"><li data-type=\"taskItem\" data-checked=\"false\">outer"
+            + "<ul data-type=\"taskList\"><li data-type=\"taskItem\" data-checked=\"true\">"
+            + "<input type=\"checkbox\" checked=\"checked\">inner</li></ul></li></ul>"
+        let outer = try HTMLParser.parse(html, schema: schema).child(0).child(0)
+        try expectEqual(outer.attrs["checked"], .bool(false))
+        try expectEqual(outer.child(1).child(0).attrs["checked"], .bool(true))
+    }
+
+    test("HTML: Apple Notes' nested checklist keeps its checkbox at its own level") {
+        // Apple Notes marks a checklist with `<input>` alone. Taking the inner
+        // one for the outer item's did both halves of the damage at once: the
+        // plain outer item became a checked task, and the sub-list — whose
+        // `<input>`s had just been consumed — came back as bullets.
+        let html = "<ul><li>outer<ul><li><input type=\"checkbox\" checked=\"checked\">inner</li></ul></li></ul>"
+        let list = try HTMLParser.parse(html, schema: schema).child(0)
+        try expectEqual(list.type.name, "bulletList")
+        let sub = list.child(0).child(1)
+        try expectEqual(sub.type.name, "taskList")
+        try expectEqual(sub.child(0).attrs["checked"], .bool(true))
+    }
+
+    test("HTML: a nested <details> keeps its own summary") {
+        // The summary was taken from anywhere under the element, so a section
+        // with none of its own stole the one belonging to a section inside it,
+        // and left that one blank.
+        let html = "<details><p>outer body</p><details><summary>inner</summary><p>inner body</p></details></details>"
+        let outer = try HTMLParser.parse(html, schema: schema).child(0)
+        try expectEqual(outer.type.name, "details")
+        try expectEqual(outer.child(0).textContent, "")
+        let inner = outer.child(1).child(1)
+        try expectEqual(inner.type.name, "details")
+        try expectEqual(inner.child(0).textContent, "inner")
+        try expectEqual(inner.child(1).textContent, "inner body")
+    }
+
+    test("HTML: a <div> holding a figure keeps the figure") {
+        // `blockTags` decides whether a div holds blocks or a run of text, and
+        // it didn't name `figure`. The text route keeps an element's words and
+        // drops the element, so the figure and its caption were gone — from a
+        // div we write ourselves, which put it in a disclosure section's own
+        // round-trip.
+        let html = "<div><figure><img src=\"i.png\"><figcaption>cap</figcaption></figure></div>"
+        let figure = try HTMLParser.parse(html, schema: schema).child(0)
+        try expectEqual(figure.type.name, "figure")
+        try expectEqual(figure.child(1).type.name, "figcaption")
+        try expectEqual(figure.child(1).textContent, "cap")
+        // The same figure where it actually shows up: inside the div the
+        // serializer wraps a disclosure section's body in.
+        let section = "<details><summary>s</summary><div data-type=\"detailsContent\">" + html + "</div></details>"
+        let content = try HTMLParser.parse(section, schema: schema).child(0).child(1)
+        try expectEqual(content.child(0).type.name, "figure")
+    }
+
+    test("HTML: end tags the author left out are written back in") {
+        // `<ul><li>a<li>b</ul>` is ordinary HTML — the spec closes an item when
+        // the next one opens. Reading structure off the token stream instead,
+        // an unclosed `<li>` ran to the end of its list, so two flat items came
+        // back as one item holding a sub-list, and two cells as one cell
+        // holding a whole table.
+        let cases: [(String, [String])] = [
+            ("<ul><li>a<li>b</ul>", ["a", "b"]),
+            ("<ol><li>a<li>b</ol>", ["a", "b"]),
+            ("<p>one<p>two</p>", ["one", "two"]),
+            ("<dl><dt>term<dd>definition</dl>", ["term", "definition"]),
+        ]
+        for (html, texts) in cases {
+            let parsed = try HTMLParser.parse(html, schema: schema)
+            let container = html.hasPrefix("<p") || html.hasPrefix("<dl") ? parsed : parsed.child(0)
+            try expectEqual(container.childCount, texts.count, html)
+            for (i, text) in texts.enumerated() {
+                try expectEqual(container.child(i).textContent, text, html)
+            }
+        }
+    }
+
+    test("HTML: cells and rows without end tags stay flat") {
+        for html in ["<table><tr><td>a<td>b</table>",
+                     "<table><tbody><tr><td>a</td><tr><td>b</td></tbody></table>"] {
+            let table = try HTMLParser.parse(html, schema: schema).child(0)
+            try expectEqual(table.type.name, "table", html)
+            // Two cells in one row, or two rows of one cell — either way, no
+            // table nested inside a cell.
+            var tables = 0
+            table.descendants { node, _, _, _ in
+                if node.type.name == "table" { tables += 1 }
+                return true
+            }
+            try expectEqual(tables, 0, "a table ended up inside \(html)")
+            try expectEqual(table.textContent, "ab", html)
+        }
+    }
+
+    test("HTML: an omitted end tag closes only its own level") {
+        // The repair may not reach through the list a parent item holds: `c`
+        // belongs to the sub-list, `d` to the outer one.
+        let outer = try HTMLParser.parse("<ul><li>a<ul><li>b<li>c</ul><li>d</ul>", schema: schema).child(0)
+        try expectEqual(outer.childCount, 2)
+        try expectEqual(outer.child(1).textContent, "d")
+        let sub = outer.child(0).child(1)
+        try expectEqual(sub.type.name, "bulletList")
+        try expectEqual(sub.childCount, 2)
+        try expectEqual(sub.child(1).textContent, "c")
+    }
+
+    test("HTML: markup that closes its own tags is unaffected by the repair") {
+        // The repair only ever adds an end tag, so anything already well-formed
+        // — everything this serializer writes — comes back exactly as it went.
+        let d = doc(h(2, "Title"),
+                    node("bulletList", tightList, [node("listItem", [:], [p("one")]),
+                                                   node("listItem", [:], [p("two")])]),
+                    node("table", [:], [node("tableRow", [:], [
+                        node("tableCell", [:], [p("a")]), node("tableCell", [:], [p("b")])])]),
+                    p(t("body")))
+        try expectEqual(try HTMLParser.parse(HTMLSerializer.serialize(d), schema: schema), d)
+    }
+
+    test("HTML: a definition list inside a div keeps its terms apart") {
+        // Same whitelist: with `dl` missing from it, `<dt>t</dt><dd>d</dd>`
+        // came back as the single word "td".
+        let doc = try HTMLParser.parse("<div><dl><dt>term</dt><dd>definition</dd></dl></div>", schema: schema)
+        try expectEqual(doc.childCount, 2)
+        try expectEqual(doc.child(0).textContent, "term")
+        try expectEqual(doc.child(1).textContent, "definition")
+    }
+
     test("every parser: a block the schema has no node for keeps its text") {
         // The schema decides which nodes exist, and a host that ships no
         // `heading` is an ordinary configuration rather than a broken one. What
