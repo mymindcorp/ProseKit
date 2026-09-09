@@ -95,9 +95,23 @@ struct Branch {
                 continue
             }
             addBefore.append(HistoryItem(map: item.map))
-            let mapped = itemStep.map(remap.slice(mapFrom))
+            // The remapping is there for items a collaborator has rebased
+            // under us. When it refuses a step — `map` returning nil, or the
+            // mapped step failing to apply — that step is dropped and the undo
+            // quietly lands half-done. There is no louder failure than the
+            // document simply not moving, and for a table it does not even do
+            // that: the fixer rebuilds whatever the rest of the undo removed,
+            // so the event leaves the stack having changed nothing at all.
+            // Fall back to the step as recorded, which is what a history with
+            // nothing to rebase would have applied in the first place.
             var map: StepMap?
-            if let mapped, transform.maybeStep(mapped).failed == nil {
+            var applied = false
+            if let mapped = itemStep.map(remap.slice(mapFrom)), transform.maybeStep(mapped).failed == nil {
+                applied = true
+            } else if transform.maybeStep(itemStep).failed == nil {
+                applied = true
+            }
+            if applied {
                 map = transform.mapping.maps[transform.mapping.maps.count - 1]
                 addAfter.append(HistoryItem(map: map!, mirrorOffset: addAfter.count + addBefore.count))
             }
