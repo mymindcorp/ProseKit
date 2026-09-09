@@ -19,6 +19,28 @@ import TestHarness
 //
 // Opt-in for the same reason as the selection sweeps; see `SelectionFuzz`.
 func registerHistoryFuzzTests() {
+    // Pinned out of the sweep below, and run whether or not the sweep is. The
+    // shape it needs — a table repair inserting a cell at exactly the position
+    // of the cell whose attribute the user just changed — took thirty-six
+    // generated edits to reach, and the seed that reached it is deterministic.
+    // `PMHistory` has the same bug written out by hand; this is the one that
+    // found it.
+    test("history: a generated session of table edits undoes back to the start") {
+        var rng = SelRNG(80 &* 7 &+ 1)
+        let editor = try Editor(extensions: fuzzKit())
+        let original = editor.doc
+        for _ in 0 ..< 36 {
+            _ = fuzzStep(editor, &rng)
+            editor.dispatch(closeHistory(editor.state.tr))
+        }
+        var undos = 0
+        while undoDepth(editor.state) > 0, undos <= fuzzOpHistoryCount * 4 {
+            try expect(key(editor, "Mod-z"), "undo declined with \(undoDepth(editor.state)) events left")
+            undos += 1
+        }
+        try expect(editor.doc == original, "undoing everything didn't restore the document")
+    }
+
     guard ProcessInfo.processInfo.environment["PROSEKIT_FUZZ"] != nil else { return }
 
     test("history fuzz: undoing everything returns to the document you started from") {

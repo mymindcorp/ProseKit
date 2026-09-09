@@ -90,7 +90,19 @@ public final class StepMap: Mappable, @unchecked Sendable {
                 let side = oldSize == 0 ? assoc : (pos == start ? -1 : (pos == end ? 1 : assoc))
                 let result = start + diff + (side < 0 ? 0 : newSize)
                 let recover = pos == (assoc < 0 ? start : end) ? nil : makeRecover(i / 3, pos - start)
-                var del = pos == start ? DEL_AFTER : (pos == end ? DEL_BEFORE : DEL_ACROSS)
+                // An insertion deletes nothing, so none of the deleted flags
+                // belong to it. Upstream spells this line without the
+                // `oldSize == 0` case, and a range that inserts has
+                // `start == end == pos` when the loop reaches it — so the first
+                // arm won and every insertion reported `deletedAfter` for the
+                // position it happened at. See the note in
+                // `docs/upstream-versions.md`: it is why undoing an attribute
+                // change silently did nothing once a plugin had inserted a node
+                // in front of it. `deleted` was already false here (neither
+                // `pos != start` nor `pos != end` holds), and `deletedAcross`
+                // was too, so this is the one flag that changes.
+                var del = oldSize == 0 ? 0
+                    : (pos == start ? DEL_AFTER : (pos == end ? DEL_BEFORE : DEL_ACROSS))
                 if assoc < 0 ? pos != start : pos != end { del |= DEL_SIDE }
                 return (result, del, recover)
             }

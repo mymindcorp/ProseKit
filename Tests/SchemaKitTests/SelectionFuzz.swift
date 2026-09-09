@@ -341,8 +341,14 @@ func registerSelectionFuzzTests() {
             for sel in everySelection(in: doc) {
                 // Four probes per selection: the nearest typable position on
                 // each side, plus a random one on each side.
-                let before = typable.filter { $0 < sel.from }
-                let after = typable.filter { $0 > sel.to }
+                // Outside *every* range, not just the first. `from`/`to`
+                // report `ranges[0]`, which for a cell selection is the head
+                // cell alone — so a position "before" it could be sitting in
+                // the anchor cell, which is inside the selection and moves it
+                // by more than the edit's size.
+                let covered = sel.ranges.map(\.from.pos).min()! ... sel.ranges.map(\.to.pos).max()!
+                let before = typable.filter { $0 < covered.lowerBound }
+                let after = typable.filter { $0 > covered.upperBound }
                 var probes: [Int] = []
                 if let x = before.last { probes.append(x) }
                 if let x = after.first { probes.append(x) }
@@ -365,9 +371,27 @@ func registerSelectionFuzzTests() {
                         continue
                     }
 
-                    let delta = at < sel.from ? shift : 0
+                    let delta = at < covered.lowerBound ? shift : 0
                     try expect(type(of: mapped) == type(of: sel),
                                "an edit outside the selection turned a \(type(of: sel)) into a \(type(of: mapped)) — \(ctx)")
+
+                    // The second selection that legitimately moves by more
+                    // than the edit: a cell selection covering whole rows or
+                    // whole columns is *re-derived* when the edit changed its
+                    // table, not shifted — that is what keeps a selected
+                    // column selected while another of the table's cells is
+                    // typed in. Its corner cells move to wherever the row or
+                    // column now ends, so its anchor and head are not the old
+                    // ones plus the edit. What it owes is to still be that
+                    // selection.
+                    if let cells = sel as? CellSelection, let moved = mapped as? CellSelection,
+                       cells.isRowSelection() || cells.isColSelection(),
+                       cells.anchorCell.node(-1) != moved.anchorCell.node(-1) {
+                        try expect(moved.isRowSelection() == cells.isRowSelection()
+                                    && moved.isColSelection() == cells.isColSelection(),
+                                   "a spanning cell selection stopped spanning — \(ctx)")
+                        continue
+                    }
                     try expectEqual(mapped.anchor, sel.anchor + delta, "anchor moved wrong — \(ctx)")
                     try expectEqual(mapped.head, sel.head + delta, "head moved wrong — \(ctx)")
 

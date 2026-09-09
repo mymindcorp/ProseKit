@@ -57,6 +57,38 @@ Use it to find what's new when re-auditing: read each package's CHANGELOG from t
 - **`splitBlockAs`'s callback signature**: upstream passes the resolved position
   as a third argument (`(node, atEnd, $from)`), added in 1.6.0. The Swift closure
   takes `(node, atEnd)`; add the parameter when a caller needs it.
+- **`MapResult`'s deleted flags at an insertion** (prosemirror-transform, all
+  versions through 1.12.1): upstream's `StepMap._map` spells the flag line as
+  `del = pos == start ? DEL_AFTER : pos == end ? DEL_BEFORE : DEL_ACROSS`, and a
+  range that *inserts* has `start == end == pos` when the loop reaches it — so
+  the first arm wins and every insertion reports `deletedAfter` at the position
+  it happened at, though it deleted nothing. Upstream already special-cases
+  `oldSize == 0` on the line above (`side = !oldSize ? assoc : …`), just not
+  here. This port returns no flags for an insertion.
+
+  It is not cosmetic. `AttrStep.map`, `AddNodeMarkStep.map` and
+  `RemoveNodeMarkStep.map` all drop the step when `deletedAfter`, and the
+  position they would have mapped to is *correct* — `start + diff + newSize` is
+  where the node moved. So an attribute change was silently dropped from undo
+  whenever something was inserted at that node's position, which is exactly what
+  a table repair does: `fixTable` inserts the missing cell at the row's content
+  start. Change a cell's rowspan, let `fixTables` square the table up, press
+  undo, and the rowspan stayed changed — the document then never came back,
+  because the table was still malformed and the repair ran again on each undo.
+  Found by `history fuzz: undoing everything returns to the document you started
+  from` at `PROSEKIT_FUZZ_OPS=120`; regression tests in
+  `Tests/DocumentTransformTests/PMMapping.swift` (the primitive),
+  `StepAttrsAndNodeMarks.swift` (the three steps, which had *pinned* the old
+  behaviour and now prove the mapped step applies to the right node),
+  `Tests/EditorCommandsTests/PMHistory.swift` (the undo, by hand) and
+  `Tests/SchemaKitTests/HistoryFuzz.swift` (the seed that found it).
+
+  `deleted` and `deletedAcross` were already false for an insertion, so
+  `ReplaceStep.map`/`ReplaceAroundStep.map` and `TextBookmark.map` — the only
+  other readers — are unaffected. `NodeBookmark.map` and `TaskSort` read
+  `deletedAfter` and get the same correction: a node selection now survives an
+  insertion immediately before its node.
+
 - **Remote steps via `maybeStep`** (prosemirror-collab): upstream's
   `receiveTransaction` uses `tr.step` and throws when an authority-confirmed step
   fails to apply; the Swift port uses `maybeStep`, silently skipping it. A failure

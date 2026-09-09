@@ -247,7 +247,20 @@ public func rejectSuggestion(_ index: Int) -> Command {
         let restoredTo = tr.mapping.map(change.toB, 1)
         guard tr.doc.slice(change.fromB, restoredTo).content
                 == set.startDoc.slice(change.fromA, change.toA).content else { return false }
-        dispatch?(tr.setMeta(suggestionModeMeta, SuggestionAction.reject(index)))
+        // And it has to survive the plugins. A change describes a difference
+        // between the base and the document, so undoing one must move the
+        // document — but this replace is only the first half of what the editor
+        // will do. Restoring a range that crosses two cells of a table whose
+        // own insertion is still only suggested deletes a cell, and `fixTables`
+        // appends a transaction putting an identical empty one back, so the
+        // reject reports success and the note is exactly as it was: the
+        // suggestion stays on screen, and clicking reject again does nothing
+        // again. Asking the state what it would become is the only way to see
+        // that from here — the repair is a plugin's, and the command has no
+        // other view of it.
+        let rejection = tr.setMeta(suggestionModeMeta, SuggestionAction.reject(index))
+        guard state.apply(rejection).doc != state.doc else { return false }
+        dispatch?(rejection)
         return true
     }
 }

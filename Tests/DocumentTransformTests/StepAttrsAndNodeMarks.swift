@@ -78,14 +78,24 @@ func registerStepAttrAndNodeMarkTests() {
         try expectEqual(out.child(0).textContent, "new")
     }
 
-    test("AttrStep: an insertion exactly at its position drops it") {
-        // `map` asks with a rightward bias, and an insertion at the position
-        // counts as deleting what was after it — so the step no longer knows
-        // which node it meant. ProseMirror drops it here too.
+    test("AttrStep: an insertion exactly at its position keeps it") {
+        // This used to be dropped, and this test used to say so. `map` asks
+        // with a rightward bias, an insertion at the position reported
+        // `deletedAfter`, and the step was thrown away — but nothing was
+        // deleted, and the position it maps to is exactly where the node
+        // moved. Proved by applying it: the heading is still the node that
+        // changes. See the note in `docs/upstream-versions.md`.
+        let before = headingDoc()
         let insert = ReplaceStep(0, 0, Slice(content: Fragment.from(p("new").node),
                                              openStart: 0, openEnd: 0))
-        try expect(AttrStep(0, "level", .int(3)).map(insert.getMap()) == nil,
-                   "a step whose node is no longer identifiable is dropped")
+        let afterInsert = try applied(insert, before)
+        guard let mapped = AttrStep(0, "level", .int(3)).map(insert.getMap()) else {
+            try expect(false, "an insertion deletes nothing, so the step survives it"); return
+        }
+        let out = try applied(mapped, afterInsert)
+        try expectEqual(out.child(0).textContent, "new")
+        try expectEqual(out.child(1).attrs["level"], .int(3))
+        try expectEqual(out.child(1).textContent, "title")
     }
 
     test("AttrStep: deleting the node it points at drops the step") {
@@ -351,11 +361,21 @@ func registerMarkStepEdgeTests() {
         try expect(out.child(1).child(0).marks.isEmpty, "the image moved, and it lost its mark")
     }
 
-    test("RemoveNodeMarkStep: an insertion at its position drops it") {
+    test("RemoveNodeMarkStep: an insertion at its position keeps it") {
+        // The other half of the same correction as the AttrStep case: text
+        // inserted in front of the image moves it to position 2, which is
+        // where the mapped step points.
+        let mark = basicSchema.mark("em")
+        let before = try applied(AddNodeMarkStep(1, mark), imageDoc())
         let insert = ReplaceStep(1, 1, Slice(content: Fragment.from(basicSchema.text("x")),
                                              openStart: 0, openEnd: 0))
-        try expect(RemoveNodeMarkStep(1, basicSchema.mark("em")).map(insert.getMap()) == nil,
-                   "a step that can no longer name its node is dropped")
+        let afterInsert = try applied(insert, before)
+        guard let mapped = RemoveNodeMarkStep(1, mark).map(insert.getMap()) else {
+            try expect(false, "an insertion deletes nothing, so the step survives it"); return
+        }
+        let out = try applied(mapped, afterInsert)
+        try expect(out.child(0).child(1).marks.isEmpty, "the image kept the mark the step removes")
+        try expectEqual(out.child(0).textContent, "x")
     }
 
     test("node mark steps: a position with no node fails rather than crashing") {

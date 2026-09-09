@@ -74,6 +74,11 @@ func registerPMMappingTests() {
     testDel("deletions across (−1)", mk(.map([0, 4, 0])), 2, -1, "dbax")
     testDel("deletions across (+1)", mk(.map([0, 4, 0])), 2, 1, "dbax")
     testDel("deletions across, multiple maps", mk(.map([0, 1, 0]), .map([4, 1, 0]), .map([0, 3, 0])), 2, 1, "dbax")
+    // deleted flags — an insertion, which deletes nothing
+    testDel("an insertion at the position", mk(.map([2, 0, 4])), 2, 1, "")
+    testDel("an insertion at the position, leftward", mk(.map([2, 0, 4])), 2, -1, "")
+    testDel("an insertion beside a deletion still reports the deletion",
+            mk(.map([2, 0, 4]), .map([6, 2, 0])), 2, 1, "da")
     // deleted flags — around
     testDel("deletions around, both sides safe", mk(.map([4, 1, 0]), .map([0, 1, 0])), 2, -1, "")
     testDel("deletions around, spanning", mk(.map([2, 1, 0]), .map([0, 2, 0])), 2, -1, "dba")
