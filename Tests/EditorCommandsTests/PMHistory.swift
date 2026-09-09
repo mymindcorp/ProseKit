@@ -21,6 +21,23 @@ private func command(_ state: EditorState, _ cmd: (EditorState, ((Transaction) -
 }
 
 func registerPMHistoryTests() {
+    test("PM history: undoes an attribute change a node was inserted in front of") {
+        // The shape a plugin's appended repair makes: an attribute change, and
+        // in the same event a node inserted at exactly that position. Mapping
+        // the attribute step's inverse over the insertion used to answer
+        // `deletedAfter` — nothing had been deleted — and the undo dropped the
+        // step without a word. The document came back with the heading in
+        // front of it removed and its level still changed.
+        var s = mkState(doc(h1("title"), p("body")))
+        let tr = s.tr
+        _ = try tr.setNodeAttribute(0, "level", .int(3))
+        _ = try tr.insert(0, Fragment.from(p("new").node))
+        s = s.apply(tr)
+        try expectEqual(s.doc, doc(p("new"), h3("title"), p("body")).node)
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(h1("title"), p("body")).node)
+    }
+
     test("PM history: enables undo") {
         var s = mkState()
         s = typeText(s, "a"); s = typeText(s, "b")
