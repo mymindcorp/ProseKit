@@ -479,6 +479,13 @@ final class DocumentLayout {
         let highlights: [(from: Int, to: Int, color: UIColor)]
         var codeBackgrounds: [(from: Int, to: Int, color: UIColor)] = []
         let tables: [TableInfo]
+        /// Whether `blocks` is sorted top to bottom as well as by document
+        /// position, which is what lets a clip band binary-search it. True for
+        /// everything that stacks; false for a table, whose cells sit side by
+        /// side, so a row walks down column one and jumps back up for column
+        /// two. Measured from the blocks themselves rather than assumed, and a
+        /// child that is out of order pays for its own blocks — nothing else's.
+        var blocksRunDownThePage: Bool = true
         /// When true this child's height is an estimate and it hasn't been
         /// typeset — it carries no blocks/decorations. Realized on demand when it
         /// scrolls near the viewport.
@@ -620,13 +627,20 @@ final class DocumentLayout {
         let m0 = mathTargets.count
         y += theme.spacing(before: child, after: previous)
         y = layoutBlock(child, docPos: docPos, x: x, width: width, y: y)
+        let mine = Array(blocks[b0...])
         return TopEntry(node: child, docStart: docPos, topY: topY, height: y - topY,
-                        blocks: Array(blocks[b0...]), decorations: Array(decorations[d0...]),
+                        blocks: mine, decorations: Array(decorations[d0...]),
                         checkboxes: Array(checkboxes[c0...]), disclosures: Array(disclosures[dc0...]),
                         mathTargets: Array(mathTargets[m0...]),
                         highlights: Array(highlights[h0...]),
                         codeBackgrounds: Array(codeBackgrounds[cb0...]),
-                        tables: Array(tables[t0...]))
+                        tables: Array(tables[t0...]),
+                        blocksRunDownThePage: Self.runDownThePage(mine))
+    }
+
+    /// Whether these blocks are in vertical order as well as document order.
+    private static func runDownThePage(_ blocks: [TextBlock]) -> Bool {
+        !zip(blocks, blocks.dropFirst()).contains { $0.frame.maxY > $1.frame.maxY || $0.frame.minY > $1.frame.minY }
     }
 
     private func append(_ e: TopEntry) {
@@ -649,6 +663,7 @@ final class DocumentLayout {
                         highlights: e.highlights.isEmpty ? e.highlights : e.highlights.map { (from: $0.from + dPos, to: $0.to + dPos, color: $0.color) },
                         codeBackgrounds: e.codeBackgrounds.isEmpty ? e.codeBackgrounds : e.codeBackgrounds.map { (from: $0.from + dPos, to: $0.to + dPos, color: $0.color) },
                         tables: e.tables.isEmpty ? e.tables : e.tables.map { TableInfo(tablePos: $0.tablePos + dPos, originX: $0.originX, widths: $0.widths, top: $0.top + dy, bottom: $0.bottom + dy) },
+                        blocksRunDownThePage: e.blocksRunDownThePage,
                         estimated: e.estimated)
     }
 
@@ -2130,15 +2145,28 @@ final class DocumentLayout {
         let candidates = blocks.filter { b in
             !b.lines.isEmpty && (below ? b.frame.minY >= cur.maxY - 0.5 : b.frame.maxY <= cur.minY + 0.5)
         }
-        guard let minGap = candidates.map({ yGap($0.frame) }).min() else { return nil }
-        // The nearest "row": blocks essentially at the same vertical level
-        // (one element for stacked flow; several for a table row).
-        let row = candidates.filter { yGap($0.frame) <= minGap + 1 }
+        guard let nearest = candidates.min(by: { yGap($0.frame) < yGap($1.frame) }) else { return nil }
+        // The nearest "row": the nearest block, plus every candidate that sits
+        // BESIDE it (one element for stacked flow; several for a table row).
+        //
+        // Beside means the two vertical spans genuinely overlap, not that the
+        // gaps to them match. A cell starts and ends wherever its own content
+        // does, so a row holding a paragraph and a heading already has two
+        // different tops, and two cells of unequal height two different
+        // bottoms. Reading the row off the gap alone split such a row into one
+        // block per cell, and then ↓ and ↑ stopped being inverses: ↓ left the
+        // row by whichever cell hung lowest and ↑ came back into whichever one
+        // reached highest, both regardless of the column the caret was in.
+        // Blocks in stacked flow abut at a single edge, which is not an overlap.
+        let level = nearest.frame
+        var row = candidates.filter { min($0.frame.maxY, level.maxY) - max($0.frame.minY, level.minY) > 0.5 }
+        if row.isEmpty { row = [nearest] }
         // Within the row, prefer the block straddling the caret column; else the
-        // one nearest the column in x.
-        if let inColumn = row.first(where: { $0.frame.minX - 0.5 <= preferredX && preferredX <= $0.frame.maxX + 0.5 }) {
-            return inColumn
-        }
+        // one nearest the column in x. A cell can hold several stacked blocks,
+        // so among the ones in the column take the nearest in the direction of
+        // travel — the top of the cell going down, its bottom coming back up.
+        let inColumn = row.filter { $0.frame.minX - 0.5 <= preferredX && preferredX <= $0.frame.maxX + 0.5 }
+        if let best = inColumn.min(by: { yGap($0.frame) < yGap($1.frame) }) { return best }
         return row.min(by: { abs($0.frame.midX - preferredX) < abs($1.frame.midX - preferredX) })
     }
 
@@ -2313,72 +2341,120 @@ final class DocumentLayout {
     private func forEachLineFragment(from: Int, to: Int, clipY: ClosedRange<CGFloat>?,
                                      _ body: (CGRect, TextBlock, Int, Int) -> Void) {
         guard to > from, !blocks.isEmpty else { return }
-        // First block overlapping [from, to): smallest index with contentEnd > from.
-        var lo = 0, hi = blocks.count
-        while lo < hi { let mid = (lo + hi) / 2; if blocks[mid].contentEnd <= from { lo = mid + 1 } else { hi = mid } }
-        var i = lo
-        // Blocks run down the page in document order, so a clip band is a
-        // contiguous run of them: skip to the first one that reaches it rather
-        // than walking the selection's whole prefix, and stop at the far edge.
+        // The walk is over top-level children, not over `blocks`, because a
+        // clip band is only a contiguous run of *those*. `blocks` is sorted by
+        // document position and nothing else: a table lays its cells side by
+        // side, so a row's blocks run down column one and then jump back up
+        // the page for column two, and a nested table interleaves further
+        // still. Binary-searching that array by y skipped straight past the
+        // blocks a band wanted — a selection inside a table cell drew nothing,
+        // while the unclipped call drew it — and the `break` at the far edge
+        // could end the walk in the middle of a row.
+        //
+        // Entries do run down the page: each is laid out at the y the previous
+        // one ended at, so they tile the document top to bottom, and every
+        // block one carries was laid out inside its own band. So the band
+        // search and the cut-off are exact over entries, and a child asked
+        // whether its own blocks are in vertical order before they are searched
+        // the same way.
+        var i = 0, hi = entries.count
+        while i < hi {
+            let mid = (i + hi) / 2
+            if entries[mid].docStart + entries[mid].node.nodeSize <= from { i = mid + 1 } else { hi = mid }
+        }
         if let clipY {
-            var blo = lo, bhi = blocks.count
+            var blo = i, bhi = entries.count
             while blo < bhi {
                 let mid = (blo + bhi) / 2
-                if blocks[mid].frame.maxY < clipY.lowerBound { blo = mid + 1 } else { bhi = mid }
+                if entries[mid].topY + entries[mid].height < clipY.lowerBound { blo = mid + 1 } else { bhi = mid }
             }
-            i = max(lo, blo)
+            i = max(i, blo)
         }
-        while i < blocks.count, blocks[i].contentStart < to {
-            let block = blocks[i]
+        while i < entries.count, entries[i].docStart < to {
+            let ei = i
             i += 1
             if let clipY {
-                if block.frame.minY > clipY.upperBound { break }
-                if block.frame.maxY < clipY.lowerBound { continue }
+                if entries[ei].topY > clipY.upperBound { break }
+                if entries[ei].topY + entries[ei].height < clipY.lowerBound { continue }
             }
-            guard from < block.contentEnd, to > block.contentStart else { continue }
-            let blockFrom = max(from, block.contentStart)
-            let blockTo = min(to, block.contentEnd)
-            let aFrom = block.attrIndex(forDocPos: blockFrom)
-            let aTo = block.attrIndex(forDocPos: blockTo)
-            for line in block.lines {
-                let lineStart = line.stringRange.location
-                let lineEnd = line.stringRange.location + line.stringRange.length
-                let s = max(aFrom, lineStart)
-                let e = min(aTo, lineEnd)
-                if e <= s { continue }
-                let top = line.baselineOrigin.y - line.ascent
-                // Clipping to blocks is not enough: a block can be far taller
-                // than the screen — one paragraph of a long document runs to
-                // hundreds of lines — and a highlight covering all of it makes
-                // every one of those lines pass the character test above. The
-                // two offset lookups are what a rect costs, so skip them here
-                // rather than let the caller throw the rect away.
-                if let clipY, top > clipY.upperBound || top + line.height < clipY.lowerBound { continue }
-                let xStart = line.offset(forStringIndex: s)
-                let xEnd = line.offset(forStringIndex: e)
-                body(CGRect(x: line.baselineOrigin.x + xStart, y: top, width: xEnd - xStart, height: line.height),
-                     block, s, e)
+            // Inside a child, blocks are still in document order, so the range
+            // is bracketed the same way. Whether they are in *vertical* order
+            // depends on what the child is, and only one that isn't — a table —
+            // gives up the band search, over its own blocks alone. It matters
+            // because a child is not always small: one list is one child, and a
+            // 3000-item list is 3000 blocks. Walking all of them cost 15x the
+            // binary search per clipped call, on the scroll path.
+            let bs = entries[ei].blocks
+            var j = 0, jhi = bs.count
+            while j < jhi { let mid = (j + jhi) / 2; if bs[mid].contentEnd <= from { j = mid + 1 } else { jhi = mid } }
+            let ordered = entries[ei].blocksRunDownThePage
+            if let clipY, ordered {
+                var blo = j, bhi = bs.count
+                while blo < bhi {
+                    let mid = (blo + bhi) / 2
+                    if bs[mid].frame.maxY < clipY.lowerBound { blo = mid + 1 } else { bhi = mid }
+                }
+                j = max(j, blo)
+            }
+            while j < bs.count, bs[j].contentStart < to {
+                let block = bs[j]
+                j += 1
+                if let clipY {
+                    if ordered, block.frame.minY > clipY.upperBound { break }
+                    if block.frame.minY > clipY.upperBound || block.frame.maxY < clipY.lowerBound { continue }
+                }
+                guard from < block.contentEnd, to > block.contentStart else { continue }
+                let blockFrom = max(from, block.contentStart)
+                let blockTo = min(to, block.contentEnd)
+                let aFrom = block.attrIndex(forDocPos: blockFrom)
+                let aTo = block.attrIndex(forDocPos: blockTo)
+                for line in block.lines {
+                    let lineStart = line.stringRange.location
+                    let lineEnd = line.stringRange.location + line.stringRange.length
+                    let s = max(aFrom, lineStart)
+                    let e = min(aTo, lineEnd)
+                    if e <= s { continue }
+                    let top = line.baselineOrigin.y - line.ascent
+                    // Clipping to blocks is not enough: a block can be far taller
+                    // than the screen — one paragraph of a long document runs to
+                    // hundreds of lines — and a highlight covering all of it makes
+                    // every one of those lines pass the character test above. The
+                    // two offset lookups are what a rect costs, so skip them here
+                    // rather than let the caller throw the rect away.
+                    if let clipY, top > clipY.upperBound || top + line.height < clipY.lowerBound { continue }
+                    let xStart = line.offset(forStringIndex: s)
+                    let xEnd = line.offset(forStringIndex: e)
+                    body(CGRect(x: line.baselineOrigin.x + xStart, y: top, width: xEnd - xStart, height: line.height),
+                         block, s, e)
+                }
             }
         }
     }
 
-    /// The document positions covered by the blocks that intersect `band`, or
-    /// nil if the band falls outside the document entirely.
+    /// The document positions covered by the top-level children that intersect
+    /// `band`, or nil if the band falls outside the document entirely.
     ///
     /// Marks are stored as a flat list over the whole document, so drawing one
     /// kind of mark means walking all of them. This turns a band of the page
     /// into a range of positions once, so that walk can reject the off-screen
     /// ones on two integer compares instead of a geometry lookup each.
+    ///
+    /// Children, not blocks, for the reason `forEachLineFragment` walks them:
+    /// they are the only thing that runs down the page in document order. The
+    /// answer is a rejection test, so covering a child whose band the caller
+    /// only clips into costs nothing but a mark that survives to a geometry
+    /// lookup that finds nothing; searching an array that isn't sorted by y
+    /// costs marks that are on screen and never get drawn.
     func positionRange(intersecting band: ClosedRange<CGFloat>) -> Range<Int>? {
-        var lo = 0, hi = blocks.count
+        var lo = 0, hi = entries.count
         while lo < hi {
             let mid = (lo + hi) / 2
-            if blocks[mid].frame.maxY < band.lowerBound { lo = mid + 1 } else { hi = mid }
+            if entries[mid].topY + entries[mid].height < band.lowerBound { lo = mid + 1 } else { hi = mid }
         }
-        guard lo < blocks.count, blocks[lo].frame.minY <= band.upperBound else { return nil }
+        guard lo < entries.count, entries[lo].topY <= band.upperBound else { return nil }
         var end = lo
-        while end < blocks.count, blocks[end].frame.minY <= band.upperBound { end += 1 }
-        return blocks[lo].contentStart ..< blocks[end - 1].contentEnd
+        while end < entries.count, entries[end].topY <= band.upperBound { end += 1 }
+        return entries[lo].docStart ..< (entries[end - 1].docStart + entries[end - 1].node.nodeSize)
     }
 
     /// Index of the block whose [contentStart, contentEnd] contains `pos`, via
