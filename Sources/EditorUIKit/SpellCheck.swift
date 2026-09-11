@@ -69,6 +69,13 @@ enum SpellCheck {
         return (checked, decorations)
     }
 
+    /// Suggested corrections for a misspelled `word`, best first.
+    @MainActor
+    static func guesses(for word: String, language: String = "en") -> [String] {
+        let range = NSRange(location: 0, length: (word as NSString).length)
+        return checker.guesses(forWordRange: range, in: word, language: language) ?? []
+    }
+
     /// Whitespace, or the placeholder `inlineCharacters` uses for an inline
     /// atom (an image, a mention): either ends a word.
     private static func isWordBoundary(_ c: Character) -> Bool {
