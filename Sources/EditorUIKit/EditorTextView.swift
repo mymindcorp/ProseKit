@@ -1241,6 +1241,50 @@ open class EditorTextView: UIView, UIKeyInput {
         setNeedsDisplay()
     }
 
+    // MARK: - Spelling corrections
+
+    static let spellingMenuIdentifier = UIMenu.Identifier("com.prosekit.spelling")
+
+    /// The underlined misspelling a menu over `from...to` is about: the word
+    /// holding the caret, or the one the selection lies within. Read from the
+    /// cache rather than `visibleSpellingRanges` — the click that opens the
+    /// menu puts the caret in the word, which hides the underline the user
+    /// just clicked on.
+    func misspelling(at from: Int, _ to: Int) -> (from: Int, to: Int)? {
+        guard spellCheckingEnabled else { return nil }
+        return spellCache.first { deco in
+            deco.attributes["spelling"] != nil && deco.from <= from && to <= deco.to
+        }.map { ($0.from, $0.to) }
+    }
+
+    /// The corrections to offer at the head of the edit menu, or nil when the
+    /// range isn't on a misspelled word.
+    func spellingMenu(for from: Int, _ to: Int) -> UIMenu? {
+        guard isEditable, let range = misspelling(at: from, to) else { return nil }
+        let word = projectedText(from: range.from, to: range.to)
+        let guesses = SpellCheck.guesses(for: word)
+        let items: [UIMenuElement] = guesses.isEmpty
+            ? [UIAction(title: "No Guesses Found", attributes: .disabled) { _ in }]
+            : guesses.prefix(5).map { guess in
+                UIAction(title: guess) { [weak self] _ in
+                    self?.replaceMisspelling(word, from: range.from, to: range.to, with: guess)
+                }
+            }
+        return UIMenu(identifier: Self.spellingMenuIdentifier, options: .displayInline, children: items)
+    }
+
+    /// Swap `word` at `from..<to` for `guess`, leaving the caret after it.
+    /// Does nothing if the word has moved or changed since the menu was built
+    /// — a collaborator's edit can land while the menu is open.
+    func replaceMisspelling(_ word: String, from: Int, to: Int, with guess: String) {
+        guard isEditable, to <= editor.doc.content.size,
+              projectedText(from: from, to: to) == word else { return }
+        let tr = editor.state.tr
+        guard (try? tr.insertText(guess, from, to)) != nil else { return }
+        tr.setSelection(TextSelection.create(tr.doc, from + guess.count))
+        editor.dispatch(tr.scrollIntoView())
+    }
+
     /// Whether the document is a single empty textblock.
     private var isDocumentEmpty: Bool {
         editor.doc.childCount == 1
@@ -3533,8 +3577,14 @@ extension EditorTextView: UIEditMenuInteractionDelegate {
                                                 menuFor configuration: UIEditMenuConfiguration,
                                                 suggestedActions: [UIMenuElement]) -> UIMenu? {
         MainActor.assumeIsolated {
-            guard let custom = editMenuItems?(editor), !custom.isEmpty else { return nil }
-            return UIMenu(children: suggestedActions + custom)
+            // Offer corrections here too, unless the text input's own edit menu
+            // already put them in `suggestedActions`.
+            let sel = editor.state.selection
+            let hasSpelling = suggestedActions.contains { ($0 as? UIMenu)?.identifier == Self.spellingMenuIdentifier }
+            let spelling = hasSpelling ? [] : spellingMenu(for: sel.from, sel.to).map { [$0 as UIMenuElement] } ?? []
+            let custom = editMenuItems?(editor) ?? []
+            guard !spelling.isEmpty || !custom.isEmpty else { return nil }
+            return UIMenu(children: spelling + suggestedActions + custom)
         }
     }
 }
