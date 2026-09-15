@@ -131,6 +131,18 @@ extension EditorTextView: UITextInput {
         editor.dispatch(tr)
     }
 
+    // MARK: Edit menu
+
+    /// Put spelling corrections at the head of the system's edit menu (the
+    /// callout, and the right-click menu on iPad and Mac). The system only
+    /// offers its own for text it checked itself; ours is drawn by the editor,
+    /// so it has to be offered here too.
+    public func editMenu(for textRange: UITextRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+        guard let r = textRange as? DocTextRange,
+              let spelling = spellingMenu(for: clamp(r.from), clamp(r.to)) else { return nil }
+        return UIMenu(children: [spelling] + suggestedActions)
+    }
+
     // MARK: Marked (IME / composing) text
 
     public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {

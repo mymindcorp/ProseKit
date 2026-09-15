@@ -111,6 +111,61 @@ final class SpellCheckTests: XCTestCase {
         XCTAssertTrue(cache.contains { $0.from == 15 && $0.to == 22 }, "the misspelling just typed is flagged immediately")
     }
 
+    // MARK: - Corrections in the edit menu
+
+    private func spellingTitles(_ menu: UIMenu?) -> [String] {
+        guard let section = menu?.children.first as? UIMenu,
+              section.identifier == EditorTextView.spellingMenuIdentifier else { return [] }
+        return section.children.compactMap { ($0 as? UIAction)?.title }
+    }
+
+    func testEditMenuOffersCorrectionsForTheMisspellingUnderTheCaret() throws {
+        let v = try view("mispeled word")
+        v.spellCache = [decoration(1, 9)]
+        let copy = UIAction(title: "Copy") { _ in }
+        let menu = v.editMenu(for: DocTextRange(5, 5), suggestedActions: [copy])
+        XCTAssertTrue(spellingTitles(menu).contains("misspelled"), "got \(spellingTitles(menu))")
+        XCTAssertEqual((menu?.children.last as? UIAction)?.title, "Copy", "the system's items follow the corrections")
+    }
+
+    func testEditMenuOffersCorrectionsForASelectedMisspelling() throws {
+        let v = try view("mispeled word")
+        v.spellCache = [decoration(1, 9)]
+        XCTAssertTrue(spellingTitles(v.editMenu(for: DocTextRange(1, 9), suggestedActions: [])).contains("misspelled"))
+    }
+
+    func testEditMenuIsUntouchedOffAMisspelling() throws {
+        let v = try view("mispeled word")
+        v.spellCache = [decoration(1, 9)]
+        XCTAssertNil(v.editMenu(for: DocTextRange(11, 11), suggestedActions: []), "a correct word gets the system menu")
+        XCTAssertNil(v.editMenu(for: DocTextRange(5, 12), suggestedActions: []), "a selection reaching past the word isn't it")
+        v.spellCheckingEnabled = false
+        XCTAssertNil(v.editMenu(for: DocTextRange(5, 5), suggestedActions: []), "no corrections with checking off")
+    }
+
+    func testEditMenuOffersNoCorrectionsWhenNotEditable() throws {
+        let v = try view("mispeled word")
+        v.spellCache = [decoration(1, 9)]
+        v.isEditable = false
+        XCTAssertNil(v.editMenu(for: DocTextRange(5, 5), suggestedActions: []))
+    }
+
+    func testChoosingACorrectionReplacesTheWord() throws {
+        let v = try view("mispeled word")
+        v.replaceMisspelling("mispeled", from: 1, to: 9, with: "misspelled")
+        XCTAssertEqual(v.editor.doc.textContent, "misspelled word")
+        XCTAssertEqual(v.editor.state.selection.head, 11, "the caret lands after the correction")
+    }
+
+    func testACorrectionForAWordThatChangedIsDropped() throws {
+        let v = try view("mispeled word")
+        let tr = v.editor.state.tr
+        try tr.insertText("x", 1) // the word moved while the menu was open
+        v.editor.dispatch(tr)
+        v.replaceMisspelling("mispeled", from: 1, to: 9, with: "misspelled")
+        XCTAssertEqual(v.editor.doc.textContent, "xmispeled word")
+    }
+
     // MARK: - Re-checking around an edit
 
     private func paragraphs(_ texts: [String], code: Bool = false) throws -> Node {
