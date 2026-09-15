@@ -39,11 +39,7 @@ public struct Fragment: Hashable, Sendable {
     /// comparison of the document. Sharing storage proves equality; not sharing
     /// it proves nothing, which is why this is only ever used to skip work.
     func sharesStorage(with other: Fragment) -> Bool {
-        unsafe content.withUnsafeBufferPointer { a in
-            unsafe other.content.withUnsafeBufferPointer { b in
-                unsafe a.baseAddress == b.baseAddress && a.count == b.count
-            }
-        }
+        content.isTriviallyIdentical(to: other.content)
     }
 
     public func hash(into hasher: inout Hasher) {

@@ -286,7 +286,7 @@ final class TextBlockLayoutCache {
 
     static func itemKey(_ node: Node, x: CGFloat, width: CGFloat, marker: String,
                         checkedContext: Bool, align: String?) -> ItemKey {
-        let buffer = unsafe node.content.content.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
+        let buffer = node.content.content.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
         return ItemKey(type: ObjectIdentifier(node.type), attrs: node.attrs, marks: node.marks,
                        buffer: buffer, x: x, width: width, marker: marker,
                        checkedContext: checkedContext, align: align)
@@ -341,7 +341,7 @@ final class TextBlockLayoutCache {
     }
 
     private static func key(_ node: Node, _ width: CGFloat, _ checked: Bool, _ align: String?) -> Key {
-        let buffer = unsafe node.content.content.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
+        let buffer = node.content.content.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
         return Key(type: ObjectIdentifier(node.type), attrs: node.attrs, marks: node.marks,
                    buffer: buffer, width: width, align: align, checked: checked)
     }
