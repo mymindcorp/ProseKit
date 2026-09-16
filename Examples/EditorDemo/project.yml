@@ -44,3 +44,36 @@ targets:
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: "YES"
         INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
         SWIFT_VERSION: "6.0"
+  EditorInteractionTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - ../../Tests/EditorUIKitTests/InteractionTriageTests.swift
+      - ../../Tests/EditorUIKitTests/ScrollingTests.swift
+      - ../../Tests/EditorUIKitTests/RevealRectTests.swift
+      - ../../Tests/EditorUIKitTests/KeyboardBehaviorTests.swift
+      - ../../Tests/EditorUIKitTests/ImageActivationTests.swift
+      - ../../Tests/EditorUIKitTests/UITextInputTests.swift
+      - ../../Tests/EditorUIKitTests/FindBarTests.swift
+      - ../../Tests/EditorUIKitTests/SuggestionMenuTests.swift
+    dependencies:
+      - target: EditorDemo
+      - package: ProseKit
+        product: EditorUIKit
+      - package: ProseKit
+        product: SchemaKit
+    settings:
+      base:
+        SUPPORTS_MACCATALYST: "YES"
+        GENERATE_INFOPLIST_FILE: "YES"
+        CODE_SIGNING_ALLOWED: "NO"
+        SWIFT_VERSION: "6.0"
+schemes:
+  EditorDemo:
+    build:
+      targets:
+        EditorDemo: all
+    test:
+      targets:
+        - EditorInteractionTests

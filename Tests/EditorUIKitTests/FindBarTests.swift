@@ -36,9 +36,12 @@ final class FindBarTests: XCTestCase {
         view.showFindBar()
         view.editor.setSearch("cat")
         XCTAssertEqual(view.editor.searchMatches.count, 1)
-        _ = view.handle(EditorTextView.KeyEvent(.keyboardEscape))
+        XCTAssertTrue(view.handle(EditorTextView.KeyEvent(.keyboardEscape)))
         XCTAssertFalse(view.isFindBarVisible)
         XCTAssertTrue(view.editor.searchMatches.isEmpty, "closing the bar clears the search")
+        let selection = view.editor.state.selection
+        XCTAssertFalse(view.handle(EditorTextView.KeyEvent(.keyboardEscape)), "the next Escape belongs to the host")
+        XCTAssertTrue(view.editor.state.selection.eq(selection))
     }
 
     func testFindNextSelectsMatches() throws {

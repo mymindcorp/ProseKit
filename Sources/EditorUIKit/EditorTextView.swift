@@ -73,6 +73,14 @@ open class EditorTextView: UIView, UIKeyInput {
     /// When true, each top-level block shows a drag handle in the left gutter
     /// that reorders the block by dragging. Off by default.
     public var blockReorderingEnabled = false { didSet { setNeedsDisplay() } }
+    /// Allow dragging selected text out of the editor. Off by default so a
+    /// pointer drag over highlighted text starts a new selection. Image and
+    /// block-handle dragging are independent of this setting.
+    public var textDraggingEnabled = false
+    /// Route Escape to the editor keymap (whose default selects the parent
+    /// node). Off by default so an enclosing sheet/lightbox can dismiss.
+    /// Suggestion menus and Find still consume Escape while open.
+    public var escapeKeyBindingEnabled = false
     /// In-progress block drag: source index and the current drop gap.
     private var blockDrag: (sourceIndex: Int, dropIndex: Int)?
     /// Desktop hover: the block under the pointer (handles reveal on hover);
@@ -1560,7 +1568,10 @@ open class EditorTextView: UIView, UIKeyInput {
     open override func becomeFirstResponder() -> Bool {
         let wasFirstResponder = isFirstResponder
         let became = super.becomeFirstResponder()
-        if became { startBlink(); updateCaret() }
+        // Native text interaction takes focus before placing the clicked
+        // caret. Revealing the old selection here moves the document under
+        // that click. Paint only; the ensuing selection change reveals itself.
+        if became { startBlink(); positionCaretLayer() }
         if became, !wasFirstResponder { onFocus?() }
         return became
     }
@@ -3128,8 +3139,7 @@ open class EditorTextView: UIView, UIKeyInput {
             return runKey(mods.contains(.shift) ? "Shift-Tab" : "Tab")
         case .keyboardEscape:
             if isFindBarVisible { hideFindBar(); return true }
-            // Escape has no characters, so map it to the named binding.
-            return runKey("Escape")
+            return escapeKeyBindingEnabled && runKey("Escape")
         default:
             // Editor key-bindings (formatting, lists, …) mutate the document, so
             // they're inert when read-only. Copy/select-all/find don't route here.
@@ -3323,6 +3333,7 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
         // `onActivateImage`.
         if onActivateImage == nil, let img = imageAt(start) { return [imageDragItem(for: img)] }
         // Otherwise, only drag when the gesture starts on the (non-empty) selection.
+        guard textDraggingEnabled else { return [] }
         let sel = editor.state.selection
         guard !sel.empty, let pos = ensureLayout().position(at: start),
               pos >= sel.from, pos <= sel.to else { return [] }

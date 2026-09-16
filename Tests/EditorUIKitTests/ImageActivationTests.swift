@@ -130,6 +130,9 @@ final class ImageActivationTests: XCTestCase {
         // The two want the same long press. With no handler the drag lifts the
         // image as it always has; with one, activation takes it instead.
         let (view, _) = try blockView()
+        // This fixture's 20x10 image lies entirely inside the resize hit area.
+        // Test activation versus dragging independently of the resize gesture.
+        view.imageResizingEnabled = false
         let point = try center(view)
         let session = FakeDragSession(location: point)
         let interaction = UIDragInteraction(delegate: view)

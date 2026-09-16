@@ -120,8 +120,11 @@ final class SuggestionMenuTests: XCTestCase {
         let view = try makeView()
         type(view, "/head")
         XCTAssertNotNil(view.suggestionTitles)
-        _ = view.handle(EditorTextView.KeyEvent(.keyboardEscape))
+        XCTAssertTrue(view.handle(EditorTextView.KeyEvent(.keyboardEscape)))
         XCTAssertNil(view.suggestionTitles)
+        let selection = view.editor.state.selection
+        XCTAssertFalse(view.handle(EditorTextView.KeyEvent(.keyboardEscape)), "the next Escape belongs to the host")
+        XCTAssertTrue(view.editor.state.selection.eq(selection))
     }
 }
 #endif
