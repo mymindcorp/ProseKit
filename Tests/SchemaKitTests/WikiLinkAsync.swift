@@ -1,5 +1,6 @@
 import Foundation
 import DocumentModel
+import DocumentTransform
 import EditorStateKit
 import SchemaKit
 import TestHarness
@@ -42,6 +43,137 @@ private func asyncWikiSetup(typing trigger: String,
 }
 
 func registerWikiLinkAsyncTests() {
+    test("suggestion acceptance: out-of-range positions are refused") {
+        let editor = try Editor(extensions: fullKit())
+        try type(editor, "hello")
+        let before = editor.doc
+        for (from, to) in [(1, 100), (-1, 3), (100, 1), (-100, 100)] {
+            try expect(!editor.acceptWikiLinkSuggestion(text: "Page", from: from, to: to))
+            try expect(!editor.acceptMentionSuggestion(id: "jane", from: from, to: to))
+        }
+        try expectEqual(editor.doc, before)
+    }
+
+    test("suggestion acceptance: reversed valid ranges still replace the query") {
+        for wiki in [false, true] {
+            let editor = try Editor(extensions: fullKit())
+            try type(editor, wiki ? "[[x" : "@ja")
+            let accepted = wiki
+                ? editor.acceptWikiLinkSuggestion(text: "Page", from: 4, to: 1)
+                : editor.acceptMentionSuggestion(id: "jane", from: 4, to: 1)
+            try expect(accepted)
+            try expectEqual(editor.doc.firstChild?.childCount, 1)
+            try expectEqual(editor.doc.firstChild?.firstChild?.type.name, wiki ? "wikiLink" : "mention")
+            try editor.doc.check()
+        }
+    }
+
+    test("suggestion acceptance: incompatible textblocks are left untouched") {
+        for wiki in [false, true] {
+            let editor = try Editor(extensions: fullKit())
+            try editor.setContent(html: "<pre><code>@ja</code></pre>")
+            let before = editor.doc
+            let accepted = wiki
+                ? editor.acceptWikiLinkSuggestion(text: "Page", from: 1, to: 4)
+                : editor.acceptMentionSuggestion(id: "jane", from: 1, to: 4)
+            try expectEqual(editor.doc, before)
+            try expect(!accepted)
+        }
+    }
+
+    test("suggestion entries: async results reject stale application") {
+        try MainActor.assumeIsolated {
+            let (editor, source, _) = try asyncWikiSetup(typing: "[[Ar") { _, _ in ["Archive"] }
+            var ready = false
+            source.onChange = { ready = true }
+            _ = source.entries("Ar", editor)
+            pumpMain { ready }
+            try expect(ready)
+            let entry = source.entries("Ar", editor)[0]
+            try editor.setContent(html: "<p>keep this text</p>")
+            let before = editor.doc
+            entry.apply(editor)
+            try expectEqual(editor.doc, before)
+        }
+    }
+
+    test("suggestion entries: selection-only changes still allow acceptance") {
+        try MainActor.assumeIsolated {
+            for wiki in [false, true] {
+                let editor = try Editor(extensions: fullKit(
+                    wikiLinkSuggestions: { _ in ["Archive"] }, mentionSuggestions: { _ in ["jane"] }))
+                try type(editor, wiki ? "[[Ar" : "@ja")
+                let source = editor.suggestionSources.first { $0.context(editor) != nil }!
+                let entry = source.entries(wiki ? "Ar" : "ja", editor)[0]
+                select(editor, 1, 1)
+                entry.apply(editor)
+                try expectEqual(editor.doc.firstChild?.firstChild?.type.name, wiki ? "wikiLink" : "mention")
+            }
+        }
+    }
+
+    test("suggestions: a hard break terminates wiki and mention queries") {
+        for wiki in [false, true] {
+            let editor = try Editor(extensions: fullKit())
+            let s = editor.schema
+            editor.setContent(try s.node("doc", content: Fragment.from(try s.node("paragraph", content: Fragment.from([
+                s.text(wiki ? "[[Ar" : "@ja"), try s.node("hardBreak"), s.text("next")
+            ])))))
+            let end = editor.doc.content.size - 1
+            select(editor, end, end)
+            if wiki { try expectNil(editor.wikiLinkSuggestion) }
+            else { try expectNil(editor.mentionSuggestion) }
+        }
+    }
+
+    test("suggestion entries: stale wiki action cannot replace newer text") {
+        try MainActor.assumeIsolated {
+            let editor = try Editor(extensions: fullKit(wikiLinkSuggestions: { _ in ["Archive"] }))
+            try type(editor, "[[Ar")
+            let source = editor.suggestionSources.first { $0.context(editor) != nil }!
+            let entry = source.entries("Ar", editor)[0]
+            try editor.setContent(html: "<p>keep this text</p>")
+            let before = editor.doc
+            entry.apply(editor)
+            try expectEqual(editor.doc, before)
+        }
+    }
+
+    test("suggestion entries: stale mention action cannot replace newer text") {
+        try MainActor.assumeIsolated {
+            let editor = try Editor(extensions: fullKit(mentionSuggestions: { _ in ["jane"] }))
+            try type(editor, "@ja")
+            let source = editor.suggestionSources.first { $0.context(editor) != nil }!
+            let entry = source.entries("ja", editor)[0]
+            try editor.setContent(html: "<p>keep this text</p>")
+            let before = editor.doc
+            entry.apply(editor)
+            try expectEqual(editor.doc, before)
+        }
+    }
+
+    test("wiki async: returning to cached query cancels obsolete fetch") {
+        try MainActor.assumeIsolated {
+            let (editor, source, _) = try asyncWikiSetup(typing: "[[Ar") { q, _ in [q] }
+            var updates = 0
+            source.onChange = { updates += 1 }
+            _ = source.entries("Ar", editor)
+            pumpMain { updates == 1 }
+            try expectEqual(updates, 1)
+            let tr = editor.state.tr
+            try tr.insertText("c")
+            editor.dispatch(tr)
+            _ = source.entries("Arc", editor)
+            let backspace = editor.state.tr
+            try backspace.delete(5, 6)
+            editor.dispatch(backspace)
+            try expectEqual(source.context(editor)?.query, "Ar")
+            _ = source.entries("Ar", editor)
+            pumpMain(timeout: 0.4) { updates > 1 }
+            try expectEqual(source.entries("Ar", editor).map(\.title), ["Ar"])
+        }
+    }
+
     test("wiki async: empty until the fetch resolves, then shows results") {
         MainActor.assumeIsolated {
             let (editor, source, log) = try! asyncWikiSetup(typing: "[[Arc") { q, _ in

@@ -82,11 +82,12 @@ final class SlashSuggestionSource: SuggestionSource {
         // Capture the trigger range now: applying from a tap can move the caret
         // (and clear the live `slashMenu`) before the command runs.
         let from = menu.from, to = menu.to
-        return commands.filter { $0.matches(query) }.map { item in
+        let entries = commands.filter { $0.matches(query) }.map { item in
             SuggestionEntry(title: item.title, subtitle: item.subtitle, icon: item.icon) {
                 $0.applySlashCommand(item, from: from, to: to)
             }
         }
+        return guardSuggestionEntries(entries, in: editor)
     }
 }
 
@@ -111,6 +112,7 @@ private func computeSlashMenu(_ state: EditorState, atLineStart: Bool) -> SlashM
     }
     let query = String(textBefore[slashRange.upperBound...])
     if query.contains(where: { $0.isWhitespace }) { return nil } // a space closes the menu
+    guard !suggestionCrossesHardBreak(parent, from: slashOffset, to: cursor.parentOffset) else { return nil }
     let from = cursor.pos - (cursor.parentOffset - slashOffset)
     return SlashMenuState(query: query, from: from, to: cursor.pos)
 }
@@ -149,9 +151,16 @@ public extension Editor {
     /// the range was captured before a tap could move the selection.
     @discardableResult
     func applySlashCommand(_ item: SlashCommandItem, from: Int, to: Int) -> Bool {
-        let tr = state.tr
-        _ = try? tr.delete(min(from, to), max(from, to))
-        dispatch(tr)
-        return run(item.command)
+        run(item.command, after: { state, dispatch, _ in
+            let start = min(from, to), end = max(from, to)
+            guard start >= 0, end <= state.doc.content.size else { return false }
+            let tr = state.tr
+            guard (try? tr.delete(start, end)) != nil else { return false }
+            // A menu tap may have moved the caret to another block. The command
+            // belongs to the block where its trigger was captured.
+            tr.setSelection(Selection.near(tr.doc.resolve(min(start, tr.doc.content.size))))
+            dispatch?(tr)
+            return true
+        })
     }
 }

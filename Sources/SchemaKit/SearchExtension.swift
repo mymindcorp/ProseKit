@@ -60,7 +60,8 @@ public extension Editor {
         let sel = state.selection
         let range = qs.range ?? SearchRange(from: 0, to: state.doc.content.size)
         var match = query.findNext(state, range.from, range.to)
-        if let atSelection = query.findNext(state, sel.from, range.to),
+        if sel.from >= range.from,
+           let atSelection = query.findNext(state, sel.from, range.to),
            atSelection.from == sel.from, atSelection.to == sel.to {
             match = atSelection
         }

@@ -26,9 +26,28 @@ public final class TaskListExtension: NodeExtension {
         return ["Mod-Shift-9": toggleList(type, item)]
     }
     public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
-        guard let type = ctx.nodeType else { return [] }
+        guard let type = ctx.nodeType, let item = ctx.schema.nodes["taskItem"] else { return [] }
         // "[ ] " or "[x] " at the start of a block makes a task list.
-        return [wrappingInputRule("^\\s*\\[[ xX]?\\]\\s$", type)]
+        // The checked attribute belongs to the item wrapper, not the list.
+        return [InputRule("^\\s*\\[([ xX]?)\\]\\s$") { state, match, start, end in
+            let tr = state.tr
+            guard (try? tr.delete(start, end)) != nil,
+                  let range = tr.doc.resolve(start).blockRange(),
+                  let wrapping = findWrappingForRange(range, type) else { return nil }
+            let checked = match[1]?.lowercased() == "x"
+            let wrappers = wrapping.map { wrapper in
+                guard wrapper.type === item else { return wrapper }
+                var attrs = wrapper.attrs
+                attrs["checked"] = .bool(checked)
+                return NodeTypeWithAttrs(wrapper.type, attrs)
+            }
+            guard (try? tr.wrap(range, wrappers)) != nil else { return nil }
+            if start > 0, tr.doc.resolve(start - 1).nodeBefore?.type === type,
+               canJoin(tr.doc, start - 1) {
+                _ = try? tr.join(start - 1)
+            }
+            return tr
+        }]
     }
 }
 
@@ -60,22 +79,15 @@ public final class TaskItemExtension: NodeExtension {
 /// Toggle the `checked` attribute of the task item containing the selection.
 public func toggleTaskChecked(_ itemType: NodeType) -> Command {
     { state, dispatch, _ in
-        let from = state.selection.resolvedFrom
-        var depth = from.depth
-        while depth > 0 {
-            if from.node(depth).type === itemType {
-                let pos = from.before(depth)
-                let checked = from.node(depth).attrs["checked"]?.boolValue ?? false
-                if let dispatch, let tr = try? state.tr.setNodeAttribute(pos, "checked", .bool(!checked)) {
-                    // Sorting (when it's on) rides along in the same transaction.
-                    sortTasksInPlace(tr, state)
-                    dispatch(tr)
-                }
-                return true
-            }
-            depth -= 1
+        guard let target = selectedNodeOrAncestor(state, itemType) else { return false }
+        let checked = target.node.attrs["checked"]?.boolValue ?? false
+        if let dispatch {
+            guard let tr = try? state.tr.setNodeAttribute(target.pos, "checked", .bool(!checked)) else { return false }
+            // Sorting (when it's on) rides along in the same transaction.
+            sortTasksInPlace(tr, state)
+            dispatch(tr)
         }
-        return false
+        return true
     }
 }
 

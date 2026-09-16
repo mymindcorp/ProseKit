@@ -5,6 +5,50 @@ import SchemaKit
 import TestHarness
 
 func registerSlashMenuTests() {
+    test("slash action: unavailable commands leave the query and selection untouched") {
+        for command in ["unknownCommand", "unsetLink"] {
+            let editor = try Editor(extensions: fullKit())
+            try type(editor, "/action")
+            let before = editor.doc
+            let selection = editor.state.selection
+            try expect(!editor.applySlashCommand(SlashCommandItem(title: "Action", command: command)))
+            try expectEqual(editor.doc, before)
+            try expect(editor.state.selection.eq(selection))
+        }
+    }
+
+    test("slash action: captured range targets its original block after the caret moves") {
+        let editor = try Editor(extensions: fullKit())
+        try editor.setContent(html: "<p>/h1</p><p>keep</p>")
+        select(editor, 4, 4)
+        let menu = editor.slashMenu!
+        select(editor, editor.doc.content.size - 1, editor.doc.content.size - 1)
+        try expect(editor.applySlashCommand(SlashCommandItem(title: "Heading", command: "toggleHeading1"), from: menu.from, to: menu.to))
+        try expectEqual(editor.doc.child(0).type.name, "heading")
+        try expectEqual(editor.doc.child(1).type.name, "paragraph")
+        try expectEqual(editor.doc.child(1).textContent, "keep")
+    }
+
+    test("slash action: stale entries do not edit newer content") {
+        try MainActor.assumeIsolated {
+            let editor = try Editor(extensions: fullKit())
+            try type(editor, "/h1")
+            let source = editor.suggestionSources.first { $0.context(editor) != nil }!
+            let entry = source.entries("h1", editor)[0]
+            try editor.setContent(html: "<p>keep this text</p>")
+            let before = editor.doc
+            entry.apply(editor)
+            try expectEqual(editor.doc, before)
+        }
+    }
+
+    test("slash query: hard breaks end the query") {
+        let editor = try Editor(extensions: fullKit())
+        try editor.setContent(html: "<p>/head<br>next</p>")
+        select(editor, editor.doc.content.size - 1, editor.doc.content.size - 1)
+        try expectNil(editor.slashMenu)
+    }
+
     test("slash menu: activates when typing / at the start of a block") {
         let editor = try Editor(extensions: fullKit())
         try type(editor, "/")

@@ -77,6 +77,17 @@ private final class PlainMark: MarkExtension {
 }
 
 func registerEdgeCommandTests() {
+    test("block toggle: selected code blocks and headings can toggle back to paragraphs") {
+        for (html, command) in [("<pre><code>text</code></pre>", "toggleCodeBlock"), ("<h2>text</h2>", "toggleHeading2")] {
+            let editor = try Editor(extensions: fullKit())
+            try editor.setContent(html: html)
+            editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, 0)))
+            try expect(editor.run(command))
+            try expectEqual(editor.doc.firstChild?.type.name, "paragraph")
+            try expectEqual(editor.doc.textContent, "text")
+        }
+    }
+
     // MARK: Image commands addressed by node type
 
     test("setImageSize(type): resizes the image of that type the selection addresses") {

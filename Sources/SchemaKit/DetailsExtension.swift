@@ -98,9 +98,11 @@ public func setDetails(_ detailsType: NodeType, _ summaryType: NodeType, _ conte
               let details = try? detailsType.createChecked(["open": .bool(true)],
                                                            content: Fragment.from([summary, content]))
         else { return false }
+        guard range.parent.canReplace(range.startIndex, range.endIndex, replacement: Fragment.from(details)) else { return false }
         guard let dispatch else { return true }
         let tr = state.tr
-        guard (try? tr.replaceWith(range.start, range.end, details)) != nil else { return false }
+        guard (try? tr.step(ReplaceStep(range.start, range.end,
+            Slice(content: Fragment.from(details), openStart: 0, openEnd: 0)))) != nil else { return false }
         // details(+1) → summary(+1) → its (empty) content.
         tr.setSelection(Selection.near(tr.doc.resolve(range.start + 2)))
         dispatch(tr.scrollIntoView())
@@ -112,24 +114,30 @@ public func setDetails(_ detailsType: NodeType, _ summaryType: NodeType, _ conte
 /// leading paragraph (dropped when empty) and its content is lifted out.
 public func unsetDetails(_ detailsType: NodeType, _ paragraphType: NodeType) -> Command {
     { state, dispatch, _ in
-        let from = state.selection.resolvedFrom
-        guard let depth = ancestorDepth(from, detailsType) else { return false }
-        let details = from.node(depth)
+        guard let target = selectedNodeOrAncestor(state, detailsType) else { return false }
+        let details = target.node
         guard details.childCount == 2 else { return false }
         let summary = details.child(0), content = details.child(1)
         var blocks: [Node] = []
-        if summary.content.size > 0, let para = try? paragraphType.create([:], content: summary.content) {
+        if summary.content.size > 0 {
+            guard let para = try? paragraphType.createChecked([:], content: summary.content) else { return false }
             blocks.append(para)
         }
         for i in 0..<content.childCount { blocks.append(content.child(i)) }
         if blocks.isEmpty, let empty = paragraphType.createAndFill() { blocks = [empty] }
-        guard let dispatch else { return true }
-        let start = from.before(depth), end = from.after(depth)
+        let start = target.pos, end = target.pos + details.nodeSize
         let tr = state.tr
-        guard (try? tr.replaceWith(start, end, Fragment.from(blocks))) != nil else { return false }
-        // Keep the cursor where it was, mapped through the unwrap.
-        tr.setSelection(Selection.near(tr.doc.resolve(min(tr.mapping.map(from.pos), tr.doc.content.size))))
-        dispatch(tr.scrollIntoView())
+        guard (try? tr.step(ReplaceStep(start, end,
+            Slice(content: Fragment.from(blocks), openStart: 0, openEnd: 0)))) != nil else { return false }
+        // The replacement's map treats all inner text as deleted. For the
+        // selection, map only the wrappers that actually disappeared; the
+        // summary's paragraph conversion preserves its content positions.
+        let contentStart = start + 1 + summary.nodeSize
+        let removed = summary.content.size > 0
+            ? [start, 1, 0, contentStart, 1, 0, end - 2, 2, 0]
+            : [start, summary.nodeSize + 2, 0, end - 2, 2, 0]
+        tr.setSelection(state.selection.map(tr.doc, StepMap(removed)))
+        dispatch?(tr.scrollIntoView())
         return true
     }
 }
@@ -148,11 +156,10 @@ public func toggleDetails(_ detailsType: NodeType, _ summaryType: NodeType,
 /// Flip the `open` attribute of the `details` node containing the selection.
 public func toggleDetailsOpen(_ detailsType: NodeType) -> Command {
     { state, dispatch, _ in
-        let from = state.selection.resolvedFrom
-        guard let depth = ancestorDepth(from, detailsType) else { return false }
+        guard let target = selectedNodeOrAncestor(state, detailsType) else { return false }
         if let dispatch {
-            let open = from.node(depth).attrs["open"]?.boolValue ?? false
-            if let tr = setDetailsOpen(state, pos: from.before(depth), open: !open) { dispatch(tr) }
+            let open = target.node.attrs["open"]?.boolValue ?? false
+            if let tr = setDetailsOpen(state, pos: target.pos, open: !open) { dispatch(tr) }
         }
         return true
     }
@@ -168,7 +175,10 @@ public func setDetailsOpen(_ state: EditorState, pos: Int, open: Bool) -> Transa
     if !open, node.childCount > 0 {
         let summaryEnd = pos + node.child(0).nodeSize // = pos + 1 + summarySize - 1
         let sel = state.selection
-        if sel.from > summaryEnd, sel.to < pos + node.nodeSize {
+        let end = pos + node.nodeSize
+        let anchorHidden = sel.anchor > summaryEnd && sel.anchor < end
+        let headHidden = sel.head > summaryEnd && sel.head < end
+        if anchorHidden || headHidden {
             tr.setSelection(Selection.near(tr.doc.resolve(summaryEnd), -1))
         }
     }

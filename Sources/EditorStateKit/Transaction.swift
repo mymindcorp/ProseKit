@@ -140,12 +140,15 @@ public final class Transaction: Transform {
         let from = from!
         let to = to ?? from
         if text.isEmpty {
-            try delete(from, to)
+            try deleteRange(from, to)
             return self
         }
         let marks = storedMarks ?? (to == from ? doc.resolve(from).marks()
             : (doc.resolve(from).marksAcross(doc.resolve(to)) ?? Mark.none))
         try replaceWith(from, to, schema.text(text, marks))
+        if !selection.empty, selection.to == from + text.count {
+            setSelection(Selection.near(selection.resolvedTo))
+        }
         return self
     }
 

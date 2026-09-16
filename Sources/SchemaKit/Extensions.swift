@@ -386,10 +386,12 @@ public func setHighlight(_ markType: MarkType, color: String?) -> Command {
         if sel.empty { return false }
         if let dispatch {
             let tr = state.tr
-            _ = try? tr.removeMark(sel.from, sel.to, markType)
             var attrs: Attrs = [:]
             if let color { attrs["color"] = .string(color) }
-            _ = try? tr.addMark(sel.from, sel.to, markType.create(attrs))
+            for range in sel.ranges {
+                _ = try? tr.removeMark(range.from.pos, range.to.pos, markType)
+                _ = try? tr.addMark(range.from.pos, range.to.pos, markType.create(attrs))
+            }
             dispatch(tr.scrollIntoView())
         }
         return true
@@ -454,10 +456,12 @@ public func setLink(_ markType: MarkType, href: String, title: String? = nil) ->
         if sel.empty { return false }
         if let dispatch {
             let tr = state.tr
-            _ = try? tr.removeMark(sel.from, sel.to, markType) // replace any existing link
             var attrs: Attrs = ["href": .string(href)]
             if let title { attrs["title"] = .string(title) }
-            _ = try? tr.addMark(sel.from, sel.to, markType.create(attrs))
+            for range in sel.ranges {
+                _ = try? tr.removeMark(range.from.pos, range.to.pos, markType) // replace any existing link
+                _ = try? tr.addMark(range.from.pos, range.to.pos, markType.create(attrs))
+            }
             dispatch(tr.scrollIntoView())
         }
         return true
@@ -471,7 +475,9 @@ public func unsetLink(_ markType: MarkType) -> Command {
         if sel.empty { return false }
         if let dispatch {
             let tr = state.tr
-            _ = try? tr.removeMark(sel.from, sel.to, markType)
+            for range in sel.ranges {
+                _ = try? tr.removeMark(range.from.pos, range.to.pos, markType)
+            }
             dispatch(tr.scrollIntoView())
         }
         return true
@@ -546,8 +552,10 @@ public func setColor(_ markType: MarkType, _ color: String?) -> Command {
         if sel.empty { return false }
         if let dispatch {
             let tr = state.tr
-            _ = try? tr.removeMark(sel.from, sel.to, markType)
-            if let color { _ = try? tr.addMark(sel.from, sel.to, markType.create(["color": .string(color)])) }
+            for range in sel.ranges {
+                _ = try? tr.removeMark(range.from.pos, range.to.pos, markType)
+                if let color { _ = try? tr.addMark(range.from.pos, range.to.pos, markType.create(["color": .string(color)])) }
+            }
             dispatch(tr.scrollIntoView())
         }
         return true

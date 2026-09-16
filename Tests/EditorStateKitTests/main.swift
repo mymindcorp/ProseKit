@@ -13,6 +13,155 @@ func freshState(_ doc: Node? = nil, plugins: [Plugin] = []) -> EditorState {
 
 // MARK: - State basics
 
+test("regex search does not expand partial grapheme matches into other text") {
+    let state = freshState(B.doc(B.p("e\u{0301}b")))
+    for pattern in ["\u{0301}b", "e", "e\u{0301}"] {
+        let query = SearchQuery(search: pattern, regexp: true)
+        let expected = pattern == "e\u{0301}" ? [1] : []
+        try expectEqual(query.findAll(state).map(\.from), expected)
+        try expectEqual(query.findNext(state).map { [$0.from] } ?? [], expected)
+        try expectEqual(query.findPrev(state).map { [$0.from] } ?? [], expected)
+    }
+}
+
+test("regex search continues after a partial grapheme match") {
+    let state = freshState(B.doc(B.p("e\u{0301}b éb")))
+    let query = SearchQuery(search: "\u{0301}b|éb", regexp: true)
+    try expectEqual(query.findNext(state)?.from, 4)
+    try expectEqual(query.findPrev(state)?.from, 4)
+    try expectEqual(query.findAll(state).map(\.from), [4])
+}
+
+test("replaceCurrent availability requires the exact match to be selected") {
+    let doc = B.doc(B.p("cat tail"))
+    for (from, to) in [(1, 1), (1, 3), (1, 4)] {
+        let state = EditorState.create(EditorStateConfig(schema: B.schema, doc: doc,
+            selection: TextSelection.create(doc, from, to),
+            plugins: [searchQueryPlugin(initialQuery: SearchQuery(search: "cat", replace: "dog"))]))
+        let enabled = to == 4
+        try expectEqual(replaceCurrent(state, nil), enabled)
+        var dispatched = false
+        try expectEqual(replaceCurrent(state, { _ in dispatched = true }), enabled)
+        try expectEqual(dispatched, enabled)
+    }
+}
+
+test("search replacement preserves non-ASCII numbers after a dollar sign") {
+    let state = freshState(B.doc(B.p("cat")))
+    for replacement in ["$٢", "$²", "$½", "$1️⃣"] {
+        let query = SearchQuery(search: "cat", replace: replacement)
+        let tr = state.tr
+        for range in query.getReplacements(state, query.findNext(state)!).reversed() {
+            try tr.replace(range.from, range.to, range.insert)
+        }
+        try expectEqual(tr.doc, B.doc(B.p(replacement)))
+    }
+}
+
+test("search replacement copies nested capture groups without deleting preserved text") {
+    let state = freshState(B.doc(B.p("prefix abc tail")))
+    let query = SearchQuery(search: "(a(b)c)", regexp: true, replace: "$1$2")
+    let tr = state.tr
+    for range in query.getReplacements(state, query.findNext(state)!).reversed() {
+        try tr.replace(range.from, range.to, range.insert)
+    }
+    try expectEqual(tr.doc, B.doc(B.p("prefix abcb tail")))
+}
+
+test("search replacement copies lookaround captures without editing outside the match") {
+    let state = freshState(B.doc(B.p("abc")))
+    for (pattern, expected) in [("(?<=(a))b", "aac"), ("b(?=(c))", "acc")] {
+        let query = SearchQuery(search: pattern, regexp: true, replace: "$1")
+        let match = query.findNext(state)!
+        let ranges = query.getReplacements(state, match)
+        try expect(ranges.allSatisfy { $0.from >= match.from && $0.to <= match.to && $0.from <= $0.to })
+        let tr = state.tr
+        for range in ranges.reversed() {
+            try tr.replace(range.from, range.to, range.insert)
+        }
+        try expectEqual(tr.doc, B.doc(B.p(expected)))
+    }
+}
+
+test("string search replacements preserve the actual match away from block start") {
+    let state = freshState(B.doc(B.p("prefix cat tail")))
+    let query = SearchQuery(search: "cat", replace: "[$&] $&")
+    let results = [query.findNext(state)!, query.findPrev(state)!, query.findAll(state)[0]]
+    for result in results {
+        let ranges = query.getReplacements(state, result)
+        try expect(ranges.allSatisfy { $0.from >= result.from && $0.to <= result.to && $0.from <= $0.to })
+        let tr = state.tr
+        for range in ranges.reversed() {
+            try tr.replace(range.from, range.to, range.insert)
+        }
+        try expectEqual(tr.doc, B.doc(B.p("prefix [cat] cat tail")))
+    }
+}
+
+test("regex search respects the lower bound when searching backward") {
+    let state = freshState(B.doc(B.p("one two one")))
+    let query = SearchQuery(search: "one", regexp: true)
+    try expect(query.findPrev(state, 8, 5) == nil)
+    try expectEqual(query.findPrev(state, 12, 5)?.from, 9)
+    try expect(query.findPrev(state, 12, 10) == nil)
+}
+
+test("regex backward search respects bounds across paragraphs") {
+    let state = freshState(B.doc(B.p("one"), B.p("two")))
+    let query = SearchQuery(search: "one|two", regexp: true)
+    try expect(query.findPrev(state, 10, 7) == nil)
+    try expectEqual(query.findPrev(state, 10, 6)?.from, 6)
+    try expectEqual(query.findPrev(state, 6, 1)?.from, 1)
+}
+
+test("regex backward search keeps the lower bound after filter rejection") {
+    let state = freshState(B.doc(B.p("one two one")))
+    let query = SearchQuery(search: "one", regexp: true, filter: { _, result in result.from < 9 })
+    try expect(query.findPrev(state, 12, 5) == nil)
+}
+
+test("insertText empty string removes a fully covered heading before the next block") {
+    let doc = B.doc(B.node("heading", ["level": .int(2)], [B.t("first")]), B.p("tail"))
+    let state = freshState(doc)
+    let tr = try state.tr.insertText("", 1, 8)
+    try expectEqual(tr.doc, B.doc(B.p("tail")))
+    try tr.doc.check()
+}
+
+test("insertText empty string removes fully covered nested wrappers") {
+    let doc = B.doc(B.node("blockquote", [:], [B.p("first")]), B.p("tail"))
+    let state = freshState(doc)
+    let actual = try state.tr.insertText("", 2, 10)
+    try expectEqual(actual.doc, B.doc(B.p("tail")))
+    try actual.doc.check()
+}
+
+test("insertText empty string preserves a partially deleted heading") {
+    let doc = B.doc(B.node("heading", ["level": .int(2)], [B.t("first")]))
+    let tr = try freshState(doc).tr.insertText("", 2, 4)
+    try expectEqual(tr.doc, B.doc(B.node("heading", ["level": .int(2)], [B.t("fst")])))
+}
+
+test("insertText collapses a selection ending at the inserted text") {
+    for backwards in [false, true] {
+        let doc = B.doc(B.p("abcdef"))
+        let state = EditorState.create(EditorStateConfig(schema: B.schema, doc: doc,
+            selection: TextSelection.create(doc, backwards ? 5 : 2, backwards ? 2 : 5)))
+        let tr = try state.tr.insertText("X", 3, 5)
+        try expectEqual(tr.doc.textContent, "abXef")
+        try expect(tr.selection.empty)
+        try expectEqual(tr.selection.head, 4)
+    }
+}
+
+test("insertText outside a selection preserves the selection") {
+    let doc = B.doc(B.p("abcdef"))
+    let state = EditorState.create(EditorStateConfig(schema: B.schema, doc: doc, selection: TextSelection.create(doc, 2, 4)))
+    let tr = try state.tr.insertText("X", 6)
+    try expectEqual(tr.selection.from, 2)
+    try expectEqual(tr.selection.to, 4)
+}
+
 test("create state defaults to filled doc + start selection") {
     let state = freshState()
     try expect(state.doc.childCount >= 1)

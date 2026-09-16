@@ -20,6 +20,20 @@ private func selFor(_ d: TaggedNode) -> Selection {
 private func mkState(_ d: TaggedNode) -> EditorState {
     EditorState.create(EditorStateConfig(schema: basicSchema, doc: d.node, selection: selFor(d)))
 }
+
+private func rootListState(nodeSelection: Bool, text: String = "") throws -> EditorState {
+    let schema = try Schema(nodes: [
+        ("doc", NodeSpec(content: "listItem+")),
+        ("listItem", NodeSpec(content: "paragraph+")),
+        ("paragraph", NodeSpec(content: "text*")),
+        ("text", NodeSpec())
+    ])
+    let paragraph = try schema.node("paragraph", content: text.isEmpty ? .empty : Fragment.from(schema.text(text)))
+    let item = try schema.node("listItem", content: Fragment.from(paragraph))
+    let doc = try schema.node("doc", content: Fragment.from(item))
+    let selection: Selection = nodeSelection ? NodeSelection.create(doc, 0) : TextSelection.create(doc, 2)
+    return EditorState.create(EditorStateConfig(schema: schema, doc: doc, selection: selection))
+}
 private func run(_ d: TaggedNode, _ command: Command, _ result: TaggedNode?) throws {
     var state = mkState(d)
     _ = command(state, { tr in state = state.apply(tr) }, nil)
@@ -31,6 +45,35 @@ private func run(_ d: TaggedNode, _ command: Command, _ result: TaggedNode?) thr
 private func lt(_ name: String) -> NodeType { basicSchema.nodes[name]! }
 
 func registerPMListTests() {
+    test("root list: nonempty items can still split") {
+        let state = try rootListState(nodeSelection: false, text: "keep")
+        var result = state
+        try expect(splitListItem(state.schema.nodes["listItem"]!)(state, { result = state.apply($0) }, nil))
+        try expectEqual(result.doc.childCount, 2)
+        try expectEqual(result.doc.textContent, "keep")
+        try result.doc.check()
+    }
+
+    test("root list: splitting an empty item does not read above the document") {
+        let state = try rootListState(nodeSelection: false)
+        let command = splitListItem(state.schema.nodes["listItem"]!)
+        try expect(!command(state, nil, nil))
+        var dispatched = false
+        try expect(!command(state, { _ in dispatched = true }, nil))
+        try expect(!dispatched)
+    }
+
+    test("root list: lifting a selected item cannot remove the document wrapper") {
+        for selected in [true, false] {
+            let state = try rootListState(nodeSelection: selected)
+            let command = liftListItem(state.schema.nodes["listItem"]!)
+            var dispatched = false
+            try expect(!command(state, { _ in dispatched = true }, nil))
+            try expect(!dispatched)
+            try expect(!command(state, nil, nil))
+        }
+    }
+
     func c(_ name: String, _ body: @escaping @Sendable () throws -> Void) { test("PM list \(name)") { try body() } }
 
     // MARK: wrapInList

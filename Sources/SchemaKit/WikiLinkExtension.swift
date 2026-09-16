@@ -149,7 +149,7 @@ final class WikiLinkSuggestionSource: SuggestionSource {
     func context(_ editor: Editor) -> SuggestionContext? { wikiLinkContext(editor) }
     func entries(_ query: String, _ editor: Editor) -> [SuggestionEntry] {
         guard let suggestion = editor.wikiLinkSuggestion else { return [] }
-        return wikiLinkEntries(provider(trimmedQuery(query)), from: suggestion.from, to: suggestion.to)
+        return guardSuggestionEntries(wikiLinkEntries(provider(trimmedQuery(query)), from: suggestion.from, to: suggestion.to), in: editor)
     }
 }
 
@@ -168,10 +168,12 @@ private func computeSuggestion(_ state: EditorState) -> WikiLinkSuggestion? {
     // Find the last unmatched "[[".
     guard let openRange = textBefore.range(of: "[[", options: .backwards) else { return nil }
     let afterOpen = textBefore[openRange.upperBound...]
-    // Cancel if there's a closing "]]" or a newline after the "[[".
-    if afterOpen.contains("]") { return nil }
+    if afterOpen.contains("]") || afterOpen.contains(where: { $0.isNewline }) { return nil }
     let query = String(afterOpen)
     let openOffset = textBefore.distance(from: textBefore.startIndex, to: openRange.lowerBound)
+    // textBetween represents every leaf by the same placeholder. Distinguish
+    // line breaks from the other inline atoms a query is allowed to contain.
+    guard !suggestionCrossesHardBreak(parent, from: openOffset, to: cursor.parentOffset) else { return nil }
     let from = cursor.pos - (cursor.parentOffset - openOffset)
     return WikiLinkSuggestion(query: query, from: from, to: cursor.pos)
 }
@@ -231,9 +233,6 @@ public extension Editor {
         guard let type = schema.nodes["wikiLink"] else { return false }
         let attrs = wikiLinkAttrs(text: text, targetId: targetId, targetType: targetType)
         guard let node = try? type.create(attrs) else { return false }
-        let tr = state.tr
-        _ = try? tr.replaceWith(min(from, to), max(from, to), node)
-        dispatch(tr.scrollIntoView())
-        return true
+        return replaceSuggestionRange(self, from: from, to: to, with: node)
     }
 }

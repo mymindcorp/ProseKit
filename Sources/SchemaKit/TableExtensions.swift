@@ -118,22 +118,23 @@ public func tableExtensions(options: TableOptions = TableOptions()) -> [any Exte
 
 /// Create a `rows` × `cols` table node (optionally with a header row).
 public func createTable(_ schema: Schema, rows: Int, cols: Int, withHeaderRow: Bool = true) -> Node? {
-    guard let tableType = schema.nodes["table"],
+    guard rows > 0, cols > 0,
+          let tableType = schema.nodes["table"],
           let rowType = schema.nodes["tableRow"],
           let cellType = schema.nodes["tableCell"],
-          let headerType = schema.nodes["tableHeader"] else { return nil }
+          let firstRowType = withHeaderRow ? schema.nodes["tableHeader"] : cellType else { return nil }
     var rowNodes: [Node] = []
     for r in 0..<rows {
-        let type = (withHeaderRow && r == 0) ? headerType : cellType
+        let type = r == 0 ? firstRowType : cellType
         var cells: [Node] = []
         for _ in 0..<cols {
             guard let cell = type.createAndFill() else { return nil }
             cells.append(cell)
         }
-        guard let row = try? rowType.create([:], content: Fragment.from(cells)) else { return nil }
+        guard let row = try? rowType.createChecked([:], content: Fragment.from(cells)) else { return nil }
         rowNodes.append(row)
     }
-    return try? tableType.create([:], content: Fragment.from(rowNodes))
+    return try? tableType.createChecked([:], content: Fragment.from(rowNodes))
 }
 
 private func isCell(_ node: Node) -> Bool {
@@ -146,13 +147,9 @@ private struct TableContext {
 }
 
 private func tableContext(_ state: EditorState) -> TableContext? {
-    let from = state.selection.resolvedFrom
-    var d = from.depth
-    while d >= 0 {
-        if from.node(d).type.name == "table" { return TableContext(table: from.node(d), tablePos: from.before(d)) }
-        d -= 1
-    }
-    return nil
+    guard let type = state.schema.nodes["table"],
+          let target = selectedNodeOrAncestor(state, type) else { return nil }
+    return TableContext(table: target.node, tablePos: target.pos)
 }
 
 // MARK: - Commands
@@ -161,16 +158,27 @@ private func tableContext(_ state: EditorState) -> TableContext? {
 public func insertTable(rows: Int = 3, cols: Int = 3, withHeaderRow: Bool = true) -> Command {
     { state, dispatch, _ in
         guard let table = createTable(state.schema, rows: rows, cols: cols, withHeaderRow: withHeaderRow) else { return false }
-        if let dispatch {
-            // Where the first cell's content will be, measured before the
-            // insert: one step into the table, one into its first row, one into
-            // the cell. Without this the caret lands *after* the table — typing
-            // then writes below it, and a table command has no cell to act on.
-            let inFirstCell = state.selection.from + 3
-            let tr = state.tr.replaceSelectionWith(table).scrollIntoView()
-            tr.setSelection(Selection.near(tr.doc.resolve(min(inFirstCell, tr.doc.content.size))))
-            dispatch(tr)
+        let tr = state.tr.replaceSelectionWith(table, inheritMarks: false)
+        // Fitting may discard a table wrapper that the destination forbids.
+        // Confirm the complete table survived before publishing the replacement.
+        var insertedAt: Int?
+        for (index, map) in tr.mapping.maps.enumerated() {
+            let after = tr.mapping.slice(index + 1)
+            map.forEach { _, _, newStart, newEnd in
+                let from = after.map(newStart, -1), to = after.map(newEnd, 1)
+                tr.doc.nodesBetween(from, to, { node, pos, _, _ in
+                    if insertedAt == nil, pos >= from, pos + node.nodeSize <= to, node == table {
+                        insertedAt = pos
+                        return false
+                    }
+                    return insertedAt == nil
+                })
+            }
         }
+        guard let insertedAt else { return false }
+        // Use the actual fitted location: insertion can split the textblock.
+        tr.setSelection(Selection.near(tr.doc.resolve(insertedAt + 3)))
+        dispatch?(tr.scrollIntoView())
         return true
     }
 }

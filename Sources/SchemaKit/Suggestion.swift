@@ -1,4 +1,5 @@
 import DocumentModel
+import DocumentTransform
 import EditorStateKit
 
 /// The active query for a suggestion menu and the document range it replaces.
@@ -27,6 +28,44 @@ public struct SuggestionEntry {
         self.icon = icon
         self.apply = apply
     }
+}
+
+/// A menu row captures document positions. Selection changes (including the
+/// tap that accepts it) are fine, but a document edit makes those positions
+/// stale. Let the next popup refresh provide a new row instead of applying an
+/// old row to unrelated text.
+@MainActor
+func guardSuggestionEntries(_ entries: [SuggestionEntry], in editor: Editor) -> [SuggestionEntry] {
+    let doc = editor.doc
+    return entries.map { entry in
+        SuggestionEntry(title: entry.title, subtitle: entry.subtitle, icon: entry.icon) { current in
+            guard current.doc == doc else { return }
+            entry.apply(current)
+        }
+    }
+}
+
+func suggestionCrossesHardBreak(_ parent: Node, from: Int, to: Int) -> Bool {
+    var found = false
+    parent.nodesBetween(from, to, { node, _, _, _ in
+        if node.type.name == "hardBreak" { found = true }
+        return !found
+    })
+    return found
+}
+
+/// Explicit suggestion ranges can outlive the text that created them. Bounds
+/// must be checked before resolving positions, and the replacement must fit
+/// exactly: a fitter may move an inline atom outside a text-only block while
+/// deleting the query it was supposed to replace in place.
+func replaceSuggestionRange(_ editor: Editor, from: Int, to: Int, with node: Node) -> Bool {
+    let start = min(from, to), end = max(from, to)
+    guard start >= 0, end <= editor.doc.content.size else { return false }
+    let tr = editor.state.tr
+    let slice = Slice(content: Fragment.from(node), openStart: 0, openEnd: 0)
+    guard (try? tr.step(ReplaceStep(start, end, slice))) != nil else { return false }
+    editor.dispatch(tr.scrollIntoView())
+    return true
 }
 
 /// A self-contained source of suggestions — the `/` slash menu, `[[` wiki links,

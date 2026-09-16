@@ -35,6 +35,118 @@ func cursorInFirstCell(_ editor: Editor) {
 }
 
 func registerM5Tests() {
+    test("table insertion: rejects a schema that cannot retain the table") {
+        let schema = try Schema(nodes: [
+            ("doc", NodeSpec(content: "paragraph+")),
+            ("paragraph", NodeSpec(content: "text*", group: "block")),
+            ("text", NodeSpec()),
+            ("table", TableExtension().nodeSpec),
+            ("tableRow", TableRowExtension().nodeSpec),
+            ("tableCell", TableCellExtension().nodeSpec),
+            ("tableHeader", TableHeaderExtension().nodeSpec)
+        ])
+        let paragraph = try schema.node("paragraph", content: Fragment.from(schema.text("keep")))
+        let doc = try schema.node("doc", content: Fragment.from(paragraph))
+        let state = EditorState.create(EditorStateConfig(schema: schema, doc: doc, selection: TextSelection.create(doc, 1, 5)))
+        let command = insertTable(rows: 1, cols: 1)
+        var dispatched = false
+        try expect(!command(state, { _ in dispatched = true }, nil))
+        try expect(!dispatched)
+        try expect(!command(state, nil, nil))
+    }
+
+    test("table insertion: places the caret in the inserted table at paragraph boundaries") {
+        for pos in [1, 3, 5] {
+            let editor = try makeFullEditor()
+            try editor.setContent(html: "<p>abcd</p>")
+            select(editor, pos, pos)
+            try expect(editor.insertTable(rows: 1, cols: 1))
+            let head = editor.state.selection.resolvedHead
+            try expect((0...head.depth).contains { head.node($0).type.name == "table" })
+            try expectEqual(head.parent.type.name, "paragraph")
+            try editor.doc.check()
+        }
+    }
+
+    test("delete table: a table document root cannot be deleted") {
+        let schema = try Schema(nodes: [
+            ("paragraph", NodeSpec(content: "text*", group: "block")),
+            ("text", NodeSpec()),
+            ("table", TableExtension().nodeSpec),
+            ("tableRow", TableRowExtension().nodeSpec),
+            ("tableCell", TableCellExtension().nodeSpec),
+            ("tableHeader", TableHeaderExtension().nodeSpec)
+        ], topNode: "table")
+        let doc = createTable(schema, rows: 1, cols: 1, withHeaderRow: false)!
+        let state = EditorState.create(EditorStateConfig(schema: schema, doc: doc))
+        try expect(!deleteTable(state, nil, nil))
+        var dispatched = false
+        try expect(!deleteTable(state, { _ in dispatched = true }, nil))
+        try expect(!dispatched)
+    }
+
+    test("delete table: a node selection targets the selected table") {
+        for nested in [false, true] {
+            let editor = try makeFullEditor()
+            let inner = "<table><tr><td>remove</td></tr></table>"
+            try editor.setContent(html: nested ? "<table><tr><td><p>keep</p>" + inner + "</td></tr></table>" : "<p>keep</p>" + inner)
+            var pos = 0
+            editor.doc.descendants { node, at, _, _ in
+                if node.type.name == "table" { pos = at }
+                return true
+            }
+            let state = EditorState.create(EditorStateConfig(schema: editor.schema, doc: editor.doc, selection: NodeSelection.create(editor.doc, pos)))
+            var result = state
+            try expect(deleteTable(state, { result = state.apply($0) }, nil))
+            try expectEqual(result.doc.textContent, "keep")
+            try expectEqual(result.doc.firstChild?.type.name, nested ? "table" : "paragraph")
+            try result.doc.check()
+        }
+    }
+
+    test("table creation: nonpositive dimensions are rejected") {
+        let editor = try Editor(extensions: fullKit())
+        let before = editor.doc
+        for (rows, cols) in [(-1, 2), (2, -1), (0, 2), (2, 0)] {
+            try expect(createTable(editor.schema, rows: rows, cols: cols) == nil)
+            try expect(!editor.insertTable(rows: rows, cols: cols))
+            try expectEqual(editor.doc, before)
+        }
+    }
+
+    test("table creation: headers are optional when not requested") {
+        let schema = try Schema(nodes: [
+            ("doc", NodeSpec(content: "block+")),
+            ("paragraph", NodeSpec(content: "text*", group: "block")),
+            ("text", NodeSpec()),
+            ("table", TableExtension().nodeSpec),
+            ("tableRow", NodeSpec(content: "tableCell+")),
+            ("tableCell", TableCellExtension().nodeSpec)
+        ])
+        let table = createTable(schema, rows: 2, cols: 2, withHeaderRow: false)
+        try expectNotNil(table)
+        try table!.check()
+        try expect(createTable(schema, rows: 2, cols: 2, withHeaderRow: true) == nil)
+    }
+
+    test("table creation: requested dimensions must satisfy the schema") {
+        let schema = try Schema(nodes: [
+            ("doc", NodeSpec(content: "block+")),
+            ("paragraph", NodeSpec(content: "text*", group: "block")),
+            ("text", NodeSpec()),
+            ("table", NodeSpec(content: "tableRow{2}", group: "block")),
+            ("tableRow", NodeSpec(content: "tableCell{2}")),
+            ("tableCell", TableCellExtension().nodeSpec),
+            ("tableHeader", TableHeaderExtension().nodeSpec)
+        ])
+        try expect(createTable(schema, rows: 1, cols: 2, withHeaderRow: false) == nil)
+        try expect(createTable(schema, rows: 2, cols: 1, withHeaderRow: false) == nil)
+        try expect(createTable(schema, rows: 2, cols: 2, withHeaderRow: true) == nil)
+        let table = createTable(schema, rows: 2, cols: 2, withHeaderRow: false)
+        try expectNotNil(table)
+        try table!.check()
+    }
+
     // MARK: Image
 
     test("image: schema + insert") {

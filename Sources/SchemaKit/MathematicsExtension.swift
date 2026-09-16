@@ -152,6 +152,18 @@ private func mathInputRule(_ type: NodeType, pattern: String) -> InputRule {
     // Never inside a code span: a literal `$x$` there must stay text, not
     // become a math node.
     InputRule(pattern, inCodeMark: false) { state, match, start, end in
+        let from = state.doc.resolve(start)
+        let to = state.doc.resolve(end)
+        guard from.sameParent(to) else { return nil }
+        if !type.isInline, from.parentOffset != 0 || end != from.end() { return nil }
+        // Input-rule matching flattens inline atoms into placeholders. They
+        // aren't LaTeX source and must not disappear into the replacement.
+        var onlyText = true
+        from.parent.nodesBetween(from.parentOffset, to.parentOffset, { node, _, _, _ in
+            if !node.isText { onlyText = false }
+            return false
+        })
+        guard onlyText else { return nil }
         guard let latex = match[1]?.trimmingCharacters(in: .whitespaces), !latex.isEmpty,
               let node = try? type.create(["latex": .string(latex)]) else { return nil }
         let tr = state.tr
@@ -175,7 +187,8 @@ public let mathMigrationPattern = "\\$([^$\\n]+)\\$"
 public func addMathMigrationSteps(_ doc: Node, _ tr: Transaction, pattern: String = mathMigrationPattern,
                                   schema: Schema) -> Transaction {
     guard let type = schema.nodes["inlineMath"],
-          let regex = try? NSRegularExpression(pattern: pattern) else { return tr }
+          let regex = try? NSRegularExpression(pattern: pattern),
+          regex.numberOfCaptureGroups >= 1 else { return tr }
     // (from, to, latex) for every match, in document order.
     var found: [(from: Int, to: Int, latex: String)] = []
     doc.descendants { node, pos, _, _ in
@@ -185,12 +198,31 @@ public func addMathMigrationSteps(_ doc: Node, _ tr: Transaction, pattern: Strin
               node.type.contentMatch.matchType(type) != nil else { return true }
         let text = node.textBetween(0, node.content.size, blockSeparator: nil, leafText: "\u{fffc}")
         let ns = text as NSString
+        // Regex ranges use UTF-16 and can split a grapheme. Only boundaries
+        // represented by document positions can safely become replacements.
+        var offsets: [Int: Int] = [0: 0]
+        var utf16Offset = 0
+        for (offset, character) in text.enumerated() {
+            utf16Offset += String(character).utf16.count
+            offsets[utf16Offset] = offset + 1
+        }
         for m in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-            let latex = ns.substring(with: m.range(at: 1))
+            let capture = m.range(at: 1)
+            guard capture.location != NSNotFound, m.range.length > 0,
+                  let localFrom = offsets[m.range.location],
+                  let localTo = offsets[NSMaxRange(m.range)] else { continue }
+            let latex = ns.substring(with: capture)
             guard !latex.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
-            // NSRange is UTF-16; document offsets are graphemes.
-            let from = pos + 1 + ns.substring(to: m.range.location).count
-            found.append((from: from, to: from + ns.substring(with: m.range).count, latex: latex))
+            // The flattened string uses placeholders for every inline leaf.
+            // A match must consist entirely of prose text: never consume an
+            // image, hard break, existing formula, or literal inline code.
+            var eligible = true
+            node.nodesBetween(localFrom, localTo, { child, _, _, _ in
+                if !child.isText || child.marks.contains(where: { $0.type.spec.code }) { eligible = false }
+                return false
+            })
+            guard eligible else { continue }
+            found.append((from: pos + 1 + localFrom, to: pos + 1 + localTo, latex: latex))
         }
         return true
     }

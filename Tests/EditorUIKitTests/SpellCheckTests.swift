@@ -9,6 +9,23 @@ import DocumentTransform
 
 @MainActor
 final class SpellCheckTests: XCTestCase {
+    func testAppendedEditMapsSpellingFromEachTransactionsDocument() throws {
+        let editor = try Editor(extensions: fullKit() + [AppendSpellingPrefix()])
+        let s = editor.schema
+        editor.setContent(try s.node("doc", content: Fragment.from([
+            try s.node("paragraph", content: Fragment.from(s.text("first"))),
+            try s.node("paragraph")
+        ])))
+        let v = EditorTextView(editor: editor)
+        let tr = editor.state.tr
+        try tr.insertText("mispeled", 8)
+        tr.setMeta("appendSpellingPrefix", true)
+        editor.dispatch(tr)
+        let start = 8 + "the quick brown fox ".count
+        XCTAssertTrue(v.spellCache.contains { $0.from == start && $0.to == start + 8 },
+                      "the underline must follow the appended insertion in the earlier paragraph")
+    }
+
     private func decoration(_ from: Int, _ to: Int) -> Decoration {
         Decoration(from: from, to: to, attributes: ["spelling": "true"])
     }
@@ -222,6 +239,15 @@ final class SpellCheckTests: XCTestCase {
         let result = SpellCheck.recheck(doc, around: 5...6)
         XCTAssertEqual(result.checked, [3...11])
         XCTAssertEqual(result.decorations.map { ($0.from, $0.to) }.map { "\($0)-\($1)" }, ["3-11"])
+    }
+}
+private final class AppendSpellingPrefix: Extension {
+    let name = "appendSpellingPrefix"
+    func plugins(_ ctx: ExtensionContext) -> [Plugin] {
+        [Plugin(key: name, appendTransaction: { trs, _, state in
+            guard trs.contains(where: { ($0.getMeta("appendSpellingPrefix") as? Bool) == true }) else { return nil }
+            return try? state.tr.insertText("the quick brown fox ", 1)
+        })]
     }
 }
 #endif

@@ -1232,7 +1232,9 @@ open class EditorTextView: UIView, UIKeyInput {
         // pass rather than blocking the keystroke.
         guard hi - lo <= 10_000 else { return }
 
-        let (checked, fresh) = SpellCheck.recheck(editor.doc, around: lo...hi)
+        // A dispatch can include appended transactions. Its observers receive
+        // each one in order, while editor.doc already holds the final state.
+        let (checked, fresh) = SpellCheck.recheck(tr.doc, around: lo...hi)
         spellCache = spellCache.filter { deco in
             !checked.contains { deco.to >= $0.lowerBound && deco.from <= $0.upperBound }
         } + fresh

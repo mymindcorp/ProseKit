@@ -21,6 +21,96 @@ private func firstMath(_ editor: Editor, _ name: String) -> (pos: Int, node: Nod
 private func mathEditor() throws -> Editor { try Editor(extensions: fullKit()) }
 
 func registerMathTests() {
+    test("math input rules: truncated lookbehind is not the start of a textblock") {
+        let editor = try mathEditor()
+        try type(editor, "a$$" + String(repeating: "x", count: 497) + "$")
+        let before = editor.doc
+        try expect(!textInput(editor, at: editor.state.selection.from, "$"))
+        try expectEqual(editor.doc, before)
+    }
+
+    test("math input rules: block math requires the end of the textblock") {
+        let editor = try mathEditor()
+        try type(editor, "$$x$ trailing text")
+        select(editor, 5, 5)
+        let before = editor.doc
+        try expect(!textInput(editor, at: 5, "$"))
+        try expectEqual(editor.doc, before)
+    }
+
+    test("math input rules: never consume inline atoms or hard breaks") {
+        for delimiter in ["$", "$$"] {
+            for name in ["inlineMath", "hardBreak"] {
+                let editor = try mathEditor()
+                let s = editor.schema
+                let atom = try s.node(name, name == "inlineMath" ? ["latex": .string("existing")] : [:])
+                let paragraph = try s.node("paragraph", content: Fragment.from([
+                    s.text(delimiter + "x"), atom, s.text("y" + String(delimiter.dropLast()))
+                ]))
+                editor.setContent(try s.node("doc", content: Fragment.from(paragraph)))
+                let before = editor.doc
+                let pos = paragraph.content.size + 1
+                select(editor, pos, pos)
+                try expect(!textInput(editor, at: pos, "$"))
+                try expectEqual(editor.doc, before)
+            }
+        }
+    }
+
+    test("math migration: regex cannot split a grapheme cluster") {
+        for text in ["e\u{301}", "🇺🇸", "👩‍💻"] {
+            let editor = try mathEditor()
+            try type(editor, text)
+            let before = editor.doc
+            try expect(!editor.migrateMathStrings(pattern: "(.)"))
+            try expectEqual(editor.doc, before)
+        }
+    }
+
+    test("math migration: complete Unicode graphemes still migrate") {
+        for text in ["e\u{301}", "🇺🇸", "👩‍💻"] {
+            let editor = try mathEditor()
+            try type(editor, text)
+            try expect(editor.migrateMathStrings(pattern: "(.+)"))
+            try expectEqual(firstMath(editor, "inlineMath")?.node.attrs["latex"], .string(text))
+            try editor.doc.check()
+        }
+    }
+
+    test("math migration: a custom pattern without a capture group is refused") {
+        let editor = try Editor(extensions: fullKit())
+        try type(editor, "$x$")
+        let before = editor.doc
+        try expect(!editor.migrateMathStrings(pattern: "x"))
+        try expectEqual(editor.doc, before)
+    }
+
+    test("math migration: an unmatched optional capture is ignored") {
+        let editor = try Editor(extensions: fullKit())
+        try type(editor, "y")
+        let before = editor.doc
+        try expect(!editor.migrateMathStrings(pattern: "(x)?y"))
+        try expectEqual(editor.doc, before)
+    }
+
+    test("math migration: inline code remains literal") {
+        let editor = try Editor(extensions: fullKit())
+        try editor.setContent(html: "<p><code>$x$</code> and $y$</p>")
+        try expect(editor.migrateMathStrings())
+        try expectEqual(editor.doc.firstChild?.firstChild?.text, "$x$")
+        try expectEqual(editor.doc.firstChild?.lastChild?.type.name, "inlineMath")
+    }
+
+    test("math migration: a match cannot consume inline atoms or line breaks") {
+        for tag in ["<img src=\"/photo.png\">", "<br>"] {
+            let editor = try Editor(extensions: fullKit())
+            try editor.setContent(html: "<p>$x" + tag + "y$</p>")
+            let before = editor.doc
+            try expect(!editor.migrateMathStrings())
+            try expectEqual(editor.doc, before)
+        }
+    }
+
     test("math: the schema has inlineMath and blockMath") {
         let editor = try mathEditor()
         let inline = editor.schema.nodes["inlineMath"]

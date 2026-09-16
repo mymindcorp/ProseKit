@@ -42,8 +42,12 @@ final class AsyncSuggestionSource: SuggestionSource {
         // Refresh only when this query is neither already shown nor in flight (so
         // repeated pulls — every keystroke *and* every scroll frame — don't restart
         // the fetch and reset its debounce forever).
+        if let pendingQuery, pendingQuery != query {
+            task?.cancel()
+            self.pendingQuery = nil
+        }
         if query != cachedQuery, query != pendingQuery { fetch(query) }
-        return build(cached, ctx)
+        return guardSuggestionEntries(build(cached, ctx), in: editor)
     }
 
     private func fetch(_ query: String) {

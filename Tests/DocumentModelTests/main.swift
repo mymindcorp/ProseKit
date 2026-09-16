@@ -9,6 +9,17 @@ func test(_ name: String, _ body: @escaping @Sendable () throws -> Void) {
 
 // MARK: - Node basics
 
+test("fragment append accounts for graphemes joined across the boundary") {
+    for (left, right) in [("e", "\u{301}"), ("🇺", "🇸"), ("👩", "‍💻")] {
+        let fragment = Fragment.from(B.t(left)).append(Fragment.from(B.t(right)))
+        try expectEqual(fragment.childCount, 1)
+        try expectEqual(fragment.size, (left + right).count)
+        try expectEqual(fragment, Fragment.from(B.t(left + right)))
+        let paragraph = B.node("paragraph", [:], fragment.content)
+        try expectEqual(paragraph.content.size, fragment.size)
+    }
+}
+
 test("node sizes") {
     let doc = B.doc(B.p("hello"))
     try expectEqual(doc.child(0).nodeSize, 7)

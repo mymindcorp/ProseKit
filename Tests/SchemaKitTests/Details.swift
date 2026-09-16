@@ -27,6 +27,112 @@ private func firstDetails(_ editor: Editor) -> (pos: Int, node: Node)? {
 }
 
 func registerDetailsTests() {
+    test("details: unwrapping never drops a summary that cannot become a paragraph") {
+        let schema = try Schema(nodes: [
+            ("doc", NodeSpec(content: "block+")),
+            ("body", NodeSpec(content: "text*", group: "block")),
+            ("paragraph", NodeSpec(content: "text*", group: "block", attrs: ["required": AttributeSpec()])),
+            ("text", NodeSpec()),
+            ("details", DetailsExtension().nodeSpec),
+            ("detailsSummary", NodeSpec(content: "text*")),
+            ("detailsContent", DetailsContentExtension().nodeSpec)
+        ])
+        let body = try schema.node("body", content: Fragment.from(schema.text("body")))
+        let summary = try schema.node("detailsSummary", content: Fragment.from(schema.text("keep summary")))
+        let content = try schema.node("detailsContent", content: Fragment.from(body))
+        let details = try schema.node("details", content: Fragment.from([summary, content]))
+        let doc = try schema.node("doc", content: Fragment.from(details))
+        let state = EditorState.create(EditorStateConfig(schema: schema, doc: doc, selection: TextSelection.create(doc, 2)))
+        let command = unsetDetails(schema.nodes["details"]!, schema.nodes["paragraph"]!)
+        var dispatched = false
+        try expect(!command(state, { _ in dispatched = true }, nil))
+        try expect(!dispatched)
+        try expect(!command(state, nil, nil))
+    }
+
+    test("details: wrapping declines when the parent forbids details") {
+        let schema = try Schema(nodes: [
+            ("doc", NodeSpec(content: "paragraph+")),
+            ("paragraph", NodeSpec(content: "text*", group: "block")),
+            ("text", NodeSpec()),
+            ("details", DetailsExtension().nodeSpec),
+            ("detailsSummary", NodeSpec(content: "text*")),
+            ("detailsContent", DetailsContentExtension().nodeSpec)
+        ])
+        let doc = try schema.node("doc", content: Fragment.from(schema.node("paragraph")))
+        let state = EditorState.create(EditorStateConfig(schema: schema, doc: doc))
+        let command = setDetails(schema.nodes["details"]!, schema.nodes["detailsSummary"]!, schema.nodes["detailsContent"]!)
+        try expect(!command(state, nil, nil))
+        var dispatched = false
+        try expect(!command(state, { _ in dispatched = true }, nil))
+        try expect(!dispatched)
+    }
+
+    test("node-selected details: toggle unwraps the selected section") {
+        let editor = try Editor(extensions: fullKit())
+        try editor.setContent(html: "<details open><summary>title</summary><p>body</p></details>")
+        editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, 0)))
+        try expect(editor.run("toggleDetails"))
+        try expect(firstDetails(editor) == nil)
+        try expectEqual(editor.doc.child(0).textContent, "title")
+        try expectEqual(editor.doc.child(1).textContent, "body")
+        try editor.doc.check()
+    }
+
+    test("node-selected details: disclosure toggles the selected section") {
+        let editor = try Editor(extensions: fullKit())
+        try editor.setContent(html: "<details open><summary>title</summary><p>body</p></details>")
+        editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, 0)))
+        try expect(editor.run("toggleDetailsOpen"))
+        try expectEqual(firstDetails(editor)?.node.attrs["open"], .bool(false))
+    }
+
+    test("details: closing a section moves a selection endpoint out of hidden content") {
+        for backwards in [false, true] {
+            let editor = try Editor(extensions: fullKit())
+            try editor.setContent(html: "<p>before</p><details open><summary>title</summary><p>body</p></details>")
+            let d = firstDetails(editor)!
+            let bodyStart = d.pos + d.node.child(0).nodeSize + 3
+            select(editor, backwards ? bodyStart + 2 : 1, backwards ? 1 : bodyStart + 2)
+            guard let tr = setDetailsOpen(editor.state, pos: d.pos, open: false) else {
+                try expect(false); return
+            }
+            editor.dispatch(tr)
+            try expect(editor.state.selection.empty)
+            try expectEqual(editor.state.selection.resolvedHead.parent.type.name, "detailsSummary")
+        }
+    }
+
+    test("details: unwrapping keeps the caret at the start of the summary") {
+        let editor = try Editor(extensions: fullKit())
+        try editor.setContent(html: "<details open><summary>title</summary><p>body</p></details>")
+        select(editor, 2, 2)
+        try expect(key(editor, "Backspace"))
+        try expectEqual(editor.state.selection.resolvedHead.parent.textContent, "title")
+        try expectEqual(editor.state.selection.resolvedHead.parentOffset, 0)
+    }
+
+    test("details: unwrapping preserves a backwards body selection") {
+        let editor = try Editor(extensions: fullKit())
+        try editor.setContent(html: "<details open><summary>title</summary><p>body</p></details>")
+        let bodyStart = firstDetails(editor)!.node.child(0).nodeSize + 3
+        select(editor, bodyStart + 3, bodyStart + 1)
+        try expect(editor.run("unsetDetails"))
+        let sel = editor.state.selection
+        try expectEqual(sel.resolvedAnchor.parent.textContent, "body")
+        try expectEqual(sel.resolvedAnchor.parentOffset, 3)
+        try expectEqual(sel.resolvedHead.parentOffset, 1)
+    }
+
+    test("details: unwrapping an empty summary keeps the caret in its body") {
+        let editor = try Editor(extensions: fullKit())
+        try editor.setContent(html: "<details open><summary></summary><p>body</p></details>")
+        select(editor, 7, 7)
+        try expect(editor.run("unsetDetails"))
+        try expectEqual(editor.state.selection.head, 3)
+        try expectEqual(editor.state.selection.resolvedHead.parentOffset, 2)
+    }
+
     test("details: schema has details + summary + content") {
         let editor = try Editor(extensions: fullKit())
         let details = editor.schema.nodes["details"]

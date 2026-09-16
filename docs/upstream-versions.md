@@ -17,7 +17,7 @@ Use it to find what's new when re-auditing: read each package's CHANGELOG from t
 | --- | --- | --- | --- | --- |
 | `DocumentModel` | `prosemirror-model` | **1.25.11** | 2026-08-22 | `Fragment.fromJSON` adjacent-text-node join **ported** this pass. The Slice invalid-`ReplaceAroundStep` guard (1.25.3, narrowed in 1.25.5) was **not** present — an earlier pass recorded it as confirmed in error — and is **ported** now. The surrogate-pair fix in `findDiffStart`/`End` (1.25.8) is N/A — positions here are grapheme clusters. `ReplaceError` vs `checkContent` (1.25.9) is free: `StepResult.fromReplace` catches any error. `DOMOutputSpec` typing (1.25.5/1.25.7/1.25.10) is TypeScript-only, and `body` in `blockTags` (1.25.11) is already how our `HTMLParser` treats it. See "Known gaps". |
 | `DocumentTransform` | `prosemirror-transform` | **1.12.0** | 2026-03-30 | `ReplaceStep.map` structure-flag fix (1.10.4) **ported** this pass. `liftTarget` split-constraint (1.10.5), `Mapping.appendMap` aliasing (1.10.3, free via Swift value semantics), and `deleteRange` start-to-start (1.12.0) confirmed present. See "Known gaps". |
-| `EditorStateKit` | `prosemirror-state` | **1.4.4** | 2025-10-23 | `insertText` selection-mapping fix (1.4.4) confirmed present. |
+| `EditorStateKit` | `prosemirror-state` | **1.4.4** | 2025-10-23 | `insertText` selection collapse and empty-text structural deletion restored and regression-tested on 2026-09-15. |
 | `EditorCommands` | `prosemirror-commands` | **1.7.2** | 2026-08-22 | `splitBlock` measuring its split against the post-deletion selection (1.7.2) **ported** in an earlier pass. `splitBlockAs` has now been brought up to upstream's shape wholesale: the multi-depth walk out of an inline node (1.6.2), the reset of the empty leftover a start-of-block split leaves behind, and the `false` return when no split is possible (1.6.1) were all missing — the row previously claimed them as confirmed — and are **ported** this pass. The `splitNode` callback still takes `(node, atEnd)` rather than upstream's third `$from` parameter (an unported feature). See "Known gaps". |
 | `SchemaKit` (tables) | `prosemirror-tables` | **1.8.5** | 2025-12-24 | `fixTables` zero-sized removal (1.6.4), colwidth validation (1.7.1), and keep-cell-type-on-row-move (1.8.1) confirmed present. Newer row/col *move* helpers track the same source. |
 | `EditorHistory` | `prosemirror-history` | **1.5.0** | 2026-07-04 | Mark-step adjacency (1.4.1) and closed-event append guard (1.1.3) confirmed present. Composition grouping (1.3.1) and 1.5.0's beforeinput check N/A (no browser IME/DOM); `isHistoryTransaction` (1.5.0) is a feature, add on demand. |
@@ -188,6 +188,19 @@ doesn't have to rediscover them.
 4. Bump the "reviewed through" version + date in the table above.
 
 ## Ported-fix log
+
+- **2026-09-15** — `prosemirror-state` 1.4.4 parity: `insertText("", from, to)`
+  now uses `deleteRange`, as the npm source does, so fully covered wrappers
+  are removed instead of imposing their type on the following block. Regression
+  tests cover headings, nested blockquotes, and partial deletion in
+  `Tests/EditorStateKitTests/main.swift`.
+
+- **2026-09-15** — `prosemirror-state` 1.4.4: explicit-range `insertText`
+  collapses a nonempty selection when its mapped end equals the inserted
+  text's end. The previous status entry incorrectly recorded this as present.
+  Verified against the npm source; regressions cover forward and backward
+  selections and an insertion outside the selection in
+  `Tests/EditorStateKitTests/main.swift`.
 
 - **2026-09-01** — `prosemirror-model` (no single release; the port had diverged
   from behaviour upstream has always had): the model now refuses the invalid
