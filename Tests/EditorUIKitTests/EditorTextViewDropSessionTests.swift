@@ -70,9 +70,13 @@ final class EditorTextViewDropSessionTests: XCTestCase {
     }
 
     private func textView(_ text: String) throws -> EditorTextView {
-        try makeView { s in
+        let view = try makeView { s in
             [try s.node("paragraph", [:], content: Fragment.from([s.text(text)]))]
         }
+        // Text dragging is opt-in. Enable it so these tests exercise drag
+        // selection checks and moves rather than the disabled-feature guard.
+        view.textDraggingEnabled = true
+        return view
     }
 
     private func imageDoc() throws -> EditorTextView {
@@ -255,9 +259,12 @@ final class EditorTextViewDropSessionTests: XCTestCase {
         drop.stringObjects = ["AB"]
         drop.point = try pointFor(view, position: 7) // the end
 
-        view.dropInteraction(dropInteraction, performDrop: drop)
         let moved = expectation(description: "moved")
-        Task { @MainActor in moved.fulfill() }
+        // Wait for the drop's transaction, not an unrelated task whose order
+        // relative to the asynchronous drop callback is not guaranteed.
+        view.onDocumentChange = { _ in moved.fulfill() }
+        defer { view.onDocumentChange = nil }
+        view.dropInteraction(dropInteraction, performDrop: drop)
         wait(for: [moved], timeout: 2)
 
         XCTAssertEqual(view.editor.doc.textContent, "CDEFAB", "the text moved rather than being copied")
