@@ -26,8 +26,10 @@ final class ScrollNotifyCoalescingTests: XCTestCase {
         func selectionDidChange(_ textInput: (any UITextInput)?) { selectionChanges += 1 }
         func textWillChange(_ textInput: (any UITextInput)?) {}
         func textDidChange(_ textInput: (any UITextInput)?) {}
+        #if !targetEnvironment(macCatalyst)
         @available(iOS 18.4, *)
         func conversationContext(_ context: UIConversationContext?, didChange textInput: (any UITextInput)?) {}
+        #endif
     }
 
     private func view(_ paragraphs: Int, words: Int = 12) -> (EditorTextView, Editor) {

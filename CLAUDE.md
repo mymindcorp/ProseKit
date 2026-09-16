@@ -48,6 +48,21 @@ Claim a suite passes only from something that actually reports pass/fail.
 
 - Build with `PROSEKIT_STRICT=1` to enforce warnings-as-errors, as CI does.
 
+- Mac Catalyst interaction tests need an application host. The demo's
+  `EditorInteractionTests` target runs the focus, scrolling, selection, keyboard,
+  image activation, Find, and suggestion suites inside `EditorDemo`:
+
+  ```sh
+  xcodebuild test -project Examples/EditorDemo/EditorDemo.xcodeproj -scheme EditorDemo \
+    -destination 'platform=macOS,variant=Mac Catalyst' \
+    -derivedDataPath /tmp/editordemo-tests
+  ```
+
+  The same scheme supports an iOS simulator destination. The standalone package
+  test runner has no `NSApplication` host on Catalyst and cannot create UIKit
+  windows there. After changing the hosted target, regenerate the project with
+  `xcodegen generate` in `Examples/EditorDemo/`.
+
 ## Fuzzers
 
 The sweeping fuzzers are opt-in — they walk every position of hundreds of

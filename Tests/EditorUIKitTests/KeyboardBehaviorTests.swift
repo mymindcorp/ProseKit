@@ -382,6 +382,7 @@ final class KeyboardBehaviorTests: XCTestCase {
         ]))
         editor.setContent(try! editor.schema.node("doc", [:], content: Fragment.from([bq])))
         let view = EditorTextView(editor: editor)
+        view.escapeKeyBindingEnabled = true
         cursor(view, 3) // inside "quoted"
         key(view, .keyboardEscape)
         XCTAssertTrue(view.editor.state.selection is NodeSelection, "Escape should select the enclosing node")

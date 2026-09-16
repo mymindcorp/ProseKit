@@ -19,9 +19,14 @@ final class DocTextPosition: UITextPosition {
 
 /// A document range in position offsets.
 final class DocTextRange: UITextRange {
+    let anchor: Int
+    let head: Int
     let from: Int
     let to: Int
-    init(_ from: Int, _ to: Int) { self.from = min(from, to); self.to = max(from, to) }
+    init(_ anchor: Int, _ head: Int) {
+        self.anchor = anchor; self.head = head
+        self.from = min(anchor, head); self.to = max(anchor, head)
+    }
     override var start: UITextPosition { DocTextPosition(from) }
     override var end: UITextPosition { DocTextPosition(to) }
     override var isEmpty: Bool { from == to }
@@ -66,13 +71,32 @@ extension EditorTextView: UITextInput {
     public var endOfDocument: UITextPosition { DocTextPosition(docSize) }
 
     public var selectedTextRange: UITextRange? {
-        get { let s = editor.state.selection; return DocTextRange(s.from, s.to) }
+        get { let s = editor.state.selection; return DocTextRange(s.anchor, s.head) }
         set {
             guard let r = newValue as? DocTextRange else { return }
             applyingTextInput = true
             defer { applyingTextInput = false }
-            let a = editor.doc.resolve(clamp(r.from))
-            let h = editor.doc.resolve(clamp(r.to))
+            // UITextRange exposes sorted endpoints, even when the user moves
+            // the leading handle upward. Keep the stationary endpoint as the
+            // anchor so reveal-on-selection follows the end being dragged.
+            let previous = editor.state.selection
+            let anchor: Int
+            let head: Int
+            if r.from == previous.from, r.to == previous.to {
+                anchor = previous.anchor; head = previous.head
+            } else if r.to == previous.to {
+                anchor = r.to; head = r.from
+            } else if r.from == previous.from {
+                anchor = r.from; head = r.to
+            } else if r.from == previous.anchor {
+                anchor = r.from; head = r.to
+            } else if r.to == previous.anchor {
+                anchor = r.to; head = r.from
+            } else {
+                anchor = r.anchor; head = r.head
+            }
+            let a = editor.doc.resolve(clamp(anchor))
+            let h = editor.doc.resolve(clamp(head))
             // An empty selection at a valid gap becomes a gap cursor —
             // TextSelection.between would snap away into a neighbor block.
             if r.from == r.to, GapCursor.valid(h) {

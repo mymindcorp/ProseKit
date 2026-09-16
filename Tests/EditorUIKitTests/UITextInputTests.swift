@@ -256,7 +256,9 @@ private final class CountingInputDelegate: NSObject, UITextInputDelegate {
     func selectionDidChange(_ textInput: (any UITextInput)?) { selectionChanges += 1 }
     func textWillChange(_ textInput: (any UITextInput)?) {}
     func textDidChange(_ textInput: (any UITextInput)?) { textChanges += 1 }
+    #if !targetEnvironment(macCatalyst)
     @available(iOS 18.4, *)
     func conversationContext(_ context: UIConversationContext?, didChange textInput: (any UITextInput)?) {}
+    #endif
 }
 #endif
