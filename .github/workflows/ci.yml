@@ -21,7 +21,7 @@ jobs:
   # package's warnings-as-errors setting, so a new warning fails CI here.
   spm:
     name: SPM build + CLT suites
-    runs-on: macos-26 # needs Xcode 26 / Swift 6.3 (swift-tools-version: 6.3)
+    runs-on: xcode-27 # needs Xcode 27 / Swift 6.4 (swift-tools-version: 6.4)
     steps:
       - uses: actions/checkout@v4
       - name: Select newest Xcode
@@ -47,7 +47,7 @@ jobs:
   # Foundation-only and is covered by EditorSyntaxTests in the job above.
   ios:
     name: iOS renderer tests
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
       - name: Select newest Xcode
