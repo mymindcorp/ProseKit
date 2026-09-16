@@ -169,15 +169,21 @@ public final class SearchQuery: @unchecked Sendable {
         var frag = Fragment.empty
         var pos = result.from
         let groups = result.match ?? [SearchMatchGroup(range: 0..<(result.to - result.from), text: nil)]
+        // Regex capture offsets are block-relative; the synthetic whole-match
+        // group for a string query is relative to the match itself.
+        let matchStart = result.match == nil ? result.from : result.matchStart
         for part in parseReplacement(unquote(replace)) {
             switch part {
             case .text(let text):
                 frag = frag.addToEnd(state.schema.text(text, marks))
             case .group(let n, let copy):
                 guard n < groups.count, let span = groups[n].range else { continue }
-                let from = result.matchStart + span.lowerBound
-                let to = result.matchStart + span.upperBound
-                if copy {
+                let from = matchStart + span.lowerBound
+                let to = matchStart + span.upperBound
+                // Numbered groups may overlap (nested captures), or lie
+                // outside the match (lookarounds). Only preserve a group in
+                // place when it is inside the still-unconsumed match range.
+                if copy || from < pos || to > result.to {
                     frag = frag.append(state.doc.slice(from, to).content)
                 } else {
                     if frag.childCount > 0 || from > pos {
@@ -290,6 +296,14 @@ private struct RegExpQuery: QueryImpl {
             }
             let lo = hay.distance(from: hay.startIndex, to: r.lowerBound)
             let hi = hay.distance(from: hay.startIndex, to: r.upperBound)
+            // UTF-16 ranges can end inside a grapheme. Rounding their offsets
+            // to document positions would select or copy text outside the
+            // regex match, so only expose ranges with exact character bounds.
+            guard hay.index(hay.startIndex, offsetBy: lo) == r.lowerBound,
+                  hay.index(hay.startIndex, offsetBy: hi) == r.upperBound else {
+                groups.append(SearchMatchGroup(range: nil, text: nil))
+                continue
+            }
             groups.append(SearchMatchGroup(range: lo..<hi, text: String(hay[r])))
         }
         // Empty *in document positions*, not only in the pattern's own units.
@@ -359,7 +373,10 @@ private struct RegExpQuery: QueryImpl {
             let hay = String(content[..<content.index(content.startIndex, offsetBy: hi)])
             // Like upstream: walk overlapping match starts and keep the last.
             var best: SearchResult?
-            var off = 0
+            // The first visited block can straddle the search range's lower
+            // bound. Keep match starts inside that range, including retries
+            // after whole-word or custom-filter rejection.
+            var off = max(0, to - start)
             while off <= hay.count {
                 let searchRange = NSRange(hay.index(hay.startIndex, offsetBy: off)..<hay.endIndex, in: hay)
                 guard let m = regex.firstMatch(in: hay, options: [], range: searchRange),
@@ -478,7 +495,7 @@ private func parseReplacement(_ text: String) -> [ReplPart] {
     var i = 0, flushed = 0
     while i < chars.count {
         if chars[i] == "$", i + 1 < chars.count,
-           chars[i + 1] == "$" || chars[i + 1] == "&" || chars[i + 1].isNumber {
+           chars[i + 1] == "$" || chars[i + 1] == "&" || "0123456789".contains(chars[i + 1]) {
             let c = chars[i + 1]
             if c == "$" {
                 add(String(chars[flushed..<i]) + "$") // "$$" → literal "$"
@@ -762,6 +779,7 @@ private func replaceCommand(wrap: Bool, moveForward: Bool) -> @Sendable (EditorS
         guard let search = searchQueryKey.getState(state), search.query.valid else { return false }
         let from = state.selection.from
         guard let next = nextMatch(search, state, wrap, from, from) else { return false }
+        guard moveForward || (state.selection.from == next.from && state.selection.to == next.to) else { return false }
         guard let dispatch else { return true }
 
         if state.selection.from == next.from, state.selection.to == next.to {

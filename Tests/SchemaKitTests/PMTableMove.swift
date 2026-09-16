@@ -9,6 +9,62 @@ import DocumentTransform
 // convert-array-of-rows-to-table-node, convert-table-node-to-array-of-rows}.
 
 func registerPMTableMoveTests() {
+    test("table moves: indexes use the requested table rather than another selected table") {
+        for column in [false, true] {
+            let small = table(tr(cell(1, 1, "unchanged")))
+            let target = table(tr(cell(1, 1, "a"), cell(1, 1, "b")), tr(cell(1, 1, "c"), cell(1, 1, "d")))
+            let d = doc(small, target)
+            let state = EditorState.create(EditorStateConfig(schema: basicSchema, doc: d.node, selection: TextSelection.create(d.node, 4)))
+            let txn = state.tr
+            let pos = small.node.nodeSize + 4
+            try expect(column ? moveColumn(txn, originIndex: 0, targetIndex: 1, pos: pos)
+                              : moveRow(txn, originIndex: 0, targetIndex: 1, pos: pos))
+            try expectEqual(txn.doc.child(0), small.node)
+            try expectEqual(txn.doc.child(1).child(0).child(0).textContent, column ? "b" : "c")
+            try expect(txn.selection.from > small.node.nodeSize)
+            try txn.doc.check()
+        }
+    }
+
+    test("table moves: out-of-range indexes return without mutation") {
+        let d = doc(table(tr(cell(1, 1, "a"), cell(1, 1, "b")), tr(cell(1, 1, "c"), cell(1, 1, "d"))))
+        let state = EditorState.create(EditorStateConfig(schema: basicSchema, doc: d.node, selection: TextSelection.create(d.node, 4)))
+        for index in [-1, 2, Int.max] {
+            let txn = state.tr
+            try expect(!moveRow(txn, originIndex: index, targetIndex: 0, pos: 4))
+            try expect(!moveColumn(txn, originIndex: 0, targetIndex: index, pos: 4))
+            try expectEqual(txn.steps.count, 0)
+        }
+    }
+
+    test("table moves: explicit position works while the selection is outside the table") {
+        for column in [false, true] {
+            let d = doc(p("outside"), table(tr(cell(1, 1, "a"), cell(1, 1, "b")), tr(cell(1, 1, "c"), cell(1, 1, "d"))))
+            let state = EditorState.create(EditorStateConfig(schema: basicSchema, doc: d.node, selection: TextSelection.create(d.node, 1)))
+            let txn = state.tr
+            let pos = d.node.child(0).nodeSize + 4
+            try expect(column ? moveColumn(txn, originIndex: 0, targetIndex: 1, select: false, pos: pos)
+                              : moveRow(txn, originIndex: 0, targetIndex: 1, select: false, pos: pos))
+            let expected = column
+                ? table(tr(cell(1, 1, "b"), cell(1, 1, "a")), tr(cell(1, 1, "d"), cell(1, 1, "c")))
+                : table(tr(cell(1, 1, "c"), cell(1, 1, "d")), tr(cell(1, 1, "a"), cell(1, 1, "b")))
+            try expectEqual(txn.doc.child(1), expected.node)
+            try expectEqual(txn.selection.from, 1)
+            try txn.doc.check()
+        }
+    }
+
+    test("table moves: invalid document positions are rejected without mutation") {
+        let d = doc(table(tr(cell(1, 1, "a"), cell(1, 1, "b")), tr(cell(1, 1, "c"), cell(1, 1, "d"))))
+        let state = EditorState.create(EditorStateConfig(schema: basicSchema, doc: d.node, selection: TextSelection.create(d.node, 4)))
+        for pos in [-1, d.node.content.size + 1, Int.max] {
+            let txn = state.tr
+            try expect(!moveRow(txn, originIndex: 0, targetIndex: 1, pos: pos))
+            try expect(!moveColumn(txn, originIndex: 0, targetIndex: 1, pos: pos))
+            try expectEqual(txn.steps.count, 0)
+        }
+    }
+
     // MARK: transpose
     test("PM transpose: inverts columns to rows (and back)") {
         let arr = [["a1", "a2", "a3"], ["b1", "b2", "b3"], ["c1", "c2", "c3"], ["d1", "d2", "d3"]]

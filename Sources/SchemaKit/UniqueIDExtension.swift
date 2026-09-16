@@ -75,6 +75,14 @@ func assignUniqueIDs(
     all: Bool,
     generate: @Sendable () -> String
 ) -> Transaction? {
+    // Reserve existing ids before generating any: a missing id near the top
+    // must not steal the stable id of a node we have yet to visit.
+    var reserved = Set<String>()
+    state.doc.descendants { node, _, _, _ in
+        let applies = all ? (!node.isText && node.type.name != "doc") : typeSet.contains(node.type.name)
+        if applies, case let .string(id)? = node.attrs[attribute] { reserved.insert(id) }
+        return true
+    }
     var seen = Set<String>()
     var tr: Transaction?
     state.doc.descendants { node, pos, _, _ in
@@ -84,7 +92,8 @@ func assignUniqueIDs(
             seen.insert(id)
         } else {
             var newID = generate()
-            while seen.contains(newID) { newID = generate() }
+            while reserved.contains(newID) { newID = generate() }
+            reserved.insert(newID)
             seen.insert(newID)
             // AttrStep preserves positions, so `pos` stays valid as we append.
             let t = tr ?? state.tr

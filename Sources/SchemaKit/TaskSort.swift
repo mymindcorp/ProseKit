@@ -90,7 +90,8 @@ func taskSortPlugin() -> Plugin {
                     let resolved = newState.doc.resolve(pos)
                     guard resolved.parent.type.name == "taskList" else { continue }
                     let index = resolved.index()
-                    guard resolved.parent.child(index).attrs["checked"]?.boolValue == true else { continue }
+                    guard index < resolved.parent.childCount,
+                          resolved.parent.child(index).attrs["checked"]?.boolValue == true else { continue }
                     homes[pos] = index
                 }
                 return homes
@@ -130,9 +131,15 @@ func checkedItemPositions(_ trs: [Transaction]) -> [Int] {
                 continue
             }
             // Through the rest of this transaction, then through the ones after it.
-            var pos = tr.mapping.slice(si + 1).map(attrStep.pos, 1)
-            for later in trs[(ti + 1)...] { pos = later.mapping.map(pos, 1) }
-            positions.append(pos)
+            var mapped = tr.mapping.slice(si + 1).mapResult(attrStep.pos, 1)
+            guard !mapped.deletedAfter else { continue }
+            for later in trs[(ti + 1)...] {
+                mapped = later.mapping.mapResult(mapped.pos, 1)
+                if mapped.deletedAfter { break }
+            }
+            // A deleted item must not transfer its check to the next item (or
+            // to the list's closing boundary, which has no child to sort).
+            if !mapped.deletedAfter { positions.append(mapped.pos) }
         }
     }
     return positions
@@ -153,6 +160,7 @@ func sortTasks(into tr: Transaction, doc: Node, selection: Selection,
         let resolved = doc.resolve(pos)
         guard resolved.depth > 0, resolved.parent.type.name == "taskList" else { continue }
         let index = resolved.index()
+        guard index < resolved.parent.childCount else { continue }
         if resolved.parent.child(index).attrs["checked"]?.boolValue == true { table[pos] = index }
         var entry = lists[resolved.before()] ?? (resolved.parent, [])
         entry.changed.insert(index)
@@ -279,9 +287,9 @@ struct ListRemap {
     let newIndexOfOld: [Int]
 
     /// The position `pos` moved to, or nil if it isn't inside a moved item.
-    func map(_ pos: Int) -> Int? {
-        guard pos > from, pos < to else { return nil }
-        for i in oldStarts.indices where pos > oldStarts[i] && pos < oldStarts[i] + sizes[i] {
+    func map(_ pos: Int, includingStart: Bool = false) -> Int? {
+        guard (includingStart ? pos >= from : pos > from), pos < to else { return nil }
+        for i in oldStarts.indices where (includingStart ? pos >= oldStarts[i] : pos > oldStarts[i]) && pos < oldStarts[i] + sizes[i] {
             return newStarts[newIndexOfOld[i]] + (pos - oldStarts[i])
         }
         return nil
@@ -341,10 +349,22 @@ func sortList(_ tr: Transaction, listPos: Int, list: Node, changed: Set<Int>, ho
 /// of the list every time you check the item you are typing in — the reorder is
 /// a replace, and a replace drops what was inside it.
 func restoreSelection(_ tr: Transaction, _ selection: Selection, _ remaps: [ListRemap]) {
-    guard selection is TextSelection else { return }
-    for remap in remaps {
-        guard let anchor = remap.map(selection.anchor), let head = remap.map(selection.head) else { continue }
-        tr.setSelection(TextSelection.create(tr.doc, anchor, head))
+    if let selected = selection as? NodeSelection {
+        var pos = selected.from
+        for remap in remaps { pos = remap.map(pos, includingStart: true) ?? pos }
+        if let node = tr.doc.nodeAt(pos), NodeSelection.isSelectable(node) {
+            tr.setSelection(NodeSelection.create(tr.doc, pos))
+        }
         return
     }
+    guard selection is TextSelection else { return }
+    var anchor = selection.anchor
+    var head = selection.head
+    for remap in remaps {
+        // Each endpoint travels independently, through every reorder. An
+        // inner move can be followed by a move of the item containing it.
+        anchor = remap.map(anchor) ?? anchor
+        head = remap.map(head) ?? head
+    }
+    tr.setSelection(TextSelection.create(tr.doc, anchor, head))
 }

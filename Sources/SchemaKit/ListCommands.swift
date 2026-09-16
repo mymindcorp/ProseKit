@@ -106,7 +106,7 @@ public func splitListItem(_ itemType: NodeType, _ itemAttrs: Attrs? = nil) -> Co
         if from.parent.content.size == 0 && from.node(-1).childCount == from.indexAfter(-1) {
             // In an empty block. If this is a nested list, split the wrapping list
             // item; otherwise bail out and let the next command handle lifting.
-            if from.depth == 3 || from.node(-3).type !== itemType || from.index(-2) != from.node(-2).childCount - 1 {
+            if from.depth <= 3 || from.node(-3).type !== itemType || from.index(-2) != from.node(-2).childCount - 1 {
                 return false
             }
             if let dispatch {
@@ -196,6 +196,8 @@ public func liftListItem(_ itemType: NodeType) -> Command {
         let sel = state.selection
         let from = sel.resolvedFrom, to = sel.resolvedTo
         guard let range = from.blockRange(to, pred: { $0.childCount != 0 && $0.firstChild?.type === itemType }) else { return false }
+        // A root list has no surrounding node to lift its items into.
+        guard range.depth > 0 else { return false }
         if dispatch == nil { return true }
         if from.node(range.depth - 1).type === itemType {
             return liftToOuterList(state, dispatch!, itemType, range)

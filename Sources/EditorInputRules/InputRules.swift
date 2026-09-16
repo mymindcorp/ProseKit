@@ -3,12 +3,18 @@ public import DocumentModel
 import DocumentTransform
 public import EditorStateKit
 
+fileprivate struct InputRuleMatch: Sendable {
+    let groups: [String?]
+    /// Character offsets relative to the full match, preserving capture identity.
+    let offsets: [Int?]
+}
+
 /// An input rule maps a regular expression matching the text before the cursor
 /// to a transformation. When the user types and the rule's pattern matches, the
 /// handler runs.
 public struct InputRule: Sendable {
     let regex: NSRegularExpression
-    let handler: @Sendable (_ state: EditorState, _ match: [String?], _ start: Int, _ end: Int) -> Transaction?
+    fileprivate let handler: @Sendable (_ state: EditorState, _ match: InputRuleMatch, _ start: Int, _ end: Int, _ from: Int, _ text: String) -> Transaction?
     /// By default rules don't apply inside nodes whose spec is marked as
     /// `code`; set this to true to change that.
     let inCode: Bool
@@ -17,20 +23,35 @@ public struct InputRule: Sendable {
     let inCodeMark: Bool
 
     public init(_ pattern: String, inCode: Bool = false, inCodeMark: Bool = true, handler: @escaping @Sendable (_ state: EditorState, _ match: [String?], _ start: Int, _ end: Int) -> Transaction?) {
+        self.init(pattern, inCode: inCode, inCodeMark: inCodeMark, textHandler: { state, match, start, end, _, _ in
+            handler(state, match.groups, start, end)
+        })
+    }
+
+    fileprivate init(_ pattern: String, inCode: Bool = false, inCodeMark: Bool = true, textHandler: @escaping @Sendable (EditorState, InputRuleMatch, Int, Int, Int, String) -> Transaction?) {
         // The pattern is an authored constant; a malformed one is a programmer
         // error (fail fast here rather than silently disabling the rule).
         self.regex = try! NSRegularExpression(pattern: pattern)
-        self.handler = handler
+        self.handler = textHandler
         self.inCode = inCode
         self.inCodeMark = inCodeMark
     }
 }
 
 public final class InputRulesState: @unchecked Sendable {
-    var transform: Transaction?
-    var from: Int = 0
-    var to: Int = 0
-    var text: String = ""
+    // EditorState snapshots (including speculative command chains) must not
+    // mutate each other's undo record.
+    let transform: Transaction?
+    let from: Int
+    let to: Int
+    let text: String
+
+    init(transform: Transaction? = nil, from: Int = 0, to: Int = 0, text: String = "") {
+        self.transform = transform
+        self.from = from
+        self.to = to
+        self.text = text
+    }
 }
 
 public let inputRulesKey = PluginKey<InputRulesState>("inputRules")
@@ -39,17 +60,16 @@ private let MAX_MATCH = 500
 
 /// Create the input-rules plugin.
 public func inputRules(_ rules: [InputRule]) -> Plugin {
-    let stateBox = InputRulesState()
     return Plugin(
         key: inputRulesKey.key,
         stateField: PluginStateField(
-            initialize: { _, _ in stateBox },
+            initialize: { _, _ in InputRulesState() },
             apply: { tr, value, _, _ in
                 let s = value as! InputRulesState
                 if let stored = tr.getMeta("applyInputRule") as? (from: Int, to: Int, text: String) {
-                    s.from = stored.from; s.to = stored.to; s.text = stored.text; s.transform = tr
+                    return InputRulesState(transform: tr, from: stored.from, to: stored.to, text: stored.text)
                 } else if tr.selectionSet || tr.docChanged {
-                    s.transform = nil
+                    return InputRulesState()
                 }
                 return s
             }),
@@ -61,22 +81,35 @@ public func inputRules(_ rules: [InputRule]) -> Plugin {
 private func run(_ state: EditorState, _ from: Int, _ to: Int, _ text: String, _ rules: [InputRule], _ dispatch: ((Transaction) -> Void)?) -> Bool {
     let resolvedFrom = state.doc.resolve(from)
     let lo = max(0, resolvedFrom.parentOffset - MAX_MATCH)
-    let textBefore = resolvedFrom.parent.textBetween(lo, resolvedFrom.parentOffset, blockSeparator: nil, leafText: "\u{fffc}") + text
+    let prefix = resolvedFrom.parent.textBetween(lo, resolvedFrom.parentOffset, blockSeparator: nil, leafText: "\u{fffc}")
+    let textBefore = prefix + text
+    // Regex offsets use UTF-16, but document positions count Characters. The
+    // incoming text can also combine with the last Character in the prefix.
+    var boundaries = [0: 0]
+    var utf16Offset = 0
+    for (offset, character) in textBefore.enumerated() {
+        utf16Offset += String(character).utf16.count
+        boundaries[utf16Offset] = offset + 1
+    }
     for rule in rules {
         if !rule.inCodeMark, resolvedFrom.marks().contains(where: { $0.type.spec.code }) { continue }
         if resolvedFrom.parent.type.spec.code, !rule.inCode { continue }
         let ns = textBefore as NSString
         guard let m = rule.regex.firstMatch(in: textBefore, range: NSRange(location: 0, length: ns.length)) else { continue }
+        guard NSMaxRange(m.range) == ns.length, m.range.location <= prefix.utf16.count,
+              let matchOffset = boundaries[m.range.location],
+              (0..<m.numberOfRanges).allSatisfy({
+                  let range = m.range(at: $0)
+                  return range.location == NSNotFound || (boundaries[range.location] != nil && boundaries[NSMaxRange(range)] != nil)
+              }) else { continue }
         var groups: [String?] = []
+        var offsets: [Int?] = []
         for i in 0..<m.numberOfRanges {
             let r = m.range(at: i)
             groups.append(r.location == NSNotFound ? nil : ns.substring(with: r))
+            offsets.append(boundaries[r.location].map { $0 - matchOffset })
         }
-        let matchLen = (groups[0] ?? "").count
-        // A rule may not consume only part of the inserted text (the range
-        // math below would invert).
-        if matchLen < text.count { continue }
-        let start = from - (matchLen - text.count)
+        let start = from - prefix.count + matchOffset
         if !rule.inCodeMark {
             // The cursor check above misses code marks that end mid-match;
             // scan the whole matched range.
@@ -87,7 +120,7 @@ private func run(_ state: EditorState, _ from: Int, _ to: Int, _ text: String, _
             })
             if hasCodeMark { continue }
         }
-        if let tr = rule.handler(state, groups, start, to) {
+        if let tr = rule.handler(state, InputRuleMatch(groups: groups, offsets: offsets), start, to, from, text) {
             // Store the TYPED range (not the match start): undoInputRule inverts
             // the steps and then re-inserts the typed text at this range.
             dispatch?(tr.setMeta("applyInputRule", (from: from, to: to, text: text)))
@@ -122,6 +155,7 @@ public func wrappingInputRule(_ pattern: String, _ nodeType: NodeType, _ getAttr
 public func textblockTypeInputRule(_ pattern: String, _ nodeType: NodeType, _ getAttrs: (@Sendable ([String?]) -> Attrs)? = nil) -> InputRule {
     InputRule(pattern) { state, match, start, end in
         let resolvedStart = state.doc.resolve(start)
+        guard resolvedStart.depth > 0 else { return nil }
         let attrs = getAttrs?(match) ?? [:]
         if !resolvedStart.node(-1).canReplaceWith(resolvedStart.index(-1), resolvedStart.indexAfter(-1), nodeType) {
             return nil
@@ -144,30 +178,44 @@ public func textblockTypeInputRule(_ pattern: String, _ nodeType: NodeType, _ ge
 /// bare "b" and the asterisks are gone. Code spans are literal, so the rule
 /// must not fire there at all.
 public func markInputRule(_ pattern: String, _ markType: MarkType, _ getAttrs: (@Sendable ([String?]) -> Attrs)? = nil, inCodeMark: Bool = false) -> InputRule {
-    InputRule(pattern, inCodeMark: inCodeMark) { state, match, start, end in
-        let fullMatch = match[0] ?? ""
+    InputRule(pattern, inCodeMark: inCodeMark, textHandler: { state, match, start, end, from, text in
+        guard state.doc.resolve(start).parent.type.allowsMarkType(markType) else { return nil }
+        let fullMatch = match.groups[0] ?? ""
         // The inner text is the last participating capture group.
-        guard let inner = match.dropFirst().compactMap({ $0 }).last, !inner.isEmpty,
-              let innerRange = fullMatch.range(of: inner) else { return nil }
-        let attrs = getAttrs?(match) ?? [:]
+        guard let capture = match.groups.indices.dropFirst().last(where: { match.groups[$0] != nil }),
+              let inner = match.groups[capture], !inner.isEmpty,
+              let innerOffset = match.offsets[capture] else { return nil }
+        let attrs = getAttrs?(match.groups) ?? [:]
 
         // Leading whitespace the pattern consumed (kept, not deleted).
         var leadingSpaces = 0
-        for ch in fullMatch { if ch == " " || ch == "\t" || ch == "\n" { leadingSpaces += 1 } else { break } }
-        let innerOffset = fullMatch.distance(from: fullMatch.startIndex, to: innerRange.lowerBound)
+        for ch in fullMatch { if ch.isWhitespace { leadingSpaces += 1 } else { break } }
         let textStart = start + innerOffset
         let textEnd = textStart + inner.count
 
         let tr = state.tr
+        // The event may contain part (or all) of the captured text. Insert it
+        // before removing delimiters so existing marks on the inner text survive.
+        var insertionFrom = from
+        var insertionText = text
+        if from > start, let previous = state.doc.resolve(from).nodeBefore?.text?.last,
+           (String(previous) + text).count != 1 + text.count {
+            // Replacing the whole combining character keeps the insertion step
+            // invertible in a document whose positions count graphemes.
+            insertionFrom -= 1
+            insertionText = String(previous) + text
+        }
+        guard (try? tr.insertText(insertionText, insertionFrom, end)) != nil else { return nil }
+        let insertedEnd = start + fullMatch.count
         // Delete trailing markers first so the earlier positions stay valid,
         // then the opening markers (after any leading whitespace).
-        if textEnd < end { _ = try? tr.delete(textEnd, end) }
+        if textEnd < insertedEnd { _ = try? tr.delete(textEnd, insertedEnd) }
         if textStart > start + leadingSpaces { _ = try? tr.delete(start + leadingSpaces, textStart) }
         let markStart = start + leadingSpaces
         _ = try? tr.addMark(markStart, markStart + inner.count, markType.create(attrs))
         tr.removeStoredMark(markType)
         return tr
-    }
+    })
 }
 
 /// Replaces `--` with an em-dash.

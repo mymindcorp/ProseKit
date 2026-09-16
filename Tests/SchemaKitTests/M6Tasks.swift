@@ -9,6 +9,57 @@ import TestHarness
 // Registered into the shared `collector` from main.swift.
 
 func registerTaskTests() {
+    test("task toggle: a selected task item is the target, including nested items") {
+        for nested in [false, true] {
+            let editor = try Editor(extensions: fullKit())
+            let s = editor.schema
+            let paragraph = try s.node("paragraph", content: Fragment.from(s.text("task")))
+            let item = try s.node("taskItem", content: Fragment.from(paragraph))
+            let innerList = try s.node("taskList", content: Fragment.from(item))
+            let list = nested ? try s.node("taskList", content: Fragment.from(s.node("taskItem", content: Fragment.from([paragraph, innerList])))) : innerList
+            editor.setContent(try s.node("doc", content: Fragment.from(list)))
+            var positions: [Int] = []
+            editor.doc.descendants { node, pos, _, _ in
+                if node.type.name == "taskItem" { positions.append(pos) }
+                return true
+            }
+            editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, positions.last!)))
+            try expect(editor.run("toggleTaskChecked"))
+            try expectEqual(editor.doc.nodeAt(positions.last!)?.attrs["checked"], .bool(true))
+            if nested { try expectEqual(editor.doc.nodeAt(positions[0])?.attrs["checked"], .bool(false)) }
+            try expect(editor.run("toggleTaskChecked"))
+            try expectEqual(editor.doc.nodeAt(positions.last!)?.attrs["checked"], .bool(false))
+            try editor.doc.check()
+        }
+    }
+
+    test("task input rule: checked markers create checked items") {
+        for marker in ["[x]", "[X]"] {
+            let editor = try Editor(extensions: fullKit())
+            try type(editor, marker)
+            try expect(textInput(editor, at: marker.count + 1, " "))
+            try expectEqual(editor.attributes(ofNode: "taskItem")?["checked"], .bool(true))
+        }
+    }
+
+    test("task input rule: joining a checked item preserves its state and can be undone") {
+        let editor = try Editor(extensions: fullKit())
+        try editor.setContent(html: "<ul data-type=\"taskList\"><li data-type=\"taskItem\" data-checked=\"false\"><p>old</p></li></ul><p>[x]</p>")
+        let end = editor.doc.content.size - 1
+        select(editor, end, end)
+        try expect(textInput(editor, at: end, " "))
+        try expectEqual(editor.doc.childCount, 1)
+        let list = editor.doc.firstChild!
+        try expectEqual(list.childCount, 2)
+        try expectEqual(list.child(0).attrs["checked"], .bool(false))
+        try expectEqual(list.child(1).attrs["checked"], .bool(true))
+        try expect(key(editor, "Backspace"))
+        try expectEqual(editor.doc.childCount, 2)
+        try expectEqual(editor.doc.lastChild?.textContent, "[x] ")
+        try expectEqual(editor.doc.firstChild?.childCount, 1)
+        try editor.doc.check()
+    }
+
     test("taskList: schema has taskList + taskItem with checked attr") {
         let editor = try Editor(extensions: fullKit())
         try expectNotNil(editor.schema.nodes["taskList"])

@@ -150,13 +150,18 @@ public struct Fragment: Hashable, Sendable {
         var merged = content
         var last = merged.removeLast()
         var rest = other.content
+        var newSize = size + other.size
         if let first = rest.first, last.isText, first.isText, Mark.sameSet(last.marks, first.marks) {
+            let oldSize = last.nodeSize + first.nodeSize
             last = last.withText((last.text ?? "") + (first.text ?? ""))
+            // Grapheme counts are not additive: a combining mark or regional
+            // indicator can join the preceding character when text is merged.
+            newSize += last.nodeSize - oldSize
             rest.removeFirst()
         }
         merged.append(last)
         merged.append(contentsOf: rest)
-        return Fragment(merged, size: size + other.size)
+        return Fragment(merged, size: newSize)
     }
 
     /// Cut out the sub-fragment between the two given positions.

@@ -9,6 +9,21 @@ import TestHarness
 // which resolve a name to either a node or a mark.
 
 func registerIsActiveQueryTests() {
+    test("getAttributes: selected image exposes its attributes") {
+        let editor = try Editor(extensions: fullKit())
+        try editor.setContent(html: "<p><img src=\"/photo.png\" alt=\"Photo\"></p>")
+        var imagePos: Int?
+        editor.doc.descendants { node, pos, _, _ in
+            if node.type.name == "image" { imagePos = pos }
+            return true
+        }
+        try expectNotNil(imagePos)
+        editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, imagePos!)))
+        try expect(editor.isActive("image"))
+        try expectEqual(editor.getAttributes("image")["src"], .string("/photo.png"))
+        try expectEqual(editor.attributes(ofNode: "image")?["alt"], .string("Photo"))
+    }
+
     test("isActive(_:): unified name resolves marks — bold/italic") {
         let editor = try Editor(extensions: starterKit())
         try type(editor, "hello")

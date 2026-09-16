@@ -83,10 +83,12 @@ public final class Editor {
     /// so undo history groups rapid edits but separates distinct user actions.
     public func dispatch(_ tr: Transaction) {
         if tr.time == 0 { tr.time = Date().timeIntervalSince1970 * 1000 }
-        if tr.docChanged { docRevision &+= 1 }
         let oldSelection = state.selection
-        state = state.apply(tr)
-        onTransaction?(tr)
+        let applied = state.applyTransaction(tr)
+        guard !applied.transactions.isEmpty else { return }
+        if applied.transactions.contains(where: { $0.docChanged }) { docRevision &+= 1 }
+        state = applied.state
+        for transaction in applied.transactions { onTransaction?(transaction) }
         onChange?(state)
         if !state.selection.eq(oldSelection) { onSelectionUpdate?(state) }
     }
@@ -107,6 +109,13 @@ public final class Editor {
     public func run(_ name: String) -> Bool {
         guard let command = namedCommands[name] else { return false }
         return run(command)
+    }
+
+    /// Commit preparation only if the named command can also run. Slash menus
+    /// use this to remove their query without losing it when a command fails.
+    func run(_ name: String, after prepare: @escaping Command) -> Bool {
+        guard let command = namedCommands[name] else { return false }
+        return chain([prepare, command])
     }
 
     /// Apply a text color (a CSS color string, named or hex) over the selection;
@@ -145,9 +154,12 @@ public final class Editor {
             var produced: Transaction? = nil
             let did = command(working, { produced = $0 }, host as? any CommandHost)
             if did, let tr = produced {
-                if tr.docChanged { changedDoc = true }
-                working = working.apply(tr)
-                applied.append(tr)
+                if tr.time == 0 { tr.time = Date().timeIntervalSince1970 * 1000 }
+                let result = working.applyTransaction(tr)
+                guard !result.transactions.isEmpty else { return false }
+                if result.transactions.contains(where: { $0.docChanged }) { changedDoc = true }
+                working = result.state
+                applied.append(contentsOf: result.transactions)
                 any = true
             } else if !did {
                 return false
@@ -256,9 +268,12 @@ public final class Editor {
         return found
     }
 
-    /// The attributes of the closest ancestor node of the given name.
+    /// The attributes of the selected node or closest ancestor of the given name.
     public func attributes(ofNode name: String) -> Attrs? {
         guard let type = schema.nodes[name] else { return nil }
+        if let selected = state.selection as? NodeSelection, selected.node.type === type {
+            return selected.node.attrs
+        }
         let from = state.selection.resolvedFrom
         var depth = from.depth
         while depth >= 0 {

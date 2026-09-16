@@ -153,20 +153,17 @@ public let insertFootnote: Command = { state, dispatch, _ in
                                                       content: Fragment.from([paragraph]))
     else { return false }
 
-    if let dispatch {
-        let tr = state.tr
-        _ = tr.replaceSelectionWith(reference)
-        // At the end of the document, after everything the insert may have
-        // shifted. The definitions collect there, which is where a reader
-        // expects to find them.
-        let end = tr.doc.content.size
-        _ = try? tr.insert(end, definition)
-        // Into the note's empty paragraph: one step past the definition's
-        // start, which is where its first block's content begins.
-        let inside = min(end + 2, tr.doc.content.size)
-        tr.setSelection(Selection.near(tr.doc.resolve(inside)))
-        dispatch(tr.scrollIntoView())
-    }
+    let tr = state.tr.replaceSelectionWith(reference)
+    // Replacement fitting may silently drop a reference that the parent does
+    // not allow. Never publish only one half of the footnote, even in a dry run.
+    guard footnoteReferences(tr.doc).contains(where: { $0.label == label }) else { return false }
+    // Require the definition itself at the document end. A fitted insertion
+    // could otherwise discard its wrapper and leave an ordinary paragraph.
+    let end = tr.doc.content.size
+    guard (try? tr.step(ReplaceStep(end, end,
+        Slice(content: Fragment.from(definition), openStart: 0, openEnd: 0)))) != nil else { return false }
+    tr.setSelection(Selection.near(tr.doc.resolve(end + 2)))
+    dispatch?(tr.scrollIntoView())
     return true
 }
 
@@ -184,8 +181,13 @@ public let removeFootnote: Command = { state, dispatch, _ in
     tr.doc.descendants { node, pos, _, _ in
         let name = node.type.name
         guard name == "footnoteReference" || name == "footnoteDefinition" else { return true }
-        if node.attrs["label"]?.stringValue == label { targets.append((pos, node.nodeSize)) }
-        return name != "footnoteDefinition"
+        if node.attrs["label"]?.stringValue == label {
+            targets.append((pos, node.nodeSize))
+            // Its contents will be deleted with it. Other definitions can
+            // contain references to this label, so keep searching those.
+            return false
+        }
+        return true
     }
     for target in targets.sorted(by: { $0.pos > $1.pos }) {
         _ = try? tr.delete(target.pos, target.pos + target.size)
@@ -196,6 +198,11 @@ public let removeFootnote: Command = { state, dispatch, _ in
 
 /// The label of the footnote the selection sits in or beside, if any.
 public func footnoteLabelAtSelection(_ state: EditorState) -> String? {
+    // An explicit node selection takes precedence over enclosing definitions.
+    if let selected = (state.selection as? NodeSelection)?.node,
+       selected.type.name == "footnoteReference" || selected.type.name == "footnoteDefinition" {
+        return selected.attrs["label"]?.stringValue
+    }
     let resolved = state.doc.resolve(state.selection.from)
     // Inside a definition, at any depth.
     for depth in stride(from: resolved.depth, through: 0, by: -1)
@@ -205,10 +212,6 @@ public func footnoteLabelAtSelection(_ state: EditorState) -> String? {
     // On a reference, or with the cursor just after one.
     for node in [resolved.nodeAfter, resolved.nodeBefore] {
         if node?.type.name == "footnoteReference" { return node?.attrs["label"]?.stringValue }
-    }
-    if let selected = (state.selection as? NodeSelection)?.node,
-       selected.type.name == "footnoteReference" {
-        return selected.attrs["label"]?.stringValue
     }
     return nil
 }

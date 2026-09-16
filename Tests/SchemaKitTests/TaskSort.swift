@@ -81,6 +81,69 @@ private func nestedEditor() throws -> Editor {
 }
 
 func registerTaskSortTests() {
+    test("task sort: node selection follows nested and outer reorders") {
+        let editor = try nestedEditor()
+        editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, itemPos(editor, 1))))
+        setCheckedTogether(editor, [(0, true), (1, true)])
+        try expectEqual((editor.state.selection as? NodeSelection)?.node.textContent, "a1")
+        try editor.doc.check()
+    }
+
+    test("task sort: node selection follows a checked item and its return") {
+        let editor = try sortingEditor([("a", false), ("b", false)])
+        editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, itemPos(editor, 0))))
+        try expect(editor.run("toggleTaskChecked"))
+        try expectEqual(texts(editor), ["b", "a"])
+        try expectEqual((editor.state.selection as? NodeSelection)?.node.textContent, "a")
+        try expect(editor.run("toggleTaskChecked"))
+        try expectEqual(texts(editor), ["a", "b"])
+        try expectEqual(checks(editor), [false, false])
+        try expectEqual((editor.state.selection as? NodeSelection)?.node.textContent, "a")
+    }
+
+    test("task sort: checking then deleting the last item in one transaction") {
+        let editor = try sortingEditor([("a", false), ("b", false)])
+        let pos = itemPos(editor, 1)
+        let size = editor.doc.nodeAt(pos)!.nodeSize
+        let tr = editor.state.tr
+        try tr.setNodeAttribute(pos, "checked", .bool(true))
+        try tr.delete(pos, pos + size)
+        editor.dispatch(tr)
+        try expectEqual(texts(editor), ["a"])
+        try expectEqual(checks(editor), [false])
+    }
+
+    test("task sort: caret follows both nested and outer reorders") {
+        let editor = try nestedEditor()
+        select(editor, itemPos(editor, 1) + 2, itemPos(editor, 1) + 2)
+        setCheckedTogether(editor, [(0, true), (1, true)])
+        try expectEqual(editor.state.selection.resolvedFrom.parent.textContent, "a1")
+        try expectEqual(editor.state.selection.resolvedFrom.parentOffset, 0)
+    }
+
+    test("task sort: deleting a checked item does not recheck its successor") {
+        let editor = try sortingEditor([("a", false), ("b", true), ("c", true)])
+        let pos = itemPos(editor, 0)
+        let size = editor.doc.nodeAt(pos)!.nodeSize
+        let tr = editor.state.tr
+        try tr.setNodeAttribute(pos, "checked", .bool(true))
+        try tr.delete(pos, pos + size)
+        editor.dispatch(tr)
+        try expectEqual(texts(editor), ["b", "c"])
+        try expectEqual(taskSortKey.getState(editor.state)?.count, 0)
+    }
+
+    test("task sort: selection endpoints follow separate lists") {
+        let editor = try nestedEditor()
+        select(editor, itemPos(editor, 1) + 2, itemPos(editor, 4) + 3)
+        setCheckedTogether(editor, [(1, true), (4, true)])
+        let sel = editor.state.selection
+        try expectEqual(sel.resolvedAnchor.parent.textContent, "a1")
+        try expectEqual(sel.resolvedHead.parent.textContent, "b1")
+        try expectEqual(sel.resolvedAnchor.parentOffset, 0)
+        try expectEqual(sel.resolvedHead.parentOffset, 1)
+    }
+
     test("task sort: off by default — checking leaves the item where it is") {
         let editor = try sortingEditor([("a", false), ("b", false), ("c", false)], sorting: false)
         setChecked(editor, 1, true)

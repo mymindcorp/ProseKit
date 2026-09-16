@@ -13,6 +13,15 @@ import TestHarness
 }
 
 func registerSearchTests() {
+    test("search: replacement respects search range lower bound") {
+        let editor = try editorWith("cat cat")
+        editor.dispatch(setSearchState(editor.state.tr, SearchQuery(search: "cat"), SearchRange(from: 5, to: 8)))
+        select(editor, 1, 4)
+        try expectEqual(editor.searchMatches.count, 1)
+        try expect(editor.replaceCurrentMatch(with: "dog"))
+        try expectEqual(editor.doc.textContent, "cat dog")
+    }
+
     test("search: setSearch produces matches and highlight decorations") {
         let editor = try editorWith("the cat sat on the mat")
         editor.setSearch("the")

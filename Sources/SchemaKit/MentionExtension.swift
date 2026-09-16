@@ -101,7 +101,7 @@ final class MentionSuggestionSource: SuggestionSource {
     func context(_ editor: Editor) -> SuggestionContext? { mentionContext(editor) }
     func entries(_ query: String, _ editor: Editor) -> [SuggestionEntry] {
         guard let suggestion = editor.mentionSuggestion else { return [] }
-        return mentionEntries(provider(query), from: suggestion.from, to: suggestion.to)
+        return guardSuggestionEntries(mentionEntries(provider(query), from: suggestion.from, to: suggestion.to), in: editor)
     }
 }
 
@@ -122,6 +122,7 @@ private func computeMentionSuggestion(_ state: EditorState) -> MentionSuggestion
     let query = textBefore[atRange.upperBound...]
     if query.contains(where: { $0.isWhitespace }) { return nil }
     let atOffset = textBefore.distance(from: textBefore.startIndex, to: atRange.lowerBound)
+    guard !suggestionCrossesHardBreak(cursor.parent, from: atOffset, to: cursor.parentOffset) else { return nil }
     let from = cursor.pos - (cursor.parentOffset - atOffset)
     return MentionSuggestion(query: String(query), from: from, to: cursor.pos)
 }
@@ -165,9 +166,6 @@ public extension Editor {
         var attrs: Attrs = ["id": .string(id)]
         if let label { attrs["label"] = .string(label) }
         guard let node = try? type.create(attrs) else { return false }
-        let tr = state.tr
-        _ = try? tr.replaceWith(min(from, to), max(from, to), node)
-        dispatch(tr.scrollIntoView())
-        return true
+        return replaceSuggestionRange(self, from: from, to: to, with: node)
     }
 }

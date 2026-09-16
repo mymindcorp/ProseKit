@@ -80,9 +80,11 @@ public func setFigure(_ figureType: NodeType, _ captionType: NodeType) -> Comman
         guard !blocks.isEmpty, let caption = captionType.createAndFill(),
               let figure = try? figureType.createChecked([:], content: Fragment.from(blocks + [caption]))
         else { return false }
+        guard parent.canReplace(range.startIndex, range.endIndex, replacement: Fragment.from(figure)) else { return false }
         guard let dispatch else { return true }
         let tr = state.tr
-        guard (try? tr.replaceWith(range.start, range.end, figure)) != nil else { return false }
+        guard (try? tr.step(ReplaceStep(range.start, range.end,
+            Slice(content: Fragment.from(figure), openStart: 0, openEnd: 0)))) != nil else { return false }
         // figure(+1) → past its blocks → caption(+1).
         let body = blocks.reduce(0) { $0 + $1.nodeSize }
         let inCaption = min(range.start + 1 + body + 1, tr.doc.content.size)
@@ -96,15 +98,14 @@ public func setFigure(_ figureType: NodeType, _ captionType: NodeType) -> Comman
 /// caption becomes a trailing paragraph (dropped when empty).
 public func unsetFigure(_ figureType: NodeType, _ paragraphType: NodeType) -> Command {
     { state, dispatch, _ in
-        let from = state.selection.resolvedFrom
-        guard let depth = ancestorDepth(from, figureType) else { return false }
-        let figure = from.node(depth)
+        guard let target = selectedNodeOrAncestor(state, figureType) else { return false }
+        let figure = target.node
         var blocks: [Node] = []
         for i in 0..<figure.childCount {
             let child = figure.child(i)
             if child.type.name == "figcaption" {
-                if child.content.size > 0,
-                   let para = try? paragraphType.create([:], content: child.content) {
+                if child.content.size > 0 {
+                    guard let para = try? paragraphType.createChecked([:], content: child.content) else { return false }
                     blocks.append(para)
                 }
             } else {
@@ -112,12 +113,16 @@ public func unsetFigure(_ figureType: NodeType, _ paragraphType: NodeType) -> Co
             }
         }
         if blocks.isEmpty, let empty = paragraphType.createAndFill() { blocks = [empty] }
-        guard let dispatch else { return true }
-        let start = from.before(depth), end = from.after(depth)
+        let start = target.pos, end = target.pos + figure.nodeSize
         let tr = state.tr
-        guard (try? tr.replaceWith(start, end, Fragment.from(blocks))) != nil else { return false }
-        tr.setSelection(Selection.near(tr.doc.resolve(min(tr.mapping.map(from.pos), tr.doc.content.size))))
-        dispatch(tr.scrollIntoView())
+        guard (try? tr.step(ReplaceStep(start, end,
+            Slice(content: Fragment.from(blocks), openStart: 0, openEnd: 0)))) != nil else { return false }
+        // Preserve the selection inside the retained blocks, rather than
+        // mapping it through a replacement that says all their text vanished.
+        let last = figure.lastChild
+        let removedTail = 1 + (last?.type.name == "figcaption" && last?.content.size == 0 ? last!.nodeSize : 0)
+        tr.setSelection(state.selection.map(tr.doc, StepMap([start, 1, 0, end - removedTail, removedTail, 0])))
+        dispatch?(tr.scrollIntoView())
         return true
     }
 }

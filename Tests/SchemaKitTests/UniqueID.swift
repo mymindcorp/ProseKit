@@ -33,6 +33,17 @@ private func ids(_ editor: Editor, ofType type: String) -> [String?] {
 }
 
 func registerUniqueIDTests() {
+    test("uniqueID: generated ids cannot steal an existing later node's id") {
+        let schema = try ExtensionManager(uniqueIDKit()).schema
+        let doc = try schema.node("doc", content: Fragment.from([
+            try schema.node("paragraph"),
+            try schema.node("paragraph", ["id": .string("id-1")], content: Fragment.from(schema.text("original")))
+        ]))
+        let counter = Counter()
+        let editor = try Editor(extensions: uniqueIDKit(generateID: { counter.next() }), content: doc)
+        try expectEqual(ids(editor, ofType: "paragraph"), ["id-2", "id-1"])
+    }
+
     test("uniqueID: adds an `id` attribute to the configured node schemas") {
         let editor = try Editor(extensions: uniqueIDKit())
         try expectNotNil(editor.schema.nodes["paragraph"]?.defaultAttrs["id"])

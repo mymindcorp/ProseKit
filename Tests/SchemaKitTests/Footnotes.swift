@@ -17,6 +17,76 @@ private func shape(_ editor: Editor) -> [String] {
 }
 
 func registerFootnoteTests() {
+    test("footnotes: insertion is atomic when the schema rejects either half") {
+        for allowReference in [false, true] {
+            let schema = try Schema(nodes: [
+                ("doc", NodeSpec(content: allowReference ? "paragraph+" : "paragraph footnoteDefinition*")),
+                ("paragraph", NodeSpec(content: allowReference ? "inline*" : "text*")),
+                ("text", NodeSpec(group: "inline")),
+                ("footnoteReference", FootnoteReferenceExtension().nodeSpec),
+                ("footnoteDefinition", NodeSpec(content: "paragraph+", attrs: ["label": AttributeSpec(default: .string(""))]))
+            ])
+            let paragraph = try schema.node("paragraph", content: Fragment.from(schema.text("keep")))
+            let doc = try schema.node("doc", content: Fragment.from(paragraph))
+            let state = EditorState.create(EditorStateConfig(schema: schema, doc: doc, selection: TextSelection.create(doc, 1, 5)))
+            try expect(!insertFootnote(state, nil, nil))
+            var dispatched = false
+            try expect(!insertFootnote(state, { _ in dispatched = true }, nil))
+            try expect(!dispatched)
+            try expectEqual(state.doc, doc)
+        }
+    }
+
+    test("footnotes: a selected definition can be removed") {
+        let editor = try footnoteEditor()
+        try expect(editor.run("insertFootnote"))
+        let pos = footnoteDefinitions(editor.doc)[0].pos
+        editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, pos)))
+        try expectEqual(footnoteLabelAtSelection(editor.state), "1")
+        try expect(editor.run("removeFootnote"))
+        try expectEqual(footnoteDefinitions(editor.doc).count, 0)
+        try expectEqual(footnoteReferences(editor.doc).count, 0)
+        try editor.doc.check()
+    }
+
+    test("footnotes: a selected reference targets its own label inside another definition") {
+        let editor = try footnoteEditor()
+        let s = editor.schema
+        let reference = try s.node("footnoteReference", ["label": .string("a")])
+        editor.setContent(try s.node("doc", content: Fragment.from([
+            try s.node("footnoteDefinition", ["label": .string("a")],
+                       content: Fragment.from(try s.node("paragraph", content: Fragment.from(s.text("A"))))),
+            try s.node("footnoteDefinition", ["label": .string("b")],
+                       content: Fragment.from(try s.node("paragraph", content: Fragment.from([s.text("See "), reference]))))
+        ])))
+        let pos = footnoteReferences(editor.doc)[0].pos
+        editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, pos)))
+        try expectEqual(footnoteLabelAtSelection(editor.state), "a")
+        try expect(editor.run("removeFootnote"))
+        try expectEqual(footnoteDefinitions(editor.doc).map(\.label), ["b"])
+        try expectEqual(editor.doc.lastChild?.textContent, "See ")
+        try editor.doc.check()
+    }
+
+    test("footnotes: removal also clears references inside other definitions") {
+        let editor = try footnoteEditor()
+        let s = editor.schema
+        let reference = try s.node("footnoteReference", ["label": .string("a")])
+        editor.setContent(try s.node("doc", content: Fragment.from([
+            try s.node("paragraph", content: Fragment.from(reference)),
+            try s.node("footnoteDefinition", ["label": .string("a")],
+                       content: Fragment.from(try s.node("paragraph", content: Fragment.from(s.text("A"))))),
+            try s.node("footnoteDefinition", ["label": .string("b")],
+                       content: Fragment.from(try s.node("paragraph", content: Fragment.from([s.text("See "), reference]))))
+        ])))
+        select(editor, 1, 1)
+        try expect(editor.run("removeFootnote"))
+        try expectEqual(footnoteReferences(editor.doc).map(\.label), [])
+        try expectEqual(footnoteDefinitions(editor.doc).map(\.label), ["b"])
+        try expectEqual(editor.doc.lastChild?.textContent, "See ")
+        try editor.doc.check()
+    }
+
     test("footnotes: not registered by default") {
         let plain = try Editor(extensions: fullKit())
         try expect(plain.schema.nodes["footnoteReference"] == nil,

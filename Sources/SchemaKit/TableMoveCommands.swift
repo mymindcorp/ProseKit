@@ -45,8 +45,8 @@ func getCellsInRow(_ rowIndex: Int, _ tr: Transaction) -> [FoundNode]? {
     cells(tr, rowIndex, isColumn: false)
 }
 
-private func cells(_ tr: Transaction, _ index: Int, isColumn: Bool) -> [FoundNode]? {
-    guard let table = findTable(tr.doc.resolve(tr.selection.from)) else { return nil }
+private func cells(_ tr: Transaction, _ index: Int, isColumn: Bool, table explicitTable: FoundNode? = nil) -> [FoundNode]? {
+    guard let table = explicitTable ?? findTable(tr.doc.resolve(tr.selection.from)) else { return nil }
     let map = TableMap.get(table.node)
     if isColumn {
         guard index >= 0, index <= map.width - 1 else { return nil }
@@ -83,9 +83,12 @@ func getSelectionRangeInRow(_ tr: Transaction, _ startRowIndex: Int) -> CellSele
     selectionRange(tr, startRowIndex, isColumn: false)
 }
 
-private func selectionRange(_ tr: Transaction, _ startIdx: Int, isColumn: Bool) -> CellSelectionRange? {
+private func selectionRange(_ tr: Transaction, _ startIdx: Int, isColumn: Bool, table explicitTable: FoundNode? = nil) -> CellSelectionRange? {
+    guard let table = explicitTable ?? findTable(tr.doc.resolve(tr.selection.from)) else { return nil }
+    let map = TableMap.get(table.node)
+    guard startIdx >= 0, startIdx < (isColumn ? map.width : map.height) else { return nil }
     func cellsAt(_ i: Int) -> [FoundNode]? {
-        isColumn ? getCellsInColumn(i, tr) : getCellsInRow(i, tr)
+        cells(tr, i, isColumn: isColumn, table: table)
     }
     func span(_ node: Node) -> Int { isColumn ? cellColspan(node) : cellRowspan(node) }
 
@@ -122,7 +125,7 @@ private func selectionRange(_ tr: Transaction, _ startIdx: Int, isColumn: Bool) 
     endIndex = last
 
     guard let firstSelected = cellsAt(startIndex), !firstSelected.isEmpty,
-          let firstPerpendicular = isColumn ? getCellsInRow(0, tr) : getCellsInColumn(0, tr)
+          let firstPerpendicular = cells(tr, 0, isColumn: !isColumn, table: table)
     else { return nil }
 
     let anchor = tr.doc.resolve(firstSelected[firstSelected.count - 1].pos)
@@ -149,9 +152,10 @@ private func selectionRange(_ tr: Transaction, _ startIdx: Int, isColumn: Bool) 
 @discardableResult
 public func moveRow(_ tr: Transaction, originIndex: Int, targetIndex: Int,
                     select: Bool = true, pos: Int) -> Bool {
+    guard pos >= 0, pos <= tr.doc.content.size else { return false }
     guard let table = findTable(tr.doc.resolve(pos)),
-          let indexesOrigin = getSelectionRangeInRow(tr, originIndex)?.indexes,
-          let indexesTarget = getSelectionRangeInRow(tr, targetIndex)?.indexes,
+          let indexesOrigin = selectionRange(tr, originIndex, isColumn: false, table: table)?.indexes,
+          let indexesTarget = selectionRange(tr, targetIndex, isColumn: false, table: table)?.indexes,
           !indexesOrigin.contains(targetIndex)
     else { return false }
 
@@ -179,9 +183,10 @@ public func moveRow(_ tr: Transaction, originIndex: Int, targetIndex: Int,
 @discardableResult
 public func moveColumn(_ tr: Transaction, originIndex: Int, targetIndex: Int,
                        select: Bool = true, pos: Int) -> Bool {
+    guard pos >= 0, pos <= tr.doc.content.size else { return false }
     guard let table = findTable(tr.doc.resolve(pos)),
-          let indexesOrigin = getSelectionRangeInColumn(tr, originIndex)?.indexes,
-          let indexesTarget = getSelectionRangeInColumn(tr, targetIndex)?.indexes,
+          let indexesOrigin = selectionRange(tr, originIndex, isColumn: true, table: table)?.indexes,
+          let indexesTarget = selectionRange(tr, targetIndex, isColumn: true, table: table)?.indexes,
           !indexesOrigin.contains(targetIndex)
     else { return false }
 

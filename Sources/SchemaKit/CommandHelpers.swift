@@ -5,6 +5,10 @@ public import EditorCommands
 /// Whether the selection sits inside a node of the given type (with matching
 /// attrs).
 public func isNodeActive(_ state: EditorState, _ type: NodeType, _ attrs: Attrs? = nil) -> Bool {
+    if let selection = state.selection as? NodeSelection, selection.node.type === type,
+       attrs?.allSatisfy({ selection.node.attrs[$0.key] == $0.value }) ?? true {
+        return true
+    }
     let from = state.selection.resolvedFrom
     var depth = from.depth
     while depth >= 0 {
@@ -49,4 +53,14 @@ public func ancestorDepth(_ pos: ResolvedPos, _ type: NodeType) -> Int? {
         depth -= 1
     }
     return nil
+}
+
+/// Resolve the explicitly selected node before looking for an enclosing one.
+func selectedNodeOrAncestor(_ state: EditorState, _ type: NodeType) -> (node: Node, pos: Int)? {
+    if let selection = state.selection as? NodeSelection, selection.node.type === type {
+        return (selection.node, selection.from)
+    }
+    let from = state.selection.resolvedFrom
+    guard let depth = ancestorDepth(from, type) else { return nil }
+    return (from.node(depth), from.before(depth))
 }
