@@ -28,6 +28,41 @@ final class UITextInputTests: XCTestCase {
         XCTAssertEqual(view.text(in: range(7, 12)), "world")
     }
 
+    func testUpwardSelectionDragKeepsTheBottomAnchored() throws {
+        let view = try makeView()
+        view.selectedTextRange = range(12, 12)
+        for head in [9, 6, 3, 5] {
+            view.selectedTextRange = range(head, 12)
+            XCTAssertEqual(view.editor.state.selection.anchor, 12)
+            XCTAssertEqual(view.editor.state.selection.head, head)
+        }
+        // UIKit may round-trip an unchanged, sorted range during the drag.
+        view.selectedTextRange = view.selectedTextRange
+        XCTAssertEqual(view.editor.state.selection.anchor, 12)
+        XCTAssertEqual(view.editor.state.selection.head, 5)
+    }
+
+    func testSelectionDragCrossesItsAnchorInBothDirections() throws {
+        let view = try makeView()
+        view.selectedTextRange = range(6, 6)
+        for head in [3, 9, 2, 6, 10] {
+            view.selectedTextRange = range(6, head)
+            XCTAssertEqual(view.editor.state.selection.anchor, 6)
+            XCTAssertEqual(view.editor.state.selection.head, head)
+        }
+    }
+
+    func testDraggingEitherSelectionHandleMakesItTheHead() throws {
+        let view = try makeView()
+        view.selectedTextRange = range(4, 8)
+        view.selectedTextRange = range(2, 8)
+        XCTAssertEqual(view.editor.state.selection.anchor, 8)
+        XCTAssertEqual(view.editor.state.selection.head, 2)
+        view.selectedTextRange = range(2, 11)
+        XCTAssertEqual(view.editor.state.selection.anchor, 2)
+        XCTAssertEqual(view.editor.state.selection.head, 11)
+    }
+
     /// Replacing a (double-tap) selection must collapse to a caret *after* the
     /// inserted text, so the next keystroke appends instead of replacing it —
     /// otherwise typed characters get "eaten".
