@@ -19,19 +19,21 @@ private func assertHistoryRoundTrip(_ editor: Editor, original: Node, selection:
 }
 
 func registerBoundaryCoverageTests() {
+    // Upper-bound clipping follows prosemirror-search 1.1.1 src/query.ts.
+    // Lower bounds use lastIndex upstream; they do not create regex anchors.
     let searches: [(String, String, String, Int, Int, [[Int]])] = [
         ("start anchor ignores a range start inside the block", "cat cat", "^cat", 5, 8, []),
-        ("end anchor ignores a range end inside the block", "cat dog", "cat$", 1, 4, []),
+        ("end anchor uses the requested upper bound", "cat dog", "cat$", 1, 4, [[1, 4]]),
         ("positive lookbehind sees text before the range", "a cat", "(?<=a )cat", 3, 6, [[3, 6]]),
-        ("positive lookahead sees text after the range", "cat!", "cat(?=!)", 1, 4, [[1, 4]]),
+        ("positive lookahead cannot see beyond the upper bound", "cat!", "cat(?=!)", 1, 4, []),
         ("negative lookbehind sees text before the range", "a cat", "(?<!a )cat", 3, 6, []),
-        ("negative lookahead sees text after the range", "cat!", "cat(?!!)", 1, 4, []),
+        ("negative lookahead uses the requested upper bound", "cat!", "cat(?!!)", 1, 4, [[1, 4]]),
         ("word start is not created by clipping the range", "scat", "\\bcat", 2, 5, []),
-        ("word end is not created by clipping the range", "cats", "cat\\b", 1, 4, []),
+        ("word end uses the requested upper bound", "cats", "cat\\b", 1, 4, [[1, 4]]),
         ("zero-width lookaheads never become highlights", "cat cat", "(?=cat)", 1, 8, []),
         ("anchors still recognize a complete block", "cat", "^cat$", 1, 4, [[1, 4]]),
         ("consuming matches cannot extend beyond the range", "cats", "cats", 1, 4, []),
-        ("lookahead uses grapheme positions after emoji", "🙂 cat!", "cat(?=!)", 3, 6, [[3, 6]])
+        ("lookahead respects the upper bound after emoji", "🙂 cat!", "cat(?=!)", 3, 6, [])
     ]
     for (name, text, pattern, from, to, expected) in searches {
         test("boundary coverage: " + name) {

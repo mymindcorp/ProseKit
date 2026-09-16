@@ -31,6 +31,27 @@ private func mathCommand(_ operation: String, _ type: NodeType, pos: Int? = nil)
 }
 
 func registerModelCommandCoverageTests() {
+    test("model command coverage: a matching formula elsewhere cannot validate a refused insertion") {
+        let schema = try Schema(nodes: [
+            ("doc", NodeSpec(content: "paragraph allowedParagraph")),
+            ("paragraph", NodeSpec(content: "text*")),
+            ("allowedParagraph", NodeSpec(content: "inline*")),
+            ("text", NodeSpec(group: "inline")),
+            ("inlineMath", InlineMathExtension().nodeSpec)
+        ])
+        let doc = try schema.node("doc", content: .from([
+            try schema.node("paragraph", content: .from(schema.text("keep"))),
+            try schema.node("allowedParagraph", content: .from(try schema.node("inlineMath", ["latex": .string("new")])) )
+        ]))
+        let state = EditorState.create(EditorStateConfig(schema: schema, doc: doc, selection: TextSelection.create(doc, 1, 5)))
+        let command = insertMath(schema.nodes["inlineMath"]!, latex: "new")
+        try expect(!command(state, nil, nil))
+        var dispatched = false
+        try expect(!command(state, { _ in dispatched = true }, nil))
+        try expect(!dispatched)
+        try expectEqual(state.doc, doc)
+    }
+
     for name in ["inlineMath", "blockMath"] {
         test("model command coverage: explicit \(name) insertion preserves text and a distant caret through history") {
             let editor = try Editor(extensions: fullKit())
@@ -50,6 +71,20 @@ func registerModelCommandCoverageTests() {
             try expectEqual(editor.state.selection.resolvedHead.parent.textContent, "keep")
             try expectEqual(editor.state.selection.resolvedHead.parentOffset, 4)
             try modelCommandHistory(editor, original: original)
+        }
+        test("model command coverage: replacing selected \(name) with the same source still succeeds") {
+            let editor = try Editor(extensions: fullKit())
+            let s = editor.schema
+            let node = try s.node(name, ["latex": .string("same")])
+            let doc = try s.node("doc", content: .from(name == "inlineMath"
+                ? try s.node("paragraph", content: .from(node)) : node))
+            editor.setContent(doc)
+            let pos = name == "inlineMath" ? 1 : 0
+            editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, pos)))
+            let command = insertMath(s.nodes[name]!, latex: "same")
+            try expect(command(editor.state, nil, nil))
+            try expect(editor.run(command))
+            try expectEqual(editor.doc, doc)
         }
         for operation in ["insert", "update", "delete"] {
             test("model command coverage: \(name) \(operation) preserves surrounding content and history") {

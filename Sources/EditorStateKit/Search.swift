@@ -280,9 +280,9 @@ private struct StringQuery: QueryImpl {
 private struct RegExpQuery: QueryImpl {
     let regex: NSRegularExpression
 
-    // Search limits constrain consumed text, not regex context. Keep the full
-    // textblock for lookarounds and word boundaries, and prevent the range's
-    // endpoints from becoming artificial ^/$ anchors.
+    // Like ProseMirror, clip text at the upper search bound. Keep the prefix
+    // before the lower bound visible to assertions: advancing through matches
+    // must not introduce a new ^ anchor or word boundary on every retry.
 
     init?(pattern: String, caseSensitive: Bool) {
         guard let regex = try? NSRegularExpression(pattern: pattern, options: caseSensitive ? [] : [.caseInsensitive])
@@ -325,9 +325,9 @@ private struct RegExpQuery: QueryImpl {
             let content = blockText(node)
             let hi = min(node.content.size, to - start)
             guard hi >= 0, hi <= content.count else { return nil }
-            let hay = content
+            let hay = String(content[..<content.index(content.startIndex, offsetBy: hi)])
             let lo = max(0, from - start)
-            guard lo <= hi else { return nil }
+            guard lo <= hay.count else { return nil }
             // The first match *with width*. An empty match is not a match: `a|`
             // and `.*` match the empty string at every position, and a result
             // whose `to` equals the `from` it was searched from sends every
@@ -335,7 +335,7 @@ private struct RegExpQuery: QueryImpl {
             // find bar spun until the process was killed. One enumeration pass
             // rather than a `firstMatch` per offset, which was quadratic in the
             // block on exactly the queries that produce empty matches.
-            let searchRange = NSRange(hay.index(hay.startIndex, offsetBy: lo)..<hay.index(hay.startIndex, offsetBy: hi), in: hay)
+            let searchRange = NSRange(hay.index(hay.startIndex, offsetBy: lo)..<hay.endIndex, in: hay)
             // `result` is nil for a match with no width in document positions,
             // so the first non-nil result is the first real match.
             return regex.matches(in: hay, options: [.withTransparentBounds, .withoutAnchoringBounds], range: searchRange)
@@ -347,24 +347,23 @@ private struct RegExpQuery: QueryImpl {
         let content = blockText(node)
         let hi = min(node.content.size, to - start)
         guard hi >= 0, hi <= content.count else { return [] }
-        let hay = content
+        let hay = String(content[..<content.index(content.startIndex, offsetBy: hi)])
         let lo = max(0, from - start)
-        guard lo <= hi else { return [] }
+        guard lo <= hay.count else { return [] }
         var out: [SearchResult] = []
-        let end = hay.index(hay.startIndex, offsetBy: hi)
         var cursor = hay.index(hay.startIndex, offsetBy: lo)
         // Successive `firstMatch` from one past the previous start, rather than
         // `matches(in:)`: that returns only non-overlapping matches, and the
         // whole-word test can reject one whose overlapping neighbour is good.
-        while cursor <= end {
-            let searchRange = NSRange(cursor ..< end, in: hay)
+        while cursor <= hay.endIndex {
+            let searchRange = NSRange(cursor ..< hay.endIndex, in: hay)
             guard let m = regex.firstMatch(in: hay, options: [.withTransparentBounds, .withoutAnchoringBounds], range: searchRange),
                   let r = Range(m.range, in: hay) else { break }
             // An empty match is not a match — see `findNext`. `a|` and `.*`
             // produce one at every position, and each would have become a
             // zero-width highlight and a "match" the find bar counts.
             if !r.isEmpty, let res = result(from: m, in: hay, blockStart: start) { out.append(res) }
-            guard r.lowerBound < end else { break }
+            guard r.lowerBound < hay.endIndex else { break }
             cursor = hay.index(after: r.lowerBound)
         }
         return out
@@ -375,15 +374,15 @@ private struct RegExpQuery: QueryImpl {
             let content = blockText(node)
             let hi = min(node.content.size, from - start)
             guard hi > 0, hi <= content.count else { return nil }
-            let hay = content
+            let hay = String(content[..<content.index(content.startIndex, offsetBy: hi)])
             // Like upstream: walk overlapping match starts and keep the last.
             var best: SearchResult?
             // The first visited block can straddle the search range's lower
             // bound. Keep match starts inside that range, including retries
             // after whole-word or custom-filter rejection.
             var off = max(0, to - start)
-            while off <= hi {
-                let searchRange = NSRange(hay.index(hay.startIndex, offsetBy: off)..<hay.index(hay.startIndex, offsetBy: hi), in: hay)
+            while off <= hay.count {
+                let searchRange = NSRange(hay.index(hay.startIndex, offsetBy: off)..<hay.endIndex, in: hay)
                 guard let m = regex.firstMatch(in: hay, options: [.withTransparentBounds, .withoutAnchoringBounds], range: searchRange),
                       let r = Range(m.range, in: hay) else { break }
                 // Keep the last match with width; `result` decides width.

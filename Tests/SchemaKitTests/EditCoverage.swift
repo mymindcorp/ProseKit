@@ -64,11 +64,13 @@ func registerEditCoverageTests() {
         try expect(editor.chain([
             { state, dispatch, _ in
                 guard let tr = try? state.tr.insertText("one", 1) else { return false }
+                tr.time = 10_000
                 dispatch?(tr.setMeta("coverageAppend", true)); return true
             },
             { state, dispatch, _ in
                 guard state.doc.textContent == "one!",
                       let tr = try? state.tr.insertText("?", state.doc.content.size - 2) else { return false }
+                tr.time = 10_001
                 dispatch?(tr); return true
             }
         ]))
