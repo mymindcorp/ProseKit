@@ -70,9 +70,13 @@ final class EditorTextViewDropSessionTests: XCTestCase {
     }
 
     private func textView(_ text: String) throws -> EditorTextView {
-        try makeView { s in
+        let view = try makeView { s in
             [try s.node("paragraph", [:], content: Fragment.from([s.text(text)]))]
         }
+        // Text dragging is opt-in. Enable it so these tests exercise drag
+        // selection checks and moves rather than the disabled-feature guard.
+        view.textDraggingEnabled = true
+        return view
     }
 
     private func imageDoc() throws -> EditorTextView {
