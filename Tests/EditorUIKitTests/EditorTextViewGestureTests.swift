@@ -39,6 +39,17 @@ private final class PointerEvent: UIEvent {
 }
 
 @MainActor
+private final class FakeMouseSelection: MouseSelectionRecognizer {
+    var point: CGPoint = .zero
+    var fakeState: UIGestureRecognizer.State = .possible
+    override func location(in view: UIView?) -> CGPoint { point }
+    override var state: UIGestureRecognizer.State {
+        get { fakeState }
+        set { fakeState = newValue }
+    }
+}
+
+@MainActor
 private final class FakePan: UIPanGestureRecognizer {
     var point: CGPoint = .zero
     var fakeState: UIGestureRecognizer.State = .possible
@@ -62,40 +73,89 @@ private final class FakeLongPress: UILongPressGestureRecognizer {
 
 @MainActor
 final class EditorTextViewGestureTests: XCTestCase {
-    func testMouseDownStartsFreshSelectionWithoutAnExtraClick() throws {
+    func testFirstMouseDragExtendsFromThePressPosition() throws {
         let view = try paragraphs(["one two three four"])
         let touch = PointerTouch()
         let event = PointerEvent()
+        let pan = FakeMouseSelection()
+        pan.anchorAtPoint = { view.mouseSelectionAnchor(at: $0) }
         for (start, previousEnd) in [(5, 8), (12, 8), (5, 1), (12, 1)] {
+            pan.reset()
+            pan.fakeState = .possible
             view.selectedTextRange = DocTextRange(1, previousEnd)
             let caret = view.caretRect(for: DocTextPosition(start))
             touch.point = CGPoint(x: caret.midX, y: caret.midY)
-            view.touchesBegan([touch], with: event)
-            XCTAssertTrue(view.editor.state.selection.empty)
-            XCTAssertEqual(view.editor.state.selection.head, start)
-            view.selectedTextRange = DocTextRange(2, start)
-            XCTAssertEqual(view.editor.state.selection.anchor, start)
-            XCTAssertEqual(view.editor.state.selection.head, 2)
+            pan.touchesBegan([touch], with: event)
+            XCTAssertEqual(pan.anchor, start)
+            // No preliminary click or manually injected selection: move the
+            // same press, then drive the actual pan handler through release.
+            for (state, head) in [(UIGestureRecognizer.State.began, 3), (.changed, 2), (.ended, 15)] {
+                let rect = view.caretRect(for: DocTextPosition(head))
+                pan.point = CGPoint(x: rect.midX, y: rect.midY)
+                pan.fakeState = state
+                view.handleMouseSelection(pan)
+                XCTAssertEqual(view.editor.state.selection.anchor, start)
+                XCTAssertEqual(view.editor.state.selection.head, head)
+                XCTAssertFalse(view.editor.state.selection.empty)
+            }
         }
     }
 
-    func testMouseDownPreservesNativeModifiedAndTouchSelection() throws {
+    func testMouseSelectionLeavesModifiedClicksAndTouchToNativeInteraction() throws {
         let view = try paragraphs(["one two three four"])
         let touch = PointerTouch()
         let event = PointerEvent()
+        let pan = FakeMouseSelection()
+        pan.anchorAtPoint = { view.mouseSelectionAnchor(at: $0) }
         let caret = view.caretRect(for: DocTextPosition(5))
         touch.point = CGPoint(x: caret.midX, y: caret.midY)
         for scenario in 0..<5 {
+            pan.reset()
+            pan.fakeState = .possible
             view.selectedTextRange = DocTextRange(1, 8)
             event.modifiers = scenario == 0 ? .shift : []
             event.buttons = scenario == 1 ? .secondary : .primary
             touch.clicks = scenario == 2 ? 2 : 1
             touch.inputType = scenario == 3 ? .direct : .indirectPointer
             view.textDraggingEnabled = scenario == 4
-            view.touchesBegan([touch], with: event)
+            pan.touchesBegan([touch], with: event)
+            XCTAssertEqual(pan.state, .failed)
+            XCTAssertNil(pan.anchor)
             XCTAssertEqual(view.editor.state.selection.from, 1)
             XCTAssertEqual(view.editor.state.selection.to, 8)
         }
+    }
+
+    func testMouseDragEstablishesSelectionBeforeFocusing() throws {
+        let view = try paragraphs(["one two three four"])
+        let window = UIWindow(frame: view.frame)
+        window.addSubview(view)
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        view.selectedTextRange = DocTextRange(1, 1)
+        let pan = FakeMouseSelection()
+        pan.anchorAtPoint = { view.mouseSelectionAnchor(at: $0) }
+        let touch = PointerTouch()
+        let start = view.caretRect(for: DocTextPosition(12))
+        touch.point = CGPoint(x: start.midX, y: start.midY)
+        pan.touchesBegan([touch], with: PointerEvent())
+        let end = view.caretRect(for: DocTextPosition(5))
+        pan.point = CGPoint(x: end.midX, y: end.midY)
+        pan.fakeState = .began
+        var focusedHead: Int?
+        view.onFocus = { focusedHead = view.editor.state.selection.head }
+        defer { view.onFocus = nil }
+        view.handleMouseSelection(pan)
+        XCTAssertEqual(focusedHead, 5)
+        XCTAssertEqual(view.editor.state.selection.anchor, 12)
+    }
+
+    func testMouseSelectionRecognizerIsPointerOnlyAndExclusive() throws {
+        let view = try paragraphs(["one two"])
+        let pan = try XCTUnwrap(view.mouseSelectionRecognizer)
+        XCTAssertEqual(pan.allowedTouchTypes, [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)])
+        XCTAssertFalse(view.gestureRecognizer(pan, shouldRecognizeSimultaneouslyWith: FakePan()))
+        XCTAssertFalse(view.gestureRecognizer(FakePan(), shouldRecognizeSimultaneouslyWith: pan))
     }
 
     // MARK: - Fixtures

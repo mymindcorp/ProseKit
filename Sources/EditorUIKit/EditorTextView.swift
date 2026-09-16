@@ -60,6 +60,7 @@ open class EditorTextView: UIView, UIKeyInput {
     private var textInteraction: UITextInteraction?
     // Internal rather than private so tests can drive the gesture wiring: the
     // delegate compares recognizer identity, so a test needs these instances.
+    weak var mouseSelectionRecognizer: MouseSelectionRecognizer?
     weak var columnResizeRecognizer: UIGestureRecognizer?
     weak var linkTapRecognizer: UIGestureRecognizer?
     weak var blockDragRecognizer: UIGestureRecognizer?
@@ -181,6 +182,13 @@ open class EditorTextView: UIView, UIKeyInput {
         // selection handles, and the edit menu — all driven by our UITextInput
         // conformance. Editable vs read-only (.nonEditable: selection without a
         // caret/keyboard) is chosen by `installTextInteraction`.
+        let mouseSelection = MouseSelectionRecognizer(target: self, action: #selector(handleMouseSelection(_:)))
+        mouseSelection.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        mouseSelection.maximumNumberOfTouches = 1
+        mouseSelection.delegate = self
+        mouseSelection.anchorAtPoint = { [weak self] point in self?.mouseSelectionAnchor(at: point) }
+        addGestureRecognizer(mouseSelection)
+        mouseSelectionRecognizer = mouseSelection
         installTextInteraction()
 
         // Our own gestures handle only what UITextInteraction doesn't: toggling
@@ -1486,6 +1494,11 @@ open class EditorTextView: UIView, UIKeyInput {
         interaction.delegate = self
         addInteraction(interaction)
         textInteraction = interaction
+        if let mouseSelectionRecognizer {
+            for gesture in interaction.gesturesForFailureRequirements {
+                gesture.require(toFail: mouseSelectionRecognizer)
+            }
+        }
     }
 
     /// Reports the current selection's on-screen rects (view coordinates) and
@@ -2050,28 +2063,31 @@ open class EditorTextView: UIView, UIKeyInput {
 
     // MARK: - Mouse selection
 
-    open override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        // Declining a drag item is too late to turn a press on selected text
-        // into a fresh selection: native interaction has already seen the old
-        // range. Place the anchor on mouse-down, before the mouse starts moving.
-        // Touch handles, multi-click word/paragraph selection and modified
-        // clicks retain their native behavior.
-        if !textDraggingEnabled,
-           let event, event.buttonMask == .primary,
-           event.modifierFlags.intersection([.shift, .control, .alternate, .command]).isEmpty,
-           touches.count == 1, let touch = touches.first,
-           touch.type == .indirectPointer, touch.tapCount == 1 {
-            let point = touch.location(in: self)
-            let dp = docPoint(point)
-            if ensureLayout().checkbox(at: dp) == nil,
-               blockAtomPosition(at: dp) == nil, imageAt(dp) == nil,
-               columnBorderHit(at: dp) == nil, blockHandleHit(at: point) == nil,
-               ensureLayout().disclosure(at: dp) == nil,
-               let position = closestPosition(to: point) {
-                selectedTextRange = textRange(from: position, to: position)
-            }
+    func mouseSelectionAnchor(at point: CGPoint) -> Int? {
+        guard !textDraggingEnabled else { return nil }
+        let dp = docPoint(point)
+        guard ensureLayout().checkbox(at: dp) == nil,
+              blockAtomPosition(at: dp) == nil, imageAt(dp) == nil,
+              columnBorderHit(at: dp) == nil, blockHandleHit(at: point) == nil,
+              ensureLayout().disclosure(at: dp) == nil else { return nil }
+        return (closestPosition(to: point) as? DocTextPosition)?.offset
+    }
+
+    @objc func handleMouseSelection(_ gesture: MouseSelectionRecognizer) {
+        guard let anchor = gesture.anchor,
+              let head = closestPosition(to: gesture.location(in: self)) as? DocTextPosition else { return }
+        switch gesture.state {
+        case .began:
+            selectedTextRange = DocTextRange(anchor, anchor)
+        case .changed, .ended:
+            break
+        default:
+            return
         }
-        super.touchesBegan(touches, with: event)
+        selectedTextRange = DocTextRange(anchor, head.offset)
+        // Focus only after replacing the old selection, so becoming first
+        // responder cannot reveal its stale caret and scroll away from the press.
+        if gesture.state == .began, isEditable { _ = becomeFirstResponder() }
     }
 
     // MARK: - Block reordering (drag handles)
@@ -3603,7 +3619,7 @@ extension EditorTextView: UITextInteractionDelegate {
 extension EditorTextView: UIGestureRecognizerDelegate {
     /// Coexist with UITextInteraction's own recognizers.
     public func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        true
+        gesture !== mouseSelectionRecognizer && other !== mouseSelectionRecognizer
     }
 }
 
