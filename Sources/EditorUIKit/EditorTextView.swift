@@ -2048,6 +2048,32 @@ open class EditorTextView: UIView, UIKeyInput {
         gesture.modifierFlags.contains(.command)
     }
 
+    // MARK: - Mouse selection
+
+    open override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        // Declining a drag item is too late to turn a press on selected text
+        // into a fresh selection: native interaction has already seen the old
+        // range. Place the anchor on mouse-down, before the mouse starts moving.
+        // Touch handles, multi-click word/paragraph selection and modified
+        // clicks retain their native behavior.
+        if !textDraggingEnabled,
+           let event, event.buttonMask == .primary,
+           event.modifierFlags.intersection([.shift, .control, .alternate, .command]).isEmpty,
+           touches.count == 1, let touch = touches.first,
+           touch.type == .indirectPointer, touch.tapCount == 1 {
+            let point = touch.location(in: self)
+            let dp = docPoint(point)
+            if ensureLayout().checkbox(at: dp) == nil,
+               blockAtomPosition(at: dp) == nil, imageAt(dp) == nil,
+               columnBorderHit(at: dp) == nil, blockHandleHit(at: point) == nil,
+               ensureLayout().disclosure(at: dp) == nil,
+               let position = closestPosition(to: point) {
+                selectedTextRange = textRange(from: position, to: position)
+            }
+        }
+        super.touchesBegan(touches, with: event)
+    }
+
     // MARK: - Block reordering (drag handles)
 
     /// The drag-handle rect for top-level block `index`, in DOCUMENT coords.

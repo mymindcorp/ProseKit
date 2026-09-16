@@ -10,6 +10,35 @@ import SchemaKit
 /// window, NOT scroll the view back to the caret (which froze scrolling).
 @MainActor
 final class ScrollingTests: XCTestCase {
+    func testUpwardSelectionDragRevealsTheMovingEnd() throws {
+        let editor = try Editor(extensions: fullKit())
+        let paragraphs = try (0..<80).map { i in
+            try editor.schema.node("paragraph", [:], content: Fragment.from([editor.schema.text("paragraph \(i)")]))
+        }
+        editor.setContent(try editor.schema.node("doc", [:], content: Fragment.from(paragraphs)))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 400))
+        let scroll = UIScrollView(frame: window.bounds)
+        let view = EditorTextView(editor: editor)
+        // A full-height content view keeps this test independent of the host's
+        // viewport synchronization, while exercising the real reveal path.
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 400)
+        view.frame.size.height = view.documentHeight
+        scroll.contentSize = view.frame.size
+        scroll.addSubview(view)
+        window.addSubview(scroll)
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        XCTAssertTrue(view.becomeFirstResponder())
+
+        let bottom = editor.doc.content.size - 1
+        view.selectedTextRange = DocTextRange(bottom, bottom)
+        XCTAssertGreaterThan(scroll.contentOffset.y, 400)
+        view.selectedTextRange = DocTextRange(1, bottom)
+        XCTAssertEqual(editor.state.selection.head, 1)
+        XCTAssertLessThan(scroll.contentOffset.y, 100,
+                          "extending upward must reveal the top, not the anchored bottom")
+    }
+
     func testFeedingScrollOffsetDoesNotSnapBackToCaret() throws {
         let editor = try Editor(extensions: fullKit())
         let paras = (0..<80).map { i in

@@ -21,6 +21,24 @@ private final class FakeTap: UITapGestureRecognizer {
 }
 
 @MainActor
+private final class PointerTouch: UITouch {
+    var point: CGPoint = .zero
+    var inputType: UITouch.TouchType = .indirectPointer
+    var clicks = 1
+    override func location(in view: UIView?) -> CGPoint { point }
+    override var type: UITouch.TouchType { inputType }
+    override var tapCount: Int { clicks }
+}
+
+@MainActor
+private final class PointerEvent: UIEvent {
+    var buttons: UIEvent.ButtonMask = .primary
+    var modifiers: UIKeyModifierFlags = []
+    override var buttonMask: UIEvent.ButtonMask { buttons }
+    override var modifierFlags: UIKeyModifierFlags { modifiers }
+}
+
+@MainActor
 private final class FakePan: UIPanGestureRecognizer {
     var point: CGPoint = .zero
     var fakeState: UIGestureRecognizer.State = .possible
@@ -44,6 +62,42 @@ private final class FakeLongPress: UILongPressGestureRecognizer {
 
 @MainActor
 final class EditorTextViewGestureTests: XCTestCase {
+    func testMouseDownStartsFreshSelectionWithoutAnExtraClick() throws {
+        let view = try paragraphs(["one two three four"])
+        let touch = PointerTouch()
+        let event = PointerEvent()
+        for (start, previousEnd) in [(5, 8), (12, 8), (5, 1), (12, 1)] {
+            view.selectedTextRange = DocTextRange(1, previousEnd)
+            let caret = view.caretRect(for: DocTextPosition(start))
+            touch.point = CGPoint(x: caret.midX, y: caret.midY)
+            view.touchesBegan([touch], with: event)
+            XCTAssertTrue(view.editor.state.selection.empty)
+            XCTAssertEqual(view.editor.state.selection.head, start)
+            view.selectedTextRange = DocTextRange(2, start)
+            XCTAssertEqual(view.editor.state.selection.anchor, start)
+            XCTAssertEqual(view.editor.state.selection.head, 2)
+        }
+    }
+
+    func testMouseDownPreservesNativeModifiedAndTouchSelection() throws {
+        let view = try paragraphs(["one two three four"])
+        let touch = PointerTouch()
+        let event = PointerEvent()
+        let caret = view.caretRect(for: DocTextPosition(5))
+        touch.point = CGPoint(x: caret.midX, y: caret.midY)
+        for scenario in 0..<5 {
+            view.selectedTextRange = DocTextRange(1, 8)
+            event.modifiers = scenario == 0 ? .shift : []
+            event.buttons = scenario == 1 ? .secondary : .primary
+            touch.clicks = scenario == 2 ? 2 : 1
+            touch.inputType = scenario == 3 ? .direct : .indirectPointer
+            view.textDraggingEnabled = scenario == 4
+            view.touchesBegan([touch], with: event)
+            XCTAssertEqual(view.editor.state.selection.from, 1)
+            XCTAssertEqual(view.editor.state.selection.to, 8)
+        }
+    }
+
     // MARK: - Fixtures
 
     private func makeView(_ build: (Schema) throws -> [Node]) throws -> EditorTextView {
