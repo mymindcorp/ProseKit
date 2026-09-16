@@ -21,6 +21,35 @@ private final class FakeTap: UITapGestureRecognizer {
 }
 
 @MainActor
+private final class PointerTouch: UITouch {
+    var point: CGPoint = .zero
+    var inputType: UITouch.TouchType = .indirectPointer
+    var clicks = 1
+    override func location(in view: UIView?) -> CGPoint { point }
+    override var type: UITouch.TouchType { inputType }
+    override var tapCount: Int { clicks }
+}
+
+@MainActor
+private final class PointerEvent: UIEvent {
+    var buttons: UIEvent.ButtonMask = .primary
+    var modifiers: UIKeyModifierFlags = []
+    override var buttonMask: UIEvent.ButtonMask { buttons }
+    override var modifierFlags: UIKeyModifierFlags { modifiers }
+}
+
+@MainActor
+private final class FakeMouseSelection: MouseSelectionRecognizer {
+    var point: CGPoint = .zero
+    var fakeState: UIGestureRecognizer.State = .possible
+    override func location(in view: UIView?) -> CGPoint { point }
+    override var state: UIGestureRecognizer.State {
+        get { fakeState }
+        set { fakeState = newValue }
+    }
+}
+
+@MainActor
 private final class FakePan: UIPanGestureRecognizer {
     var point: CGPoint = .zero
     var fakeState: UIGestureRecognizer.State = .possible
@@ -44,6 +73,176 @@ private final class FakeLongPress: UILongPressGestureRecognizer {
 
 @MainActor
 final class EditorTextViewGestureTests: XCTestCase {
+    private func point(_ view: EditorTextView, _ pos: Int) -> CGPoint {
+        let caret = view.caretRect(for: DocTextPosition(pos))
+        return CGPoint(x: caret.midX, y: caret.midY)
+    }
+
+    private func pointer(_ view: EditorTextView) -> FakeMouseSelection {
+        let pointer = FakeMouseSelection()
+        pointer.anchorAtPoint = { view.mouseSelectionAnchor(at: $0) }
+        return pointer
+    }
+
+    func testFirstMousePressClaimsSelectionBeforeAnyMovement() throws {
+        let view = try paragraphs(["one two three four"])
+        let touch = PointerTouch(), event = PointerEvent()
+        let pointer = pointer(view)
+        for (start, previousEnd) in [(5, 8), (12, 8), (5, 1), (12, 1)] {
+            pointer.reset()
+            pointer.fakeState = .possible
+            view.selectedTextRange = DocTextRange(1, previousEnd)
+            touch.point = point(view, start)
+            pointer.touchesBegan([touch], with: event)
+            // The old UIPan remained possible here and lost slow drags to a
+            // native caret gesture before it ever delivered a selection action.
+            XCTAssertEqual(pointer.state, .began)
+            view.handleMouseSelection(pointer)
+            XCTAssertEqual(view.editor.state.selection.anchor, start)
+            XCTAssertEqual(view.editor.state.selection.head, start)
+            for head in [3, 2, 15] {
+                touch.point = point(view, head)
+                pointer.touchesMoved([touch], with: event)
+                XCTAssertEqual(pointer.state, .changed)
+                view.handleMouseSelection(pointer)
+                XCTAssertEqual(view.editor.state.selection.anchor, start)
+                XCTAssertEqual(view.editor.state.selection.head, head)
+            }
+            pointer.touchesEnded([touch], with: event)
+            view.handleMouseSelection(pointer)
+            XCTAssertEqual(pointer.state, .ended)
+        }
+    }
+
+    func testTinyMouseMovementDoesNotWaitForAPanThreshold() throws {
+        let view = try paragraphs(["one two"])
+        let pointer = pointer(view), touch = PointerTouch(), event = PointerEvent()
+        touch.point = point(view, 2)
+        pointer.touchesBegan([touch], with: event)
+        view.handleMouseSelection(pointer)
+        touch.point.x += 1
+        pointer.touchesMoved([touch], with: event)
+        XCTAssertEqual(pointer.state, .changed)
+        XCTAssertEqual(pointer.anchor, 2)
+    }
+
+    func testShiftClickAndDragKeepTheExistingAnchor() throws {
+        let view = try paragraphs(["one two three four"])
+        view.applyInputSelection(anchor: 12, head: 7)
+        let pointer = pointer(view), touch = PointerTouch(), event = PointerEvent()
+        event.modifiers = .shift
+        touch.point = point(view, 4)
+        pointer.touchesBegan([touch], with: event)
+        view.handleMouseSelection(pointer)
+        XCTAssertEqual(view.editor.state.selection.anchor, 12)
+        XCTAssertEqual(view.editor.state.selection.head, 4)
+        touch.point = point(view, 16)
+        pointer.touchesMoved([touch], with: event)
+        view.handleMouseSelection(pointer)
+        XCTAssertEqual(view.editor.state.selection.anchor, 12)
+        XCTAssertEqual(view.editor.state.selection.head, 16)
+    }
+
+    func testDoubleClickSelectsAndDragsWholeWords() throws {
+        let view = try paragraphs(["one two three four"])
+        let pointer = pointer(view), touch = PointerTouch(), event = PointerEvent()
+        touch.clicks = 2
+        touch.point = point(view, 6)
+        pointer.touchesBegan([touch], with: event)
+        view.handleMouseSelection(pointer)
+        XCTAssertEqual(view.editor.doc.textBetween(view.editor.state.selection.from, view.editor.state.selection.to), "two")
+        touch.point = point(view, 11)
+        pointer.touchesMoved([touch], with: event)
+        view.handleMouseSelection(pointer)
+        XCTAssertEqual(view.editor.doc.textBetween(view.editor.state.selection.from, view.editor.state.selection.to), "two three")
+        touch.point = point(view, 2)
+        pointer.touchesMoved([touch], with: event)
+        view.handleMouseSelection(pointer)
+        XCTAssertEqual(view.editor.doc.textBetween(view.editor.state.selection.from, view.editor.state.selection.to), "one two")
+    }
+
+    func testTripleClickSelectsParagraph() throws {
+        let view = try paragraphs(["one two three", "four five"])
+        let pointer = pointer(view), touch = PointerTouch(), event = PointerEvent()
+        touch.clicks = 3
+        touch.point = point(view, 6)
+        pointer.touchesBegan([touch], with: event)
+        view.handleMouseSelection(pointer)
+        XCTAssertEqual(view.editor.doc.textBetween(view.editor.state.selection.from, view.editor.state.selection.to), "one two three")
+    }
+
+    func testMouseSelectionLeavesTouchAndCommandClicksNative() throws {
+        let view = try paragraphs(["one two three four"])
+        let touch = PointerTouch(), event = PointerEvent(), pointer = pointer(view)
+        touch.point = point(view, 5)
+        for scenario in 0..<5 {
+            pointer.reset()
+            pointer.fakeState = .possible
+            view.selectedTextRange = DocTextRange(1, 8)
+            event.modifiers = scenario == 0 ? .command : []
+            event.buttons = scenario == 1 ? .secondary : .primary
+            touch.inputType = scenario == 2 ? .direct : (scenario == 3 ? .pencil : .indirectPointer)
+            view.textDraggingEnabled = scenario == 4
+            pointer.touchesBegan([touch], with: event)
+            XCTAssertEqual(pointer.state, .failed)
+            XCTAssertNil(pointer.anchor)
+            XCTAssertEqual(view.editor.state.selection.from, 1)
+            XCTAssertEqual(view.editor.state.selection.to, 8)
+        }
+    }
+
+    func testCancelledPointerCannotKeepExtendingSelection() throws {
+        let view = try paragraphs(["one two three"])
+        let pointer = pointer(view), touch = PointerTouch(), event = PointerEvent()
+        touch.point = point(view, 6)
+        pointer.touchesBegan([touch], with: event)
+        view.handleMouseSelection(pointer)
+        pointer.touchesCancelled([touch], with: event)
+        view.handleMouseSelection(pointer)
+        touch.point = point(view, 11)
+        pointer.touchesMoved([touch], with: event)
+        view.handleMouseSelection(pointer)
+        XCTAssertEqual(view.editor.state.selection.head, 6)
+        pointer.reset()
+        XCTAssertNil(pointer.anchor)
+    }
+
+    func testMousePressEstablishesCaretBeforeFocusing() throws {
+        let view = try paragraphs(["one two three four"])
+        let window = UIWindow(frame: view.frame)
+        window.addSubview(view)
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let pointer = pointer(view), touch = PointerTouch()
+        touch.point = point(view, 12)
+        var focusedHead: Int?
+        view.onFocus = { focusedHead = view.editor.state.selection.head }
+        defer { view.onFocus = nil }
+        pointer.touchesBegan([touch], with: PointerEvent())
+        view.handleMouseSelection(pointer)
+        XCTAssertEqual(focusedHead, 12)
+    }
+
+    func testPointerSelectionYieldsToSpecialClickTargets() throws {
+        let view = try makeView { s in
+            [try s.node("blockMath", ["latex": .string("x^2")])]
+        }
+        view.onActivateMath = { _, _ in }
+        let layout = view.ensureLayout()
+        let target = try XCTUnwrap(layout.mathTargets.first)
+        XCTAssertNil(view.mouseSelectionAnchor(at: CGPoint(x: target.rect.midX, y: target.rect.midY)))
+        XCTAssertNil(view.mouseSelectionAnchor(at: CGPoint(x: 50, y: layout.height + 20)),
+                     "the trailing tap must be able to append a paragraph")
+    }
+
+    func testMouseSelectionRecognizerIsPointerOnlyAndExclusive() throws {
+        let view = try paragraphs(["one two"])
+        let pointer = try XCTUnwrap(view.mouseSelectionRecognizer)
+        XCTAssertEqual(pointer.allowedTouchTypes, [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)])
+        XCTAssertFalse(view.gestureRecognizer(pointer, shouldRecognizeSimultaneouslyWith: FakePan()))
+        XCTAssertFalse(view.gestureRecognizer(FakePan(), shouldRecognizeSimultaneouslyWith: pointer))
+    }
+
     // MARK: - Fixtures
 
     private func makeView(_ build: (Schema) throws -> [Node]) throws -> EditorTextView {

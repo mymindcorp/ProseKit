@@ -244,8 +244,23 @@ final class EditorTextViewDropSessionTests: XCTestCase {
 
     // MARK: - A local drag, start to finish
 
+    func testDraggingSelectedTextDefaultsToNativeSelection() throws {
+        let view = try textView("ABCDEF")
+        view.textDraggingEnabled = false
+        for selection in [TextSelection.create(view.editor.doc, 1, 3),
+                          TextSelection.create(view.editor.doc, 7, 1)] {
+            view.editor.dispatch(view.editor.state.tr.setSelection(selection))
+            let drag = FakeDragSession()
+            drag.point = try pointFor(view, position: 2)
+            XCTAssertTrue(view.dragInteraction(dragInteraction, itemsForBeginning: drag).isEmpty,
+                          "selected text must not start a content drag")
+            XCTAssertEqual(view.editor.doc.textContent, "ABCDEF")
+        }
+    }
+
     func testDraggingSelectedTextWithinTheDocumentMovesIt() throws {
         let view = try textView("ABCDEF")
+        view.textDraggingEnabled = true
         view.editor.dispatch(view.editor.state.tr.setSelection(
             TextSelection.create(view.editor.doc, 1, 3))) // "AB"
 
@@ -272,6 +287,7 @@ final class EditorTextViewDropSessionTests: XCTestCase {
 
     func testADragStartedOffTheSelectionCarriesNothing() throws {
         let view = try textView("ABCDEF")
+        view.textDraggingEnabled = true
         view.editor.dispatch(view.editor.state.tr.setSelection(
             TextSelection.create(view.editor.doc, 1, 3)))
 
@@ -282,6 +298,7 @@ final class EditorTextViewDropSessionTests: XCTestCase {
 
     func testADragWithNoSelectionCarriesNothing() throws {
         let view = try textView("ABCDEF")
+        view.textDraggingEnabled = true
         let drag = FakeDragSession()
         drag.point = try pointFor(view, position: 3)
         XCTAssertTrue(view.dragInteraction(dragInteraction, itemsForBeginning: drag).isEmpty)
