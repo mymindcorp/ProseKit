@@ -1178,14 +1178,16 @@ public enum MarkdownParser {
         try parse(markdown, schema: schema, depth: 0)
     }
 
-    static func parse(_ markdown: String, schema: Schema, depth: Int) throws -> Node {
+    static func parse(_ markdown: String, schema: Schema,
+                      definitions inherited: [String: LinkDefinition] = [:], depth: Int) throws -> Node {
         // A reference can appear before the definition it uses, so definitions
         // are collected — and their lines removed — before anything is parsed.
         let expanded = markdown.components(separatedBy: "\n").map { expandLeadingTabs($0) }
         let (lines, definitions) = collectDefinitions(expanded)
         // A definition inside a quote still belongs to the document.
         let all = definitions.merging(collectNestedDefinitions(expanded)) { outer, _ in outer }
-        return try parse(lines: lines, schema: schema, definitions: all, depth: depth)
+        return try parse(lines: lines, schema: schema,
+                         definitions: inherited.merging(all) { outer, _ in outer }, depth: depth)
     }
 
     /// Definitions found anywhere in a document, including inside quotes and
@@ -1549,10 +1551,10 @@ public enum MarkdownParser {
             // Lists
             if let bullet = bulletMatch(trimmed) {
                 let (items, next, tight) = collectList(lines, i, ordered: false)
-                if let tasks = try makeTaskList(items, schema: schema, depth: depth + 1) {
+                if let tasks = try makeTaskList(items, schema: schema, definitions: definitions, depth: depth + 1) {
                     blocks.append(tasks)
                 } else {
-                    blocks.append(contentsOf: try makeList(items, ordered: false, schema: schema,
+                    blocks.append(contentsOf: try makeList(items, ordered: false, schema: schema, definitions: definitions,
                                                            tight: tight, depth: depth + 1))
                 }
                 i = next
@@ -1561,7 +1563,7 @@ public enum MarkdownParser {
             }
             if let ordered = orderedMatch(trimmed) {
                 let (items, next, tight) = collectList(lines, i, ordered: true)
-                blocks.append(contentsOf: try makeList(items, ordered: true, schema: schema,
+                blocks.append(contentsOf: try makeList(items, ordered: true, schema: schema, definitions: definitions,
                                                        start: ordered, tight: tight, depth: depth + 1))
                 i = next
                 continue
@@ -1802,17 +1804,16 @@ public enum MarkdownParser {
     static func collectDefinitions(_ lines: [String]) -> ([String], [String: LinkDefinition]) {
         var remaining: [String] = []
         var definitions: [String: LinkDefinition] = [:]
-        var fence: String?
+        var fence: CodeFence?
         var i = 0
         while i < lines.count {
             let line = lines[i]
-            let trimmed = line.trimmingCharacters(in: markdownSpaces)
             if let open = fence {
-                if trimmed.hasPrefix(open) { fence = nil }
+                if closesFence(line, open) { fence = nil }
                 remaining.append(line); i += 1; continue
             }
-            if isOpeningFence(trimmed) {
-                fence = trimmed.hasPrefix("```") ? "```" : "~~~"
+            if let open = openingFence(line) {
+                fence = open
                 remaining.append(line); i += 1; continue
             }
             // Four columns in is code, and a definition has to begin a block —
@@ -2370,14 +2371,16 @@ public enum MarkdownParser {
     /// Build a `taskList` when every item carries a checkbox and the schema has
     /// the nodes; otherwise nil, so the caller falls back to a plain list and the
     /// brackets stay literal text.
-    private static func makeTaskList(_ items: [[String]], schema: Schema, depth: Int) throws -> Node? {
+    private static func makeTaskList(_ items: [[String]], schema: Schema,
+                                     definitions: [String: LinkDefinition], depth: Int) throws -> Node? {
         guard let listType = schema.nodes["taskList"], let itemType = schema.nodes["taskItem"],
               !items.isEmpty, items.allSatisfy({ taskMarker($0.first ?? "") != nil }) else { return nil }
         var itemNodes: [Node] = []
         for var lines in items {
             guard let marker = taskMarker(lines[0]) else { return nil }
             lines[0] = marker.rest
-            let content = fitContent(try itemBlocks(lines, schema: schema, depth: depth), into: itemType, schema: schema)
+            let content = fitContent(try itemBlocks(lines, schema: schema, definitions: definitions, depth: depth),
+                                     into: itemType, schema: schema)
             // `createChecked`, not `create`: `create` only validates attributes,
             // so it accepts content the schema doesn't and the `createAndFill`
             // fallback beside it never ran. See the same note in `HTMLParser`.
@@ -2392,18 +2395,20 @@ public enum MarkdownParser {
 
     /// The blocks of one list item. An item that carried continuation lines is
     /// parsed as a document, the way a blockquote's contents are.
-    private static func itemBlocks(_ lines: [String], schema: Schema, depth: Int) throws -> [Node] {
+    private static func itemBlocks(_ lines: [String], schema: Schema,
+                                   definitions: [String: LinkDefinition], depth: Int) throws -> [Node] {
         // Indented content is a block even on its own line: a marker followed by
         // five or more spaces leaves the content four columns in, which is code.
         if lines.count > 1 || indentWidth(lines[0]) >= 4
             || startsAnyBlock(lines[0].trimmingCharacters(in: markdownSpaces)) {
-            let inner = try parse(lines.joined(separator: "\n"), schema: schema, depth: depth).content
+            let inner = try parse(lines.joined(separator: "\n"), schema: schema,
+                                  definitions: definitions, depth: depth).content
             return (0..<inner.childCount).map { inner.child($0) }
         }
         // A list item holds blocks, so a block-level image in its text becomes a
         // sibling block rather than an invalid child of the paragraph.
         // `fitContent` then puts the item's content in order.
-        let inline = parseInline(lines[0], schema)
+        let inline = parseInline(lines[0], schema, definitions)
         return textblockSplittingBlocks(inline) {
             try? schema.node("paragraph", [:], content: Fragment.from($0))
         }
@@ -2416,11 +2421,12 @@ public enum MarkdownParser {
     /// already paragraphs by the time `itemBlocks` returns it. Dropping the list
     /// used to drop those too, so "- KEEPME" parsed to nothing at all.
     private static func makeList(_ items: [[String]], ordered: Bool, schema: Schema,
+                                 definitions: [String: LinkDefinition],
                                  start: Int = 1, tight: Bool = false, depth: Int) throws -> [Node] {
         // `itemBlocks` decides whether the content is inline or its own blocks;
         // this used to repeat that test and so never saw the indented
         // single-line case.
-        let itemContents = try items.map { try itemBlocks($0, schema: schema, depth: depth) }
+        let itemContents = try items.map { try itemBlocks($0, schema: schema, definitions: definitions, depth: depth) }
         let listName = ordered ? "orderedList" : "bulletList"
         guard let itemType = schema.nodes["listItem"], let listType = schema.nodes[listName] else {
             return itemContents.flatMap { $0 }
