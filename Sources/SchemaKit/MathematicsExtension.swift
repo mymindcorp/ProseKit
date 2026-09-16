@@ -97,16 +97,32 @@ public func mathematicsExtensions() -> [any Extension] {
 public func insertMath(_ type: NodeType, latex: String, pos: Int? = nil) -> Command {
     { state, dispatch, _ in
         guard let node = try? type.create(["latex": .string(latex)]) else { return false }
-        guard let pos else {
-            dispatch?(state.tr.replaceSelectionWith(node).scrollIntoView())
-            return true
-        }
-        guard pos >= 0, pos <= state.doc.content.size else { return false }
-        if let dispatch {
-            let tr = state.tr
+        let tr = state.tr
+        if let pos {
+            guard pos >= 0, pos <= state.doc.content.size else { return false }
             guard (try? tr.insert(pos, node)) != nil else { return false }
-            dispatch(tr.scrollIntoView())
+        } else {
+            tr.replaceSelectionWith(node)
         }
+        // Fitting can drop a node that the destination forbids, sometimes
+        // deleting the selection in the process. Require the requested formula
+        // in the inserted content before committing, including in a dry run.
+        var inserted = false
+        for (index, map) in tr.mapping.maps.enumerated() {
+            let after = tr.mapping.slice(index + 1)
+            map.forEach { _, _, newStart, newEnd in
+                let from = after.map(newStart, -1), to = after.map(newEnd, 1)
+                tr.doc.nodesBetween(from, to, { candidate, pos, _, _ in
+                    if candidate.type === type, candidate.attrs == node.attrs,
+                       pos >= from, pos + candidate.nodeSize <= to {
+                        inserted = true
+                    }
+                    return !inserted
+                })
+            }
+        }
+        guard inserted else { return false }
+        dispatch?(tr.scrollIntoView())
         return true
     }
 }
