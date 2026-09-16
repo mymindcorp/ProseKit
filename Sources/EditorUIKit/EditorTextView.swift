@@ -61,6 +61,7 @@ open class EditorTextView: UIView, UIKeyInput {
     // Internal rather than private so tests can drive the gesture wiring: the
     // delegate compares recognizer identity, so a test needs these instances.
     weak var mouseSelectionRecognizer: MouseSelectionRecognizer?
+    private var pointerSelection: (range: ClosedRange<Int>, granularity: UITextGranularity)?
     weak var columnResizeRecognizer: UIGestureRecognizer?
     weak var linkTapRecognizer: UIGestureRecognizer?
     weak var blockDragRecognizer: UIGestureRecognizer?
@@ -184,17 +185,14 @@ open class EditorTextView: UIView, UIKeyInput {
         // caret/keyboard) is chosen by `installTextInteraction`.
         let mouseSelection = MouseSelectionRecognizer(target: self, action: #selector(handleMouseSelection(_:)))
         mouseSelection.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
-        mouseSelection.maximumNumberOfTouches = 1
         mouseSelection.delegate = self
         mouseSelection.anchorAtPoint = { [weak self] point in self?.mouseSelectionAnchor(at: point) }
         addGestureRecognizer(mouseSelection)
         mouseSelectionRecognizer = mouseSelection
         installTextInteraction()
 
-        // Our own gestures handle only what UITextInteraction doesn't: toggling
-        // task-list checkboxes and dragging table column borders. Each is gated
-        // (via the gesture delegate) to begin only on its target, so ordinary
-        // taps and selection drags fall through to UITextInteraction.
+        // Pointer text selection has one owner. Native UITextInteraction owns
+        // touch selection; the remaining gestures are gated to editor controls.
         let columnResize = UIPanGestureRecognizer(target: self, action: #selector(handleMouseDrag(_:)))
         let linkTap = UITapGestureRecognizer(target: self, action: #selector(handleLinkTap(_:)))
         let blockDrag = UIPanGestureRecognizer(target: self, action: #selector(handleBlockDrag(_:)))
@@ -2066,7 +2064,10 @@ open class EditorTextView: UIView, UIKeyInput {
     func mouseSelectionAnchor(at point: CGPoint) -> Int? {
         guard !textDraggingEnabled else { return nil }
         let dp = docPoint(point)
-        guard ensureLayout().checkbox(at: dp) == nil,
+        let layout = ensureLayout()
+        guard !trailingGapTap(at: dp),
+              onActivateMath == nil || layout.math(at: dp) == nil,
+              layout.checkbox(at: dp) == nil,
               blockAtomPosition(at: dp) == nil, imageAt(dp) == nil,
               columnBorderHit(at: dp) == nil, blockHandleHit(at: point) == nil,
               ensureLayout().disclosure(at: dp) == nil else { return nil }
@@ -2074,20 +2075,48 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     @objc func handleMouseSelection(_ gesture: MouseSelectionRecognizer) {
-        guard let anchor = gesture.anchor,
-              let head = closestPosition(to: gesture.location(in: self)) as? DocTextPosition else { return }
         switch gesture.state {
         case .began:
-            selectedTextRange = DocTextRange(anchor, anchor)
+            guard let anchor = gesture.anchor else { return }
+            let granularity: UITextGranularity = gesture.extendsSelection ? .character
+                : (gesture.clickCount >= 3 ? .paragraph : (gesture.clickCount == 2 ? .word : .character))
+            let initial = gesture.extendsSelection
+                ? editor.state.selection.anchor ... editor.state.selection.anchor
+                : pointerRange(at: anchor, point: gesture.pressPoint, granularity: granularity)
+            pointerSelection = (initial, granularity)
         case .changed, .ended:
             break
         default:
+            pointerSelection = nil
             return
         }
-        selectedTextRange = DocTextRange(anchor, head.offset)
-        // Focus only after replacing the old selection, so becoming first
-        // responder cannot reveal its stale caret and scroll away from the press.
+        guard let session = pointerSelection,
+              let position = closestPosition(to: gesture.currentPoint) as? DocTextPosition else { return }
+        let target = pointerRange(at: position.offset, point: gesture.currentPoint, granularity: session.granularity)
+        let anchor: Int, head: Int
+        if target.lowerBound < session.range.lowerBound {
+            anchor = session.range.upperBound; head = target.lowerBound
+        } else {
+            anchor = session.range.lowerBound; head = max(session.range.upperBound, target.upperBound)
+        }
+        applyInputSelection(anchor: anchor, head: head)
         if gesture.state == .began, isEditable { _ = becomeFirstResponder() }
+        if gesture.state == .ended { pointerSelection = nil }
+    }
+
+    private func pointerRange(at pos: Int, point: CGPoint, granularity: UITextGranularity) -> ClosedRange<Int> {
+        if granularity == .paragraph, let range = paragraphRange(at: docPoint(point)) {
+            return range.from ... range.to
+        }
+        if granularity == .word {
+            for direction in [UITextStorageDirection.forward, .backward] {
+                if let range = tokenizer.rangeEnclosingPosition(DocTextPosition(pos), with: .word,
+                    inDirection: UITextDirection(rawValue: direction.rawValue)) as? DocTextRange {
+                    return range.from ... range.to
+                }
+            }
+        }
+        return pos ... pos
     }
 
     // MARK: - Block reordering (drag handles)
@@ -3619,7 +3648,10 @@ extension EditorTextView: UITextInteractionDelegate {
 extension EditorTextView: UIGestureRecognizerDelegate {
     /// Coexist with UITextInteraction's own recognizers.
     public func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        gesture !== mouseSelectionRecognizer && other !== mouseSelectionRecognizer
+        if gesture === mouseSelectionRecognizer || other === mouseSelectionRecognizer {
+            return gesture === linkTapRecognizer || other === linkTapRecognizer
+        }
+        return true
     }
 }
 

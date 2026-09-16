@@ -95,35 +95,43 @@ extension EditorTextView: UITextInput {
             } else {
                 anchor = r.anchor; head = r.head
             }
-            let a = editor.doc.resolve(clamp(anchor))
-            let h = editor.doc.resolve(clamp(head))
-            // An empty selection at a valid gap becomes a gap cursor —
-            // TextSelection.between would snap away into a neighbor block.
-            if r.from == r.to, GapCursor.valid(h) {
-                editor.dispatch(editor.state.tr.setSelection(GapCursor(h)))
-                return
-            }
-            // A range that exactly spans one leaf atom is that node, selected:
-            // double-tapping an image (or a mention chip) reaches here as the
-            // atom's one-position "word", and the node should be what deleting
-            // or copying then addresses. Only leaf atoms — a drag whose
-            // endpoints happen to bracket a paragraph is still a text drag.
-            if let node = a.nodeAfter, node.isLeaf, NodeSelection.isSelectable(node),
-               clamp(r.from) + node.nodeSize == clamp(r.to) {
-                editor.dispatch(editor.state.tr.setSelection(NodeSelection(a)))
-                return
-            }
-            // A drag whose endpoints sit in different cells of one table is a
-            // cell selection (prosemirror-tables' createSelectionBetween).
-            if r.from != r.to,
-               let anchorCell = cellAround(a), let headCell = cellAround(h),
-               anchorCell.pos != headCell.pos, inSameTable(anchorCell, headCell) {
-                editor.dispatch(editor.state.tr.setSelection(
-                    CellSelection.create(editor.doc, anchorCellPos: anchorCell.pos, headCellPos: headCell.pos)))
-                return
-            }
-            editor.dispatch(editor.state.tr.setSelection(TextSelection.between(a, h)))
+            applyInputSelection(anchor: anchor, head: head)
         }
+    }
+
+    /// One semantic selection path for native touch input and pointer input.
+    /// Pointer gestures supply direction explicitly; UITextRange infers it above.
+    func applyInputSelection(anchor: Int, head: Int) {
+        let a = editor.doc.resolve(clamp(anchor))
+        let h = editor.doc.resolve(clamp(head))
+        let from = min(a.pos, h.pos), to = max(a.pos, h.pos)
+        let start = editor.doc.resolve(from)
+        // An empty selection at a valid gap becomes a gap cursor —
+        // TextSelection.between would snap away into a neighbor block.
+        if from == to, GapCursor.valid(h) {
+            editor.dispatch(editor.state.tr.setSelection(GapCursor(h)))
+            return
+        }
+        // A range that exactly spans one leaf atom is that node, selected:
+        // double-tapping an image (or a mention chip) reaches here as the
+        // atom's one-position "word", and the node should be what deleting
+        // or copying then addresses. Only leaf atoms — a drag whose
+        // endpoints happen to bracket a paragraph is still a text drag.
+        if let node = start.nodeAfter, node.isLeaf, NodeSelection.isSelectable(node),
+           from + node.nodeSize == to {
+            editor.dispatch(editor.state.tr.setSelection(NodeSelection(start)))
+            return
+        }
+        // A drag whose endpoints sit in different cells of one table is a
+        // cell selection (prosemirror-tables' createSelectionBetween).
+        if from != to,
+           let anchorCell = cellAround(a), let headCell = cellAround(h),
+           anchorCell.pos != headCell.pos, inSameTable(anchorCell, headCell) {
+            editor.dispatch(editor.state.tr.setSelection(
+                CellSelection.create(editor.doc, anchorCellPos: anchorCell.pos, headCellPos: headCell.pos)))
+            return
+        }
+        editor.dispatch(editor.state.tr.setSelection(TextSelection.between(a, h)))
     }
 
     public var markedTextRange: UITextRange? {
