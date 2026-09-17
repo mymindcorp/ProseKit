@@ -3,6 +3,7 @@ import DocumentModel
 import DocumentTransform
 import EditorStateKit
 import EditorCommands
+import EditorHistory
 import EditorKeymap
 import EditorSerialization
 import SchemaKit
@@ -77,6 +78,402 @@ private final class PlainMark: MarkExtension {
 }
 
 func registerEdgeCommandTests() {
+    for blockName in ["codeBlock", "blockquote"] {
+        for nested in [false, true] {
+            test("block exit: node-selected \(blockName), nested \(nested)") {
+                let editor = try Editor(extensions: starterKit())
+                let schema = editor.schema
+                let paragraph = try schema.node("paragraph", content: .from(schema.text("keep")))
+                let block = try schema.node(blockName, content: blockName == "codeBlock"
+                    ? .from(schema.text("keep")) : .from(paragraph))
+                let root = try nested ? schema.node("blockquote", content: .from(block)) : block
+                editor.setContent(try schema.node("doc", content: .from(root)))
+                editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, nested ? 1 : 0)))
+                let original = editor.state
+                try expect(key(editor, "Shift-Enter"))
+                let empty = try schema.node("paragraph")
+                let expected = try nested
+                    ? schema.node("doc", content: .from(schema.node("blockquote", content: .from([block, empty]))))
+                    : schema.node("doc", content: .from([block, empty]))
+                try expectEqual(editor.doc, expected, "Exiting a selected block must preserve its content")
+                try expectEqual(editor.state.selection.resolvedFrom.parent.type.name, "paragraph")
+                try expectEqual(editor.state.selection.resolvedFrom.parent.content.size, 0)
+                try expect(key(editor, "Mod-z"))
+                try expectEqual(editor.doc, original.doc)
+                try expect(editor.state.selection.eq(original.selection))
+            }
+        }
+    }
+    for atomType in ["inlineMath", "image", "footnoteReference"] {
+        for selectionKind in ["forward", "backward", "caret"] {
+            test("adjacent commands: \(atomType) before a \(selectionKind) text selection") {
+                let extensions = fullKit().filter { $0.name != "image" } + [ImageExtension(inline: true)] + footnoteExtensions()
+                let editor = try Editor(extensions: extensions)
+                let schema = editor.schema
+                let attrs: Attrs = atomType == "image" ? ["src": .string("keep.png")]
+                    : atomType == "footnoteReference" ? ["label": .string("a")] : ["latex": .string("x")]
+                let atom = try schema.node(atomType, attrs)
+                let paragraph = try schema.node("paragraph", content: .from([atom, schema.text("keep")]))
+                editor.setContent(try schema.node("doc", content: .from(paragraph)))
+                select(editor, selectionKind == "backward" ? 4 : 2, selectionKind == "forward" ? 4 : 2)
+                let original = editor.state
+                let command: Command
+                switch atomType {
+                case "image": command = setImageSize(width: 100, height: 50)
+                case "inlineMath": command = deleteMath(atom.type)
+                default: command = removeFootnote
+                }
+                let allowed = selectionKind == "caret"
+                try expectEqual(editor.can(command), allowed)
+                try expectEqual(editor.run(command), allowed)
+                if !allowed {
+                    try expect(editor.state === original, "Selecting following text must not edit an unselected atom")
+                } else {
+                    try expect(editor.doc != original.doc)
+                    try editor.doc.check()
+                }
+            }
+        }
+    }
+    for selectedType in ["image", "imageBlock"] {
+        test("node commands: typed image command refuses selected \(selectedType) of another type") {
+            let editor = try Editor(extensions: fullKit())
+            let schema = editor.schema
+            let preceding = try schema.node(selectedType == "image" ? "imageBlock" : "image", ["src": .string("first.png")])
+            let selected = try schema.node(selectedType, ["src": .string("selected.png")])
+            editor.setContent(try schema.node("doc", content: .from([preceding, selected])))
+            editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, preceding.nodeSize)))
+            let original = editor.state
+            let command = setImageSize(preceding.type, width: 100, height: 50)
+            try expect(!editor.can(command))
+            try expect(!editor.run(command))
+            try expect(editor.state === original)
+            // The untyped command still acts on the selected image variant.
+            try expect(editor.run(setImageSize(width: 100, height: 50)))
+            try expectEqual(editor.doc.firstChild, preceding)
+            try expectEqual(editor.doc.lastChild?.attrs["width"], .int(100))
+        }
+    }
+    for precedingType in ["image", "imageBlock", "blockMath"] {
+        for selectedType in ["paragraph", "horizontalRule"] {
+            test("node commands: selecting \(selectedType) does not target preceding \(precedingType)") {
+                let editor = try Editor(extensions: fullKit())
+                let schema = editor.schema
+                let attrs: Attrs = precedingType == "blockMath" ? ["latex": .string("keep")]
+                    : ["src": .string("keep.png")]
+                let preceding = try schema.node(precedingType, attrs)
+                let selected = try schema.node(selectedType)
+                editor.setContent(try schema.node("doc", content: .from([preceding, selected])))
+                editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, preceding.nodeSize)))
+                let original = editor.state
+                let commands: [Command]
+                if precedingType == "blockMath" {
+                    commands = [updateMath(preceding.type, latex: "changed"), deleteMath(preceding.type)]
+                } else {
+                    commands = [
+                        setImageSize(preceding.type, width: 100, height: 50),
+                        setImageSize(width: 100, height: 50),
+                        setImageModel(preceding.type, ImageModel(path: "changed.png")),
+                        setImageModel(ImageModel(path: "changed.png"))
+                    ]
+                }
+                for command in commands {
+                    try expect(!editor.can(command), "An explicit node selection must not target its neighbor")
+                    try expect(!editor.run(command))
+                    try expect(editor.state === original)
+                }
+            }
+        }
+    }
+    for listType in ["bulletList", "orderedList", "taskList"] {
+        test("toggle quote: preserves nested \(listType) when unwrapping") {
+            let editor = try Editor(extensions: fullKit())
+            let schema = editor.schema
+            let paragraph = try schema.node("paragraph", content: Fragment.from(schema.text("keep")))
+            let item = try schema.node(listType == "taskList" ? "taskItem" : "listItem", content: Fragment.from(paragraph))
+            let list = try schema.node(listType, content: Fragment.from(item))
+            let quote = try schema.node("blockquote", content: Fragment.from(list))
+            let doc = try schema.node("doc", content: Fragment.from(quote))
+            editor.setContent(doc)
+            select(editor, 5, 5)
+            let command = toggleWrap(schema.nodes["blockquote"]!)
+            try expect(command(editor.state, nil, nil))
+            try expect(editor.run("toggleBlockquote"))
+            try expectEqual(editor.doc, try schema.node("doc", content: Fragment.from(list)))
+            try expectEqual(editor.state.selection.from, 4)
+            try editor.doc.check()
+            try expect(EditorHistory.undo(editor.state, { editor.dispatch($0) }))
+            try expectEqual(editor.doc, doc)
+            try expectEqual(editor.state.selection.from, 5)
+        }
+    }
+
+    test("toggle quote: only unwraps the selected paragraph of a multi-block quote") {
+        let editor = try Editor(extensions: starterKit())
+        let schema = editor.schema
+        let blocks = try ["a", "b", "c"].map { try schema.node("paragraph", content: Fragment.from(schema.text($0))) }
+        let quote = try schema.node("blockquote", content: Fragment.from(blocks))
+        editor.setContent(try schema.node("doc", content: Fragment.from(quote)))
+        select(editor, 5, 5)
+        try expect(editor.run("toggleBlockquote"))
+        let expected = try schema.node("doc", content: Fragment.from([
+            schema.node("blockquote", content: Fragment.from(blocks[0])), blocks[1],
+            schema.node("blockquote", content: Fragment.from(blocks[2]))
+        ]))
+        try expectEqual(editor.doc, expected)
+        try expectEqual(editor.state.selection.resolvedFrom.parent.textContent, "b")
+        try editor.doc.check()
+    }
+
+    test("toggle quote: preserves an enclosing list when unwrapping a nested quote") {
+        let editor = try Editor(extensions: starterKit())
+        let schema = editor.schema
+        let first = try schema.node("paragraph", content: Fragment.from(schema.text("a")))
+        let second = try schema.node("paragraph", content: Fragment.from(schema.text("b")))
+        let quote = try schema.node("blockquote", content: Fragment.from(second))
+        let item = try schema.node("listItem", content: Fragment.from([first, quote]))
+        let list = try schema.node("bulletList", content: Fragment.from(item))
+        editor.setContent(try schema.node("doc", content: Fragment.from(list)))
+        select(editor, 7, 7)
+        try expect(editor.run("toggleBlockquote"))
+        let expectedItem = try schema.node("listItem", content: Fragment.from([first, second]))
+        try expectEqual(editor.doc, try schema.node("doc", content: Fragment.from(
+            schema.node("bulletList", content: Fragment.from(expectedItem)))))
+        try expectEqual(editor.state.selection.from, 6)
+        try editor.doc.check()
+    }
+
+    test("toggle wrapper: refuses an explicitly selected leaf") {
+        let editor = try Editor(extensions: starterKit())
+        let leaf = try editor.schema.node("horizontalRule")
+        editor.setContent(try editor.schema.node("doc", content: Fragment.from(leaf)))
+        editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, 0)))
+        let command = toggleWrap(leaf.type)
+        try expect(!command(editor.state, nil, nil))
+        var dispatched = false
+        try expect(!command(editor.state, { _ in dispatched = true }, nil))
+        try expect(!dispatched)
+    }
+
+    test("toggle quote: unwraps an explicitly selected quote") {
+        let editor = try Editor(extensions: starterKit())
+        let schema = editor.schema
+        let paragraph = try schema.node("paragraph", content: Fragment.from(schema.text("keep")))
+        let quote = try schema.node("blockquote", content: Fragment.from(paragraph))
+        editor.setContent(try schema.node("doc", content: Fragment.from(quote)))
+        editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, 0)))
+        try expect(toggleWrap(schema.nodes["blockquote"]!)(editor.state, nil, nil))
+        try expect(editor.run("toggleBlockquote"))
+        try expectEqual(editor.doc, try schema.node("doc", content: Fragment.from(paragraph)))
+        try editor.doc.check()
+    }
+
+    for depth in [1, 2] {
+        for offset in [0, 2, 4] {
+            test("block exit routing: code in \(depth) quotes exits only code at offset \(offset)") {
+                let editor = try Editor(extensions: fullKit())
+                let s = editor.schema
+                let code = try s.node("codeBlock", content: .from(s.text("code")))
+                let tail = try s.node("paragraph", content: .from(s.text("tail")))
+                func wrap(_ blocks: [Node]) throws -> Node {
+                    var node = try s.node("blockquote", content: .from(blocks))
+                    for _ in 1..<depth { node = try s.node("blockquote", content: .from(node)) }
+                    return try s.node("doc", content: .from(node))
+                }
+                editor.setContent(try wrap([code, tail]))
+                select(editor, depth + 1 + offset, depth + 1 + offset)
+                let original = editor.state
+                try expect(key(editor, "Shift-Enter"))
+                try expectEqual(editor.doc, wrap([code, s.node("paragraph"), tail]))
+                try expectEqual(editor.state.selection.head, depth + code.nodeSize + 1)
+                try expectEqual(editor.state.selection.resolvedHead.parent.type.name, "paragraph")
+                try expectEqual(editor.state.selection.resolvedHead.depth, depth + 1)
+                try editor.doc.check()
+                try expect(key(editor, "Mod-z"))
+                try expectEqual(editor.doc, original.doc)
+                try expect(editor.state.selection.eq(original.selection))
+            }
+        }
+    }
+    for block in ["codeBlock", "blockquote"] {
+        for allowed in [false, true] {
+            test("block exit: \(block) respects its parent's schema (allowed \(allowed))") {
+                let blockExtension: any Extension = block == "codeBlock" ? CodeBlockExtension() : BlockquoteExtension()
+                let editor = try Editor(extensions: [ExitTestDocument(allowed ? "block+" : block + "+"), ParagraphExtension(), TextExtension(), blockExtension])
+                let s = editor.schema
+                let content = block == "codeBlock" ? Fragment.from(s.text("keep"))
+                    : Fragment.from(try s.node("paragraph", content: .from(s.text("keep"))))
+                let node = try s.node(block, content: content)
+                editor.setContent(try s.node("doc", content: .from(node)))
+                var cursor = 0
+                editor.doc.descendants { node, pos, _, _ in
+                    if node.isText { cursor = pos + 2 }
+                    return true
+                }
+                select(editor, cursor, cursor)
+                let original = editor.state, revision = editor.docRevision
+                let command = editor.manager.keyboardShortcuts(editor: editor)["Shift-Enter"]!
+                try expectEqual(editor.can(command), allowed)
+                try expectEqual(editor.run(command), allowed)
+                if allowed {
+                    try expectEqual(editor.doc.childCount, 2)
+                    try expectEqual(editor.doc.child(0), node)
+                    try expectEqual(editor.doc.child(1).type.name, "paragraph")
+                    try expectEqual(editor.state.selection.head, node.nodeSize + 1)
+                    try expect(key(editor, "Mod-z"))
+                    try expectEqual(editor.doc, original.doc)
+                    try expect(editor.state.selection.eq(original.selection))
+                } else {
+                    try expect(editor.state === original)
+                    try expectEqual(editor.docRevision, revision)
+                    try expectEqual(EditorHistory.undoDepth(editor.state), 0)
+                }
+                try editor.doc.check()
+            }
+        }
+    }
+    for (name, newline) in [("LF", "\n"), ("CRLF", "\r\n"), ("CR", "\r"), ("line separator", "\u{2028}"), ("paragraph separator", "\u{2029}")] {
+        test("code outdent: \(name) selects the current line rather than the first") {
+            for offset in [0, 1, 3, 8] {
+                let editor = try Editor(extensions: fullKit())
+                let s = editor.schema
+                let prefix = "  first" + newline
+                let source = prefix + "  second"
+                editor.setContent(try s.node("doc", content: .from(s.node("codeBlock", content: .from(s.text(source))))))
+                let lineStart = 1 + prefix.count
+                select(editor, lineStart + offset, lineStart + offset)
+                let original = editor.state
+                try expect(key(editor, "Shift-Tab"))
+                try expectEqual(editor.doc.textContent, prefix + "second")
+                try expectEqual(editor.state.selection.head, lineStart + max(0, offset - 2))
+                try editor.doc.check()
+                let outdented = editor.state
+                try expect(key(editor, "Mod-z"))
+                try expectEqual(editor.doc, original.doc)
+                try expect(editor.state.selection.eq(original.selection))
+                try expect(key(editor, "Mod-y"))
+                try expectEqual(editor.doc, outdented.doc)
+                try expect(editor.state.selection.eq(outdented.selection))
+            }
+        }
+    }
+    for nodeName in ["image", "horizontalRule", "hardBreak"] {
+        test("atomic insertion: rejected \(nodeName) preserves text and history") {
+            for (from, to) in [(1, 5), (2, 4), (3, 3)] {
+                let editor = try Editor(extensions: fullKit().filter { $0.name != "doc" } + [CodeOnlyInsertionDocument()])
+                try editor.setContent(html: "<pre><code>keep</code></pre>")
+                select(editor, from, to)
+                let original = editor.state, revision = editor.docRevision
+                let performed: Bool
+                if nodeName == "image" {
+                    let command = SchemaKit.insertImage(editor.schema.nodes[nodeName]!, src: "/test.png")
+                    let available = editor.can(command)
+                    performed = editor.run(command)
+                    try expectEqual(editor.doc, original.doc)
+                    try expect(!available)
+                } else {
+                    performed = editor.run(nodeName == "hardBreak" ? "setHardBreak" : "setHorizontalRule")
+                }
+                try expectEqual(editor.doc, original.doc)
+                try expect(!performed)
+                try expect(editor.state === original)
+                try expectEqual(editor.docRevision, revision)
+                try expectEqual(EditorHistory.undoDepth(editor.state), 0)
+            }
+        }
+
+        test("atomic insertion: valid \(nodeName) replaces selection and supports undo redo") {
+            let editor = try Editor(extensions: fullKit())
+            try editor.setContent(html: "<p>before word after</p>")
+            select(editor, 8, 12)
+            let original = editor.state
+            let performed = nodeName == "image"
+                ? editor.insertImage(src: "/test.png")
+                : editor.run(nodeName == "hardBreak" ? "setHardBreak" : "setHorizontalRule")
+            try expect(performed)
+            try expectEqual(count(editor.doc, nodeName), 1)
+            var text = ""
+            editor.doc.descendants { node, _, _, _ in
+                if let content = node.text { text += content }
+                return true
+            }
+            try expectEqual(text, "before  after")
+            try editor.doc.check()
+            let edited = editor.doc
+            try expect(EditorHistory.undo(editor.state, { editor.dispatch($0) }))
+            try expectEqual(editor.doc, original.doc)
+            try expect(editor.state.selection.eq(original.selection))
+            try expect(EditorHistory.redo(editor.state, { editor.dispatch($0) }))
+            try expectEqual(editor.doc, edited)
+        }
+    }
+    for wiki in [false, true] {
+        let name = wiki ? "wiki link" : "mention"
+        test("inline insertion: a schema rejecting \(name) does not erase text or report success") {
+            for (from, to) in [(1, 5), (2, 4), (3, 3)] {
+                let editor = try Editor(extensions: fullKit().filter { $0.name != "doc" } + [CodeOnlyInsertionDocument()])
+                try editor.setContent(html: "<pre><code>keep</code></pre>")
+                select(editor, from, to)
+                let original = editor.state, revision = editor.docRevision
+                let command = wiki
+                    ? SchemaKit.insertWikiLink(editor.schema.nodes["wikiLink"]!, text: "Page")
+                    : SchemaKit.insertMention(editor.schema.nodes["mention"]!, id: "jane")
+                let available = command(editor.state, nil, nil)
+                let performed = editor.run(command)
+                try expectEqual(editor.doc, original.doc)
+                try expect(!performed)
+                try expect(!available)
+                try expect(editor.state === original)
+                try expectEqual(editor.docRevision, revision)
+                try expectEqual(EditorHistory.undoDepth(editor.state), 0)
+            }
+        }
+
+        test("inline insertion: \(name) can fit outside code when the schema permits it") {
+            let editor = try Editor(extensions: fullKit())
+            try editor.setContent(html: "<pre><code>keep</code></pre>")
+            select(editor, 3, 3)
+            let original = editor.state
+            let accepted = wiki ? editor.insertWikiLink(text: "Page") : editor.insertMention(id: "jane")
+            try expect(accepted)
+            try expectEqual(count(editor.doc, wiki ? "wikiLink" : "mention"), 1)
+            var text = ""
+            editor.doc.descendants { node, _, _, _ in
+                if let content = node.text { text += content }
+                return true
+            }
+            try expectEqual(text, "keep")
+            try editor.doc.check()
+            try expect(EditorHistory.undo(editor.state, { editor.dispatch($0) }))
+            try expectEqual(editor.doc, original.doc)
+            try expect(editor.state.selection.eq(original.selection))
+        }
+
+        test("inline insertion: \(name) preserves inherited marks and undo restores the selection") {
+            let editor = try Editor(extensions: fullKit())
+            try editor.setContent(html: "<p>before <strong>word</strong> after</p>")
+            select(editor, 8, 12)
+            let original = editor.state
+            let accepted = wiki
+                ? editor.insertWikiLink(text: "Page", targetId: "page-1")
+                : editor.insertMention(id: "jane", label: "Jane")
+            try expect(accepted)
+            let paragraph = editor.doc.firstChild!
+            try expectEqual(paragraph.childCount, 3)
+            let inserted = paragraph.child(1)
+            try expectEqual(inserted.type.name, wiki ? "wikiLink" : "mention")
+            try expect(inserted.marks.contains { $0.type.name == "bold" })
+            try expectEqual(paragraph.child(0).text, "before ")
+            try expectEqual(paragraph.child(2).text, " after")
+            try editor.doc.check()
+            let edited = editor.doc
+            try expect(EditorHistory.undo(editor.state, { editor.dispatch($0) }))
+            try expectEqual(editor.doc, original.doc)
+            try expect(editor.state.selection.eq(original.selection))
+            try expect(EditorHistory.redo(editor.state, { editor.dispatch($0) }))
+            try expectEqual(editor.doc, edited)
+        }
+    }
     test("block toggle: selected code blocks and headings can toggle back to paragraphs") {
         for (html, command) in [("<pre><code>text</code></pre>", "toggleCodeBlock"), ("<h2>text</h2>", "toggleHeading2")] {
             let editor = try Editor(extensions: fullKit())
@@ -513,4 +910,16 @@ func registerMathMLShapeTests() {
         let latex = try mathML("<semantics><mi>x</mi><annotation encoding=\"application/x-mathml\">ignored</annotation></semantics>")
         try expectEqual(latex, "x")
     }
+}
+
+private final class CodeOnlyInsertionDocument: NodeExtension {
+    let name = "doc"
+    var nodeSpec: NodeSpec { NodeSpec(content: "codeBlock+") }
+}
+
+private final class ExitTestDocument: NodeExtension {
+    let name = "doc"
+    let content: String
+    init(_ content: String) { self.content = content }
+    var nodeSpec: NodeSpec { NodeSpec(content: content) }
 }

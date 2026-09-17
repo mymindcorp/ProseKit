@@ -45,6 +45,137 @@ private func run(_ d: TaggedNode, _ command: Command, _ result: TaggedNode?) thr
 private func lt(_ name: String) -> NodeType { basicSchema.nodes[name]! }
 
 func registerPMListTests() {
+    for supplied in [false, true] {
+        for rangeSelected in [false, true] {
+            test("list split: required item attributes supplied \(supplied), range selected \(rangeSelected)") {
+                let schema = try Schema(nodes: [
+                    ("doc", NodeSpec(content: "block+")),
+                    ("paragraph", NodeSpec(content: "text*", group: "block")),
+                    ("text", NodeSpec()),
+                    ("list", NodeSpec(content: "(plainItem | listItem)+", group: "block")),
+                    ("plainItem", NodeSpec(content: "paragraph block*")),
+                    ("listItem", NodeSpec(content: "paragraph block*", attrs: ["id": AttributeSpec()]))
+                ])
+                let paragraph = try schema.node("paragraph", content: .from(schema.text("keep")))
+                let item = try schema.node("listItem", ["id": .string("original")], content: .from(paragraph))
+                let doc = try schema.node("doc", content: .from(schema.node("list", content: .from(item))))
+                let state = EditorState.create(EditorStateConfig(schema: schema, doc: doc,
+                    selection: TextSelection.create(doc, 4, rangeSelected ? 6 : 4)))
+                let command = splitListItem(schema.nodes["listItem"]!, supplied ? ["id": .string("new")] : [:])
+                var result: Transaction?
+                let performed = command(state, { result = $0 }, nil)
+                if supplied {
+                    try expectEqual(result?.doc.firstChild?.childCount, 2)
+                    try expectEqual(result?.doc.firstChild?.child(0).attrs["id"], .string("original"))
+                    try expectEqual(result?.doc.firstChild?.child(1).attrs["id"], .string("new"))
+                    try expectEqual(result?.doc.textContent, rangeSelected ? "kp" : "keep")
+                    try result?.doc.check()
+                } else {
+                    try expect(result == nil, "A failed split must not delete the selection or dispatch a no-op")
+                }
+                try expectEqual(performed, supplied)
+                try expectEqual(command(state, nil, nil), supplied)
+                try expectEqual(state.doc, doc)
+            }
+        }
+    }
+    for supplied in [false, true] {
+        for nodeSelected in [false, true] {
+            test("list wrapping: required attributes supplied \(supplied), node selected \(nodeSelected)") {
+                let schema = try Schema(nodes: [
+                    ("doc", NodeSpec(content: "block+")),
+                    ("paragraph", NodeSpec(content: "text*", group: "block")),
+                    ("text", NodeSpec()),
+                    ("customList", NodeSpec(content: "listItem+", group: "block", attrs: ["key": AttributeSpec()])),
+                    ("listItem", NodeSpec(content: "paragraph block*"))
+                ])
+                let paragraph = try schema.node("paragraph", content: .from(schema.text("keep")))
+                let doc = try schema.node("doc", content: .from(paragraph))
+                let selection: Selection = nodeSelected ? NodeSelection.create(doc, 0) : TextSelection.create(doc, 2)
+                let state = EditorState.create(EditorStateConfig(schema: schema, doc: doc, selection: selection))
+                let command = wrapInList(schema.nodes["customList"]!, supplied ? ["key": .string("list-id")] : [:])
+                var result: Transaction?
+                try expectEqual(command(state, { result = $0 }, nil), supplied)
+                try expectEqual(command(state, nil, nil), supplied)
+                if supplied {
+                    try expectEqual(result?.doc.firstChild?.attrs["key"], .string("list-id"))
+                    try expectEqual(result?.doc.firstChild?.firstChild?.firstChild, paragraph)
+                    try result?.doc.check()
+                } else {
+                    try expect(result == nil, "Failed wrapping must not dispatch a no-op transaction")
+                }
+                try expectEqual(state.doc, doc)
+            }
+        }
+    }
+    for listName in ["bulletList", "orderedList", "taskList"] {
+        for allowed in [false, true] {
+            for nodeSelected in [false, true] {
+                test("list indent validity: \(listName), allowed \(allowed), node selection \(nodeSelected)") {
+                    let schema = try Schema(nodes: [
+                        ("doc", NodeSpec(content: "block+")),
+                        ("paragraph", NodeSpec(content: "text*", group: "block")),
+                        ("text", NodeSpec(group: "inline")),
+                        (listName, NodeSpec(content: "listItem+", group: "block")),
+                        ("listItem", NodeSpec(content: allowed ? "paragraph block*" : "paragraph"))
+                    ])
+                    let first = try schema.node("listItem", content: .from(schema.node("paragraph", content: .from(schema.text("one")))))
+                    let second = try schema.node("listItem", content: .from(schema.node("paragraph", content: .from(schema.text("two")))))
+                    let doc = try schema.node("doc", content: .from(schema.node(listName, content: .from([first, second]))))
+                    let pos = 1 + first.nodeSize
+                    let selection: Selection = nodeSelected ? NodeSelection.create(doc, pos) : TextSelection.create(doc, pos + 2)
+                    let state = EditorState.create(EditorStateConfig(schema: schema, doc: doc, selection: selection))
+                    let command = sinkListItem(schema.nodes["listItem"]!)
+                    var dispatched: Transaction?
+                    let available = command(state, nil, nil)
+                    let performed = command(state, { dispatched = $0 }, nil)
+                    try expectEqual(performed, allowed)
+                    try expectEqual(available, allowed)
+                    if allowed {
+                        try expectNotNil(dispatched)
+                        let changed = dispatched!.doc
+                        try expectEqual(changed.firstChild?.childCount, 1)
+                        try expectEqual(changed.firstChild?.firstChild?.firstChild?.textContent, "one")
+                        try expectEqual(changed.firstChild?.firstChild?.lastChild?.firstChild, second)
+                        try changed.check()
+                    } else {
+                        try expect(dispatched == nil)
+                    }
+                    try expectEqual(state.doc, doc)
+                }
+            }
+        }
+    }
+    for listName in ["bulletList", "orderedList", "taskList"] {
+        for allowed in [false, true] {
+            test("list lift availability: \(listName) agrees with execution (allowed \(allowed))") {
+                let schema = try Schema(nodes: [
+                    ("doc", NodeSpec(content: allowed ? "block+" : listName + "+")),
+                    ("paragraph", NodeSpec(content: "text*", group: "block")),
+                    ("text", NodeSpec(group: "inline")),
+                    (listName, NodeSpec(content: "listItem+", group: "block")),
+                    ("listItem", NodeSpec(content: "paragraph block*"))
+                ])
+                let paragraph = try schema.node("paragraph", content: .from(schema.text("keep")))
+                let item = try schema.node("listItem", content: .from(paragraph))
+                let doc = try schema.node("doc", content: .from(schema.node(listName, content: .from(item))))
+                let state = EditorState.create(EditorStateConfig(schema: schema, doc: doc, selection: TextSelection.create(doc, 3)))
+                let command = liftListItem(schema.nodes["listItem"]!)
+                let available = command(state, nil, nil)
+                var dispatched: Transaction?
+                let performed = command(state, { dispatched = $0 }, nil)
+                try expectEqual(performed, allowed)
+                try expectEqual(available, performed)
+                if let dispatched {
+                    try expectEqual(dispatched.doc.firstChild, paragraph)
+                    try dispatched.doc.check()
+                } else {
+                    try expect(!allowed)
+                }
+                try expectEqual(state.doc, doc)
+            }
+        }
+    }
     test("root list: nonempty items can still split") {
         let state = try rootListState(nodeSelection: false, text: "keep")
         var result = state

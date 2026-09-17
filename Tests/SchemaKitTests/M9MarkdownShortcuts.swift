@@ -43,6 +43,80 @@ private func hasMark(_ editor: Editor, _ name: String) -> Bool {
 private func topBlock(_ editor: Editor) -> Node? { editor.doc.firstChild }
 
 func registerMarkdownShortcutTests() {
+    for (name, prefix, trigger) in [("bold", "**text*", "*"), ("italic", "*text", "*"),
+                                    ("strike", "~~text~", "~"), ("highlight", "==text=", "=")] {
+        for excluded in [false, true] {
+            test("mark shortcut: \(name) with excluding mark \(excluded)") {
+                let editor = try Editor(extensions: starterKit() + [ShortcutExclusiveMark()])
+                let schema = editor.schema
+                let marks = excluded ? [schema.marks["exclusive"]!.create()] : []
+                let paragraph = try schema.node("paragraph", content: .from(schema.text(prefix, marks)))
+                editor.setContent(try schema.node("doc", content: .from(paragraph)))
+                let pos = editor.doc.content.size - 1
+                select(editor, pos, pos)
+                let original = editor.state
+                try expectEqual(textInput(editor, at: pos, trigger), !excluded)
+                if excluded {
+                    try expect(editor.state === original, "Rejected formatting must not strip its delimiters")
+                } else {
+                    try expectEqual(editor.doc.textContent, "text")
+                    try expect(hasMark(editor, name))
+                }
+            }
+        }
+    }
+    for levels in [[2, 4], [], [-1, 0]] {
+        for typedLevel in [1, 2, 4, 6] {
+            test("heading shortcut: configured \(levels), typed level \(typedLevel)") {
+                let editor = try Editor(extensions: starterKit().filter { $0.name != "heading" } + [HeadingExtension(levels: levels)])
+                let prefix = String(repeating: "#", count: typedLevel)
+                try type(editor, prefix)
+                let original = editor.state
+                let handled = textInput(editor, at: editor.doc.content.size - 1, " ")
+                let allowed = levels.contains(typedLevel)
+                try expectEqual(handled, allowed)
+                if allowed {
+                    try expectEqual(editor.doc.firstChild?.type.name, "heading")
+                    try expectEqual(editor.doc.firstChild?.attrs["level"], .int(typedLevel))
+                } else {
+                    try expect(editor.state === original, "Disabled heading levels must remain literal text")
+                }
+            }
+        }
+    }
+    for order in [0, 3, 42] {
+        test("ordered shortcut: preserves starting number \(order)") {
+            let editor = try shortcut("\(order).", " ")
+            try expectEqual(editor.doc.firstChild?.type.name, "orderedList")
+            try expectEqual(editor.doc.firstChild?.attrs["order"], .int(order))
+        }
+    }
+    for (order, typed, joins) in [(1, 3, true), (1, 1, false), (4, 6, true), (4, 3, false)] {
+        test("ordered shortcut: list starting \(order) followed by \(typed)") {
+            let editor = try Editor(extensions: starterKit())
+            let schema = editor.schema
+            let item = try schema.node("listItem", content: .from(schema.node("paragraph", content: .from(schema.text("keep")))))
+            let list = try schema.node("orderedList", ["order": .int(order)], content: .from([item, item]))
+            let paragraph = try schema.node("paragraph", content: .from(schema.text("\(typed).")))
+            editor.setContent(try schema.node("doc", content: .from([list, paragraph])))
+            let pos = editor.doc.content.size - 1
+            select(editor, pos, pos)
+            try expect(textInput(editor, at: pos, " "))
+            try expectEqual(editor.doc.childCount, joins ? 1 : 2)
+            try expectEqual(editor.doc.firstChild?.childCount, joins ? 3 : 2)
+            try expectEqual(editor.doc.firstChild?.attrs["order"], .int(order))
+            if !joins { try expectEqual(editor.doc.lastChild?.attrs["order"], .int(typed)) }
+            try editor.doc.check()
+        }
+    }
+    test("ordered shortcut: an unrepresentable number remains literal") {
+        let editor = try Editor(extensions: starterKit())
+        let literal = String(repeating: "9", count: 30) + "."
+        try type(editor, literal)
+        let original = editor.state
+        try expect(!textInput(editor, at: editor.doc.content.size - 1, " "))
+        try expect(editor.state === original)
+    }
     // MARK: Block shortcuts
 
     test("md shortcut: '# ' → heading level 1") {
@@ -251,4 +325,9 @@ func registerMarkdownShortcutTests() {
         try expect(editor.doc.rangeHasMark(0, editor.doc.content.size, code))
     }
 
+}
+
+private final class ShortcutExclusiveMark: MarkExtension {
+    let name = "exclusive"
+    var markSpec: MarkSpec { MarkSpec(excludes: "_") }
 }

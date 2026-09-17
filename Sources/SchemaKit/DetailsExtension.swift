@@ -197,10 +197,10 @@ func enterDetailsContent(_ summaryType: NodeType, _ detailsType: NodeType) -> Co
             if !(from.node(depth).attrs["open"]?.boolValue ?? false) {
                 _ = try? tr.setNodeAttribute(detailsPos, "open", .bool(true))
             }
-            // details(+1) → summary(its whole node) → content(+1) → first block(+1).
-            // `near` keeps this sane when the body starts with a non-textblock.
+            // Start before the first body block so `near` can select an atom
+            // or descend into a textblock without skipping a leaf node.
             let contentStart = detailsPos + 1 + from.node(depth).child(0).nodeSize
-            tr.setSelection(Selection.near(tr.doc.resolve(min(contentStart + 2, tr.doc.content.size))))
+            tr.setSelection(Selection.near(tr.doc.resolve(min(contentStart + 1, tr.doc.content.size))))
             dispatch(tr.scrollIntoView())
         }
         return true

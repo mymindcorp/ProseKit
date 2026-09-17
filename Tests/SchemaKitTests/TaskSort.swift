@@ -81,6 +81,50 @@ private func nestedEditor() throws -> Editor {
 }
 
 func registerTaskSortTests() {
+    for shift in [false, true] {
+        test("task sort: cancelling toggles do not reorder completed tasks (shift \(shift))") {
+            let editor = try sortingEditor([("a", false), ("b", true), ("c", true)])
+            let original = editor.doc
+            let tr = editor.state.tr
+            let pos = itemPos(editor, 1)
+            try tr.setNodeAttribute(pos, "checked", .bool(false))
+            if shift { try tr.insertText("x", itemPos(editor, 0) + 3) }
+            let mapped = tr.mapping.map(pos)
+            try tr.setNodeAttribute(mapped, "checked", .bool(true))
+            editor.dispatch(tr)
+            try expectEqual(texts(editor), [shift ? "ax" : "a", "b", "c"])
+            try expectEqual(checks(editor), [false, true, true])
+            try expectEqual(taskSortKey.getState(editor.state) ?? [:], [:])
+            if !shift { try expectEqual(editor.doc, original) }
+            try editor.doc.check()
+        }
+    }
+
+    test("task sort: cancelling toggles preserve a completed task's original home") {
+        let editor = try sortingEditor([("a", false), ("b", false), ("c", false)])
+        setChecked(editor, 0, true)
+        try expectEqual(texts(editor), ["b", "c", "a"])
+        let homes = taskSortKey.getState(editor.state)
+        let tr = editor.state.tr, pos = itemPos(editor, 2)
+        try tr.setNodeAttribute(pos, "checked", .bool(false))
+        try tr.setNodeAttribute(pos, "checked", .bool(true))
+        editor.dispatch(tr)
+        try expectEqual(taskSortKey.getState(editor.state), homes)
+        setChecked(editor, 2, false)
+        try expectEqual(texts(editor), ["a", "b", "c"])
+        try expectEqual(checks(editor), [false, false, false])
+    }
+
+    test("task sort: repeated toggles with a net change still sort and return home") {
+        let editor = try sortingEditor([("a", false), ("b", false), ("c", false)])
+        let tr = editor.state.tr, pos = itemPos(editor, 0)
+        for checked in [true, false, true] { try tr.setNodeAttribute(pos, "checked", .bool(checked)) }
+        editor.dispatch(tr)
+        try expectEqual(texts(editor), ["b", "c", "a"])
+        setChecked(editor, 2, false)
+        try expectEqual(texts(editor), ["a", "b", "c"])
+        try editor.doc.check()
+    }
     test("task sort: node selection follows nested and outer reorders") {
         let editor = try nestedEditor()
         editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, itemPos(editor, 1))))

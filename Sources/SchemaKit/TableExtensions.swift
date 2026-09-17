@@ -47,6 +47,8 @@ public struct TableOptions: Equatable, Sendable {
 
 public final class TableExtension: NodeExtension {
     public let name = "table"
+    // Indent code and list items inside cells before navigating between cells.
+    public let priority = 90
     public let options: TableOptions
     public init(options: TableOptions = TableOptions()) { self.options = options }
     public var nodeSpec: NodeSpec { NodeSpec(content: "tableRow+", group: "block", isolating: true) }
@@ -186,9 +188,21 @@ public func insertTable(rows: Int = 3, cols: Int = 3, withHeaderRow: Bool = true
 /// Delete the whole table containing the selection.
 public let deleteTable: Command = { state, dispatch, _ in
     guard let ctx = tableContext(state) else { return false }
-    if let dispatch {
-        _ = try? dispatch(state.tr.delete(ctx.tablePos, ctx.tablePos + ctx.table.nodeSize).scrollIntoView())
+    let tr = state.tr
+    guard (try? tr.delete(ctx.tablePos, ctx.tablePos + ctx.table.nodeSize)) != nil else { return false }
+    // A schema may require a table, in which case fitting synthesizes an
+    // empty replacement. Do not publish a content wipe as successful deletion.
+    // Include nested tables in the target: they disappear with their parent.
+    func tableCount(_ node: Node) -> Int {
+        var count = node.type === ctx.table.type ? 1 : 0
+        node.descendants { child, _, _, _ in
+            if child.type === ctx.table.type { count += 1 }
+            return true
+        }
+        return count
     }
+    guard tableCount(tr.doc) == tableCount(state.doc) - tableCount(ctx.table) else { return false }
+    dispatch?(tr.scrollIntoView())
     return true
 }
 

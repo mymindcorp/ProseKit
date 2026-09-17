@@ -23,9 +23,36 @@ public func fixTables(_ state: EditorState, _ oldState: EditorState?) -> Transac
 
 /// Fix a single table, appending to `tr0` (or creating one) if it has problems.
 public func fixTable(_ state: EditorState, _ table: Node, _ tablePos: Int, _ tr0: Transaction?) -> Transaction? {
+    // Persist the same colspan bounds used by TableMap so serialization and
+    // subsequent commands see canonical attributes, even in a rectangular table.
+    var normalizedTr = tr0
+    var didNormalize = false
+    var cellPos = 1
+    for rowIndex in 0..<table.childCount {
+        let row = table.child(rowIndex)
+        for cellIndex in 0..<row.childCount {
+            let cell = row.child(cellIndex)
+            let colspan = cellColspan(cell)
+            if cell.attrs["colspan"] != .int(colspan) {
+                let tr = normalizedTr ?? state.tr
+                var attrs = cell.attrs
+                attrs["colspan"] = .int(colspan)
+                _ = try? tr.setNodeMarkup(tr.mapping.map(tablePos + 1 + cellPos), nil, attrs)
+                normalizedTr = tr
+                didNormalize = true
+            }
+            cellPos += cell.nodeSize
+        }
+        cellPos += 2
+    }
+    var normalizedTable = table
+    if didNormalize, let tr = normalizedTr {
+        normalizedTable = tr.doc.nodeAt(tr.mapping.map(tablePos)) ?? table
+    }
+    let table = normalizedTable
     let map = TableMap.get(table)
-    guard let problems = map.problems, !problems.isEmpty else { return tr0 }
-    let tr = tr0 ?? state.tr
+    guard let problems = map.problems, !problems.isEmpty else { return normalizedTr }
+    let tr = normalizedTr ?? state.tr
 
     var mustAdd = [Int](repeating: 0, count: map.height)
     for prob in problems {

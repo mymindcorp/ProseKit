@@ -213,6 +213,10 @@ public func markInputRule(_ pattern: String, _ markType: MarkType, _ getAttrs: (
         if textStart > start + leadingSpaces { _ = try? tr.delete(start + leadingSpaces, textStart) }
         let markStart = start + leadingSpaces
         _ = try? tr.addMark(markStart, markStart + inner.count, markType.create(attrs))
+        // A non-code mark may also exclude this formatting. An AddMarkStep
+        // can succeed without applying its mark, so verify the result before
+        // committing the delimiter deletions.
+        guard tr.doc.rangeHasMark(markStart, markStart + inner.count, markType) else { return nil }
         tr.removeStoredMark(markType)
         return tr
     })

@@ -1,5 +1,6 @@
 import DocumentModel
 import EditorHistory
+import EditorCommands
 import EditorStateKit
 import SchemaKit
 import TestHarness
@@ -10,6 +11,77 @@ import TestHarness
 private func fullEditor() throws -> Editor { try Editor(extensions: fullKit()) }
 
 func registerPolishCoverageTests() {
+    for markName in ["link", "highlight", "textColor", "backgroundColor"] {
+        for context in ["codeBlock", "codeMark", "paragraph"] {
+            test("format availability: \(markName) in \(context)") {
+                let editor = try fullEditor()
+                let schema = editor.schema
+                let text = schema.text("keep", context == "codeMark" ? [schema.marks["code"]!.create()] : [])
+                let block = try schema.node(context == "codeBlock" ? "codeBlock" : "paragraph", content: .from(text))
+                editor.setContent(try schema.node("doc", content: .from(block)))
+                select(editor, 1, 5)
+                let original = editor.state
+                let type = schema.marks[markName]!
+                let command: Command
+                switch markName {
+                case "link": command = setLink(type, href: "https://example.com")
+                case "highlight": command = setHighlight(type, color: "green")
+                default: command = setColor(type, "red")
+                }
+                let allowed = context == "paragraph"
+                try expectEqual(editor.can(command), allowed)
+                var dispatched = false
+                try expectEqual(command(editor.state, { editor.dispatch($0); dispatched = true }, nil), allowed)
+                try expectEqual(dispatched, allowed)
+                if allowed {
+                    try expect(editor.isActive(mark: markName))
+                    try expectEqual(editor.doc.textContent, "keep")
+                } else {
+                    try expect(editor.state === original, "Rejected formatting must not publish a no-op")
+                }
+            }
+        }
+    }
+    for atom in ["hardBreak", "mention", "inlineMath", "wikiLink"] {
+        test("autolink safety: embedded \(atom) cannot become part of a URL") {
+            let editor = try fullEditor()
+            let s = editor.schema
+            let attrs: Attrs = atom == "mention" ? ["id": .string("person")]
+                : atom == "inlineMath" ? ["latex": .string("x")]
+                : atom == "wikiLink" ? ["text": .string("Page")] : [:]
+            let embedded = try s.node(atom, attrs)
+            editor.setContent(try s.node("doc", content: .from(s.node("paragraph", content: .from([
+                s.text("https://example.com/"), embedded, s.text("tail")
+            ])))))
+            let end = editor.doc.content.size - 1
+            select(editor, end, end)
+            let original = editor.state, revision = editor.docRevision
+            try expect(!textInput(editor, at: end, " "))
+            try expect(editor.state === original)
+            try expectEqual(editor.docRevision, revision)
+            editor.dispatch(try editor.state.tr.insertText(" ", end))
+            try expectEqual(editor.doc.firstChild?.child(1), embedded)
+            try expectEqual(editor.doc.firstChild?.lastChild?.text, "tail ")
+            try editor.doc.check()
+        }
+    }
+
+    test("autolink safety: a URL across formatting boundaries still links") {
+        let editor = try fullEditor()
+        try editor.setContent(html: "<p>https://<strong>example</strong>.com</p>")
+        let original = editor.doc
+        let end = editor.doc.content.size - 1
+        try expect(textInput(editor, at: end, " "))
+        let paragraph = editor.doc.firstChild!
+        for index in 0..<3 {
+            try expectEqual(paragraph.child(index).marks.first { $0.type.name == "link" }?.attrs["href"], .string("https://example.com"))
+        }
+        try expect(paragraph.child(1).marks.contains { $0.type.name == "bold" })
+        try expectEqual(paragraph.lastChild?.text, " ")
+        try expect(EditorHistory.undo(editor.state, { editor.dispatch($0) }))
+        try expectEqual(editor.doc, original)
+        try editor.doc.check()
+    }
     test("gapcursor survives undo (bookmark round-trips through history)") {
         let editor = try fullEditor()
         let s = editor.schema

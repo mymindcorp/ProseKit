@@ -280,6 +280,10 @@ private struct StringQuery: QueryImpl {
 private struct RegExpQuery: QueryImpl {
     let regex: NSRegularExpression
 
+    // Like ProseMirror, clip text at the upper search bound. Keep the prefix
+    // before the lower bound visible to assertions: advancing through matches
+    // must not introduce a new ^ anchor or word boundary on every retry.
+
     init?(pattern: String, caseSensitive: Bool) {
         guard let regex = try? NSRegularExpression(pattern: pattern, options: caseSensitive ? [] : [.caseInsensitive])
         else { return nil }
@@ -334,7 +338,7 @@ private struct RegExpQuery: QueryImpl {
             let searchRange = NSRange(hay.index(hay.startIndex, offsetBy: lo)..<hay.endIndex, in: hay)
             // `result` is nil for a match with no width in document positions,
             // so the first non-nil result is the first real match.
-            return regex.matches(in: hay, options: [], range: searchRange)
+            return regex.matches(in: hay, options: [.withTransparentBounds, .withoutAnchoringBounds], range: searchRange)
                 .lazy.compactMap { self.result(from: $0, in: hay, blockStart: start) }.first
         }
     }
@@ -353,7 +357,7 @@ private struct RegExpQuery: QueryImpl {
         // whole-word test can reject one whose overlapping neighbour is good.
         while cursor <= hay.endIndex {
             let searchRange = NSRange(cursor ..< hay.endIndex, in: hay)
-            guard let m = regex.firstMatch(in: hay, options: [], range: searchRange),
+            guard let m = regex.firstMatch(in: hay, options: [.withTransparentBounds, .withoutAnchoringBounds], range: searchRange),
                   let r = Range(m.range, in: hay) else { break }
             // An empty match is not a match — see `findNext`. `a|` and `.*`
             // produce one at every position, and each would have become a
@@ -379,7 +383,7 @@ private struct RegExpQuery: QueryImpl {
             var off = max(0, to - start)
             while off <= hay.count {
                 let searchRange = NSRange(hay.index(hay.startIndex, offsetBy: off)..<hay.endIndex, in: hay)
-                guard let m = regex.firstMatch(in: hay, options: [], range: searchRange),
+                guard let m = regex.firstMatch(in: hay, options: [.withTransparentBounds, .withoutAnchoringBounds], range: searchRange),
                       let r = Range(m.range, in: hay) else { break }
                 // Keep the last match with width; `result` decides width.
                 if let res = result(from: m, in: hay, blockStart: start) { best = res }

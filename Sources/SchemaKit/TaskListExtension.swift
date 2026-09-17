@@ -70,8 +70,8 @@ public final class TaskItemExtension: NodeExtension {
             // A task created by splitting (Enter) always starts unchecked,
             // never inheriting the current item's checked state.
             "Enter": splitListItem(item, ["checked": .bool(false)]),
-            "Tab": sinkListItem(item),
-            "Shift-Tab": liftListItem(item),
+            "Tab": listItemShortcut(item, sinkListItem(item)),
+            "Shift-Tab": listItemShortcut(item, liftListItem(item)),
         ]
     }
 }

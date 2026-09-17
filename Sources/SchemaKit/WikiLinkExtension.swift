@@ -76,6 +76,16 @@ public final class WikiLinkExtension: NodeExtension {
         // [[Target]] or [[Target|Label]] -> a wiki-link node.
         // Not inside a code span, where `[[Page]]` is literal text.
         return [InputRule("\\[\\[([^\\]|]+)(?:\\|([^\\]]+))?\\]\\]$", inCodeMark: false) { state, match, start, end in
+            let from = state.doc.resolve(start), to = state.doc.resolve(end)
+            guard from.sameParent(to) else { return nil }
+            // The matcher represents inline nodes as placeholders. They must
+            // not be consumed as if they were literal characters in a label.
+            var onlyText = true
+            from.parent.nodesBetween(from.parentOffset, to.parentOffset, { node, _, _, _ in
+                if !node.isText { onlyText = false }
+                return false
+            })
+            guard onlyText else { return nil }
             let typed = (match[1] ?? "").trimmingCharacters(in: .whitespaces)
             if typed.isEmpty { return nil }
             // `[[Page|shown]]` reads as "shown": what a reader sees is the text.
@@ -83,7 +93,8 @@ public final class WikiLinkExtension: NodeExtension {
             let attrs: Attrs = ["text": .string(shown)]
             guard let node = try? type.create(attrs) else { return nil }
             let tr = state.tr
-            _ = try? tr.replaceWith(start, end, node)
+            guard (try? tr.replaceWith(start, end, node)) != nil,
+                  containsInsertedNode(tr, node) else { return nil }
             return tr
         }]
     }
@@ -158,22 +169,20 @@ private func computeSuggestion(_ state: EditorState) -> WikiLinkSuggestion? {
           let type = state.schema.nodes["wikiLink"] else { return nil }
     let parent = cursor.parent
     guard isSuggestionContext(parent, state: state, cursor: cursor,
-                              inserting: type, excludingHeadings: true) else { return nil }
-    // One character per inline leaf, so a character offset into this string is
-    // a document offset. Without the override a leaf expands to its `leafText`
-    // — a wiki-link renders as its whole label — and every offset past it
-    // overstates the position by the label's length, which puts `from` beyond
-    // the cursor and traps in `resolve`.
+                              excludingHeadings: true) else { return nil }
+    // Neutralize display labels so inline atoms cannot supply trigger text.
     let textBefore = parent.textBetween(0, cursor.parentOffset, blockSeparator: nil, leafText: "\u{fffc}")
     // Find the last unmatched "[[".
     guard let openRange = textBefore.range(of: "[[", options: .backwards) else { return nil }
     let afterOpen = textBefore[openRange.upperBound...]
     if afterOpen.contains("]") || afterOpen.contains(where: { $0.isNewline }) { return nil }
     let query = String(afterOpen)
-    let openOffset = textBefore.distance(from: textBefore.startIndex, to: openRange.lowerBound)
+    guard let openOffset = suggestionTriggerOffset(parent,
+        utf16Offset: textBefore[..<openRange.lowerBound].utf16.count) else { return nil }
     // textBetween represents every leaf by the same placeholder. Distinguish
     // line breaks from the other inline atoms a query is allowed to contain.
     guard !suggestionCrossesHardBreak(parent, from: openOffset, to: cursor.parentOffset) else { return nil }
+    guard suggestionFits(parent, from: openOffset, to: cursor.parentOffset, type: type) else { return nil }
     let from = cursor.pos - (cursor.parentOffset - openOffset)
     return WikiLinkSuggestion(query: query, from: from, to: cursor.pos)
 }
@@ -198,7 +207,9 @@ public func insertWikiLink(_ type: NodeType, text: String, targetId: String? = n
     { state, dispatch, _ in
         let attrs = wikiLinkAttrs(text: text, targetId: targetId, targetType: targetType)
         guard let node = try? type.create(attrs) else { return false }
-        dispatch?(state.tr.replaceSelectionWith(node).scrollIntoView())
+        let tr = state.tr.replaceSelectionWith(node)
+        guard containsInsertedNode(tr, node) else { return false }
+        dispatch?(tr.scrollIntoView())
         return true
     }
 }

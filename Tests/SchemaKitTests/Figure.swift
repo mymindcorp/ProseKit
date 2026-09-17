@@ -19,6 +19,37 @@ private func firstFigure(_ editor: Editor) -> (pos: Int, node: Node)? {
 }
 
 func registerFigureTests() {
+    for quoted in [false, true] {
+        test("setFigure: selecting an existing figure does not wrap it again (quoted \(quoted))") {
+            let editor = try Editor(extensions: fullKit() + figureExtensions())
+            let figure = "<figure><p>body</p><figcaption>caption</figcaption></figure>"
+            try editor.setContent(html: quoted ? "<blockquote>" + figure + "</blockquote>" : figure)
+            let pos = firstFigure(editor)!.pos
+            editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, pos)))
+            let original = editor.state, revision = editor.docRevision
+            let command = setFigure(editor.schema.nodes["figure"]!, editor.schema.nodes["figcaption"]!)
+            let available = editor.can(command)
+            let performed = editor.run(command)
+            try expectEqual(editor.doc, original.doc)
+            try expect(!available)
+            try expect(!performed)
+            try expect(editor.state === original)
+            try expectEqual(editor.docRevision, revision)
+        }
+    }
+
+    test("setFigure: selecting an ordinary block still creates a figure") {
+        let editor = try Editor(extensions: fullKit() + figureExtensions())
+        try editor.setContent(html: "<p>body</p>")
+        editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, 0)))
+        let command = setFigure(editor.schema.nodes["figure"]!, editor.schema.nodes["figcaption"]!)
+        try expect(editor.can(command))
+        try expect(editor.run(command))
+        try expectEqual(count(editor.doc, "figure"), 1)
+        try expectEqual(editor.doc.firstChild?.firstChild?.textContent, "body")
+        try expectEqual(editor.state.selection.resolvedHead.parent.type.name, "figcaption")
+        try editor.doc.check()
+    }
     test("unwrapping: availability respects a parent that requires the wrapper") {
         for name in ["figure", "details"] {
             let schema = try Schema(nodes: [

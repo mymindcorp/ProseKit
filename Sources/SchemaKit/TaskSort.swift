@@ -114,6 +114,7 @@ func taskSortPlugin() -> Plugin {
 /// `checked` attribute the batch set.
 func checkedItemPositions(_ trs: [Transaction]) -> [Int] {
     var positions: [Int] = []
+    var originalValues: [Int: AttributeValue] = [:]
     for (ti, tr) in trs.enumerated() {
         // A transaction that sorted itself (see `sortTasksInPlace`) is done.
         if tr.getMeta(taskHomesMeta) != nil { continue }
@@ -139,10 +140,18 @@ func checkedItemPositions(_ trs: [Transaction]) -> [Int] {
             }
             // A deleted item must not transfer its check to the next item (or
             // to the list's closing boundary, which has no child to sort).
-            if !mapped.deletedAfter { positions.append(mapped.pos) }
+            if !mapped.deletedAfter, originalValues[mapped.pos] == nil {
+                positions.append(mapped.pos)
+                originalValues[mapped.pos] = tr.docs[si].nodeAt(attrStep.pos)?.attrs["checked"] ?? .null
+            }
         }
     }
-    return positions
+    // Several writes in a batch can cancel each other. Sorting that item would
+    // move an unchanged task and overwrite the home it should return to later.
+    guard let finalDoc = trs.last?.doc else { return [] }
+    return positions.filter { pos in
+        (finalDoc.nodeAt(pos)?.attrs["checked"] ?? .null) != originalValues[pos]
+    }
 }
 
 /// Fold the reordering the given checks call for into `tr`: the steps that move

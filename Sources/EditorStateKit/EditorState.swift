@@ -76,6 +76,10 @@ public final class EditorState: @unchecked Sendable {
                 if let tr = (n < trs.count ? append(n != 0 ? slice : trs, oldState, newState) : nil),
                    newState.filterTransaction(tr, i) {
                     tr.setMeta("appendedTransaction", rootTr)
+                    // Plugins commonly leave the timestamp unset. Preserve the
+                    // root event's time so appending an edit does not reset the
+                    // history clock and split the next adjacent edit's group.
+                    if tr.time == 0 { tr.time = rootTr.time }
                     if seen == nil {
                         // The plugins before this one have already been asked
                         // about every transaction so far, and were asked from

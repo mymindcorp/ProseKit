@@ -434,6 +434,30 @@ final class KeyboardBehaviorTests: XCTestCase {
         XCTAssertEqual(view.editor.state.selection.resolvedHead.parent.type.name, "paragraph", "caret moves into the new paragraph")
     }
 
+    func testShiftEnterExitsCodeBeforeItsEnclosingQuote() throws {
+        let editor = try Editor(extensions: fullKit())
+        try editor.setContent(html: "<blockquote><pre><code>code</code></pre><p>tail</p></blockquote>")
+        let view = EditorTextView(editor: editor)
+        cursor(view, 4)
+        let original = editor.state
+        key(view, .keyboardReturnOrEnter, .shift)
+        XCTAssertEqual(editor.doc.childCount, 1)
+        let quote = editor.doc.firstChild!
+        XCTAssertEqual(quote.type.name, "blockquote")
+        XCTAssertEqual(quote.childCount, 3)
+        if quote.childCount == 3 {
+            XCTAssertEqual(quote.child(0), original.doc.firstChild?.firstChild)
+            XCTAssertEqual(quote.child(1).type.name, "paragraph")
+            XCTAssertEqual(quote.child(1).content.size, 0)
+            XCTAssertEqual(quote.child(2).textContent, "tail")
+        }
+        XCTAssertEqual(editor.state.selection.head, 8)
+        XCTAssertEqual(editor.state.selection.resolvedHead.depth, 2)
+        key(view, .keyboardZ, .command, "z")
+        XCTAssertEqual(editor.doc, original.doc)
+        XCTAssertTrue(editor.state.selection.eq(original.selection))
+    }
+
     func testShiftEnterExitsBlockquote() throws {
         let editor = try Editor(extensions: fullKit())
         let quote = try! editor.schema.node("blockquote", [:], content: Fragment.from([

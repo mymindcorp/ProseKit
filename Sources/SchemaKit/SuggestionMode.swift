@@ -93,7 +93,12 @@ public final class SuggestionModeState {
                 // Enabling for the first time starts tracking from the current
                 // document; disabling keeps pending suggestions.
                 let newSet = on && changeSet == nil ? Self.makeSet(tr.doc, []) : changeSet
-                return SuggestionModeState(enabled: on, changeSet: newSet)
+                let next = SuggestionModeState(enabled: on, changeSet: newSet)
+                // Existing pending changes must follow edits in this same
+                // transaction. The new mode decides whether those edits are
+                // suggestions or committed changes. On first enable, tr.doc
+                // already became the base, so there is nothing to map again.
+                return changeSet == nil ? next : next.applyDocumentChange(tr, author: author)
             case .accept(let index):
                 guard let set = changeSet, set.changes.indices.contains(index) else { return self }
                 return SuggestionModeState(enabled: enabled, changeSet: Self.accepting(set, index, doc: tr.doc))
@@ -107,6 +112,10 @@ public final class SuggestionModeState {
                 return SuggestionModeState(enabled: enabled, changeSet: changeSet != nil ? Self.makeSet(tr.doc, []) : nil)
             }
         }
+        return applyDocumentChange(tr, author: author)
+    }
+
+    private func applyDocumentChange(_ tr: Transaction, author: String) -> SuggestionModeState {
         guard tr.docChanged, let set = changeSet else { return self }
         if enabled {
             return SuggestionModeState(enabled: true, changeSet: set.addSteps(tr.doc, tr.mapping.maps, author))

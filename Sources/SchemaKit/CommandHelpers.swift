@@ -1,4 +1,5 @@
 public import DocumentModel
+import DocumentTransform
 public import EditorStateKit
 public import EditorCommands
 
@@ -39,7 +40,22 @@ public func toggleBlockType(_ type: NodeType, _ defaultType: NodeType, _ attrs: 
 public func toggleWrap(_ type: NodeType, _ attrs: Attrs = [:]) -> Command {
     { state, dispatch, host in
         if isNodeActive(state, type) {
-            return lift(state, dispatch, host)
+            let selection = state.selection
+            let range: NodeRange?
+            if let selected = selection as? NodeSelection, selected.node.type === type {
+                guard !selected.node.isLeaf else { return false }
+                range = NodeRange(state.doc.resolve(selected.from + 1),
+                                  state.doc.resolve(selected.to - 1), selected.resolvedFrom.depth + 1)
+            } else {
+                // Lift the target wrapper's children, not a closer list item
+                // or other container that happens to hold the selection.
+                range = selection.resolvedFrom.blockRange(selection.resolvedTo, pred: { $0.type === type })
+            }
+            guard let range, let target = liftTarget(range), target == range.depth - 1 else { return false }
+            let tr = state.tr
+            guard (try? tr.lift(range, target)) != nil else { return false }
+            dispatch?(tr.scrollIntoView())
+            return true
         }
         return wrapIn(type, attrs)(state, dispatch, host)
     }
@@ -63,4 +79,25 @@ func selectedNodeOrAncestor(_ state: EditorState, _ type: NodeType) -> (node: No
     let from = state.selection.resolvedFrom
     guard let depth = ancestorDepth(from, type) else { return nil }
     return (from.node(depth), from.before(depth))
+}
+
+// Fitting can drop a node that the destination forbids, sometimes deleting
+// the selected text in the process. Validate the changed ranges rather than
+// accepting an identical node that already exists elsewhere in the document.
+func containsInsertedNode(_ tr: Transaction, _ node: Node) -> Bool {
+    var inserted = false
+    for (index, map) in tr.mapping.maps.enumerated() {
+        let after = tr.mapping.slice(index + 1)
+        map.forEach { _, _, newStart, newEnd in
+            let from = after.map(newStart, -1), to = after.map(newEnd, 1)
+            tr.doc.nodesBetween(from, to, { candidate, pos, _, _ in
+                if candidate.type === node.type, candidate.attrs == node.attrs, candidate.content == node.content,
+                   pos >= from, pos + candidate.nodeSize <= to {
+                    inserted = true
+                }
+                return !inserted
+            })
+        }
+    }
+    return inserted
 }

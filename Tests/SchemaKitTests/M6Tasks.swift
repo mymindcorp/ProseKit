@@ -3,12 +3,52 @@ import DocumentModel
 import DocumentTransform
 import EditorStateKit
 import EditorCommands
+import EditorHistory
 import SchemaKit
 import TestHarness
 
 // Registered into the shared `collector` from main.swift.
 
 func registerTaskTests() {
+    for checked in [false, true] {
+        for trailing in [false, true] {
+            test("task split: nested empty item honors attributes (checked \(checked), trailing \(trailing))") {
+                let editor = try Editor(extensions: fullKit())
+                let s = editor.schema
+                let paragraph = try s.node("paragraph", content: .from(s.text("parent")))
+                let emptyItem = try s.node("taskItem", ["checked": .bool(!checked)], content: .from(s.node("paragraph")))
+                let nested = try s.node("taskList", content: .from(emptyItem))
+                var content = [paragraph, nested]
+                if trailing { content.append(try s.node("paragraph", content: .from(s.text("tail")))) }
+                let parent = try s.node("taskItem", ["checked": .bool(!checked)], content: .from(content))
+                editor.setContent(try s.node("doc", content: .from(s.node("taskList", content: .from(parent)))))
+                var cursor = 0
+                editor.doc.descendants { node, pos, _, _ in
+                    if node.isTextblock && node.content.size == 0 { cursor = pos + 1 }
+                    return true
+                }
+                select(editor, cursor, cursor)
+                let original = editor.state
+                let command = splitListItem(s.nodes["taskItem"]!, ["checked": .bool(checked)])
+                try expect(editor.can(command))
+                try expect(editor.run(command))
+                let list = editor.doc.firstChild!
+                try expectEqual(list.childCount, trailing ? 3 : 2)
+                try expectEqual(list.child(0).attrs["checked"], .bool(!checked))
+                try expectEqual(list.child(1).attrs["checked"], .bool(checked))
+                try expectEqual(list.child(1).textContent, "")
+                try expectEqual(editor.state.selection.resolvedHead.node(-1).attrs["checked"], .bool(checked))
+                if trailing { try expectEqual(list.child(2).textContent, "tail") }
+                try editor.doc.check()
+                let split = editor.doc
+                try expect(EditorHistory.undo(editor.state, { editor.dispatch($0) }))
+                try expectEqual(editor.doc, original.doc)
+                try expect(editor.state.selection.eq(original.selection))
+                try expect(EditorHistory.redo(editor.state, { editor.dispatch($0) }))
+                try expectEqual(editor.doc, split)
+            }
+        }
+    }
     test("task toggle: a selected task item is the target, including nested items") {
         for nested in [false, true] {
             let editor = try Editor(extensions: fullKit())

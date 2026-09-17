@@ -174,10 +174,11 @@ public let insertFootnote: Command = { state, dispatch, _ in
 /// the definition — because either is where you notice you don't want it.
 public let removeFootnote: Command = { state, dispatch, _ in
     guard let label = footnoteLabelAtSelection(state) else { return false }
-    guard let dispatch else { return true }
     let tr = state.tr
     // Highest position first, so removing one doesn't move the next.
     var targets: [(pos: Int, size: Int)] = []
+    var remainingReferences: [String] = []
+    var remainingDefinitions: [String] = []
     tr.doc.descendants { node, pos, _, _ in
         let name = node.type.name
         guard name == "footnoteReference" || name == "footnoteDefinition" else { return true }
@@ -187,12 +188,29 @@ public let removeFootnote: Command = { state, dispatch, _ in
             // contain references to this label, so keep searching those.
             return false
         }
+        let retainedLabel = node.attrs["label"]?.stringValue ?? ""
+        if name == "footnoteReference" { remainingReferences.append(retainedLabel) }
+        else { remainingDefinitions.append(retainedLabel) }
         return true
     }
     for target in targets.sorted(by: { $0.pos > $1.pos }) {
-        _ = try? tr.delete(target.pos, target.pos + target.size)
+        if tr.doc.nodeAt(target.pos)?.type.name == "footnoteReference" {
+            // Fitting a deletion can replace a required reference with a new,
+            // empty-label reference. Refuse the whole operation instead of
+            // deleting its definition and publishing a broken footnote.
+            guard (try? tr.step(ReplaceStep(target.pos, target.pos + target.size, .empty))) != nil else { return false }
+        } else {
+            // A removed definition may need an empty paragraph in its place
+            // to keep a block container (including the document) valid.
+            guard (try? tr.delete(target.pos, target.pos + target.size)) != nil else { return false }
+        }
     }
-    dispatch(tr)
+    // Fitting may synthesize a required definition, or remove more than the
+    // requested nodes. Only publish a removal that leaves precisely the
+    // surviving references and definitions collected above.
+    guard footnoteReferences(tr.doc).map(\.label) == remainingReferences,
+          footnoteDefinitions(tr.doc).map(\.label) == remainingDefinitions else { return false }
+    dispatch?(tr)
     return true
 }
 
@@ -209,8 +227,13 @@ public func footnoteLabelAtSelection(_ state: EditorState) -> String? {
     where resolved.node(depth).type.name == "footnoteDefinition" {
         return resolved.node(depth).attrs["label"]?.stringValue
     }
-    // On a reference, or with the cursor just after one.
-    for node in [resolved.nodeAfter, resolved.nodeBefore] {
+    // Selecting another atom is not a cursor beside the reference. It may
+    // still belong to an enclosing definition, which was handled above.
+    if state.selection is NodeSelection { return nil }
+    // A range may include a reference at its start, but a reference before
+    // the range is outside the selection. Only a caret can target that neighbor.
+    let candidates = state.selection.empty ? [resolved.nodeAfter, resolved.nodeBefore] : [resolved.nodeAfter]
+    for node in candidates {
         if node?.type.name == "footnoteReference" { return node?.attrs["label"]?.stringValue }
     }
     return nil
