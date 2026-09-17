@@ -25,7 +25,9 @@ public enum TableProblem: Sendable {
 public enum TableAxis: Sendable { case horiz, vert }
 
 // Cell attribute accessors (colspan/rowspan default 1; colwidth is an int array or nil).
-func cellColspan(_ node: Node) -> Int { node.attrs["colspan"]?.intValue ?? 1 }
+// Stored or pasted cells can bypass HTML validation. Bound the span before
+// computing map sizes or allocating per-column arrays.
+func cellColspan(_ node: Node) -> Int { min(1000, max(1, node.attrs["colspan"]?.intValue ?? 1)) }
 func cellRowspan(_ node: Node) -> Int { node.attrs["rowspan"]?.intValue ?? 1 }
 func cellColwidth(_ node: Node) -> [Int]? {
     // A width that isn't positive is no width: zero already means "unknown"

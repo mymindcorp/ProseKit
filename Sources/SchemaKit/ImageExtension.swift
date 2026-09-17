@@ -127,7 +127,9 @@ public func insertImage(_ type: NodeType, src: String, alt: String? = nil, title
         if let height { attrs["height"] = .int(height) }
         if let model { attrs["model"] = model.attributeValue }
         guard let node = try? type.create(attrs) else { return false }
-        dispatch?(state.tr.replaceSelectionWith(node).scrollIntoView())
+        let tr = state.tr.replaceSelectionWith(node)
+        guard containsInsertedNode(tr, node) else { return false }
+        dispatch?(tr.scrollIntoView())
         return true
     }
 }
@@ -201,10 +203,10 @@ public func setImageModel(_ model: ImageModel?, pos: Int? = nil) -> Command {
 /// names it turned out to be.
 private func imageNodePos(_ state: EditorState, _ type: NodeType? = nil) -> Int? {
     func matches(_ node: Node) -> Bool { type.map { node.type === $0 } ?? node.isImage }
-    if let sel = state.selection as? NodeSelection, matches(sel.node) { return sel.from }
+    if let sel = state.selection as? NodeSelection { return matches(sel.node) ? sel.from : nil }
     let from = state.selection.resolvedFrom
     if let after = from.nodeAfter, matches(after) { return from.pos }
-    if let before = from.nodeBefore, matches(before) { return from.pos - before.nodeSize }
+    if state.selection.empty, let before = from.nodeBefore, matches(before) { return from.pos - before.nodeSize }
     return nil
 }
 

@@ -95,14 +95,12 @@ private func computeSlashMenu(_ state: EditorState, atLineStart: Bool) -> SlashM
     guard let cursor = (state.selection as? TextSelection)?.cursor else { return nil }
     let parent = cursor.parent
     guard parent.isTextblock, !parent.type.spec.code else { return nil }
-    // One character per inline leaf, so a character offset into this string is
-    // a document offset. Without the override a leaf expands to its `leafText`
-    // — a wiki-link renders as its whole label — and every offset past it
-    // overstates the position by the label's length, which puts `from` beyond
-    // the cursor and traps in `resolve`.
+    // Use placeholders so the display label of an inline leaf cannot be
+    // mistaken for typed trigger text.
     let textBefore = parent.textBetween(0, cursor.parentOffset, blockSeparator: nil, leafText: "\u{fffc}")
     guard let slashRange = textBefore.range(of: "/", options: .backwards) else { return nil }
-    let slashOffset = textBefore.distance(from: textBefore.startIndex, to: slashRange.lowerBound)
+    guard let slashOffset = suggestionTriggerOffset(parent,
+        utf16Offset: textBefore[..<slashRange.lowerBound].utf16.count) else { return nil }
     if atLineStart {
         // The `/` must be the first character of the block.
         if slashOffset != 0 { return nil }

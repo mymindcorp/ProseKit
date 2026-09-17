@@ -1,5 +1,6 @@
 import Foundation
 import DocumentModel
+import DocumentTransform
 import EditorStateKit
 import SchemaKit
 import TestHarness
@@ -17,6 +18,34 @@ private func shape(_ editor: Editor) -> [String] {
 }
 
 func registerFootnoteTests() {
+    for selectedType in ["mention", "inlineMath", "wikiLink"] {
+        for insideDefinition in [false, true] {
+            test("footnotes: selected \(selectedType) beside a reference, inside definition \(insideDefinition)") {
+                let editor = try Editor(extensions: fullKit() + footnoteExtensions())
+                let schema = editor.schema
+                let reference = try schema.node("footnoteReference", ["label": .string("a")])
+                let selected = try schema.node(selectedType, selectedType == "mention" ? ["id": .string("user")] : [:])
+                let paragraph = try schema.node("paragraph", content: .from([reference, selected]))
+                let definitionA = try schema.node("footnoteDefinition", ["label": .string("a")],
+                    content: .from(schema.node("paragraph", content: .from(schema.text("keep note")))))
+                let body = try insideDefinition
+                    ? schema.node("footnoteDefinition", ["label": .string("b")], content: .from(paragraph)) : paragraph
+                editor.setContent(try schema.node("doc", content: .from([body, definitionA])))
+                let pos = insideDefinition ? 3 : 2
+                editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.doc, pos)))
+                let original = editor.state
+                try expectEqual(footnoteLabelAtSelection(editor.state), insideDefinition ? "b" : nil)
+                try expectEqual(editor.can(removeFootnote), insideDefinition)
+                try expectEqual(editor.run("removeFootnote"), insideDefinition)
+                if insideDefinition {
+                    try expectEqual(footnoteDefinitions(editor.doc).map(\.label), ["a"])
+                    try expectEqual(editor.doc.lastChild, definitionA)
+                } else {
+                    try expect(editor.state === original, "Selecting another atom must not delete a neighboring footnote")
+                }
+            }
+        }
+    }
     test("footnotes: insertion is atomic when the schema rejects either half") {
         for allowReference in [false, true] {
             let schema = try Schema(nodes: [
@@ -35,6 +64,83 @@ func registerFootnoteTests() {
             try expect(!dispatched)
             try expectEqual(state.doc, doc)
         }
+    }
+
+    for requiredReference in [false, true] {
+        for fromDefinition in [false, true] {
+            test("footnotes: removal is atomic with required reference \(requiredReference), from definition \(fromDefinition)") {
+                let schema = try Schema(nodes: [
+                    ("doc", NodeSpec(content: "paragraph footnoteDefinition*")),
+                    ("paragraph", NodeSpec(content: requiredReference ? "text* footnoteReference text*" : "inline*")),
+                    ("text", NodeSpec(group: "inline")),
+                    ("footnoteReference", FootnoteReferenceExtension().nodeSpec),
+                    ("footnoteDefinition", NodeSpec(content: "note", attrs: ["label": AttributeSpec(default: .string(""))])),
+                    ("note", NodeSpec(content: "text*"))
+                ])
+                let reference = try schema.node("footnoteReference", ["label": .string("a")])
+                let paragraph = try schema.node("paragraph", content: Fragment.from([schema.text("keep"), reference]))
+                let definition = try schema.node("footnoteDefinition", ["label": .string("a")],
+                    content: Fragment.from(schema.node("note", content: Fragment.from(schema.text("note")))))
+                let doc = try schema.node("doc", content: Fragment.from([paragraph, definition]))
+                let state = EditorState.create(EditorStateConfig(schema: schema, doc: doc,
+                    selection: TextSelection.create(doc, fromDefinition ? paragraph.nodeSize + 2 : 5)))
+                var result: Node?
+                try expectEqual(removeFootnote(state, { result = $0.doc }, nil), !requiredReference)
+                if requiredReference {
+                    try expect(result == nil, "Cannot remove one half of a footnote")
+                } else {
+                    try expectEqual(result?.textContent, "keep")
+                    try expectEqual(result?.childCount, 1)
+                    try result?.check()
+                }
+                try expectEqual(removeFootnote(state, nil, nil), !requiredReference)
+                try expectEqual(state.doc, doc)
+            }
+        }
+    }
+
+    for requiredDefinition in [false, true] {
+        for fromDefinition in [false, true] {
+            test("footnotes: required definition removal \(requiredDefinition), from definition \(fromDefinition)") {
+                let schema = try Schema(nodes: [
+                    ("doc", NodeSpec(content: requiredDefinition ? "paragraph footnoteDefinition" : "paragraph footnoteDefinition*")),
+                    ("paragraph", NodeSpec(content: "inline*")),
+                    ("text", NodeSpec(group: "inline")),
+                    ("footnoteReference", FootnoteReferenceExtension().nodeSpec),
+                    ("footnoteDefinition", NodeSpec(content: "paragraph+", attrs: ["label": AttributeSpec(default: .string(""))]))
+                ])
+                let reference = try schema.node("footnoteReference", ["label": .string("a")])
+                let paragraph = try schema.node("paragraph", content: Fragment.from([schema.text("keep"), reference]))
+                let definition = try schema.node("footnoteDefinition", ["label": .string("a")],
+                    content: Fragment.from(schema.node("paragraph", content: Fragment.from(schema.text("note")))))
+                let doc = try schema.node("doc", content: Fragment.from([paragraph, definition]))
+                let state = EditorState.create(EditorStateConfig(schema: schema, doc: doc,
+                    selection: TextSelection.create(doc, fromDefinition ? paragraph.nodeSize + 2 : 5)))
+                var result: Node?
+                let handled = removeFootnote(state, { result = $0.doc }, nil)
+                if requiredDefinition {
+                    try expect(result == nil, "Do not erase the note and leave an anonymous replacement definition")
+                } else {
+                    try expectEqual(result?.textContent, "keep")
+                    try expectEqual(result?.childCount, 1)
+                    try result?.check()
+                }
+                try expectEqual(handled, !requiredDefinition)
+                try expectEqual(removeFootnote(state, nil, nil), !requiredDefinition)
+            }
+        }
+    }
+
+    test("footnotes: removing the sole definition leaves a valid empty paragraph") {
+        let editor = try footnoteEditor()
+        let schema = editor.schema
+        let definition = try schema.node("footnoteDefinition", ["label": .string("a")],
+            content: Fragment.from(schema.node("paragraph", content: Fragment.from(schema.text("note")))))
+        editor.setContent(try schema.node("doc", content: Fragment.from(definition)))
+        select(editor, 2, 2)
+        try expect(editor.run("removeFootnote"))
+        try expectEqual(editor.doc, try schema.node("doc", content: Fragment.from(schema.node("paragraph"))))
+        try editor.doc.check()
     }
 
     test("footnotes: a selected definition can be removed") {

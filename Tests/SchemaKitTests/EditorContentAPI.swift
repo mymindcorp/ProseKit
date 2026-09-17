@@ -9,6 +9,31 @@ import DocumentTransform
 // and attributes(ofMark:).
 
 func registerEditorContentAPITests() {
+    for nodeName in ["inlineMath", "blockMath", "image", "horizontalRule", "mention", "wikiLink"] {
+        for backwards in [false, true] {
+            test("insertContent safety: rejected \(nodeName) preserves selection, backwards \(backwards)") {
+                let editor = try Editor(extensions: [ContentCodeDocument()] + fullKit().filter { $0.name != "doc" })
+                let schema = editor.schema
+                editor.setContent(try schema.node("doc", content: .from(schema.node("codeBlock", content: .from(schema.text("keep"))))))
+                select(editor, backwards ? 4 : 2, backwards ? 2 : 4)
+                let original = editor.state
+                let attrs: Attrs = nodeName == "image" ? ["src": .string("photo.png")] : nodeName == "mention" ? ["id": .string("user")] : [:]
+                let node = try schema.node(nodeName, attrs)
+                try expect(!editor.insertContent(node), "A discarded node must not be reported as inserted")
+                try expect(editor.state === original, "Failed insertion must preserve content and selection")
+                try expectEqual(editor.doc.textContent, "keep")
+            }
+        }
+    }
+
+    test("insertContent safety: text still merges with neighboring text") {
+        let editor = try Editor(extensions: starterKit())
+        try type(editor, "keep")
+        select(editor, 2, 4)
+        try expect(editor.insertContent(editor.schema.text("oo")))
+        try expectEqual(editor.doc.textContent, "koop")
+        try expectEqual(editor.doc.firstChild?.childCount, 1)
+    }
     test("getHTML serializes the document") {
         let editor = try Editor(extensions: fullKit())
         try editor.setContent(html: "<p>Hello <strong>world</strong></p>")
@@ -117,3 +142,8 @@ func registerEditorContentAPITests() {
 }
 
 private final class Counter: @unchecked Sendable { var n = 0 }
+
+private final class ContentCodeDocument: NodeExtension {
+    let name = "doc"
+    var nodeSpec: NodeSpec { NodeSpec(content: "codeBlock+") }
+}

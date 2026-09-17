@@ -104,24 +104,7 @@ public func insertMath(_ type: NodeType, latex: String, pos: Int? = nil) -> Comm
         } else {
             tr.replaceSelectionWith(node)
         }
-        // Fitting can drop a node that the destination forbids, sometimes
-        // deleting the selection in the process. Require the requested formula
-        // in the inserted content before committing, including in a dry run.
-        var inserted = false
-        for (index, map) in tr.mapping.maps.enumerated() {
-            let after = tr.mapping.slice(index + 1)
-            map.forEach { _, _, newStart, newEnd in
-                let from = after.map(newStart, -1), to = after.map(newEnd, 1)
-                tr.doc.nodesBetween(from, to, { candidate, pos, _, _ in
-                    if candidate.type === type, candidate.attrs == node.attrs,
-                       pos >= from, pos + candidate.nodeSize <= to {
-                        inserted = true
-                    }
-                    return !inserted
-                })
-            }
-        }
-        guard inserted else { return false }
+        guard containsInsertedNode(tr, node) else { return false }
         dispatch?(tr.scrollIntoView())
         return true
     }
@@ -156,10 +139,10 @@ public func deleteMath(_ type: NodeType, pos: Int? = nil) -> Command {
 /// The position of the math node the selection addresses: the node a
 /// `NodeSelection` covers, else the one immediately before or after the cursor.
 private func mathNodePos(_ state: EditorState, _ type: NodeType) -> Int? {
-    if let sel = state.selection as? NodeSelection, sel.node.type === type { return sel.from }
+    if let sel = state.selection as? NodeSelection { return sel.node.type === type ? sel.from : nil }
     let from = state.selection.resolvedFrom
     if let after = from.nodeAfter, after.type === type { return from.pos }
-    if let before = from.nodeBefore, before.type === type { return from.pos - before.nodeSize }
+    if state.selection.empty, let before = from.nodeBefore, before.type === type { return from.pos - before.nodeSize }
     return nil
 }
 
@@ -183,7 +166,8 @@ private func mathInputRule(_ type: NodeType, pattern: String) -> InputRule {
         guard let latex = match[1]?.trimmingCharacters(in: .whitespaces), !latex.isEmpty,
               let node = try? type.create(["latex": .string(latex)]) else { return nil }
         let tr = state.tr
-        guard (try? tr.replaceWith(start, end, node)) != nil else { return nil }
+        guard (try? tr.replaceWith(start, end, node)) != nil,
+              containsInsertedNode(tr, node) else { return nil }
         return tr
     }
 }
@@ -208,19 +192,31 @@ public func addMathMigrationSteps(_ doc: Node, _ tr: Transaction, pattern: Strin
     // (from, to, latex) for every match, in document order.
     var found: [(from: Int, to: Int, latex: String)] = []
     doc.descendants { node, pos, _, _ in
-        // Only scan textblocks that can actually hold an inlineMath, and skip
-        // code (its `$` are literal).
-        guard node.isTextblock, !node.type.spec.code,
-              node.type.contentMatch.matchType(type) != nil else { return true }
+        // Skip code, where `$` is literal. Whether a formula fits depends on
+        // its actual position, not the content match at the start of the block.
+        guard node.isTextblock, !node.type.spec.code else { return true }
         let text = node.textBetween(0, node.content.size, blockSeparator: nil, leafText: "\u{fffc}")
         let ns = text as NSString
         // Regex ranges use UTF-16 and can split a grapheme. Only boundaries
         // represented by document positions can safely become replacements.
         var offsets: [Int: Int] = [0: 0]
         var utf16Offset = 0
-        for (offset, character) in text.enumerated() {
-            utf16Offset += String(character).utf16.count
-            offsets[utf16Offset] = offset + 1
+        // Count positions within each source node. Concatenation can join
+        // graphemes across mark boundaries, but their document sizes do not
+        // change when the text is flattened for matching.
+        node.descendants { child, childPos, _, _ in
+            if let source = child.text {
+                offsets[utf16Offset] = childPos
+                for (offset, character) in source.enumerated() {
+                    utf16Offset += String(character).utf16.count
+                    offsets[utf16Offset] = childPos + offset + 1
+                }
+            } else if child.isLeaf {
+                offsets[utf16Offset] = childPos
+                utf16Offset += 1 // textBetween's U+FFFC placeholder
+                offsets[utf16Offset] = childPos + child.nodeSize
+            }
+            return true
         }
         for m in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
             let capture = m.range(at: 1)
@@ -244,7 +240,10 @@ public func addMathMigrationSteps(_ doc: Node, _ tr: Transaction, pattern: Strin
     }
     for match in found.reversed() {
         guard let node = try? type.create(["latex": .string(match.latex)]) else { continue }
-        _ = try? tr.replaceWith(match.from, match.to, node)
+        // An inline migration must fit at this exact location. Fitting may
+        // otherwise discard the formula while still deleting its source text.
+        _ = try? tr.step(ReplaceStep(match.from, match.to,
+            Slice(content: Fragment.from(node), openStart: 0, openEnd: 0)))
     }
     return tr
 }

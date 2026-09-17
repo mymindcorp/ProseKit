@@ -340,6 +340,10 @@ public final class Editor {
             tr.replaceSelectionWith(node)
         }
         guard tr.docChanged else { return false }
+        // Fitting can discard an unsupported leaf while deleting the selected
+        // text. A text node may merge with neighbors, but a non-text leaf must
+        // actually be present in the inserted range before we publish it.
+        if node.isLeaf && !node.isText && !containsInsertedNode(tr, node) { return false }
         dispatch(tr.scrollIntoView())
         return true
     }

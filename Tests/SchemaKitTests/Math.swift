@@ -3,6 +3,7 @@ import DocumentModel
 import DocumentTransform
 import EditorStateKit
 import EditorCommands
+import EditorHistory
 import SchemaKit
 import TestHarness
 
@@ -21,6 +22,127 @@ private func firstMath(_ editor: Editor, _ name: String) -> (pos: Int, node: Nod
 private func mathEditor() throws -> Editor { try Editor(extensions: fullKit()) }
 
 func registerMathTests() {
+    test("math migration: a required leading node does not hide eligible formulas") {
+        let editor = try Editor(extensions: [
+            RestrictedMathNode("doc", content: "paragraph+"),
+            RestrictedMathNode("paragraph", content: "hardBreak (text|inlineMath)*"),
+            TextExtension(), HardBreakExtension(), InlineMathExtension()
+        ])
+        let s = editor.schema
+        editor.setContent(try s.node("doc", content: .from(try s.node("paragraph", content: .from([
+            try s.node("hardBreak"), s.text("before $x$ after $y$")
+        ])))))
+        try expect(editor.migrateMathStrings())
+        let paragraph = editor.doc.firstChild!
+        try expectEqual(paragraph.firstChild?.type.name, "hardBreak")
+        try expectEqual(count(editor.doc, "inlineMath"), 2)
+        try expectEqual(paragraph.child(1).text, "before ")
+        try expectEqual(paragraph.child(2).attrs["latex"], .string("x"))
+        try expectEqual(paragraph.child(3).text, " after ")
+        try expectEqual(paragraph.child(4).attrs["latex"], .string("y"))
+        try editor.doc.check()
+    }
+
+    for (left, right) in [("e", "\u{301}"), ("🇺", "🇸"), ("👩", "\u{200d}💻")] {
+        for split in [true, false] {
+            test("math migration: Unicode \(left + right) across marks preserves ranges (split \(split))") {
+                let editor = try mathEditor()
+                let s = editor.schema
+                let bold = s.marks["bold"]!.create()
+                let parts = split
+                    ? [s.text("$" + left), s.text(right + "$", [bold]), s.text(" tail $z$")]
+                    : [s.text(left), s.text(right + " ", [bold]), s.text("$x$ tail $z$")]
+                editor.setContent(try s.node("doc", content: .from(try s.node("paragraph", content: .from(parts)))))
+                let original = editor.doc
+                try expect(editor.migrateMathStrings())
+                let paragraph = editor.doc.firstChild!
+                try expectEqual(count(editor.doc, "inlineMath"), 2)
+                try expectEqual(firstMath(editor, "inlineMath")?.node.attrs["latex"], .string(split ? left + right : "x"))
+                try expectEqual(paragraph.lastChild?.attrs["latex"], .string("z"))
+                let prose = paragraph.content.content.filter { $0.isText }.compactMap { $0.text }.joined()
+                try expectEqual(prose, split ? " tail " : left + right + "  tail ")
+                try editor.doc.check()
+                let migrated = editor.doc
+                try expect(EditorHistory.undo(editor.state, { editor.dispatch($0) }))
+                try expectEqual(editor.doc, original)
+                try expect(EditorHistory.redo(editor.state, { editor.dispatch($0) }))
+                try expectEqual(editor.doc, migrated)
+            }
+        }
+    }
+    for delimiter in ["$", "$$"] {
+        test("math rules: refused \(delimiter) formula preserves literal text in a restricted schema") {
+            let editor = try restrictedMathEditor(paragraphContent: "text*")
+            let prefix = delimiter + "x" + String(delimiter.dropLast())
+            try type(editor, prefix)
+            let original = editor.state, revision = editor.docRevision
+            let pos = prefix.count + 1
+            try expect(!textInput(editor, at: pos, "$"))
+            try expect(editor.state === original)
+            try expectEqual(editor.docRevision, revision)
+            // The view's fallback inserts the unhandled key as ordinary text.
+            editor.dispatch(try editor.state.tr.insertText("$", pos))
+            try expectEqual(editor.doc.textContent, delimiter + "x" + delimiter)
+            try editor.doc.check()
+        }
+    }
+
+    test("math migration: a formula allowed only at the start cannot replace trailing prose") {
+        let editor = try restrictedMathEditor(paragraphContent: "inlineMath text*")
+        let s = editor.schema
+        let existing = try s.node("inlineMath", ["latex": .string("existing")])
+        editor.setContent(try s.node("doc", content: .from(try s.node("paragraph", content: .from([
+            existing, s.text("$x$")
+        ])))))
+        let original = editor.state, revision = editor.docRevision
+        try expect(!editor.migrateMathStrings())
+        try expect(editor.state === original)
+        try expectEqual(editor.docRevision, revision)
+        try expectEqual(editor.doc.firstChild?.lastChild?.text, "$x$")
+        try editor.doc.check()
+    }
+
+    test("math migration: skips forbidden matches while converting other blocks") {
+        let editor = try Editor(extensions: [
+            RestrictedMathNode("doc", content: "(paragraph|allowedParagraph)+"),
+            RestrictedMathNode("paragraph", content: "inlineMath text*"),
+            RestrictedMathNode("allowedParagraph", content: "inline*"),
+            TextExtension(), InlineMathExtension(), BlockMathExtension()
+        ])
+        let s = editor.schema
+        let restricted = try s.node("paragraph", content: .from([
+            try s.node("inlineMath", ["latex": .string("existing")]), s.text("$forbidden$")
+        ]))
+        let allowed = try s.node("allowedParagraph", content: .from(s.text("before $x$ after")))
+        editor.setContent(try s.node("doc", content: .from([restricted, allowed])))
+        try expect(editor.migrateMathStrings())
+        try expectEqual(editor.doc.child(0), restricted)
+        let converted = editor.doc.child(1)
+        try expectEqual(converted.childCount, 3)
+        try expectEqual(converted.child(0).text, "before ")
+        try expectEqual(converted.child(1).type.name, "inlineMath")
+        try expectEqual(converted.child(1).attrs["latex"], .string("x"))
+        try expectEqual(converted.child(2).text, " after")
+        try editor.doc.check()
+    }
+
+    test("math rules: successful block fitting retains a surrounding list item") {
+        let editor = try mathEditor()
+        try editor.setContent(html: "<ul><li><p>$$x$</p></li></ul>")
+        var end = 0
+        editor.doc.descendants { node, pos, _, _ in
+            if node.isText { end = pos + node.nodeSize }
+            return true
+        }
+        select(editor, end, end)
+        try expect(textInput(editor, at: end, "$"))
+        try expectEqual(editor.doc.firstChild?.type.name, "bulletList")
+        try expectEqual(editor.doc.firstChild?.firstChild?.type.name, "listItem")
+        try expectEqual(count(editor.doc, "blockMath"), 1)
+        try expectEqual(firstMath(editor, "blockMath")?.node.attrs["latex"], .string("x"))
+        try editor.doc.check()
+    }
+
     test("math input rules: truncated lookbehind is not the start of a textblock") {
         let editor = try mathEditor()
         try type(editor, "a$$" + String(repeating: "x", count: 497) + "$")
@@ -309,4 +431,21 @@ func registerMathTests() {
         try expect(inlineEditor.run("insertInlineMath"), "insertInlineMath should be registered")
         try expectNotNil(firstMath(inlineEditor, "inlineMath"))
     }
+}
+
+private final class RestrictedMathNode: NodeExtension {
+    let name: String
+    let nodeSpec: NodeSpec
+    init(_ name: String, content: String) {
+        self.name = name
+        self.nodeSpec = NodeSpec(content: content, group: name == "paragraph" ? "block" : nil)
+    }
+}
+
+private func restrictedMathEditor(paragraphContent: String) throws -> Editor {
+    try Editor(extensions: [
+        RestrictedMathNode("doc", content: "paragraph+"),
+        RestrictedMathNode("paragraph", content: paragraphContent),
+        TextExtension(), InlineMathExtension(), BlockMathExtension()
+    ])
 }

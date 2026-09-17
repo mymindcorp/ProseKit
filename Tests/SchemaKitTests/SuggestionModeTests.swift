@@ -29,6 +29,40 @@ private func insert(_ editor: Editor, _ text: String, at pos: Int) throws {
 }
 
 func registerSuggestionModeTests() {
+    for wasEnabled in [false, true] {
+        for enabled in [false, true] {
+            test("suggestion: editing while setting mode from \(wasEnabled) to \(enabled) updates pending changes") {
+                let editor = try suggestionEditor()
+                try type(editor, "base")
+                enable(editor)
+                try insert(editor, "!", at: 5)
+                editor.dispatch(setSuggestionMode(editor.state.tr, enabled: wasEnabled))
+                let tr = try editor.state.tr.insertText("X", 1)
+                editor.dispatch(setSuggestionMode(tr, enabled: enabled))
+                try expectEqual(editor.doc.textContent, "Xbase!")
+                try expectEqual(state(editor).enabled, enabled)
+                try expect(state(editor).changes.contains { $0.fromB == 6 && $0.toB == 7 },
+                    "The pending suffix must move with the inserted prefix")
+                try expectEqual(state(editor).changes.count, enabled ? 2 : 1)
+                try expect(editor.run(rejectAllSuggestions))
+                try expectEqual(editor.doc.textContent, enabled ? "base" : "Xbase")
+                try expectEqual(state(editor).changes.count, 0)
+            }
+    }
+    }
+
+    test("suggestion: first enable with an edit uses the edited document as its base") {
+        let editor = try suggestionEditor()
+        try type(editor, "base")
+        editor.dispatch(setSuggestionMode(try editor.state.tr.insertText("X", 1), enabled: true))
+        try expectEqual(state(editor).baseDoc, editor.doc)
+        try expectEqual(state(editor).changes.count, 0)
+        try insert(editor, "!", at: 6)
+        try expectEqual(state(editor).changes.count, 1)
+        try expect(editor.run(rejectAllSuggestions))
+        try expectEqual(editor.doc.textContent, "Xbase")
+    }
+
     test("suggestion: disabled by default, edits not recorded") {
         let editor = try suggestionEditor()
         try type(editor, "hello")

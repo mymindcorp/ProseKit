@@ -53,26 +53,22 @@ public func wrapInList(_ listType: NodeType, _ attrs: Attrs = [:]) -> Command {
             doJoin = true
         }
         guard let wrap = findWrappingForRange(outerRange, listType, attrs, range) else { return false }
-        if let dispatch {
-            dispatch(doWrapInList(state.tr, range, wrap, doJoin, listType).scrollIntoView())
-        }
+        guard let tr = doWrapInList(state.tr, range, wrap, doJoin, listType) else { return false }
+        dispatch?(tr.scrollIntoView())
         return true
     }
 }
 
-private func doWrapInList(_ tr: Transaction, _ range: NodeRange, _ wrappers: [NodeTypeWithAttrs], _ joinBefore: Bool, _ listType: NodeType) -> Transaction {
+private func doWrapInList(_ tr: Transaction, _ range: NodeRange, _ wrappers: [NodeTypeWithAttrs], _ joinBefore: Bool, _ listType: NodeType) -> Transaction? {
     var content = Fragment.empty
     var i = wrappers.count - 1
     while i >= 0 {
-        if let wrapped = try? wrappers[i].type.create(wrappers[i].attrs, content: content) {
-            content = Fragment.from(wrapped)
-        } else if let inner = content.firstChild {
-            content = Fragment.from(inner) // couldn't wrap (e.g. a required attr) — keep going
-        } // else: nothing to wrap yet; leave content empty
+        guard let wrapped = try? wrappers[i].type.create(wrappers[i].attrs, content: content) else { return nil }
+        content = Fragment.from(wrapped)
         i -= 1
     }
-    _ = try? tr.step(ReplaceAroundStep(range.start - (joinBefore ? 2 : 0), range.end, range.start, range.end,
-                                   Slice(content: content, openStart: 0, openEnd: 0), wrappers.count, structure: true))
+    guard (try? tr.step(ReplaceAroundStep(range.start - (joinBefore ? 2 : 0), range.end, range.start, range.end,
+        Slice(content: content, openStart: 0, openEnd: 0), wrappers.count, structure: true))) != nil else { return nil }
     var found = 0
     for (idx, w) in wrappers.enumerated() where w.type === listType { found = idx + 1 }
     let splitDepth = wrappers.count - found
@@ -83,7 +79,7 @@ private func doWrapInList(_ tr: Transaction, _ range: NodeRange, _ wrappers: [No
     var first = true
     while idx < end {
         if !first && canSplit(tr.doc, splitPos, splitDepth) {
-            _ = try? tr.split(splitPos, splitDepth)
+            guard (try? tr.split(splitPos, splitDepth)) != nil else { return nil }
             splitPos += 2 * splitDepth
         }
         splitPos += parent.child(idx).nodeSize
@@ -109,6 +105,7 @@ public func splitListItem(_ itemType: NodeType, _ itemAttrs: Attrs? = nil) -> Co
             if from.depth <= 3 || from.node(-3).type !== itemType || from.index(-2) != from.node(-2).childCount - 1 {
                 return false
             }
+            guard let filledItem = itemType.createAndFill(itemAttrs ?? [:]) else { return false }
             if let dispatch {
                 var wrap = Fragment.empty
                 let depthBefore = from.index(-1) != 0 ? 1 : (from.index(-2) != 0 ? 2 : 3)
@@ -121,7 +118,6 @@ public func splitListItem(_ itemType: NodeType, _ itemAttrs: Attrs? = nil) -> Co
                 }
                 let depthAfter = from.indexAfter(-1) < from.node(-2).childCount ? 1
                     : (from.indexAfter(-2) < from.node(-3).childCount ? 2 : 3)
-                guard let filledItem = itemType.createAndFill() else { return true }
                 wrap = wrap.append(Fragment.from(filledItem))
                 let start = from.before(from.depth - (depthBefore - 1))
                 let tr = state.tr
@@ -151,10 +147,10 @@ public func splitListItem(_ itemType: NodeType, _ itemAttrs: Attrs? = nil) -> Co
         }
         let splitPos = from.pos
         if !canSplit(tr.doc, splitPos, 2, types) { return false }
-        if let dispatch {
-            _ = try? tr.split(splitPos, 2, types)
-            dispatch(tr.scrollIntoView())
-        }
+        // Structural validity alone does not check required attributes on the
+        // new item. Never publish the selection deletion if splitting fails.
+        guard (try? tr.split(splitPos, 2, types)) != nil else { return false }
+        dispatch?(tr.scrollIntoView())
         return true
     }
 }
@@ -170,22 +166,21 @@ public func sinkListItem(_ itemType: NodeType) -> Command {
         let parent = range.parent
         let nodeBefore = parent.child(startIndex - 1)
         if nodeBefore.type !== itemType { return false }
-        if let dispatch {
-            let nestedBefore = nodeBefore.lastChild?.type === parent.type
-            var innerInner = Fragment.empty
-            if nestedBefore {
-                guard let nested = try? itemType.create() else { return true }
-                innerInner = Fragment.from(nested)
-            }
-            guard let parentNode = try? parent.type.create([:], content: innerInner),
-                  let itemNode = try? itemType.create([:], content: Fragment.from(parentNode)) else { return true }
-            let slice = Slice(content: Fragment.from(itemNode),
-                              openStart: nestedBefore ? 3 : 1, openEnd: 0)
-            let before = range.start, after = range.end
-            let tr = state.tr
-            _ = try? tr.step(ReplaceAroundStep(before - (nestedBefore ? 3 : 1), after, before, after, slice, 1, structure: true))
-            dispatch(tr.scrollIntoView())
+        let nestedBefore = nodeBefore.lastChild?.type === parent.type
+        var innerInner = Fragment.empty
+        if nestedBefore {
+            guard let nested = try? itemType.create() else { return false }
+            innerInner = Fragment.from(nested)
         }
+        guard let parentNode = try? parent.type.create([:], content: innerInner),
+              let itemNode = try? itemType.create([:], content: Fragment.from(parentNode)) else { return false }
+        let slice = Slice(content: Fragment.from(itemNode),
+                          openStart: nestedBefore ? 3 : 1, openEnd: 0)
+        let before = range.start, after = range.end
+        let tr = state.tr
+        guard (try? tr.step(ReplaceAroundStep(before - (nestedBefore ? 3 : 1), after,
+            before, after, slice, 1, structure: true))) != nil else { return false }
+        dispatch?(tr.scrollIntoView())
         return true
     }
 }
@@ -195,18 +190,25 @@ public func liftListItem(_ itemType: NodeType) -> Command {
     { state, dispatch, _ in
         let sel = state.selection
         let from = sel.resolvedFrom, to = sel.resolvedTo
-        guard let range = from.blockRange(to, pred: { $0.childCount != 0 && $0.firstChild?.type === itemType }) else { return false }
+        let itemRange: NodeRange?
+        if let selected = sel as? NodeSelection, selected.node.firstChild?.type === itemType {
+            // A selection around the whole list resolves outside it. Address
+            // its items explicitly so toggling a selected list can unwrap it.
+            itemRange = NodeRange(state.doc.resolve(sel.from + 1), state.doc.resolve(sel.to - 1), from.depth + 1)
+        } else {
+            itemRange = from.blockRange(to, pred: { $0.childCount != 0 && $0.firstChild?.type === itemType })
+        }
+        guard let range = itemRange else { return false }
         // A root list has no surrounding node to lift its items into.
         guard range.depth > 0 else { return false }
-        if dispatch == nil { return true }
-        if from.node(range.depth - 1).type === itemType {
-            return liftToOuterList(state, dispatch!, itemType, range)
+        if range.from.node(range.depth - 1).type === itemType {
+            return liftToOuterList(state, dispatch, itemType, range)
         }
-        return liftOutOfList(state, dispatch!, range)
+        return liftOutOfList(state, dispatch, range)
     }
 }
 
-private func liftToOuterList(_ state: EditorState, _ dispatch: Dispatch, _ itemType: NodeType, _ range0: NodeRange) -> Bool {
+private func liftToOuterList(_ state: EditorState, _ dispatch: Dispatch?, _ itemType: NodeType, _ range0: NodeRange) -> Bool {
     var range = range0
     let tr = state.tr
     let end = range.end
@@ -226,11 +228,11 @@ private func liftToOuterList(_ state: EditorState, _ dispatch: Dispatch, _ itemT
     if canJoin(tr.doc, afterPos), after.nodeBefore?.type === after.nodeAfter?.type {
         _ = try? tr.join(afterPos)
     }
-    dispatch(tr.scrollIntoView())
+    dispatch?(tr.scrollIntoView())
     return true
 }
 
-private func liftOutOfList(_ state: EditorState, _ dispatch: Dispatch, _ range: NodeRange) -> Bool {
+private func liftOutOfList(_ state: EditorState, _ dispatch: Dispatch?, _ range: NodeRange) -> Bool {
     let tr = state.tr
     let list = range.parent
     var pos = range.end
@@ -258,6 +260,25 @@ private func liftOutOfList(_ state: EditorState, _ dispatch: Dispatch, _ range: 
         .append(atEnd ? .empty : Fragment.from(list.copy(content: .empty)))
     _ = try? tr.step(ReplaceAroundStep(startPos - (atStart ? 1 : 0), endPos + (atEnd ? 1 : 0), startPos + 1, endPos - 1,
         Slice(content: sliceContent, openStart: atStart ? 0 : 1, openEnd: atEnd ? 0 : 1), atStart ? 0 : 1, structure: true))
-    dispatch(tr.scrollIntoView())
+    dispatch?(tr.scrollIntoView())
     return true
+}
+
+/// Built-in list shortcuts target the nearest item, even when regular and task
+/// lists are mixed. A handler for an outer item must not claim an inner key.
+func listItemShortcut(_ type: NodeType, _ command: @escaping Command) -> Command {
+    { state, dispatch, host in
+        if let selected = (state.selection as? NodeSelection)?.node,
+           selected.type.name == "listItem" || selected.type.name == "taskItem" {
+            return selected.type === type && command(state, dispatch, host)
+        }
+        let from = state.selection.resolvedFrom
+        for depth in stride(from: from.depth, through: 1, by: -1) {
+            let candidate = from.node(depth).type
+            if candidate.name == "listItem" || candidate.name == "taskItem" {
+                return candidate === type && command(state, dispatch, host)
+            }
+        }
+        return false
+    }
 }

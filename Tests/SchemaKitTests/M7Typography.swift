@@ -7,6 +7,18 @@ import TestHarness
 // Registered into the shared `collector` from main.swift.
 
 func registerTypographyTests() {
+    for (name, whitespace) in [("nonbreaking space", "\u{a0}"), ("narrow nonbreaking space", "\u{202f}"), ("em space", "\u{2003}"), ("carriage return", "\r")] {
+        for single in [false, true] {
+            test("typography: opening \(single ? "single" : "double") quote after \(name)") {
+                let editor = try Editor(extensions: starterKit())
+                try type(editor, "before" + whitespace)
+                let end = editor.doc.content.size - 1
+                try expect(textInput(editor, at: end, single ? "'" : "\""))
+                try expectEqual(editor.doc.textContent, "before" + whitespace + (single ? "‘" : "“"))
+                try editor.doc.check()
+            }
+        }
+    }
     test("typography: opening double quote at the start") {
         let editor = try Editor(extensions: starterKit())
         try expect(textInput(editor, at: 1, "\""))

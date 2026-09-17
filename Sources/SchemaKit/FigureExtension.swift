@@ -66,7 +66,7 @@ public func figureExtensions() -> [any Extension] {
 /// (empty) caption — the part a writer fills in next.
 public func setFigure(_ figureType: NodeType, _ captionType: NodeType) -> Command {
     { state, dispatch, _ in
-        guard ancestorDepth(state.selection.resolvedFrom, figureType) == nil,
+        guard !isNodeActive(state, figureType),
               let range = state.selection.resolvedFrom.blockRange(state.selection.resolvedTo)
         else { return false }
         let parent = range.parent

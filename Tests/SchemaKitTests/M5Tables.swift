@@ -35,6 +35,38 @@ func cursorInFirstCell(_ editor: Editor) {
 }
 
 func registerM5Tests() {
+    for required in [false, true] {
+        for nodeSelected in [false, true] {
+            test("delete table: required table \(required), node selection \(nodeSelected)") {
+                let schema = try Schema(nodes: [
+                    ("doc", NodeSpec(content: required ? "table+" : "block+")),
+                    ("paragraph", NodeSpec(content: "text*", group: "block")),
+                    ("text", NodeSpec()),
+                    ("table", TableExtension().nodeSpec),
+                    ("tableRow", TableRowExtension().nodeSpec),
+                    ("tableCell", TableCellExtension().nodeSpec),
+                    ("tableHeader", TableHeaderExtension().nodeSpec)
+                ])
+                let paragraph = try schema.node("paragraph", content: .from(schema.text("keep")))
+                let cell = try schema.node("tableCell", content: .from(paragraph))
+                let row = try schema.node("tableRow", content: .from(cell))
+                let table = try schema.node("table", content: .from(row))
+                let doc = try schema.node("doc", content: .from(table))
+                let selection: Selection = nodeSelected ? NodeSelection.create(doc, 0) : TextSelection.create(doc, 4)
+                let state = EditorState.create(EditorStateConfig(schema: schema, doc: doc, selection: selection))
+                var result: Transaction?
+                let handled = deleteTable(state, { result = $0 }, nil)
+                if required {
+                    try expect(result == nil, "Cannot erase table contents and silently replace it with another table")
+                } else {
+                    try expectEqual(result?.doc, try schema.node("doc", content: .from(schema.node("paragraph"))))
+                    try result?.doc.check()
+                }
+                try expectEqual(handled, !required)
+                try expectEqual(deleteTable(state, nil, nil), !required)
+            }
+        }
+    }
     test("table insertion: rejects a schema that cannot retain the table") {
         let schema = try Schema(nodes: [
             ("doc", NodeSpec(content: "paragraph+")),

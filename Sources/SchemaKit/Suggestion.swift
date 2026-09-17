@@ -62,8 +62,14 @@ func replaceSuggestionRange(_ editor: Editor, from: Int, to: Int, with node: Nod
     let start = min(from, to), end = max(from, to)
     guard start >= 0, end <= editor.doc.content.size else { return false }
     let tr = editor.state.tr
-    let slice = Slice(content: Fragment.from(node), openStart: 0, openEnd: 0)
+    // Use the captured query's marks, not the caret or stored marks left by a
+    // menu tap elsewhere in the document.
+    let resolvedStart = tr.doc.resolve(start)
+    let marks = start == end ? resolvedStart.marks()
+        : (resolvedStart.marksAcross(tr.doc.resolve(end)) ?? [])
+    let slice = Slice(content: Fragment.from(node.mark(marks)), openStart: 0, openEnd: 0)
     guard (try? tr.step(ReplaceStep(start, end, slice))) != nil else { return false }
+    tr.setSelection(Selection.near(tr.doc.resolve(start + node.nodeSize)))
     editor.dispatch(tr.scrollIntoView())
     return true
 }
@@ -104,13 +110,45 @@ public extension SuggestionSource {
 /// schema matter: a wiki-link treats a heading as a title, not prose, while a
 /// mention in a title is ordinary.
 func isSuggestionContext(_ parent: Node, state: EditorState, cursor: ResolvedPos,
-                         inserting type: NodeType, excludingHeadings: Bool) -> Bool {
+                         excludingHeadings: Bool) -> Bool {
     guard parent.isTextblock, !parent.type.spec.code,
-          !(excludingHeadings && parent.type.name == "heading"),
-          parent.type.contentMatch.matchType(type) != nil else { return false }
+          !(excludingHeadings && parent.type.name == "heading") else { return false }
     // An inline code span is code too, even in a paragraph. `storedMarks` is
     // what the next character would take on, which is what matters at a
     // boundary where the cursor's own marks haven't caught up yet.
     let marks = state.storedMarks ?? cursor.marks()
     return !marks.contains { $0.type.spec.code }
+}
+
+/// Map a trigger's UTF-16 offset in flattened text (with U+FFFC for leaves)
+/// back to its position in the textblock. Graphemes may combine across marks
+/// in the flattened string while remaining separate document positions.
+func suggestionTriggerOffset(_ parent: Node, utf16Offset target: Int) -> Int? {
+    var consumed = 0
+    var result: Int?
+    parent.descendants { node, pos, _, _ in
+        guard result == nil else { return false }
+        if let text = node.text {
+            for (offset, character) in text.enumerated() {
+                if consumed == target {
+                    result = pos + offset
+                    break
+                }
+                consumed += String(character).utf16.count
+            }
+        } else if node.isLeaf {
+            consumed += 1
+        }
+        return true
+    }
+    return result
+}
+
+/// Check the exact replacement rather than the content expression's initial
+/// state: a node may be allowed only after a prefix or only in an earlier slot.
+func suggestionFits(_ parent: Node, from: Int, to: Int, type: NodeType) -> Bool {
+    let before = parent.content.cut(0, from)
+    let after = parent.content.cut(to)
+    return parent.type.contentMatch.matchFragment(before)?.matchType(type)?
+        .matchFragment(after)?.validEnd == true
 }

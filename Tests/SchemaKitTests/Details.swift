@@ -3,6 +3,7 @@ import DocumentModel
 import DocumentTransform
 import EditorStateKit
 import EditorCommands
+import EditorHistory
 import SchemaKit
 import TestHarness
 
@@ -243,6 +244,36 @@ func registerDetailsTests() {
         // Typing now lands in the content's first block.
         try typeHere(editor, "x")
         try expectEqual(firstDetails(editor)?.node.child(1).textContent, "xbody")
+    }
+
+    for leafType in ["horizontalRule", "image", "blockMath"] {
+        for hasTrailingParagraph in [false, true] {
+            test("details Enter: selects first \(leafType), trailing paragraph \(hasTrailingParagraph)") {
+                let editor = try Editor(extensions: fullKit())
+                let schema = editor.schema
+                let summary = try schema.node("detailsSummary", content: Fragment.from(schema.text("title")))
+                let attrs: Attrs = leafType == "image" ? ["src": .string("test.png")]
+                    : leafType == "blockMath" ? ["latex": .string("x")] : [:]
+                let leaf = try schema.node(leafType, attrs)
+                let paragraph = try schema.node("paragraph", content: Fragment.from(schema.text("tail")))
+                let body = try schema.node("detailsContent", content: Fragment.from(
+                    hasTrailingParagraph ? [leaf, paragraph] : [leaf]))
+                let details = try schema.node("details", content: Fragment.from([summary, body]))
+                let doc = try schema.node("doc", content: Fragment.from([details, paragraph]))
+                editor.setContent(doc)
+                select(editor, 3, 3)
+
+                try expect(key(editor, "Enter"))
+                try expectEqual(firstDetails(editor)?.node.attrs["open"], .bool(true))
+                try expect(editor.state.selection is NodeSelection, "Enter selects the first body atom")
+                try expectEqual(editor.state.selection.from, summary.nodeSize + 2)
+                try expectEqual((editor.state.selection as? NodeSelection)?.node, leaf)
+                try expectEqual(editor.doc.child(0).content, details.content)
+                try expect(EditorHistory.undo(editor.state, { editor.dispatch($0) }))
+                try expectEqual(editor.doc, doc)
+                try expectEqual(editor.state.selection.from, 3)
+            }
+        }
     }
 
     test("Backspace at the start of the summary unwraps the details") {

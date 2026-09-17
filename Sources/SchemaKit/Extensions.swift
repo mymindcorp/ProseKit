@@ -62,10 +62,11 @@ public final class HeadingExtension: NodeExtension {
     }
     public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
         guard let type = ctx.nodeType else { return [] }
-        let maxLevel = levels.max() ?? 6
-        return [textblockTypeInputRule("^(#{1,\(maxLevel)})\\s$", type) { m in
-            ["level": .int((m[1] ?? "").count)]
-        }]
+        return levels.filter { (1...6).contains($0) }.map { level in
+            textblockTypeInputRule("^(#{\(level)})\\s$", type) { _ in
+                ["level": .int(level)]
+            }
+        }
     }
 }
 
@@ -99,17 +100,34 @@ public final class BlockquoteExtension: NodeExtension {
 /// default Shift-Enter (hard break).
 func exitToParagraph(_ blockType: NodeType, _ paragraphType: NodeType) -> Command {
     { state, dispatch, _ in
-        let from = state.selection.resolvedFrom
-        var depth = from.depth
-        while depth > 0, from.node(depth).type !== blockType { depth -= 1 }
-        guard depth > 0, from.node(depth).type === blockType, let paragraph = paragraphType.createAndFill() else { return false }
-        if let dispatch {
-            let after = from.after(depth)
-            let tr = state.tr
-            _ = try? tr.insert(after, paragraph)
-            tr.setSelection(TextSelection.create(tr.doc, after + 1))
-            dispatch(tr.scrollIntoView())
+        let after: Int
+        if let selected = state.selection as? NodeSelection,
+           selected.node.type.name == "codeBlock" || selected.node.type.name == "blockquote" {
+            // Node selections resolve outside the selected block. Prefer it
+            // over an enclosing quote, and let its own shortcut handle exit.
+            guard selected.node.type === blockType else { return false }
+            after = selected.to
+        } else {
+            let from = state.selection.resolvedFrom
+            var depth = from.depth
+            while depth > 0, from.node(depth).type !== blockType {
+                // A shortcut for an outer quote must yield to the inner code
+                // block's exit command, regardless of extension registration order.
+                let name = from.node(depth).type.name
+                if name == "codeBlock" || name == "blockquote" { return false }
+                depth -= 1
+            }
+            guard depth > 0, from.node(depth).type === blockType else { return false }
+            after = from.after(depth)
         }
+        guard let paragraph = paragraphType.createAndFill() else { return false }
+        let tr = state.tr
+        // Exit immediately after this block, or decline. Fitting may discard
+        // or move a forbidden paragraph, making the requested caret invalid.
+        guard (try? tr.step(ReplaceStep(after, after,
+            Slice(content: Fragment.from(paragraph), openStart: 0, openEnd: 0)))) != nil else { return false }
+        tr.setSelection(Selection.near(tr.doc.resolve(after + 1)))
+        dispatch?(tr.scrollIntoView())
         return true
     }
 }
@@ -168,7 +186,7 @@ private func outdentCodeBlock(_ type: NodeType) -> Command {
         guard sel.empty, from.parent.type === type else { return false }
         let blockStart = from.start()
         let before = state.doc.textBetween(blockStart, sel.from)
-        let lineStartOffset = before.lastIndex(of: "\n").map { before.distance(from: before.startIndex, to: before.index(after: $0)) } ?? 0
+        let lineStartOffset = before.lastIndex(where: { $0.isNewline }).map { before.distance(from: before.startIndex, to: before.index(after: $0)) } ?? 0
         let lineStart = blockStart + lineStartOffset
         let probe = state.doc.textBetween(lineStart, min(lineStart + codeBlockIndent.count, from.end()))
         var remove = 0
@@ -190,7 +208,10 @@ public final class HorizontalRuleExtension: NodeExtension {
     public func commands(_ ctx: ExtensionContext) -> [String: Command] {
         guard let type = ctx.nodeType else { return [:] }
         return ["setHorizontalRule": { state, dispatch, _ in
-            dispatch?(state.tr.replaceSelectionWith((try? type.create())!).scrollIntoView())
+            guard let node = try? type.create() else { return false }
+            let tr = state.tr.replaceSelectionWith(node)
+            guard containsInsertedNode(tr, node) else { return false }
+            dispatch?(tr.scrollIntoView())
             return true
         }]
     }
@@ -211,7 +232,10 @@ public final class HardBreakExtension: NodeExtension {
     }
     private func setHardBreak(_ type: NodeType) -> Command {
         { state, dispatch, _ in
-            dispatch?(state.tr.replaceSelectionWith((try? type.create())!, inheritMarks: false).scrollIntoView())
+            guard let node = try? type.create() else { return false }
+            let tr = state.tr.replaceSelectionWith(node, inheritMarks: false)
+            guard containsInsertedNode(tr, node) else { return false }
+            dispatch?(tr.scrollIntoView())
             return true
         }
     }
@@ -228,8 +252,8 @@ public final class ListItemExtension: NodeExtension {
         guard let item = ctx.nodeType else { return [:] }
         return [
             "Enter": splitListItem(item),
-            "Tab": sinkListItem(item),
-            "Shift-Tab": liftListItem(item),
+            "Tab": listItemShortcut(item, sinkListItem(item)),
+            "Shift-Tab": listItemShortcut(item, liftListItem(item)),
         ]
     }
 }
@@ -279,7 +303,24 @@ public final class OrderedListExtension: NodeExtension {
     }
     public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
         guard let type = ctx.nodeType else { return [] }
-        return [wrappingInputRule("^(\\d+)\\.\\s$", type)]
+        return [InputRule("^(\\d+)\\.\\s$") { state, match, start, end in
+            guard let digits = match[1], let order = Int(digits) else { return nil }
+            let tr = state.tr
+            guard (try? tr.delete(start, end)) != nil,
+                  let range = tr.doc.resolve(start).blockRange(),
+                  let wrapping = findWrappingForRange(range, type, ["order": .int(order)]),
+                  (try? tr.wrap(range, wrapping)) != nil else { return nil }
+            // Join only when the typed number continues the preceding list.
+            // A restart or another starting number belongs to a separate list.
+            if start > 0, let before = tr.doc.resolve(start - 1).nodeBefore,
+               before.type === type, canJoin(tr.doc, start - 1) {
+                let next = (before.attrs["order"]?.intValue ?? 1).addingReportingOverflow(before.childCount)
+                if !next.overflow, next.partialValue == order {
+                    _ = try? tr.join(start - 1)
+                }
+            }
+            return tr
+        }]
     }
 }
 
@@ -384,16 +425,15 @@ public func setHighlight(_ markType: MarkType, color: String?) -> Command {
     { state, dispatch, _ in
         let sel = state.selection
         if sel.empty { return false }
-        if let dispatch {
-            let tr = state.tr
-            var attrs: Attrs = [:]
-            if let color { attrs["color"] = .string(color) }
-            for range in sel.ranges {
-                _ = try? tr.removeMark(range.from.pos, range.to.pos, markType)
-                _ = try? tr.addMark(range.from.pos, range.to.pos, markType.create(attrs))
-            }
-            dispatch(tr.scrollIntoView())
+        let tr = state.tr
+        var attrs: Attrs = [:]
+        if let color { attrs["color"] = .string(color) }
+        for range in sel.ranges {
+            _ = try? tr.removeMark(range.from.pos, range.to.pos, markType)
+            _ = try? tr.addMark(range.from.pos, range.to.pos, markType.create(attrs))
         }
+        guard sel.ranges.contains(where: { tr.doc.rangeHasMark($0.from.pos, $0.to.pos, markType) }) else { return false }
+        dispatch?(tr.scrollIntoView())
         return true
     }
 }
@@ -436,6 +476,14 @@ public final class LinkExtension: MarkExtension {
             let from = start + full.distance(from: full.startIndex, to: urlRange.lowerBound)
             let to = from + url.count
             guard to == end else { return nil }
+            // Input-rule matching substitutes placeholders for inline nodes.
+            // Those placeholders are not characters in a URL destination.
+            var onlyText = true
+            state.doc.nodesBetween(from, to, { node, _, _, _ in
+                if node.isInline && !node.isText { onlyText = false }
+                return true
+            })
+            guard onlyText else { return nil }
             let href = url.hasPrefix("www.") ? "https://" + url : url
             let tr = state.tr
             _ = try? tr.addMark(from, to, type.create(["href": .string(href)]))
@@ -454,16 +502,15 @@ public func setLink(_ markType: MarkType, href: String, title: String? = nil) ->
     { state, dispatch, _ in
         let sel = state.selection
         if sel.empty { return false }
-        if let dispatch {
-            let tr = state.tr
-            var attrs: Attrs = ["href": .string(href)]
-            if let title { attrs["title"] = .string(title) }
-            for range in sel.ranges {
-                _ = try? tr.removeMark(range.from.pos, range.to.pos, markType) // replace any existing link
-                _ = try? tr.addMark(range.from.pos, range.to.pos, markType.create(attrs))
-            }
-            dispatch(tr.scrollIntoView())
+        let tr = state.tr
+        var attrs: Attrs = ["href": .string(href)]
+        if let title { attrs["title"] = .string(title) }
+        for range in sel.ranges {
+            _ = try? tr.removeMark(range.from.pos, range.to.pos, markType) // replace any existing link
+            _ = try? tr.addMark(range.from.pos, range.to.pos, markType.create(attrs))
         }
+        guard sel.ranges.contains(where: { tr.doc.rangeHasMark($0.from.pos, $0.to.pos, markType) }) else { return false }
+        dispatch?(tr.scrollIntoView())
         return true
     }
 }
@@ -550,14 +597,13 @@ public func setColor(_ markType: MarkType, _ color: String?) -> Command {
     { state, dispatch, _ in
         let sel = state.selection
         if sel.empty { return false }
-        if let dispatch {
-            let tr = state.tr
-            for range in sel.ranges {
-                _ = try? tr.removeMark(range.from.pos, range.to.pos, markType)
-                if let color { _ = try? tr.addMark(range.from.pos, range.to.pos, markType.create(["color": .string(color)])) }
-            }
-            dispatch(tr.scrollIntoView())
+        let tr = state.tr
+        for range in sel.ranges {
+            _ = try? tr.removeMark(range.from.pos, range.to.pos, markType)
+            if let color { _ = try? tr.addMark(range.from.pos, range.to.pos, markType.create(["color": .string(color)])) }
         }
+        guard color == nil || sel.ranges.contains(where: { tr.doc.rangeHasMark($0.from.pos, $0.to.pos, markType) }) else { return false }
+        dispatch?(tr.scrollIntoView())
         return true
     }
 }

@@ -23,7 +23,8 @@ public final class TypographyExtension: Extension {
 func smartQuoteRule(_ quote: Character, open: String, close: String) -> InputRule {
     InputRule("\(quote)$", inCodeMark: false) { state, _, start, end in
         let before = start > 0 ? state.doc.textBetween(start - 1, start) : ""
-        let opensHere = before.isEmpty || before == " " || "([{\u{201C}\u{2018}\n\t".contains(before)
+        let opensHere = before.isEmpty || before.allSatisfy { $0.isWhitespace }
+            || "([{\u{201C}\u{2018}".contains(before)
         let tr = state.tr
         _ = try? tr.insertText(opensHere ? open : close, start, end)
         return tr

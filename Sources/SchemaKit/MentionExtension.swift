@@ -112,7 +112,7 @@ private func computeMentionSuggestion(_ state: EditorState) -> MentionSuggestion
     // Accepting there would try to insert a node the textblock can't hold, and
     // fail silently after the popup had already offered it.
     guard isSuggestionContext(cursor.parent, state: state, cursor: cursor,
-                              inserting: type, excludingHeadings: false) else { return nil }
+                              excludingHeadings: false) else { return nil }
     // Neutralize leaf atoms (a mention's own leaf text starts with "@" and
     // must not re-trigger the popup right after insertion).
     let textBefore = cursor.parent.textBetween(0, cursor.parentOffset, blockSeparator: nil, leafText: "\u{fffc}")
@@ -121,8 +121,10 @@ private func computeMentionSuggestion(_ state: EditorState) -> MentionSuggestion
     if let before = textBefore[..<atRange.lowerBound].last, !before.isWhitespace { return nil }
     let query = textBefore[atRange.upperBound...]
     if query.contains(where: { $0.isWhitespace }) { return nil }
-    let atOffset = textBefore.distance(from: textBefore.startIndex, to: atRange.lowerBound)
+    guard let atOffset = suggestionTriggerOffset(cursor.parent,
+        utf16Offset: textBefore[..<atRange.lowerBound].utf16.count) else { return nil }
     guard !suggestionCrossesHardBreak(cursor.parent, from: atOffset, to: cursor.parentOffset) else { return nil }
+    guard suggestionFits(cursor.parent, from: atOffset, to: cursor.parentOffset, type: type) else { return nil }
     let from = cursor.pos - (cursor.parentOffset - atOffset)
     return MentionSuggestion(query: String(query), from: from, to: cursor.pos)
 }
@@ -133,7 +135,9 @@ public func insertMention(_ type: NodeType, id: String, label: String? = nil) ->
         var attrs: Attrs = ["id": .string(id)]
         if let label { attrs["label"] = .string(label) }
         guard let node = try? type.create(attrs) else { return false }
-        dispatch?(state.tr.replaceSelectionWith(node).scrollIntoView())
+        let tr = state.tr.replaceSelectionWith(node)
+        guard containsInsertedNode(tr, node) else { return false }
+        dispatch?(tr.scrollIntoView())
         return true
     }
 }

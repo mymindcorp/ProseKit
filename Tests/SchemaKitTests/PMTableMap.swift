@@ -9,6 +9,57 @@ private func mapStr(_ t: TaggedNode) -> String { TableMap.get(t.node).map.map(St
 private let spanMap = TableMap.get(table(tr(cell(2, 3), c11(), cell(1, 2)), tr(c11()), tr(cell(2, 1))).node)
 
 func registerPMTableMapTests() {
+    for type in ["tableCell", "tableHeader"] {
+        for (value, expected) in [(Int.min, 1), (-1, 1), (0, 1), (1, 1), (1000, 1000), (1001, 1000), (1_000_000, 1000), (Int.max, 1000)] {
+            test("TableMap: bounded colspan \(value) in \(type)") {
+                let editor = try Editor(extensions: fullKit())
+                let schema = editor.schema
+                let paragraph = try schema.node("paragraph", content: .from(schema.text("preserve me")))
+                let cell = try schema.node(type, ["colspan": .int(value)], content: .from(paragraph))
+                let row = try schema.node("tableRow", content: .from(cell))
+                let table = try schema.node("table", content: .from(row))
+                let stored = try schema.nodeFromJSON(table.toJSON())
+                let map = TableMap.get(stored)
+                try expectEqual(map.width, expected)
+                try expectEqual(map.map, Array(repeating: 1, count: expected))
+                try expectEqual(map.findCell(1), TableRect(left: 0, top: 0, right: expected, bottom: 1))
+
+                editor.setContent(try schema.node("doc", content: .from(stored)))
+                try expectEqual(editor.doc.textContent, "preserve me")
+                let fixed = editor.doc.firstChild!
+                try expectEqual(fixed.type.name, "table")
+                try expectEqual(fixed.firstChild!.firstChild!.attrs["colspan"], .int(expected))
+                try expectEqual(TableMap.get(fixed).width, expected)
+                try expect(fixTables(editor.state, nil) == nil, "Repair must be idempotent")
+            }
+        }
+    }
+
+    test("TableMap: bounded colspan repair composes with missing cells and widths") {
+        let editor = try Editor(extensions: fullKit())
+        let schema = editor.schema
+        func makeCell(_ text: String, _ span: Int, _ width: Int) throws -> Node {
+            let paragraph = try schema.node("paragraph", content: .from(schema.text(text)))
+            return try schema.node("tableCell", ["colspan": .int(span), "colwidth": .array([.int(width)])], content: .from(paragraph))
+        }
+        let first = try schema.node("tableRow", content: .from([makeCell("A", 0, 80), makeCell("B", 1, 90)]))
+        let second = try schema.node("tableRow", content: .from(makeCell("C", -1, 0)))
+        let table = try schema.node("table", content: .from([first, second]))
+        // Two tables also exercise position mapping across preceding repairs.
+        editor.setContent(try schema.node("doc", content: .from([table, table])))
+        try expectEqual(editor.doc.textContent, "ABCABC")
+        try expectEqual(editor.doc.childCount, 2)
+        for i in 0..<2 {
+            let fixed = editor.doc.child(i)
+            try expectEqual(fixed.child(1).childCount, 2)
+            try expectEqual(fixed.child(0).child(0).attrs["colspan"], .int(1))
+            try expectEqual(fixed.child(1).child(0).attrs["colspan"], .int(1))
+            try expectEqual(fixed.child(0).child(0).attrs["colwidth"], .array([.int(80)]))
+            try expect(TableMap.get(fixed).problems == nil)
+        }
+        try expect(fixTables(editor.state, nil) == nil)
+    }
+
     test("PM TableMap: simple table shape") {
         let t = table(tr(c11(), c11(), c11()), tr(c11(), c11(), c11()), tr(c11(), c11(), c11()), tr(c11(), c11(), c11()))
         try expectEqual(mapStr(t), "1, 6, 11, 18, 23, 28, 35, 40, 45, 52, 57, 62")
