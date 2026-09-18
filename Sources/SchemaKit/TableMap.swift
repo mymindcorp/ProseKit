@@ -35,11 +35,23 @@ func cellColwidth(_ node: Node) -> [Int]? {
     // or pasted cell can carry — became a column's authority and then a
     // mismatch the fixer wrote into every other cell of the column. Reading it
     // as unknown keeps garbage from spreading.
-    if case let .array(arr)? = node.attrs["colwidth"] {
-        let count = cellColspan(node)
+    //
+    // The array is padded or trimmed to the cell's colspan so every consumer
+    // can index it by column. Older documents stored a single number instead of
+    // an array; the renderer still honours that form, so it is read as the
+    // first column's width — the fixer then rewrites it in the array form
+    // rather than erasing a width the layout was using.
+    let count = cellColspan(node)
+    switch node.attrs["colwidth"] {
+    case let .array(arr)?:
         return (0..<count).map { $0 < arr.count ? max(0, arr[$0].intValue ?? 0) : 0 }
+    case let scalar? where scalar.intValue != nil:
+        var widths = [Int](repeating: 0, count: count)
+        widths[0] = max(0, scalar.intValue ?? 0)
+        return widths
+    default:
+        return nil
     }
-    return nil
 }
 
 public final class TableMap: Sendable {

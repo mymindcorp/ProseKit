@@ -61,6 +61,26 @@ func registerMalformedTableImportTests() {
             try expectEqual(TableMap.get(editor.doc.firstChild!).width, 2)
         }
     }
+    // Older documents stored a scalar width rather than an array. The layout
+    // reads it as the first column's width, so the fixer must canonicalize it
+    // to the array form instead of dropping it.
+    for scalar in [AttributeValue.int(3), .double(3)] {
+        test("malformed table import: scalar colwidth \(scalar) is canonicalized, not erased") {
+            let editor = try Editor(extensions: fullKit())
+            let schema = editor.schema
+            func header(_ text: String, _ width: AttributeValue) throws -> Node {
+                try schema.node("tableHeader", ["colwidth": width],
+                                content: .from(schema.node("paragraph", content: .from(schema.text(text)))))
+            }
+            let row = try schema.node("tableRow", content: .from([header("A", scalar), header("B", .int(1))]))
+            let table = try schema.node("table", content: .from(row))
+            editor.setContent(try schema.node("doc", content: .from(table)))
+            let cells = editor.doc.firstChild!.firstChild!
+            try expectEqual(cells.child(0).attrs["colwidth"], .array([.int(3)]))
+            try expectEqual(cells.child(1).attrs["colwidth"], .array([.int(1)]))
+            try expect(fixTables(editor.state, nil) == nil)
+        }
+    }
     let widths: [AttributeValue] = [.array([]), .array([.int(80)]), .array([.int(-5), .int(90), .int(70)]), .array([.string("bad"), .null]), .string("bad"), .null]
     for (index, width) in widths.enumerated() {
         test("malformed table import: colwidth shape \(index) can resize") {
