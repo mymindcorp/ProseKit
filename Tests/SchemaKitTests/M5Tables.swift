@@ -34,6 +34,33 @@ func cursorInFirstCell(_ editor: Editor) {
     }
 }
 
+/// Whether the caret sits inside a table.
+private func inTable(_ editor: Editor) -> Bool {
+    let rp = editor.doc.resolve(editor.state.selection.from)
+    return (0...rp.depth).contains { rp.node($0).type.name == "table" }
+}
+
+/// Caret in the last cell of the document's last table.
+private func cursorInLastCell(_ editor: Editor) {
+    var pos = 0
+    editor.doc.descendants { node, p, _, _ in
+        if node.type.name == "tableCell" { pos = p + 2 }
+        return true
+    }
+    editor.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.doc, pos)))
+}
+
+/// A table of empty cells with a paragraph after it — somewhere for a caret
+/// pushed out of the table to land.
+private func tableThenParagraph(rows: Int, cols: Int) throws -> Editor {
+    let editor = try makeFullEditor()
+    try expect(editor.insertTable(rows: rows, cols: cols, withHeaderRow: false))
+    let tr = editor.state.tr
+    try tr.insert(tr.doc.content.size, editor.schema.nodes["paragraph"]!.createAndFill()!)
+    editor.dispatch(tr)
+    return editor
+}
+
 func registerM5Tests() {
     for required in [false, true] {
         for nodeSelected in [false, true] {
@@ -264,6 +291,34 @@ func registerM5Tests() {
         cursorInFirstCell(editor)
         try expect(editor.run(deleteRow))
         try expectEqual(count(editor.doc, "tableRow"), 2)
+    }
+
+    // Tiptap Table 3.30.0: prosemirror-tables leaves the caret wherever the
+    // deletion mapped it, which for the last row or column is the paragraph
+    // after the table.
+    test("table: deleting the last row keeps the caret in the table") {
+        let editor = try tableThenParagraph(rows: 2, cols: 2)
+        cursorInLastCell(editor)
+        try expect(editor.run(deleteRow))
+        try expectEqual(count(editor.doc, "tableRow"), 1)
+        try expect(inTable(editor), "caret left the table")
+    }
+
+    test("table: deleting the last column keeps the caret in the table") {
+        let editor = try tableThenParagraph(rows: 2, cols: 2)
+        cursorInLastCell(editor)
+        try expect(editor.run(deleteColumn))
+        try expectEqual(count(editor.doc, "tableCell"), 2)
+        try expect(inTable(editor), "caret left the table")
+    }
+
+    test("table: deleting a row that isn't the last leaves the caret alone") {
+        let editor = try tableThenParagraph(rows: 3, cols: 2)
+        cursorInFirstCell(editor)
+        let before = editor.state.selection.from
+        try expect(editor.run(deleteRow))
+        try expectEqual(editor.state.selection.from, before)
+        try expect(inTable(editor))
     }
 
     test("table: deleteColumn removes a column") {

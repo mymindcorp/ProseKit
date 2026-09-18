@@ -109,9 +109,24 @@ public let deleteColumn: Command = { state, dispatch, _ in
             rect.map = TableMap.get(table)
             i -= 1
         }
+        keepCursorInTable(tr, tablePos: rect.tableStart - 1)
         dispatch(tr)
     }
     return true
+}
+
+/// prosemirror-tables leaves the selection wherever the deletion mapped it,
+/// so removing the last row or column carried the caret out of the table and
+/// into whatever came after it. Put it back in the table's last cell. (Tiptap
+/// Table 3.30.0.)
+func keepCursorInTable(_ tr: Transaction, tablePos: Int) {
+    let mapped = tr.mapping.map(tablePos)
+    // The deletion can also land the caret in a *following* table, so the
+    // check is that it is still inside the one being edited.
+    if let still = findParentNode({ $0.type.name == "table" }, tr.doc.resolve(tr.selection.from)),
+       still.pos == mapped { return }
+    guard let table = tr.doc.nodeAt(mapped), table.type.name == "table" else { return }
+    tr.setSelection(Selection.near(tr.doc.resolve(mapped + table.nodeSize - 1), -1))
 }
 
 // MARK: - Rows
@@ -218,6 +233,7 @@ public let deleteRow: Command = { state, dispatch, _ in
             rect.map = TableMap.get(table)
             i -= 1
         }
+        keepCursorInTable(tr, tablePos: rect.tableStart - 1)
         dispatch(tr)
     }
     return true

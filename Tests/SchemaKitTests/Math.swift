@@ -359,6 +359,16 @@ func registerMathTests() {
         try expectEqual(math?.node.attrs["latex"], .string("a^2 + b^2"))
     }
 
+    test("math: a block formula replaces the paragraph it was typed in") {
+        // Tiptap Mathematics 3.23.0: replacing only the matched text left the
+        // emptied paragraph sitting above the formula.
+        let editor = try mathEditor()
+        try type(editor, "$$a^2$")
+        try expect(textInput(editor, at: editor.state.selection.from, "$"))
+        try expectEqual(editor.doc.firstChild?.type.name, "blockMath")
+        try expectEqual(count(editor.doc, "paragraph"), 0)
+    }
+
     test("math: $$…$$ mid-sentence stays text") {
         let editor = try mathEditor()
         try type(editor, "see $$x$")
