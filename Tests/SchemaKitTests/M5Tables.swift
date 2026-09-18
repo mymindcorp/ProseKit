@@ -355,6 +355,36 @@ func registerM5Tests() {
         try expectEqual(row?.childCount, 2)           // two cells in it
     }
 
+    test("cellSelection: a column through a rowspan leaves no empty row in content()") {
+        // Column 1 of a 3-row table where row 0's cell spans two rows: row 1
+        // has nothing of its own in the rectangle. prosemirror-tables writes an
+        // empty row there, which our `tableRow` (one cell or more) rejects, so
+        // pasting the slice back built a document the schema refused — found by
+        // the selection fuzz at PROSEKIT_FUZZ_DOCS=1000, seed 591.
+        let editor = try makeFullEditor()
+        try editor.setContent(html: """
+            <table><tr><td>a</td><td rowspan="2">b</td></tr>\
+            <tr><td>c</td></tr>\
+            <tr><td>d</td><td>e</td></tr></table>
+            """)
+        var cellPos: [Int] = []
+        editor.doc.descendants { node, pos, _, _ in
+            if node.type.name == "tableCell" { cellPos.append(pos) }
+            return true
+        }
+        try expectEqual(cellPos.count, 5)
+        let sel = CellSelection.create(editor.doc, anchorCellPos: cellPos[1], headCellPos: cellPos[4])
+        try expectEqual(sel.ranges.count, 2)
+        let slice = sel.content()
+        try expectEqual(slice.content.childCount, 2, "the covered row is left out")
+        try expectEqual(slice.content.child(0).firstChild?.attrs["rowspan"], .int(1), "and the span that crossed it ends sooner")
+        try expectEqual(slice.content.child(0).firstChild?.textContent, "b")
+        try expectEqual(slice.content.child(1).firstChild?.textContent, "e")
+        let tr = editor.state.tr.setSelection(sel)
+        _ = tr.replaceSelection(slice)
+        try tr.doc.check()
+    }
+
     test("cellSelection: create falls back to text selection outside a table") {
         let editor = try makeFullEditor()
         try type(editor, "hello")

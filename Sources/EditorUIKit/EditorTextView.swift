@@ -2063,6 +2063,11 @@ open class EditorTextView: UIView, UIKeyInput {
 
     func mouseSelectionAnchor(at point: CGPoint) -> Int? {
         guard !textDraggingEnabled else { return nil }
+        // The find bar is a subview, so its touches reach this view's
+        // recognizers too. A press on it belongs to its fields and buttons:
+        // claiming it would move the selection to the text underneath, take
+        // first responder from the field, and cancel the button's touch.
+        if let findBar, findBar.frame.contains(point) { return nil }
         let dp = docPoint(point)
         let layout = ensureLayout()
         guard !trailingGapTap(at: dp),

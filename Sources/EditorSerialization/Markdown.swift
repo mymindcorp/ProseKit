@@ -31,18 +31,30 @@ public enum MarkdownSerializer {
     static func serializeBlocks(_ nodes: [Node], indent: String,
                                 separator: String = "\n\n") -> String {
         var out = ""
+        for (i, (node, alternate)) in zip(nodes, alternations(nodes)).enumerated() {
+            if i > 0 { out += separator }
+            out += serializeBlock(node, indent: indent, alternate: alternate)
+        }
+        return out
+    }
+
+    /// Which of a run of sibling blocks take the other list marker.
+    ///
+    /// A task list is written with a bullet marker, so it joins a plain bullet
+    /// list next to it just as readily as another bullet list would — and the
+    /// checkboxes then read as literal text. What tells two lists apart is the
+    /// marker, so it is the marker that has to differ, whichever kind of list
+    /// is wearing it. Every place that writes siblings has to ask this, not
+    /// only the document body: a figure's blocks and a list item's blocks are
+    /// siblings just the same, and two lists there merged on the way back.
+    static func alternations(_ nodes: [Node]) -> [Bool] {
+        var out: [Bool] = []
         var alternate = false
         var previous: String?
         for node in nodes {
-            // A task list is written with a bullet marker, so it joins a plain
-            // bullet list next to it just as readily as another bullet list
-            // would — and the checkboxes then read as literal text. What tells
-            // two lists apart is the marker, so it is the marker that has to
-            // differ, whichever kind of list is wearing it.
             let family = markerFamily(node.type.name)
             if let family, family == previous { alternate.toggle() } else { alternate = false }
-            if previous != nil { out += separator }
-            out += serializeBlock(node, indent: indent, alternate: family != nil && alternate)
+            out.append(family != nil && alternate)
             previous = family ?? node.type.name
         }
         return out
@@ -196,7 +208,7 @@ public enum MarkdownSerializer {
             // one, so it reads as Markdown when the nodes are registered. It is
             // a Markdig extension rather than CommonMark, so only our own parser
             // and Markdig will understand it; other readers see literal text.
-            var body: [String] = []
+            var body: [Node] = []
             var caption = ""
             for i in 0..<node.childCount {
                 let child = node.child(i)
@@ -207,13 +219,13 @@ public enum MarkdownSerializer {
                     // paragraph after the figure rather than as its caption.
                     caption = flattenToOneLine(serializeInline(child.content))
                 } else {
-                    body.append(serializeBlock(child, indent: indent))
+                    body.append(child)
                 }
             }
             // A figure holding a figure needs the longer fence, the way a code
             // fence does: with both written `^^^`, the inner closing fence ends
             // the outer figure and the two come apart into siblings.
-            let bodyText = body.joined(separator: "\n\n")
+            let bodyText = serializeBlocks(body, indent: indent)
             let fence = String(repeating: "^", count: max(3, longestCaretRun(bodyText) + 1))
             let fenceEnd = caption.isEmpty ? fence : "\(fence) \(caption)"
             return "\(fence)\n\(bodyText)\n\(fenceEnd)"
@@ -450,10 +462,10 @@ public enum MarkdownSerializer {
         // the same reason.
         let separator = tight ? "\n" : "\n\n"
         var body = ""
-        for (i, child) in children.enumerated() {
+        for (i, (child, alternate)) in zip(children, alternations(Array(children))).enumerated() {
             if i > 0 { body += separator }
             body += child.type.name == "horizontalRule"
-                ? "***" : serializeBlock(child, indent: continuation)
+                ? "***" : serializeBlock(child, indent: continuation, alternate: alternate)
         }
         guard body.unicodeScalars.contains("\n") else { return body }
         return prefixLines(body, with: continuation, skippingFirst: true, blankLines: false)

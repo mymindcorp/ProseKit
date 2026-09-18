@@ -235,6 +235,25 @@ final class EditorTextViewGestureTests: XCTestCase {
                      "the trailing tap must be able to append a paragraph")
     }
 
+    func testPointerPressOnTheFindBarIsNotAnEditorSelection() throws {
+        let view = try paragraphs((0..<30).map { "paragraph number \($0) with some words in it" })
+        view.selectedTextRange = DocTextRange(500, 500)
+        view.showFindBar()
+        view.layoutIfNeeded()
+        let bar = try XCTUnwrap(view.subviews.compactMap { $0 as? FindBarView }.first)
+        bar.layoutIfNeeded()
+        let field = bar.queryField
+        let touch = PointerTouch(), event = PointerEvent()
+        touch.point = field.convert(CGPoint(x: field.bounds.midX, y: field.bounds.midY), to: view)
+        // The bar sits over text, so the point does have a closest position —
+        // which is what made the press an editor selection.
+        XCTAssertNotNil(view.closestPosition(to: touch.point))
+        let pointer = pointer(view)
+        pointer.touchesBegan([touch], with: event)
+        XCTAssertEqual(pointer.state, .failed, "the find bar's fields and buttons own their presses")
+        XCTAssertEqual(view.editor.state.selection.from, 500)
+    }
+
     func testMouseSelectionRecognizerIsPointerOnlyAndExclusive() throws {
         let view = try paragraphs(["one two"])
         let pointer = try XCTUnwrap(view.mouseSelectionRecognizer)

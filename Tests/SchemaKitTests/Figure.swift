@@ -4,6 +4,7 @@ import DocumentTransform
 import EditorStateKit
 import EditorCommands
 import SchemaKit
+import EditorSerialization
 import TestHarness
 
 // Registered into the shared `collector` from main.swift.
@@ -19,6 +20,38 @@ private func firstFigure(_ editor: Editor) -> (pos: Int, node: Node)? {
 }
 
 func registerFigureTests() {
+    test("markdown: adjacent lists inside a figure keep different markers") {
+        // Sibling lists at the document root already alternate `-` and `+` so
+        // they don't read back as one list. A figure's body and a list item's
+        // body wrote every list with `-`, so a task list followed by a bullet
+        // list came back as a single bullet list with literal `[x]` text —
+        // found by the serialization fuzz at PROSEKIT_FUZZ_DOCS=1000, seed 925.
+        let editor = try Editor(extensions: fullKit() + figureExtensions())
+        let schema = editor.schema
+        let figure = try schema.node("figure", [:], content: Fragment.from([
+            try schema.node("taskList", [:], content: Fragment.from([
+                try schema.node("taskItem", ["checked": .bool(true)], content: Fragment.from([
+                    try schema.node("paragraph", [:], content: Fragment.from([schema.text("done")]))]))])),
+            try schema.node("bulletList", [:], content: Fragment.from([
+                try schema.node("listItem", [:], content: Fragment.from([
+                    try schema.node("paragraph", [:], content: Fragment.from([schema.text("plain")])),
+                    try schema.node("bulletList", [:], content: Fragment.from([
+                        try schema.node("listItem", [:], content: Fragment.from([
+                            try schema.node("paragraph", [:], content: Fragment.from([schema.text("one")]))]))])),
+                    try schema.node("bulletList", [:], content: Fragment.from([
+                        try schema.node("listItem", [:], content: Fragment.from([
+                            try schema.node("paragraph", [:], content: Fragment.from([schema.text("two")]))]))])),
+                ]))])),
+        ]))
+        let doc = try schema.node("doc", [:], content: Fragment.from([figure]))
+        let markdown = MarkdownSerializer.serialize(doc)
+        try expect(markdown.contains("- [x] done"), markdown)
+        try expect(markdown.contains("+ plain"), markdown)
+        let back = try MarkdownParser.parse(markdown, schema: schema)
+        try expectEqual(count(back, "taskList"), 1, markdown)
+        try expectEqual(count(back, "bulletList"), 3, "the item's two nested lists stay two\n" + markdown)
+    }
+
     for quoted in [false, true] {
         test("setFigure: selecting an existing figure does not wrap it again (quoted \(quoted))") {
             let editor = try Editor(extensions: fullKit() + figureExtensions())

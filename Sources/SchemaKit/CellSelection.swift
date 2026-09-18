@@ -53,9 +53,12 @@ public final class CellSelection: Selection {
         let tableStart = anchorCell.start(-1)
         let rect = map.rectBetween(anchorCell.pos - tableStart, headCell.pos - tableStart)
         var seen = Set<Int>()
-        var rows: [Node] = []
+        // Each cell with the rows (relative to the rectangle) it spans once
+        // clipped, so a row that turns out to hold no cell can be dropped and
+        // the spans that ran through it shortened to match.
+        var rows: [[(cell: Node, top: Int, bottom: Int)]] = []
         for row in rect.top..<rect.bottom {
-            var rowContent: [Node] = []
+            var rowContent: [(cell: Node, top: Int, bottom: Int)] = []
             var index = row * map.width + rect.left
             var col = rect.left
             while col < rect.right {
@@ -80,11 +83,31 @@ public final class CellSelection: Selection {
                     if cellRect.top < rect.top { cell = cell.type.createAndFill(attrs) ?? cell }
                     else { cell = (try? cell.type.create(attrs, content: cell.content)) ?? cell }
                 }
-                rowContent.append(cell)
+                rowContent.append((cell, max(cellRect.top, rect.top) - rect.top,
+                                   min(cellRect.bottom, rect.bottom) - rect.top))
             }
-            rows.append(table.child(row).copy(content: Fragment.from(rowContent)))
+            rows.append(rowContent)
         }
-        let fragment = (isColSelection() && isRowSelection()) ? Fragment.from(table) : Fragment.from(rows)
+        // A row every cell of which is covered by spans from the rows above
+        // has nothing of its own in the rectangle. prosemirror-tables writes it
+        // as an empty row, which its schema allows and ours (`tableRow` holds
+        // one cell or more) does not — pasting the slice would build a document
+        // the schema rejects. Leave the row out and let the spans that crossed
+        // it end a row sooner, which is the same shape one row shorter.
+        var dropped: [Int] = []
+        for (r, rowContent) in rows.enumerated() where rowContent.isEmpty { dropped.append(r) }
+        var rowNodes: [Node] = []
+        for (r, rowContent) in rows.enumerated() where !rowContent.isEmpty {
+            let cells = rowContent.map { entry -> Node in
+                let crossed = dropped.filter { entry.top <= $0 && $0 < entry.bottom }.count
+                guard crossed > 0 else { return entry.cell }
+                var attrs = entry.cell.attrs
+                attrs["rowspan"] = .int(max(1, (attrs["rowspan"]?.intValue ?? 1) - crossed))
+                return (try? entry.cell.type.create(attrs, content: entry.cell.content)) ?? entry.cell
+            }
+            rowNodes.append(table.child(rect.top + r).copy(content: Fragment.from(cells)))
+        }
+        let fragment = (isColSelection() && isRowSelection()) ? Fragment.from(table) : Fragment.from(rowNodes)
         return Slice(content: fragment, openStart: 1, openEnd: 1)
     }
 
