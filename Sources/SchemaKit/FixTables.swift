@@ -23,8 +23,8 @@ public func fixTables(_ state: EditorState, _ oldState: EditorState?) -> Transac
 
 /// Fix a single table, appending to `tr0` (or creating one) if it has problems.
 public func fixTable(_ state: EditorState, _ table: Node, _ tablePos: Int, _ tr0: Transaction?) -> Transaction? {
-    // Persist the same colspan bounds used by TableMap so serialization and
-    // subsequent commands see canonical attributes, even in a rectangular table.
+    // Persist safe span and width attributes even in rectangular tables.
+    // Internal rowspans are positive and cannot extend beyond the last row.
     var normalizedTr = tr0
     var didNormalize = false
     var cellPos = 1
@@ -33,10 +33,12 @@ public func fixTable(_ state: EditorState, _ table: Node, _ tablePos: Int, _ tr0
         for cellIndex in 0..<row.childCount {
             let cell = row.child(cellIndex)
             let colspan = cellColspan(cell)
-            if cell.attrs["colspan"] != .int(colspan) {
+            var attrs = cell.attrs
+            attrs["colspan"] = .int(colspan)
+            attrs["rowspan"] = .int(min(cellRowspan(cell), table.childCount - rowIndex))
+            attrs["colwidth"] = cellColwidth(cell).map { .array($0.map { .int($0) }) } ?? .null
+            if attrs != cell.attrs {
                 let tr = normalizedTr ?? state.tr
-                var attrs = cell.attrs
-                attrs["colspan"] = .int(colspan)
                 _ = try? tr.setNodeMarkup(tr.mapping.map(tablePos + 1 + cellPos), nil, attrs)
                 normalizedTr = tr
                 didNormalize = true

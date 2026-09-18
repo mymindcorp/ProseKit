@@ -28,15 +28,30 @@ public enum TableAxis: Sendable { case horiz, vert }
 // Stored or pasted cells can bypass HTML validation. Bound the span before
 // computing map sizes or allocating per-column arrays.
 func cellColspan(_ node: Node) -> Int { min(1000, max(1, node.attrs["colspan"]?.intValue ?? 1)) }
-func cellRowspan(_ node: Node) -> Int { node.attrs["rowspan"]?.intValue ?? 1 }
+func cellRowspan(_ node: Node) -> Int { max(1, node.attrs["rowspan"]?.intValue ?? 1) }
 func cellColwidth(_ node: Node) -> [Int]? {
     // A width that isn't positive is no width: zero already means "unknown"
     // to the map, and a negative one — which nothing here writes, but a stored
     // or pasted cell can carry — became a column's authority and then a
     // mismatch the fixer wrote into every other cell of the column. Reading it
     // as unknown keeps garbage from spreading.
-    if case let .array(arr)? = node.attrs["colwidth"] { return arr.map { max(0, $0.intValue ?? 0) } }
-    return nil
+    //
+    // The array is padded or trimmed to the cell's colspan so every consumer
+    // can index it by column. Older documents stored a single number instead of
+    // an array; the renderer still honours that form, so it is read as the
+    // first column's width — the fixer then rewrites it in the array form
+    // rather than erasing a width the layout was using.
+    let count = cellColspan(node)
+    switch node.attrs["colwidth"] {
+    case let .array(arr)?:
+        return (0..<count).map { $0 < arr.count ? max(0, arr[$0].intValue ?? 0) : 0 }
+    case let scalar? where scalar.intValue != nil:
+        var widths = [Int](repeating: 0, count: count)
+        widths[0] = max(0, scalar.intValue ?? 0)
+        return widths
+    default:
+        return nil
+    }
 }
 
 public final class TableMap: Sendable {
@@ -217,7 +232,7 @@ private func findWidth(_ table: Node) -> Int {
                 let prevRow = table.child(j)
                 for i in 0..<prevRow.childCount {
                     let cell = prevRow.child(i)
-                    if j + cellRowspan(cell) > row { rowWidth += cellColspan(cell) }
+                    if cellRowspan(cell) > row - j { rowWidth += cellColspan(cell) }
                 }
             }
         }
