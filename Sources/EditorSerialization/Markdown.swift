@@ -1626,7 +1626,7 @@ public enum MarkdownParser {
             }
             // Lists
             if let bullet = bulletMatch(trimmed) {
-                let (items, next, tight) = collectList(lines, i, ordered: false)
+                let (items, next, tight) = collectList(lines, i, ordered: false, schema: schema)
                 if let tasks = try makeTaskList(items, schema: schema, definitions: definitions, depth: depth + 1) {
                     blocks.append(tasks)
                 } else {
@@ -1638,7 +1638,7 @@ public enum MarkdownParser {
                 continue
             }
             if let ordered = orderedMatch(trimmed) {
-                let (items, next, tight) = collectList(lines, i, ordered: true)
+                let (items, next, tight) = collectList(lines, i, ordered: true, schema: schema)
                 blocks.append(contentsOf: try makeList(items, ordered: true, schema: schema, definitions: definitions,
                                                        start: ordered, tight: tight, depth: depth + 1))
                 i = next
@@ -2309,7 +2309,7 @@ public enum MarkdownParser {
     /// rule — so a formula or code fence written under a bullet stays part of
     /// that bullet instead of ending the list.
     private static func collectList(_ lines: [String], _ start: Int,
-                                    ordered: Bool) -> (items: [[String]], next: Int, tight: Bool) {
+                                    ordered: Bool, schema: Schema) -> (items: [[String]], next: Int, tight: Bool) {
         var items: [[String]] = []
         // A blank line anywhere inside the list makes it loose, whether it
         // separates two items or two blocks within one.
@@ -2336,6 +2336,30 @@ public enum MarkdownParser {
             guard let indent = indents.last,
                   !line.trimmingCharacters(in: markdownSpaces).isEmpty else { return false }
             return indentWidth(line) >= indent
+        }
+        // Whether an item's innermost open block is a paragraph: its last line
+        // holds text, outside any fence the item has opened, and that text —
+        // looked at past the quote and list markers in front of it, since the
+        // paragraph may be a nested block's — doesn't start some other block.
+        // A heading or a fence line closes at the end of its line and leaves
+        // nothing open.
+        func openParagraph(_ item: [String]) -> Bool {
+            var fenced = false
+            for line in item {
+                let l = line.trimmingCharacters(in: markdownSpaces)
+                if l.hasPrefix("```") || l.hasPrefix("~~~") { fenced.toggle() }
+            }
+            guard !fenced, var last = item.last?.trimmingCharacters(in: markdownSpaces) else { return false }
+            while true {
+                if last.hasPrefix(">") {
+                    last = last.dropFirst().trimmingCharacters(in: markdownSpaces)
+                } else if let marker = listMarker(last, ordered: false) ?? listMarker(last, ordered: true) {
+                    last = marker.content.trimmingCharacters(in: markdownSpaces)
+                } else {
+                    break
+                }
+            }
+            return !last.isEmpty && !startsBlock(last)
         }
         while i < lines.count {
             let raw = lines[i]
@@ -2372,8 +2396,11 @@ public enum MarkdownParser {
                 i += 1
                 continue
             }
-            if !isThematicBreak(t), let marker = listMarker(t, ordered: ordered,
-                                                            startColumn: indentWidth(raw)) {
+            // The marker is read off the line with only its leading whitespace
+            // gone: two spaces at the end of it are a hard break before the
+            // lazy line that follows, and they have to reach the inline parser.
+            if !isThematicBreak(t), let marker = listMarker(String(raw.drop(while: { $0 == " " || $0 == "\t" })),
+                                                            ordered: ordered, startColumn: indentWidth(raw)) {
                 let here = markerDelimiter(t)
                 if let delimiter, here != delimiter { break }
                 delimiter = here
@@ -2381,6 +2408,29 @@ public enum MarkdownParser {
                 // The content column is where the text after the marker starts,
                 // so an item that is itself indented carries that indent.
                 indents.append(indentWidth(raw) + marker.width)
+                i += 1
+                continue
+            }
+            // Lazy continuation. A line that is neither indented to the item's
+            // content column nor a marker still belongs to the item when the
+            // item's innermost open block is a paragraph and the line doesn't
+            // start a block of its own — CommonMark's rule for a quote, which
+            // holds for an item too: `1. a\nsecond` is one item reading
+            // "a second", not an item and then a paragraph after the list. The
+            // line goes in as it is, and the item's own parse — where a nested
+            // list or quote may be what holds the paragraph — decides what it
+            // continues. Only leading whitespace is dropped; trailing spaces
+            // are a hard break and have to reach the inline parser.
+            // A run of "=" only ever underlines a heading, and it can't do that
+            // across the item's edge — so it continues the paragraph as text,
+            // escaped, or the item's own parse would read it as the underline
+            // it isn't. (A run of "-" is also a thematic break, which does end
+            // the list.)
+            let underlineOnly = setextUnderline(t) == 1
+            if let item = items.last, openParagraph(item), underlineOnly || !startsBlock(t),
+               !startsPipeTable(lines, i, schema) {
+                let text = String(raw.drop(while: { $0 == " " || $0 == "\t" }))
+                items[items.count - 1].append(underlineOnly ? "\\" + text : text)
                 i += 1
                 continue
             }

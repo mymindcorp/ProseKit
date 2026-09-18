@@ -173,6 +173,19 @@ private func mathInputRule(_ type: NodeType, pattern: String) -> InputRule {
         let (replaceFrom, replaceTo) = type.isInline ? (start, end) : (from.before(), from.after())
         guard (try? tr.replaceWith(replaceFrom, replaceTo, node)) != nil,
               containsInsertedNode(tr, node) else { return nil }
+        if !type.isInline {
+            // The paragraph the caret was in is gone, and the mapped selection
+            // lands *on* the formula, where the next keystroke would replace
+            // it. Put the caret where typing carries on: the start of the next
+            // textblock, or — when the formula is the last thing in its parent
+            // — a gap cursor after it, which typing turns into a paragraph.
+            let after = tr.doc.resolve(min(replaceFrom + node.nodeSize, tr.doc.content.size))
+            if let next = Selection.findFrom(after, 1, textOnly: true) {
+                tr.setSelection(next)
+            } else if GapCursor.valid(after) {
+                tr.setSelection(GapCursor(after))
+            }
+        }
         return tr
     }
 }
