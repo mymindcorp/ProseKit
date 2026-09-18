@@ -171,14 +171,23 @@ final class Fitter {
         return nil
     }
 
+    // Open the unplaced slice one level deeper on its start side, so the next
+    // round can try placing its first child's content rather than the child.
+    //
+    // The end side only follows when the slice is a single spine — when there
+    // is more than one node in it, the last child is not the one being opened
+    // — and only where the last child can actually be opened. The old rule
+    // pushed `openEnd` along whenever the opened content reached the end of
+    // the slice, which could claim an open depth into a text node: a slice no
+    // node can supply, which then crashed or looped (prosemirror-transform
+    // 1.12.1).
     private func openMore() -> Bool {
         let content = unplaced.content
         let openStart = unplaced.openStart
-        let openEnd = unplaced.openEnd
-        let inner = contentAt(content, openStart)
-        guard inner.childCount != 0, let first = inner.firstChild, !first.isLeaf else { return false }
-        let newOpenEnd = Swift.max(openEnd, inner.size + openStart >= content.size - openEnd ? openStart + 1 : 0)
-        unplaced = Slice(content: content, openStart: openStart + 1, openEnd: newOpenEnd)
+        var openEnd = unplaced.openEnd
+        if maxOpen(content, -1) <= openStart { return false }
+        if unplaced.size > 1, maxOpen(content, 1) > openEnd { openEnd += 1 }
+        unplaced = Slice(content: content, openStart: openStart + 1, openEnd: openEnd)
         return true
     }
 
@@ -366,6 +375,19 @@ private func lastContentAt(_ fragment: Fragment, _ depth: Int) -> Fragment {
         i += 1
     }
     return frag
+}
+
+/// How many levels a fragment can be opened on one side (`-1` the start, `1`
+/// the end) before reaching a node with no content to open into — an atom,
+/// or nothing at all.
+private func maxOpen(_ fragment: Fragment, _ side: Int) -> Int {
+    var frag = fragment
+    var count = 0
+    while let child = side < 0 ? frag.firstChild : frag.lastChild, !child.isAtom {
+        frag = child.content
+        count += 1
+    }
+    return count
 }
 
 private func contentAt(_ fragment: Fragment, _ depth: Int) -> Fragment {

@@ -16,17 +16,17 @@ Use it to find what's new when re-auditing: read each package's CHANGELOG from t
 | Swift module | Upstream package | Reviewed through | Date | Notes |
 | --- | --- | --- | --- | --- |
 | `DocumentModel` | `prosemirror-model` | **1.25.11** | 2026-08-22 | `Fragment.fromJSON` adjacent-text-node join **ported** this pass. The Slice invalid-`ReplaceAroundStep` guard (1.25.3, narrowed in 1.25.5) was **not** present — an earlier pass recorded it as confirmed in error — and is **ported** now. The surrogate-pair fix in `findDiffStart`/`End` (1.25.8) is N/A — positions here are grapheme clusters. `ReplaceError` vs `checkContent` (1.25.9) is free: `StepResult.fromReplace` catches any error. `DOMOutputSpec` typing (1.25.5/1.25.7/1.25.10) is TypeScript-only, and `body` in `blockTags` (1.25.11) is already how our `HTMLParser` treats it. See "Known gaps". |
-| `DocumentTransform` | `prosemirror-transform` | **1.12.0** | 2026-03-30 | `ReplaceStep.map` structure-flag fix (1.10.4) **ported** this pass. `liftTarget` split-constraint (1.10.5), `Mapping.appendMap` aliasing (1.10.3, free via Swift value semantics), and `deleteRange` start-to-start (1.12.0) confirmed present. See "Known gaps". |
+| `DocumentTransform` | `prosemirror-transform` | **1.12.1** | 2026-09-17 | Fitter `openMore` rewrite (1.12.1) **ported** this pass — upstream's regression test already passed here, because `fit` re-clamps the slice's open depths every round, but the code now matches. `ReplaceStep.map` structure-flag fix (1.10.4) ported earlier. `liftTarget` split-constraint (1.10.5), `Mapping.appendMap` aliasing (1.10.3, free via Swift value semantics), and `deleteRange` start-to-start (1.12.0) confirmed present. See "Known gaps". |
 | `EditorStateKit` | `prosemirror-state` | **1.4.4** | 2025-10-23 | `insertText` selection collapse and empty-text structural deletion restored and regression-tested on 2026-09-15. |
 | `EditorCommands` | `prosemirror-commands` | **1.7.2** | 2026-08-22 | `splitBlock` measuring its split against the post-deletion selection (1.7.2) **ported** in an earlier pass. `splitBlockAs` has now been brought up to upstream's shape wholesale: the multi-depth walk out of an inline node (1.6.2), the reset of the empty leftover a start-of-block split leaves behind, and the `false` return when no split is possible (1.6.1) were all missing — the row previously claimed them as confirmed — and are **ported** this pass. The `splitNode` callback still takes `(node, atEnd)` rather than upstream's third `$from` parameter (an unported feature). See "Known gaps". |
 | `SchemaKit` (tables) | `prosemirror-tables` | **1.8.5** | 2025-12-24 | `fixTables` zero-sized removal (1.6.4), colwidth validation (1.7.1), and keep-cell-type-on-row-move (1.8.1) confirmed present. Newer row/col *move* helpers track the same source. |
 | `EditorHistory` | `prosemirror-history` | **1.5.0** | 2026-07-04 | Mark-step adjacency (1.4.1) and closed-event append guard (1.1.3) confirmed present. Composition grouping (1.3.1) and 1.5.0's beforeinput check N/A (no browser IME/DOM); `isHistoryTransaction` (1.5.0) is a feature, add on demand. |
-| `EditorKeymap` | `prosemirror-keymap` | _not yet pinned_ | — | Upstream fixes are DOM `KeyboardEvent`-specific; the UIKit key handling is hand-written. Audit deferred. |
+| `EditorKeymap` | `prosemirror-keymap` | _not yet pinned_ | 2026-09-17 | Upstream fixes through 1.2.3 are all DOM `KeyboardEvent`-specific (key-code fallbacks for non-ASCII characters, macOS Cmd handling); the UIKit key handling is hand-written. Nothing to port. |
 | `EditorInputRules` | `prosemirror-inputrules` | **1.5.1** | 2026-07-04 | Multi-char-input guard + `inCodeMark` code-mark suppression (1.5.0/1.5.1) **ported** this pass, with `MarkSpec.code` (model 1.25.0) added to support them; undo-without-text guard (1.1.3) confirmed present. `inCode: "only"` and the `undoable` option are unported features. |
 | `EditorCollab` | `prosemirror-collab` | **1.3.1** | 2026-07-04 | `mapSelectionBackward` fixes (1.1.1/1.1.2) confirmed present; upstream's clearing of the selection-updated flag after mapping **ported** this pass (`Transaction.clearSelectionSet`). See "Known gaps" re remote-step application. |
-| `EditorChangeset` | `prosemirror-changeset` | **2.4.2** | 2026-08-22 | Word-character range fix (2.4.1) and the too-big-to-diff guard (2.4.2) **ported** this pass, both with a correction — see the log. Typed close tokens (2.3.1) and multi-range steps (2.0.4) confirmed present. `Change` JSON serialization (2.4.0) is a feature, add on demand. |
+| `EditorChangeset` | `prosemirror-changeset` | **2.4.3** | 2026-09-17 | 2.4.3 fixes the `max(toA - fromA, toB, fromB)` typo in the too-big-to-diff guard; this port had already spelled it as two lengths (see the 2026-08-22 log entry), so nothing to do. Word-character range fix (2.4.1) and the guard itself (2.4.2) ported earlier, both with a correction — see the log. Typed close tokens (2.3.1) and multi-range steps (2.0.4) confirmed present. `Change` JSON serialization (2.4.0) is a feature, add on demand. |
 | `SchemaKit` (lists) | `prosemirror-schema-list` | **1.5.1** | 2026-07-04 | `liftListItem` type-guarded join (1.5.1), adjacent-sublists join (1.2.2), and `splitListItem` sublist fix (1.1.5) confirmed present. See "Known gaps" re attr validation (1.4.1). |
-| `EditorSerialization` | `prosemirror-markdown` + custom HTML | n/a | 2026-08-22 | HTML/Markdown serializers are hand-written for this editor's shapes, not direct ports; no upstream version to track. Upstream's `expelEnclosingWhitespace` behaviour (the subject of markdown 1.13.3/1.13.4/1.13.6) had no equivalent here and was **written this pass** — see the log. Trailing `order` handling (1.13.5) was already correct. |
+| `EditorSerialization` | `prosemirror-markdown` + custom HTML | n/a | 2026-09-17 | HTML/Markdown serializers are hand-written for this editor's shapes, not direct ports; no upstream version to track. Upstream's `expelEnclosingWhitespace` behaviour (the subject of markdown 1.13.3/1.13.4/1.13.6) had no equivalent here and was written on 2026-08-22 — see the log. 1.13.7's case (a bold run broken up by an italic one before whitespace) already read back correctly, but probing around it found overlapping bold/italic shapes that did not; the writer now reads its own output back — see the log. Trailing `order` handling (1.13.5) was already correct. |
 | `EditorMath` | none (TeX/KaTeX box model) | n/a | 2026-07-27 | Not a ProseMirror port. The typesetter implements the algorithms and font parameters from *The TeXbook* Appendix G — the same ones KaTeX implements — written from the published specification, not translated from KaTeX's source. The `SchemaKit` extension follows Tiptap's *documented* Mathematics API (node names, `latex` attribute, `data-type` HTML, command set); see the note in `MathematicsExtension.swift`. |
 
 ## Known gaps / intentional deviations
@@ -188,6 +188,56 @@ doesn't have to rediscover them.
 4. Bump the "reviewed through" version + date in the table above.
 
 ## Ported-fix log
+
+- **2026-09-17** — `prosemirror-transform` 1.12.1: the fitter's `openMore`
+  now follows upstream's rewrite. The old rule pushed a slice's `openEnd`
+  along with its `openStart` whenever the opened content reached the end of
+  the slice, which could claim an open depth into a text node — a slice
+  nothing can supply, which upstream then crashed or looped on. This port was
+  already safe, because `fit` re-clamps the open depths every round (see the
+  comment there), and upstream's regression test passed before the change;
+  it is ported so the code stops depending on the clamp.
+  `Sources/DocumentTransform/Fitter.swift`; upstream's test, plus its test
+  for issue #1574 (`maybeStep` refusing a mapped step that would produce
+  invalid content), in `Tests/DocumentTransformTests/PMTransform.swift`.
+  Upstream's other post-1.12.0 tests — `test/test-replace_step.ts`, the
+  `ReplaceAroundStep` content-fit checks and its mapping over an insertion at
+  a wrap or unwrap step's start — all passed as ported, and are in
+  `Tests/DocumentTransformTests/SliceInsertAt.swift`. No other package
+  gained tests since its reviewed version (`test/` diffed on the Forgejo
+  host; `prosemirror-tables` and `-inputrules` checked on GitHub).
+- **2026-09-17** — `prosemirror-markdown` 1.13.7, in kind: the case upstream
+  fixed (`**f*oo*** *bar*`, a bold run broken up by an italic one before
+  whitespace) already round-tripped here, but sweeping every three-piece
+  paragraph with *two-mark* pieces — the earlier sweep only had one mark per
+  piece — found 75 shapes that did not. Bold and italic share a delimiter
+  character, so where they overlap rather than nest their runs merge and land
+  between letters, and CommonMark's closer-first pairing plus its "rule of
+  three" (over the merged run's *original* length) then reads them another
+  way: `***a** e**a***` comes back with the italic closed at `e**a`, and in
+  `**d*a****e*` the `****` is refused as the closer of the `**` that opened
+  it. Confirmed against commonmark.js, so the parser here is right and the
+  writer was wrong. Rather than reproduce the pairing algorithm on the writing
+  side, `serializeInline` reads a paragraph that carries both marks back
+  through the parser, and if the marks come back different writes it again
+  with the italic as `<em>` tags, then with both as tags. Only such
+  paragraphs pay for the read-back; every other paragraph's output is
+  unchanged. Tiptap fixed the same class in core 3.20.3.
+  `Sources/EditorSerialization/Markdown.swift`; the two-mark sweep and two
+  pinned spellings in
+  `Tests/EditorSerializationTests/MarkdownDelimiterWhitespace.swift`.
+- **2026-09-17** — Tiptap Mathematics 3.23.0: the `$$…$$` input rule replaced
+  only the matched text, which — since the rule only fires when the match
+  fills its paragraph — left the emptied paragraph sitting above the formula.
+  It now replaces the paragraph. `Sources/SchemaKit/MathematicsExtension.swift`;
+  regression test in `Tests/SchemaKitTests/Math.swift`.
+- **2026-09-17** — Tiptap Table 3.30.0: `deleteRow` and `deleteColumn` left
+  the selection wherever the deletion mapped it, which for the last row or
+  column was the paragraph after the table. `keepCursorInTable` puts it back
+  in the table's last cell, checking (as Tiptap does) that a caret which
+  landed in a *following* table doesn't count as still inside.
+  `Sources/SchemaKit/TableCommandsPM.swift`; regression tests in
+  `Tests/SchemaKitTests/M5Tables.swift`.
 
 - **2026-09-15** — `prosemirror-state` 1.4.4 parity: `insertText("", from, to)`
   now uses `deleteRange`, as the npm source does, so fully covered wrappers

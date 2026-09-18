@@ -166,7 +166,12 @@ private func mathInputRule(_ type: NodeType, pattern: String) -> InputRule {
         guard let latex = match[1]?.trimmingCharacters(in: .whitespaces), !latex.isEmpty,
               let node = try? type.create(["latex": .string(latex)]) else { return nil }
         let tr = state.tr
-        guard (try? tr.replaceWith(start, end, node)) != nil,
+        // A block formula replaces the textblock it was typed in, not just the
+        // text — the rule only fires when the match fills the block, and
+        // replacing the text alone left the emptied paragraph sitting above the
+        // formula (Tiptap Mathematics 3.23.0).
+        let (replaceFrom, replaceTo) = type.isInline ? (start, end) : (from.before(), from.after())
+        guard (try? tr.replaceWith(replaceFrom, replaceTo, node)) != nil,
               containsInsertedNode(tr, node) else { return nil }
         return tr
     }

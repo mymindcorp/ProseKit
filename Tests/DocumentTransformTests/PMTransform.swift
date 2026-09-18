@@ -227,6 +227,47 @@ func registerPMTransformTests() {
     repl("doesn't change the nesting of blocks after the selection", doc(p("one<a>"), p("two"), p("three")), doc(p("outside<a>"), blockquote(p("inside<b>"))), doc(p("one"), blockquote(p("inside")), p("two"), p("three")))
     repl("can close a parent node", doc(blockquote(p("b<a>c"), p("d<b>e"), p("f"))), doc(blockquote(p("x<a>y")), p("after"), "<b>"), doc(blockquote(p("b<a>y")), p("after"), blockquote(p("<b>e"), p("f"))))
 
+    // prosemirror-transform 1.12.1. `openMore` used to push a slice's `openEnd`
+    // along with its `openStart` whenever the opened content reached the end
+    // of the slice, which could claim an open depth into a text node — a slice
+    // nothing can supply, which then crashed or looped. Here the text is `xy`
+    // after the paragraph. This port was already safe, because `fit` re-clamps
+    // the open depths every round; the test pins it now that `openMore`
+    // matches upstream.
+    test("PM replace: won't try to open a leaf node") {
+        let s = try Schema(nodes: [
+            ("doc", NodeSpec(content: "block")),
+            ("paragraph", NodeSpec(content: "inline*", group: "block")),
+            ("text", NodeSpec(group: "inline")),
+        ], marks: [], topNode: "doc")
+        let d = try s.node("doc", content: Fragment.from([try s.node("paragraph")]))
+        let tr = Transform(d)
+        try tr.replace(1, 1, Slice(content: Fragment.from([try s.node("paragraph"), s.text("xy")]),
+                                   openStart: 0, openEnd: 0))
+        try expectEqual(tr.doc, d)
+    }
+
+    // Upstream's test for its issue #1574: a step mapped over a block-type
+    // change that would leave a node the new type cannot hold is refused by
+    // `maybeStep`, not applied to produce an invalid document.
+    test("PM Transform: drops steps that produce invalid content") {
+        let s = try Schema(nodes: [
+            ("doc", NodeSpec(content: "block+")),
+            ("paragraph", NodeSpec(content: "inline*", group: "block")),
+            ("heading", NodeSpec(content: "text*", group: "block")),
+            ("special", NodeSpec(group: "inline", inline: true)),
+            ("text", NodeSpec(group: "inline")),
+        ], marks: [], topNode: "doc")
+        let d = try s.node("doc", content: Fragment.from([
+            try s.node("paragraph", content: Fragment.from(s.text("abc"))),
+        ]))
+        let tr1 = try Transform(d).insert(2, try s.node("special"))
+        let tr2 = try Transform(d).setBlockType(1, 4, s.nodes["heading"]!)
+        let mapped = tr1.steps[0].map(tr2.mapping)!
+        try expect(tr2.maybeStep(mapped).failed != nil)
+        try expectEqual(tr2.steps.count, 1)
+    }
+
     // MARK: replaceRangeWith
     // Upstream finishes with `replaceRange`, which consumes the empty parent
     // a plain `replaceWith` would leave standing.

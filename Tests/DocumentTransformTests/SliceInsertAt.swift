@@ -69,4 +69,46 @@ func registerSliceInsertAtTests() {
         let bad = try! basicSchema.node("code_block", [:], content: Fragment.from(p("foo").node))
         try expect(!bad.type.validContent(bad.content), "expected an invalid code block")
     }
+
+    // Upstream's `test/test-replace_step.ts`, added after prosemirror-transform
+    // 1.12.0 — the same guard, exercised through `Transform.step`, and the two
+    // mapping cases for a wrap and an unwrap step over an insertion at the
+    // position they start at.
+    test("PM ReplaceAroundStep: verifies that the inserted content fits") {
+        let tr = Transform(doc(p("a")).node)
+        let slice = Slice(content: Fragment.from(blockquote().node), openStart: 0, openEnd: 0)
+        try expectThrows({ try tr.step(ReplaceAroundStep(1, 2, 1, 2, slice, 1, structure: true)) })
+    }
+
+    test("PM ReplaceAroundStep: considers slice openness when verifying content fit") {
+        let tr = Transform(doc(blockquote(p("x"))).node)
+        let slice = Slice(content: Fragment.from(blockquote().node), openStart: 0, openEnd: 1)
+        try tr.step(ReplaceAroundStep(0, 1, 1, 1, slice, 1, structure: true))
+        try expectEqual(tr.doc, doc(blockquote(p("x"))).node)
+    }
+
+    test("PM ReplaceAroundStep.map: doesn't break wrap steps on insertions") {
+        try mappedOverOther(doc(p("a")),
+                            { try $0.wrap($0.doc.resolve(1).blockRange()!, [NodeTypeWithAttrs(basicSchema.nodes["blockquote"]!)]) },
+                            { try $0.insert(0, p("b").node) },
+                            doc(p("b"), blockquote(p("a"))))
+    }
+
+    test("PM ReplaceAroundStep.map: doesn't overwrite content inserted at start of unwrap step") {
+        try mappedOverOther(doc(blockquote(p("a"))),
+                            { try $0.lift($0.doc.resolve(2).blockRange()!, 0) },
+                            { try $0.insert(2, basicSchema.text("x")) },
+                            doc(p("xa")))
+    }
+}
+
+/// Apply `change`'s first step after mapping it over `other`, and check the
+/// document that gives.
+private func mappedOverOther(_ d: TaggedNode, _ change: (Transform) throws -> Void,
+                             _ other: (Transform) throws -> Void, _ expected: TaggedNode) throws {
+    let trA = Transform(d.node), trB = Transform(d.node)
+    try change(trA)
+    try other(trB)
+    let step = trA.steps[0].map(trB.mapping)!
+    try expectEqual(try Transform(trB.doc).step(step).doc, expected.node)
 }

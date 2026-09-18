@@ -576,10 +576,73 @@ public enum MarkdownSerializer {
         // enough for it and grows only for the markup around it.
         out.reserveCapacity(fragment.size + 16)
         writeInline(fragment, into: &out)
+        // Bold and italic are both spelled with asterisks, and where the two
+        // overlap rather than nest, their runs merge and land between letters:
+        // `**d*a****e*` for bold `d`, bold-italic `a`, italic `e`. What such a
+        // run does is then decided by CommonMark's closer-first pairing and its
+        // "rule of three", which count the *original* length of each merged
+        // run — so the `****` there is refused as a closer for the `**` that
+        // opened it, and the bold is gone the next time the document is read.
+        // Predicting that from the writer's side would mean reproducing the
+        // pairing algorithm; instead the output is read back through the
+        // parser that implements it, and if the marks come back different, the
+        // paragraph is written again with the italic — the single-star run,
+        // whose delimiters are the ambiguous ones — as tags, and then with
+        // both as tags. The same class of fix as prosemirror-markdown 1.13.6
+        // and 1.13.7 and Tiptap 3.20.3, though their serializers pick
+        // different cases to predict.
+        //
+        // Only a paragraph holding both marks can produce a merged run of
+        // both, so that is the only kind that is read back.
+        guard mixesStarRuns(fragment), let schema = fragment.firstChild?.type.schema else { return out }
+        let want = markSignature(fragment.content)
+        guard markSignature(MarkdownParser.parseInline(out, schema)) != want else { return out }
+        var retry = ""
+        for tagged in [["italic"], ["italic", "bold"]] as [Set<String>] {
+            retry = ""
+            writeInline(fragment, into: &retry, tagged: tagged)
+            if markSignature(MarkdownParser.parseInline(retry, schema)) == want { return retry }
+        }
+        return retry
+    }
+
+    /// Whether the fragment carries both marks that are spelled with asterisks.
+    private static func mixesStarRuns(_ fragment: Fragment) -> Bool {
+        var bold = false, italic = false
+        for node in fragment.content {
+            for mark in node.marks {
+                if mark.type.name == "bold" { bold = true } else if mark.type.name == "italic" { italic = true }
+            }
+            if bold && italic { return true }
+        }
+        return false
+    }
+
+    /// Every non-whitespace character of some inline content paired with the
+    /// names of the marks on it — what has to survive a trip through Markdown.
+    /// Whitespace is left out because moving it across a delimiter is exactly
+    /// what the writer is allowed to do.
+    private static func markSignature(_ nodes: [Node]) -> String {
+        var out = ""
+        func walk(_ node: Node) {
+            if node.isText {
+                let marks = "[" + node.marks.map(\.type.name).sorted().joined(separator: ",") + "]"
+                for ch in node.text ?? "" where !ch.isWhitespace {
+                    out.append(ch)
+                    out += marks
+                }
+            } else {
+                for i in 0..<node.childCount { walk(node.child(i)) }
+            }
+        }
+        for node in nodes { walk(node) }
         return out
     }
 
-    static func writeInline(_ fragment: Fragment, into out: inout String) {
+    /// `tagged` names the marks to write as HTML tags whether or not their
+    /// delimiters could land — see `serializeInline` for why a paragraph may
+    /// be written that way.
+    static func writeInline(_ fragment: Fragment, into out: inout String, tagged: Set<String> = []) {
         // Where this call's own output starts, so the trailing-break trim at the
         // bottom can't reach back into whatever the caller had already written.
         let written = out.count
@@ -712,6 +775,7 @@ public enum MarkdownSerializer {
         }
         func spellAsHTML(_ mark: Mark, at index: Int, opening: ArraySlice<Mark>, offset: Int) -> Bool {
             guard expelsWhitespace(mark) else { return false }
+            if tagged.contains(mark.type.name) { return true }
 
             // Where the closing delimiter lands, and whether the mark has to
             // stay open across a line break to get there — which it can't do as

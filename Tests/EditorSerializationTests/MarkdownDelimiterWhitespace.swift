@@ -19,6 +19,15 @@ private func codeSpan(_ s: String) -> Node { schema.text(s, [schema.mark("code")
 private func boldStrike(_ s: String) -> Node {
     schema.text(s, [schema.mark("bold"), schema.mark("strike")])
 }
+private func boldItalic(_ s: String) -> Node {
+    schema.text(s, [schema.mark("bold"), schema.mark("italic")])
+}
+private func italicStrike(_ s: String) -> Node {
+    schema.text(s, [schema.mark("italic"), schema.mark("strike")])
+}
+private func boldHighlight(_ s: String) -> Node {
+    schema.text(s, [schema.mark("bold"), schema.mark("highlight")])
+}
 private func boldBrk() -> Node {
     try! schema.nodes["hardBreak"]!.create(marks: [schema.mark("bold")])
 }
@@ -260,6 +269,37 @@ func registerMarkdownDelimiterWhitespaceTests() {
                                   strike("c "), strike(" c"), strike("c"),
                                   highlight("d "), highlight(" d"), highlight("d"),
                                   t("x"), t(" x"), t("x "), t(" "), brk(), boldBrk()])
+
+    // Bold and italic overlapping rather than nesting. Their runs merge, and a
+    // merged run between two letters is paired by CommonMark's closer-first
+    // rule and its rule of three over the *original* run lengths — so the
+    // `****` in `**d*a****e*` (bold `d`, bold-italic `a`, italic `e`) is refused
+    // as the closer of the `**` that opened it, and the bold is gone the next
+    // time the document is read. The writer reads its own output back and,
+    // where the marks come back different, spells the italic as a tag.
+    sweep("overlapping bold and italic", [boldItalic("a "), boldItalic(" a"), boldItalic("a"), boldItalic(" "),
+                                          italicStrike("b "), italicStrike(" b"), italicStrike("b"),
+                                          boldHighlight("c "), boldHighlight("c"),
+                                          strong("d "), strong(" d"), strong("d"),
+                                          em("e "), em(" e"), em("e"),
+                                          strike("f "), strike("f"),
+                                          t("x"), t(" x"), t("x "), t(" "), boldBrk()])
+
+    // The shapes prosemirror-markdown 1.13.6 and 1.13.7 are about — a bold run
+    // broken up by an italic one beside whitespace — read back as delimiters.
+    writes("bold broken by italic after whitespace",
+           doc(p(strong("f"), boldItalic("oo"), em(" bar"))), "**f*oo*** *bar*",
+           reads: doc(p(strong("f"), boldItalic("oo"), t(" "), em("bar"))))
+    writes("bold broken by italic before whitespace",
+           doc(p(strong("f"), boldItalic("oo "), em("bar"))), "**f*oo*** *bar*",
+           reads: doc(p(strong("f"), boldItalic("oo"), t(" "), em("bar"))))
+
+    // ...and one that doesn't: bold on either side of a plain italic word, all
+    // inside the italic, puts a `**` between `e` and `a` that CommonMark reads
+    // as closing the `*`. The italic is written as a tag instead.
+    writes("bold inside italic on both sides of a word",
+           doc(p(boldItalic("a"), em(" e"), boldItalic("a"))), "<em>**a** e**a**</em>",
+           reads: doc(p(boldItalic("a"), em(" e"), boldItalic("a"))))
 
     // Whitespace is only half the flanking rule. CommonMark also refuses to open
     // a run that is followed by punctuation unless what sits before the run is
