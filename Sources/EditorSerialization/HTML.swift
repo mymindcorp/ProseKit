@@ -777,7 +777,17 @@ public enum HTMLParser {
             return (textblockSplittingBlocks(inline) {
                 try? schema.node("figcaption", a, content: Fragment.from($0))
             }, end + 1)
-        case "blockquote", "listItem", "table", "tableRow", "figure":
+        case "table":
+            let parsed = parseBlocks(tokens[(start + 1)..<end], schema, config)
+            let a = idAttrs(attrs, "table", schema, config)
+            if let type = schema.nodes["table"] {
+                let children = applyColumnWidths(columnWidths(tokens, start + 1, end),
+                                                 to: fitContent(parsed, into: type, schema: schema))
+                if let n = try? type.createChecked(a, content: Fragment.from(children)) { return ([n], end + 1) }
+                if let filled = type.createAndFill(a, content: Fragment.from(children)) { return ([filled], end + 1) }
+            }
+            return (parsed, end + 1)
+        case "blockquote", "listItem", "tableRow", "figure":
             let parsed = parseBlocks(tokens[(start + 1)..<end], schema, config)
             let name = nodeName!
             let a = idAttrs(attrs, name, schema, config)
@@ -1304,6 +1314,83 @@ public enum HTMLParser {
         let raw = styleValue(attrs["style"] ?? "", "text-align") ?? attrs["align"]
         guard let value = raw?.trimmingCharacters(in: .whitespaces).lowercased() else { return nil }
         return ["left", "center", "right"].contains(value) ? value : nil
+    }
+
+    /// The widths a table's `<col>` elements give its columns, in order, with
+    /// nil where a column has none. Only this table's own: a nested table's
+    /// columns are stepped over. A table pasted from a web page or a document
+    /// editor carries its widths here rather than on the cells, and
+    /// `colgroup` is a wrapper the parser otherwise skips wholesale — which is
+    /// how they used to be lost (Tiptap Table 3.27.4).
+    private static func columnWidths(_ tokens: Tokens, _ start: Int, _ end: Int) -> [Int?] {
+        var widths: [Int?] = []
+        var nested = 0
+        for i in start..<end {
+            switch tokens[i] {
+            case let .open(tag, colAttrs, _):
+                if tag == "table" { nested += 1 } else if tag == "col", nested == 0 { widths.append(pixelWidth(colAttrs)) }
+            case let .close(tag):
+                if tag == "table" { nested -= 1 }
+            case .text:
+                break
+            }
+        }
+        return widths
+    }
+
+    /// A `<col>`'s width in pixels: a `width:` declaration in its style, or a
+    /// `width` attribute — `120` or `120px`. A percentage isn't a pixel count
+    /// and is left alone.
+    private static func pixelWidth(_ attrs: [String: String]) -> Int? {
+        func pixels(_ raw: Substring) -> Int? {
+            var s = raw.trimmingCharacters(in: .whitespaces).lowercased()
+            if s.hasSuffix("px") { s = String(s.dropLast(2)).trimmingCharacters(in: .whitespaces) }
+            guard let w = Double(s), w > 0 else { return nil }
+            return Int(w.rounded())
+        }
+        if let style = attrs["style"] {
+            for declaration in style.split(separator: ";") {
+                let parts = declaration.split(separator: ":", maxSplits: 1)
+                if parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces).lowercased() == "width",
+                   let w = pixels(parts[1]) { return w }
+            }
+        }
+        if let width = attrs["width"], let w = pixels(Substring(width)) { return w }
+        return nil
+    }
+
+    /// Give each cell that has no width of its own the widths of the columns
+    /// it spans, when every one of them is known. Cells are placed the way a
+    /// table map places them: a cell spanning rows keeps its columns occupied
+    /// in the rows below, so the cells there start further right.
+    private static func applyColumnWidths(_ widths: [Int?], to rows: [Node]) -> [Node] {
+        guard widths.contains(where: { $0 != nil }) else { return rows }
+        var occupied: [Int: Int] = [:]  // column → rows it stays covered for, this one included
+        return rows.map { row in
+            guard row.type.name == "tableRow" else { return row }
+            var cells: [Node] = []
+            var col = 0
+            for i in 0..<row.childCount {
+                let cell = row.child(i)
+                while (occupied[col] ?? 0) > 0 { col += 1 }
+                let span = max(1, cell.attrs["colspan"]?.intValue ?? 1)
+                let rowspan = max(1, cell.attrs["rowspan"]?.intValue ?? 1)
+                var placed = cell
+                if case .null? = cell.attrs["colwidth"] {
+                    let spanned = (col..<col + span).map { $0 < widths.count ? widths[$0] : nil }
+                    if spanned.allSatisfy({ $0 != nil }) {
+                        var a = cell.attrs
+                        a["colwidth"] = .array(spanned.map { .int($0!) })
+                        if let n = try? cell.type.createChecked(a, content: cell.content, marks: cell.marks) { placed = n }
+                    }
+                }
+                cells.append(placed)
+                if rowspan > 1 { for c in col..<col + span { occupied[c] = rowspan } }
+                col += span
+            }
+            for (c, left) in occupied { occupied[c] = left - 1 }
+            return row.copy(content: Fragment.from(cells))
+        }
     }
 
     private static func parseColwidth(_ attrs: [String: String]) -> [Int]? {

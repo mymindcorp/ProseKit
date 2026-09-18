@@ -369,6 +369,33 @@ func registerMathTests() {
         try expectEqual(count(editor.doc, "paragraph"), 0)
     }
 
+    test("math: typing after a block formula at the end of the document starts a paragraph") {
+        // With the paragraph gone the mapped selection sat on the formula, so
+        // the next keystroke replaced it. A gap cursor after it instead.
+        let editor = try mathEditor()
+        try type(editor, "$$a^2$")
+        try expect(textInput(editor, at: editor.state.selection.from, "$"))
+        try expect(editor.state.selection is GapCursor, "expected a gap cursor, got \(type(of: editor.state.selection))")
+        let tr = editor.state.tr
+        try tr.insertText("y")
+        editor.dispatch(tr)
+        try expectEqual(editor.doc.childCount, 2)
+        try expectEqual(editor.doc.firstChild?.type.name, "blockMath")
+        try expectEqual(editor.doc.lastChild?.textContent, "y")
+    }
+
+    test("math: a block formula typed above a paragraph leaves the caret in that paragraph") {
+        let editor = try mathEditor()
+        let tr = editor.state.tr
+        try tr.insert(tr.doc.content.size, editor.schema.nodes["paragraph"]!.createAndFill()!)
+        editor.dispatch(tr)
+        try type(editor, "$$a^2$")
+        try expect(textInput(editor, at: editor.state.selection.from, "$"))
+        try expectEqual(editor.doc.firstChild?.type.name, "blockMath")
+        try expect(editor.state.selection is TextSelection)
+        try expectEqual(editor.state.selection.from, editor.doc.firstChild!.nodeSize + 1)
+    }
+
     test("math: $$…$$ mid-sentence stays text") {
         let editor = try mathEditor()
         try type(editor, "see $$x$")

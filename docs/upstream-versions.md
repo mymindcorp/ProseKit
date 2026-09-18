@@ -189,6 +189,40 @@ doesn't have to rediscover them.
 
 ## Ported-fix log
 
+- **2026-09-18** — Tiptap Table 3.27.4, in kind: the HTML importer read a
+  column width only from a cell's `data-colwidth`, which is our own
+  serializer's spelling; `colgroup` was a wrapper it skipped wholesale, so a
+  table pasted from a web page or a document editor — which put its widths on
+  `<col>` elements — lost every one of them. `columnWidths` now collects the
+  table's own `<col>` widths (a `width` attribute or a `width:` style, in
+  pixels; a percentage is left alone) and `applyColumnWidths` gives them to
+  the cells of every row, headers included, placing cells the way a table map
+  does so a cell spanning rows shifts the cells beneath it. A cell's own
+  `data-colwidth` still wins. `Sources/EditorSerialization/HTML.swift`;
+  regression tests in `Tests/EditorSerializationTests/HTMLColumnWidths.swift`.
+- **2026-09-18** — follow-up to the Mathematics 3.23.0 port: with the
+  paragraph gone, the mapped selection landed *on* the formula, so the next
+  keystroke replaced it. The rule now puts the caret at the start of the next
+  textblock, or — when the formula is the last thing in its parent — a gap
+  cursor after it, which typing turns into a paragraph. (Tiptap leaves this to
+  its gap-cursor and trailing-node extensions.)
+  `Sources/SchemaKit/MathematicsExtension.swift`; regression tests in
+  `Tests/SchemaKitTests/Math.swift`.
+- **2026-09-18** — CommonMark lazy continuation for list items (not an
+  upstream port; found while checking Tiptap's list-parsing fixes, which turn
+  out to be about their own tokenizer). `1. a\nsecond` parsed as an item and
+  then a paragraph *after* the list; CommonMark, and commonmark.js, read it as
+  one item holding "a second". The parser already did this for quotes.
+  `collectList` now keeps a line that is neither indented into the item nor a
+  marker when the item's innermost open block is a paragraph and the line
+  doesn't start a block, handing it to the item's own parse so a nested list
+  or quote continues its own paragraph; a fence left open by the item takes
+  no lazy line, and a run of `=` continues as text rather than underlining a
+  heading across the item's edge. The marker line also keeps its trailing
+  spaces now, so a hard break before the lazy line survives.
+  `Sources/EditorSerialization/Markdown.swift`; regression tests, each checked
+  against commonmark.js, in `Tests/EditorSerializationTests/MarkdownLazyLines.swift`.
+
 - **2026-09-17** — `prosemirror-transform` 1.12.1: the fitter's `openMore`
   now follows upstream's rewrite. The old rule pushed a slice's `openEnd`
   along with its `openStart` whenever the opened content reached the end of
