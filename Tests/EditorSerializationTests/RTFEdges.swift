@@ -32,6 +32,16 @@ private func shapeOf(_ d: Node) -> [String] {
     (0 ..< d.childCount).map { d.child($0).type.name }
 }
 
+/// A table whose cells hold exactly one paragraph, so a cell of two overflows.
+private let oneParagraphCells: Schema = try! Schema(nodes: [
+    ("doc", NodeSpec(content: "block+")),
+    ("paragraph", NodeSpec(content: "inline*", group: "block")),
+    ("table", NodeSpec(content: "tableRow+", group: "block")),
+    ("tableRow", NodeSpec(content: "tableCell+")),
+    ("tableCell", NodeSpec(content: "paragraph")),
+    ("text", NodeSpec(group: "inline")),
+])
+
 func registerRTFEdgeTests() {
     // MARK: Control symbols
 
@@ -177,5 +187,20 @@ func registerRTFEdgeTests() {
         } catch let error as RTFParseError {
             try expectEqual(error, .notRTF)
         }
+    }
+
+    // MARK: Cells the schema can't hold as written
+
+    test("RTF: a cell that overflows the schema's cell spills into another, keeping its text") {
+        // Only the cell that fitted used to survive: "one" and "two" vanished
+        // while "three" stayed — yet had *every* cell failed, the text would
+        // have been kept. ProseMirror's parser closes the cell at the block
+        // that doesn't fit and opens another.
+        let source = edgeRTF(#"\trowd\cellx2000\cellx4000\pard\intbl one\par two\cell\pard\intbl three\cell\row"#)
+        let d = try RTFParser.parse(source, schema: oneParagraphCells)
+        try d.check()
+        try expectEqual(shapeOf(d).first, "table")
+        let row = d.child(0).child(0)
+        try expectEqual((0..<row.childCount).map { row.child($0).textContent }, ["one", "two", "three"])
     }
 }

@@ -792,9 +792,12 @@ public enum HTMLParser {
             let name = nodeName!
             let a = idAttrs(attrs, name, schema, config)
             if let type = schema.nodes[name] {
-                let children = fitContent(parsed, into: type, schema: schema)
-                if let n = try? type.createChecked(a, content: Fragment.from(children)) { return ([n], end + 1) }
-                if let filled = type.createAndFill(a, content: Fragment.from(children)) { return ([filled], end + 1) }
+                // What comes after the node is full — a paragraph after a
+                // figure's caption — closes it and follows it out.
+                var after: [Node] = []
+                let children = fitContent(parsed, into: type, schema: schema, overflow: &after)
+                if let n = try? type.createChecked(a, content: Fragment.from(children)) { return ([n] + after, end + 1) }
+                if let filled = type.createAndFill(a, content: Fragment.from(children)) { return ([filled] + after, end + 1) }
             }
             // The element itself has no place here; keep what was inside it.
             return (parsed, end + 1)
@@ -956,9 +959,22 @@ public enum HTMLParser {
         let isTask = attrs["data-type"] == "taskList" || listLooksLikeTasks(tokens, start, end)
         if isTask, let listType = schema.nodes["taskList"], schema.nodes["taskItem"] != nil {
             var items: [Node] = []
-            for (open, close) in directItems(tokens, start, end) {
-                guard case let .open(_, liAttrs, _) = tokens[open] else { continue }
-                if let item = parseTaskItem(tokens, open, close, liAttrs, schema, config) { items.append(item) }
+            for (open, close) in directItems(tokens, start, end, subLists: true) {
+                guard case let .open(tag, liAttrs, _) = tokens[open] else { continue }
+                if tag == "li" {
+                    if let item = parseTaskItem(tokens, open, close, liAttrs, schema, config) { items.append(item) }
+                    continue
+                }
+                // A sub-list sitting directly in the list, not in an item. As
+                // ProseMirror's `normalizeList` reads it, it belongs to the item
+                // above; with no item above to take it, it becomes one.
+                guard let (sub, _) = parseBlock(tokens, open, schema, config) else { continue }
+                if let last = items.last,
+                   let merged = try? last.type.createChecked(last.attrs, content: last.content.append(Fragment.from(sub))) {
+                    items[items.count - 1] = merged
+                } else {
+                    items.append(contentsOf: fitContent(sub, into: listType, schema: schema))
+                }
             }
             if !items.isEmpty, let n = try? listType.createChecked(idAttrs(attrs, "taskList", schema, config), content: Fragment.from(items)) { return [n] }
         }
@@ -1108,8 +1124,10 @@ public enum HTMLParser {
     /// The `<li>` elements directly inside this list, as (open, close) index
     /// pairs. A nested `<ul>`/`<ol>` is skipped whole: what a sub-list holds is
     /// that list's business, and reading it as this one's made a bullet list
-    /// containing a checklist into a checklist.
-    private static func directItems(_ tokens: Tokens, _ start: Int, _ end: Int) -> [(open: Int, close: Int)] {
+    /// containing a checklist into a checklist. With `subLists`, such a list is
+    /// returned too, in order among the items, for the caller to place.
+    private static func directItems(_ tokens: Tokens, _ start: Int, _ end: Int,
+                                    subLists: Bool = false) -> [(open: Int, close: Int)] {
         var items: [(open: Int, close: Int)] = []
         var i = start + 1
         while i < end {
@@ -1121,7 +1139,9 @@ public enum HTMLParser {
             } else if !selfClosing, tag == "ul" || tag == "ol" {
                 // A sub-list written outside an `<li>`, which is malformed but
                 // arrives all the same.
-                i = min(matchingClose(tokens, i, tag), end) + 1
+                let close = min(matchingClose(tokens, i, tag), end)
+                if subLists { items.append((i, close)) }
+                i = close + 1
             } else {
                 i += 1
             }

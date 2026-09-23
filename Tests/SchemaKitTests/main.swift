@@ -380,4 +380,17 @@ test("checklist import: unrelated bullet list sharing one line text stays a bull
     try expectEqual(out.child(1).type.name, "bulletList")
 }
 
+test("checklist import: a list that can't convert still uses up its lines") {
+    // A listItem holding bare text can't become a taskItem, so the first list
+    // stays a bullet list. Restoring the queues then handed its "milk" = checked
+    // to the second list's "milk", whose own line is unchecked.
+    let malformed = clNode("bulletList", [:], [clNode("listItem", [:], [clSchema.text("milk")])])
+    let good = clNode("bulletList", [:], [clItem("milk")])
+    let out = applyChecklistMarkers(Fragment.from([malformed, good]), checkedTexts: [],
+                                    checklistLines: [("milk", true), ("milk", false)], schema: clSchema)
+    try expectEqual(out.child(0).type.name, "bulletList")
+    try expectEqual(out.child(1).type.name, "taskList")
+    try expectEqual(out.child(1).child(0).attrs["checked"]?.boolValue, false)
+}
+
 TestSuite.main("SchemaKitTests", collector.all)

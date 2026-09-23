@@ -73,9 +73,22 @@ public func applyChecklistMarkers(_ content: Fragment, checkedTexts: Set<String>
 
         // Convert each item BEFORE recursing into it, so queues are consumed in
         // document order — which matches note order even across nesting levels.
-        // If any item can't convert, restore the queues and keep the list intact
-        // rather than dropping a line or leaving states shifted.
+        // If any item can't convert, keep the list intact rather than dropping a
+        // line. Its lines are still the note's lines, though, so they stay
+        // consumed: restoring the queues handed this list's states to the next
+        // item with the same text — a later unchecked "milk" came out checked.
         let queuesBefore = queues
+        func keepAsBullets() -> Node {
+            queues = queuesBefore
+            let kids = zip(items, texts).map { item, text -> Node in
+                if var queue = queues[text], !queue.isEmpty {
+                    queue.removeFirst()
+                    queues[text] = queue
+                }
+                return recurseChildren(item)
+            }
+            return node.copy(content: Fragment.from(kids))
+        }
         var taskItems: [Node] = []
         for (item, text) in zip(items, texts) {
             let isChecked: Bool
@@ -87,15 +100,11 @@ public func applyChecklistMarkers(_ content: Fragment, checkedTexts: Set<String>
             }
             let kids = (0..<item.childCount).map { mapNode(item.child($0)) }
             guard let ti = taskItemType.createAndFill(["checked": .bool(isChecked)], content: Fragment.from(kids))
-            else {
-                queues = queuesBefore
-                return recurseChildren(node)
-            }
+            else { return keepAsBullets() }
             taskItems.append(ti)
         }
         if let list = taskListType.createAndFill([:], content: Fragment.from(taskItems)) { return list }
-        queues = queuesBefore
-        return recurseChildren(node)
+        return keepAsBullets()
     }
 
     return Fragment.from((0..<content.childCount).map { mapNode(content.child($0)) })
