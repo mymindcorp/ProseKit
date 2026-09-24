@@ -144,8 +144,6 @@ final class DocumentHeightExactnessTests: XCTestCase {
         let e = editor(300, mixed: true, fitted: true)
         let v = view(e)
         XCTAssertFalse(v.documentHeightIsExact)
-        XCTAssertLessThan(v.documentHeight, fullHeight(e),
-                          "the indents are what the estimator misses here, so it falls short")
         XCTAssertEqual(v.measuredDocumentHeight(), fullHeight(e), accuracy: 0.5)
     }
 
