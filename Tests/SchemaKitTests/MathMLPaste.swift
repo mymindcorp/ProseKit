@@ -99,6 +99,66 @@ func registerMathMLPasteTests() {
         }
     }
 
+    test("mathml: text is escaped for text mode and keeps its spaces") {
+        let cases: [(String, String)] = [
+            ("<math><mtext>a}b{c</mtext></math>", "\\text{a\\}b\\{c}"),
+            ("<math><mtext>C:\\</mtext></math>", "\\text{C:\\textbackslash{}}"),
+            ("<math><mtext>50% &amp; ~x^</mtext></math>",
+             "\\text{50\\% \\& \\textasciitilde{}x\\textasciicircum{}}"),
+            ("<math><mn>0</mn><mtext> if </mtext><mi>x</mi></math>", "0\\text{ if }x"),
+            ("<math><mtext>  two\n  words </mtext></math>", "\\text{ two words }"),
+        ]
+        let typesetter = MathTypesetter(baseSize: 17, bodyFont: bodyFontForTests())
+        for (html, expected) in cases {
+            let latex = try expectSome(try pasted(html)?.latex, html)
+            try expectEqual(latex, expected, html)
+            let result = typesetter.layout(latex, display: false)
+            try expect(!result.isError, "\(latex) → \(result.error ?? "")")
+        }
+    }
+
+    test("mathml: only a TeX encoding is read as TeX") {
+        func annotated(_ encoding: String) -> String {
+            "<math><semantics><mi>y</mi><annotation encoding=\"\(encoding)\">x^2</annotation></semantics></math>"
+        }
+        for encoding in ["application/x-tex", "application/x-latex", "TeX", "text/x-tex; charset=utf-8"] {
+            try expectEqual(try pasted(annotated(encoding))?.latex, "x^2", encoding)
+        }
+        // AsciiMath contains "tex" but isn't TeX: the markup is converted instead.
+        for encoding in ["text/x-asciimath", "application/x-texinfo", "MathML-Content"] {
+            try expectEqual(try pasted(annotated(encoding))?.latex, "y", encoding)
+        }
+    }
+
+    test("mathml: mfenced keeps a command delimiter clear of a letter-first body") {
+        let cases: [(String, String)] = [
+            (#"<math><mfenced open="⟨" close="⟩"><mi>u</mi><mi>v</mi></mfenced></math>"#, "\\left\\langle u,v\\right\\rangle"),
+            (#"<math><mfenced open="⌈" close="⌉"><mi>x</mi></mfenced></math>"#, "\\left\\lceil x\\right\\rceil"),
+            (#"<math><mfenced open="⌊" close="⌋" separators=""><mi>a</mi><mi>b</mi></mfenced></math>"#,
+             "\\left\\lfloor ab\\right\\rfloor"),
+        ]
+        let typesetter = MathTypesetter(baseSize: 17, bodyFont: bodyFontForTests())
+        for (html, expected) in cases {
+            let latex = try expectSome(try pasted(html)?.latex, html)
+            try expectEqual(latex, expected, html)
+            try expect(!typesetter.layout(latex, display: false).isError, latex)
+        }
+    }
+
+    test("mathml: an arrow over a letter is a vector") {
+        try expectEqual(try pasted("<math><mover><mi>v</mi><mo>&#x2192;</mo></mover></math>")?.latex, "\\vec{v}")
+        try expectEqual(try pasted("<math><mover><mi>x</mi><mo>^</mo></mover></math>")?.latex, "\\hat{x}")
+        // An over-script that isn't an accent is still a superscript.
+        try expectEqual(try pasted("<math><mover><mi>x</mi><mi>n</mi></mover></math>")?.latex, "x^{n}")
+    }
+
+    test("mathml: a named operator written as <mo> is a function name") {
+        try expectEqual(try pasted("<math><munder><mo>lim</mo><mrow><mi>x</mi><mo>→</mo><mn>0</mn></mrow></munder></math>")?.latex,
+                        "\\lim_{x\\to0}")
+        try expectEqual(try pasted("<math><mo>max</mo><mi>f</mi></math>")?.latex, "\\max f")
+        try expectEqual(try pasted("<math><mo>Pr</mo></math>")?.latex, "\\mathrm{Pr}")
+    }
+
     test("mathml: invisible operators leave no trace") {
         // MathML marks implied multiplication and function application with
         // invisible characters; rendering them would be nonsense.

@@ -34,10 +34,6 @@ private struct RTFSample {
     /// Footnote text: it moves to the end of the document, and a schema with no
     /// footnote nodes drops it by design.
     var footnoteRuns: [String] = []
-    /// The note has groups nested inside it, as every Word footnote does, and
-    /// the reader ends a footnote at the first nested group it closes (see
-    /// `knownBugs`). Its text is then checked for presence, not placement.
-    var footnoteEndsAtNestedGroup = false
     /// Text that must never reach the document.
     var forbidden: [String] = []
 }
@@ -217,7 +213,6 @@ private let rtfCorpus: [RTFSample] = [
                "Outlook",
                "We expect steady growth, and no some hiring."],
         footnoteRuns: ["Unaudited figures."],
-        footnoteEndsAtNestedGroup: true,
         forbidden: ["Jane Doe", "Quarterly;", "Acme", "HYPERLINK", "draft", "Normal", "heading 1", "_Ref1",
                     "Times New Roman", "Hyperlink", "wordml", "504b03"]),
 
@@ -372,7 +367,6 @@ private let rtfCorpus: [RTFSample] = [
             wordRun(#" stands.\par "#) + "\n" + wordTrailer,
         runs: ["Claim", " stands."],
         footnoteRuns: ["First source.", "Second source.", "A cited item."],
-        footnoteEndsAtNestedGroup: true,
         forbidden: ["\u{00B7}"]),
 
     RTFSample(
@@ -448,34 +442,6 @@ private let narrowings: [(String, @Sendable () throws -> Schema)] = [
                                                      dropMarks: Set(schema.markSpecOrder)) }),
 ]
 
-/// Source × narrowing pairs that fail the property because of a bug in the
-/// reader as it stands. Skipped rather than asserted: each is a place where the
-/// importer loses or rejects content it should keep, not behaviour to pin.
-///
-/// Also not asserted anywhere: `footnoteEndsAtNestedGroup` above. Word writes
-/// `{\footnote \pard … {\cs17\super \chftn}{ Note text.}\par}`; every group
-/// nested in the note inherits the `.footnote` destination, so the first one to
-/// close calls `endFootnote()`. The definition is left empty and the rest of
-/// the note is read into the body paragraph after the reference.
-private let knownBugs: [String: String] = [
-    // `paragraphNode` builds with `createAndFill`, which fails for a paragraph
-    // whose inline content includes a node its `text*` content won't take —
-    // a footnote reference, an image, a hard break — and `assembleBlocks`
-    // drops the paragraph, text and all.
-    "paragraph: text*|Word: styled headings, marks in run groups, a hyperlink field and a footnote": "paragraph with a non-text inline dropped",
-    "paragraph: text*|Word: a picture (shape + fallback), a line break, tabs and ignorable groups": "paragraph with a non-text inline dropped",
-    "paragraph: text*|Word: a footnote of two paragraphs and a bulleted item": "paragraph with a non-text inline dropped",
-    // `appendLists.pop()` nests a sublist with `lastItem.copy(content:)`,
-    // which validates nothing; the invalid item surfaces at `check()` and the
-    // whole paste throws `invalidDocument`.
-    "listItem: paragraph|TextEdit / Apple Notes: nested bullets and a numbered list, from the list table": "nested list throws invalidDocument",
-    "listItem: paragraph|Word: bulleted list with a nested level, then a numbered list starting at 3": "nested list throws invalidDocument",
-    // `cellNodes` spills a cell by content-match groups, but fits each group
-    // with `fitContent` into a single cell: a group of a nested table plus the
-    // paragraph after it keeps only what fits the first slot.
-    "tableCell/Header: paragraph|Word: a table nested in a cell, with its flattened fallback copy": "spilled cell group loses its overflow",
-]
-
 // MARK: - The text check
 
 /// The document's text, one line per textblock, so a run can't be satisfied by
@@ -517,14 +483,9 @@ private func rtfViolation(_ sample: RTFSample, _ narrowed: Schema) -> String? {
     do { try d.check() } catch { return "invalid document: \(error)" }
     let text = blockTexts(d)
     let hasFootnotes = narrowed.nodes["footnoteDefinition"] != nil && narrowed.nodes["footnoteReference"] != nil
-    let expected = sample.runs + (hasFootnotes && !sample.footnoteEndsAtNestedGroup ? sample.footnoteRuns : [])
+    let expected = sample.runs + (hasFootnotes ? sample.footnoteRuns : [])
     if let missing = firstMissingRun(expected, in: text) {
         return "lost \(missing.debugDescription); document text: \(text.debugDescription)"
-    }
-    if hasFootnotes, sample.footnoteEndsAtNestedGroup {
-        for run in sample.footnoteRuns where !text.contains(run) {
-            return "lost footnote text \(run.debugDescription); document text: \(text.debugDescription)"
-        }
     }
     for bad in sample.forbidden where text.contains(bad) {
         return "\(bad.debugDescription) reached the document: \(text.debugDescription)"
@@ -563,11 +524,7 @@ private let mathmlCorpus: [MathMLSample] = [
                  tokens: ["\\sqrt", "[", "3", "]", "x", "+", "1"]),
     MathMLSample(name: "accents over identifiers",
                  mathml: "<math><mover><mi>v</mi><mo>→</mo></mover><mo>·</mo><mover><mi>w</mi><mo>^</mo></mover><mo>=</mo><mover><mi>x</mi><mo>¯</mo></mover></math>",
-                 // `→` over `v` should be `\vec{v}`, but the script is
-                 // converted to `\to` before the accent table sees it, so it
-                 // arrives as `v^{\to}` (a known gap): only the identifier is
-                 // required here.
-                 tokens: ["v", "\\cdot", "\\hat", "w", "=", "\\bar", "x"]),
+                 tokens: ["\\vec", "v", "\\cdot", "\\hat", "w", "=", "\\bar", "x"]),
     MathMLSample(name: "a limit with a function name and invisible apply",
                  mathml: "<math><munder><mi>lim</mi><mrow><mi>x</mi><mo>→</mo><mn>0</mn></mrow></munder><mfrac><mrow><mi>sin</mi><mo>&#x2061;</mo><mi>x</mi></mrow><mi>x</mi></mfrac><mo>=</mo><mn>1</mn></math>",
                  tokens: ["\\lim", "x", "\\to", "0", "\\frac", "\\sin", "x", "x", "=", "1"]),
@@ -690,12 +647,12 @@ private func firstMissingToken(_ expected: [String], in actual: [String]) -> Str
 
 func registerRTFImportPropertyTests() {
     test("RTF import property: every corpus source parses to a valid document that keeps its text, under every narrowing") {
-        // 15 producer-shaped sources × 22 schemas, less the known-bug pairs. Reported together, since one
+        // 15 producer-shaped sources × 22 schemas. Reported together, since one
         // bug usually shows up under several narrowings at once.
         var failures: [String] = []
         for (label, make) in narrowings {
             let narrowed = try make()
-            for sample in rtfCorpus where knownBugs["\(label)|\(sample.name)"] == nil {
+            for sample in rtfCorpus {
                 if let why = rtfViolation(sample, narrowed) {
                     failures.append("[\(label)] \(sample.name): \(why)")
                 }

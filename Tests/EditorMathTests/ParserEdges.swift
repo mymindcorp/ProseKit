@@ -86,6 +86,22 @@ func registerParserEdgeTests() {
         try expectNil(parseError("\\text{a\\b}"))
     }
 
+    test("parser: \\text reads the text-mode names for a backslash, tilde and caret") {
+        // A literal backslash can't be escaped as `\\` inside `\text` — that is
+        // a line break — so it is written `\textbackslash{}`, and the name,
+        // with the `{}` or the spaces that end it, draws one character.
+        for (named, literal) in [("\\textbackslash{}", "C:\\"), ("\\textasciitilde{}", "~"),
+                                 ("\\textasciicircum{}", "^")] {
+            let text = named.hasPrefix("\\textbackslash") ? "C:" + named : named
+            let a = try layout("\\text{\(text)x}")
+            let b = try layout("\\text{\(literal)x}")
+            try expect(abs(a.width - b.width) < 0.01, "\(named): \(a.width) vs \(b.width)")
+        }
+        let spaced = try layout("\\text{\\textbackslash x}")
+        try expect(abs(spaced.width - (try layout("\\text{\\textbackslash{}x}")).width) < 0.01,
+                   "the space after the name ends it rather than being drawn")
+    }
+
     test("parser: a \\text group left open is an error") {
         try expectNotNil(parseError("\\text{abc"))
         // The inner group closes; the outer one never does.

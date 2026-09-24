@@ -311,6 +311,11 @@ struct LatexParser {
         return list
     }
 
+    private static let textModeSymbols: [String: Character] = [
+        "textbackslash": "\\", "textasciitilde": "~", "textasciicircum": "^",
+        "textbraceleft": "{", "textbraceright": "}",
+    ]
+
     /// The raw text of a `{…}` group, for `\text` and environment names.
     private mutating func parseRawGroup() throws -> String {
         skipSpaces()
@@ -325,6 +330,20 @@ struct LatexParser {
             // A backslash escape inside \text passes its character through.
             if c == "\\", i + 1 < chars.count, !chars[i + 1].isLetter {
                 out.append(chars[i + 1]); i += 2; continue
+            }
+            // The text-mode names for the characters that have no escape of
+            // their own: `\textbackslash{}` is how a literal backslash is
+            // written inside `\text`, where `\\` would be a line break. As in
+            // TeX, the spaces after the name — or an empty `{}` — end it.
+            if c == "\\", let name = peekCommand(), let symbol = Self.textModeSymbols[name] {
+                out.append(symbol)
+                i += 1 + name.count
+                if i + 1 < chars.count, chars[i] == "{", chars[i + 1] == "}" {
+                    i += 2
+                } else {
+                    while i < chars.count, chars[i] == " " { i += 1 }
+                }
+                continue
             }
             out.append(c)
             i += 1
