@@ -309,6 +309,58 @@ final class TextBlockLayoutCache {
         markerWidths[marker] = w
         return w
     }
+    /// A long block's line breaks, and the exact text and width they were
+    /// found for. Kept apart from `entries` because the block that wants them
+    /// is by definition not there: an edit makes a new node, which misses.
+    struct BreakRecord {
+        let text: NSAttributedString
+        let units: [unichar]
+        let width: CGFloat
+        let ends: [Int]
+    }
+    /// The last few long blocks broken, most recent first. Matched by
+    /// content, never by node — whichever shares the most text with the block
+    /// being typeset is the one resumed from — so a record from some other
+    /// block can be chosen and is still sound, just less use.
+    private var recentBreaks: [BreakRecord] = []
+    private static let recentBreaksLimit = 4
+
+    /// The record at `width` sharing the most with `text` from its two ends,
+    /// with how much it shares — or nil when none shares at least half of it,
+    /// and resuming would re-break most of the block anyway.
+    ///
+    /// Characters are compared first, for every record; attributes only for
+    /// the closest, since they cost a walk over every run. A record of some
+    /// other paragraph is turned away in microseconds.
+    func closestBreaks(to text: NSAttributedString, units: [unichar], width: CGFloat)
+        -> (record: BreakRecord, prefix: Int, suffix: Int)? {
+        let candidates = recentBreaks
+            .filter { $0.width == width && LineBreaking.shapedAlike($0.units.count, units.count) }
+            .map { (record: $0, shared: LineBreaking.sharedUnits($0.units, units)) }
+            .sorted { $0.shared.prefix + $0.shared.suffix > $1.shared.prefix + $1.shared.suffix }
+        for (record, shared) in candidates {
+            guard 2 * (shared.prefix + shared.suffix) >= units.count else { break }
+            let prefix = LineBreaking.sameAttributesFromStart(record.text, text, upTo: shared.prefix)
+            let suffix = LineBreaking.sameAttributesFromEnd(record.text, text, upTo: shared.suffix)
+            if 2 * (prefix + suffix) >= units.count { return (record, prefix, suffix) }
+        }
+        return nil
+    }
+    /// Remember a long block's breaks, in place of the record they were
+    /// resumed from — that text is gone, and the next keystroke will want
+    /// these.
+    func recordBreaks(_ record: BreakRecord, replacing old: BreakRecord?) {
+        if let old, let i = recentBreaks.firstIndex(where: { $0.text === old.text && $0.width == old.width }) {
+            recentBreaks.remove(at: i)
+        }
+        recentBreaks.insert(record, at: 0)
+        if recentBreaks.count > Self.recentBreaksLimit { recentBreaks.removeLast() }
+    }
+    /// Test hook: how many blocks were broken by resuming a record, so a test
+    /// can say the incremental path ran rather than infer it from a timing.
+    private(set) var debugIncrementalBreaks = 0
+    func noteIncrementalBreak() { debugIncrementalBreaks += 1 }
+
     /// The theme the cached blocks were typeset with. Colors and fonts are baked
     /// into each block's attributed string (not part of `Key`), so a theme change
     /// must drop the cache — otherwise a new theme reuses stale-styled blocks.
@@ -324,7 +376,9 @@ final class TextBlockLayoutCache {
     /// Drop all cached blocks when the theme changes (e.g. the user edits colors,
     /// fonts, or spacing live), so they're re-typeset with the new styling.
     func syncTheme(_ theme: DocumentTheme) {
-        if let lastTheme, lastTheme != theme { entries.removeAll(); items.removeAll(); markerWidths.removeAll() }
+        if let lastTheme, lastTheme != theme {
+            entries.removeAll(); items.removeAll(); markerWidths.removeAll(); recentBreaks.removeAll()
+        }
         lastTheme = theme
     }
 
@@ -355,7 +409,7 @@ final class TextBlockLayoutCache {
     }
     func beginPass() { generation += 1 }
     /// Drop everything (e.g. when the syntax highlighter changes).
-    func clear() { entries.removeAll(); items.removeAll() }
+    func clear() { entries.removeAll(); items.removeAll(); recentBreaks.removeAll() }
     /// Drop the blocks whose node matches — the paragraphs holding an inline
     /// image whose bytes have just arrived, say. The block is keyed by its node
     /// and width, neither of which changed when the bytes turned up, so without
@@ -1644,18 +1698,12 @@ final class DocumentLayout {
         let typesetter = CTTypesetterCreateWithAttributedString(base as CFAttributedString)
         let length = base.length
         let nsString = base.string as NSString
-        // CTTypesetterSuggestLineBreak wraps by WIDTH only — it doesn't stop at
-        // hard line breaks (a code block's "\n", or a hard-break " "). So
-        // cap each line at the first mandatory break within the suggested span.
-        let hardBreaks = CharacterSet(charactersIn: "\n\r\u{2028}\u{2029}")
+        let ends = lineEnds(base, typesetter: typesetter, width: width)
         var lines: [LineLayout] = []
         var lineStart = 0
         var lineY: CGFloat = 0
-        while lineStart < length {
-            var count = CTTypesetterSuggestLineBreak(typesetter, lineStart, Double(width))
-            if count <= 0 { count = length - lineStart }
-            let br = nsString.rangeOfCharacter(from: hardBreaks, range: NSRange(location: lineStart, length: count))
-            if br.location != NSNotFound { count = br.location - lineStart + 1 }
+        for end in ends {
+            let count = end - lineStart
             let ctLine = CTTypesetterCreateLine(typesetter, CFRangeMake(lineStart, count))
             var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
             unsafe CTLineGetTypographicBounds(ctLine, &ascent, &descent, &leading)
@@ -1673,12 +1721,12 @@ final class DocumentLayout {
                                     stringRange: NSRange(location: lineStart, length: count),
                                     height: lineHeight, ascent: ascent))
             lineY += lineHeight
-            lineStart += count
-            if count == 0 { break }
+            lineStart = end
         }
         // If the text ends with a hard break, add a trailing empty line so the
         // caret has somewhere to sit on the new (blank) line.
-        if length > 0, let last = Unicode.Scalar(nsString.character(at: length - 1)), hardBreaks.contains(last) {
+        if length > 0, let last = Unicode.Scalar(nsString.character(at: length - 1)),
+           LineBreaking.hardBreaks.contains(last) {
             let font = theme.blockFont(node)
             let ascent = font.ascender, descent = -font.descender
             let lineHeight = theme.lineHeight(for: node, naturalHeight: ascent + descent)
@@ -1691,6 +1739,62 @@ final class DocumentLayout {
                               imageAtoms: imageAtoms, mathAtoms: mathAtoms,
                               highlights: highlights, codeBackgrounds: codeBackgrounds,
                               wikiLinkChips: wikiLinkChips)
+    }
+
+    /// Where each line of `text` ends, at `width`.
+    ///
+    /// Breaking a paragraph costs time proportional to its square:
+    /// `CTTypesetterSuggestLineBreak` reads to the end of the CoreText
+    /// paragraph on every call, so a keystroke in a 3000-word paragraph spent
+    /// ~55 ms here. When a long block was broken recently at this width, and
+    /// this text differs from it only in one stretch, the lines before that
+    /// stretch keep their breaks, breaking resumes a line above the word it
+    /// starts in, and it stops as soon as a break after a space lands where an
+    /// old one did in the unchanged tail — from there on, the old breaks carry
+    /// over shifted by the edit (`LineBreaking.resume`).
+    ///
+    /// The breaks come from a whole-string typesetter either way, never from a
+    /// substring of the text: CoreText shapes a string differently once it is
+    /// longer than `LineBreaking.shapingChangeLength`, so a substring can wrap
+    /// differently from the whole — which is what once looked like breaks
+    /// depending on text thousands of characters away. For the same reason a
+    /// record is only resumed from when it is on the same side of that length.
+    /// Resuming is checked against a full re-break on random edits, pastes and
+    /// deletions by `IncrementalLineBreakTests`; the text that could let an
+    /// edit reach further back than a line — bidirectional text, and the
+    /// scripts CoreText breaks by dictionary — always breaks in full, as does
+    /// text with no spaces, which resuming wouldn't speed up
+    /// (`LineBreaking.canResume`).
+    private func lineEnds(_ text: NSAttributedString, typesetter: CTTypesetter, width: CGFloat) -> [Int] {
+        let length = text.length
+        let string = text.string as NSString
+        guard let blockCache, length >= LineBreaking.incrementalMinimumLength else {
+            return LineBreaking.ends(typesetter, string: string, width: width, from: 0, prefix: [])
+        }
+        let units = LineBreaking.utf16(string)
+        // Never resumed, so never recorded — a record here would only push
+        // out one that could be.
+        guard LineBreaking.canResume(units) else {
+            return LineBreaking.ends(typesetter, string: string, width: width, from: 0, prefix: [])
+        }
+        // A copy: the block's own string is mutable, and later texts are
+        // compared against this one.
+        let recorded = NSAttributedString(attributedString: text)
+        let ends: [Int]
+        if let (record, prefix, suffix) = blockCache.closestBreaks(to: text, units: units, width: width) {
+            ends = LineBreaking.resume(typesetter, string: string, units: units, width: width, old: record.ends,
+                                       oldLength: record.text.length, prefix: prefix, suffix: suffix)
+            blockCache.noteIncrementalBreak()
+            #if PROSEKIT_VERIFY_BREAKS
+            let whole = LineBreaking.ends(typesetter, string: string, width: width, from: 0, prefix: [])
+            precondition(ends == whole, "incremental line breaks diverged from a full re-break")
+            #endif
+            blockCache.recordBreaks(.init(text: recorded, units: units, width: width, ends: ends), replacing: record)
+        } else {
+            ends = LineBreaking.ends(typesetter, string: string, width: width, from: 0, prefix: [])
+            blockCache.recordBreaks(.init(text: recorded, units: units, width: width, ends: ends), replacing: nil)
+        }
+        return ends
     }
 
     /// The open `[[` rebased onto a block's local offsets, when it is this
@@ -1740,6 +1844,7 @@ final class DocumentLayout {
         var attrs: [NSAttributedString.Key: Any] = index > 0
             ? unsafe text.attributes(at: index - 1, effectiveRange: nil) : [.font: font]
         attrs[kCTRunDelegateAttributeName as NSAttributedString.Key] = nil
+        attrs[LineBreaking.atomMetricsKey] = nil
         attrs[.underlineStyle] = nil
         attrs[.kern] = nil
         attrs[.foregroundColor] = Self.fade(style.color ?? attrs[.foregroundColor] as? UIColor ?? theme.textColor,
@@ -1860,9 +1965,9 @@ final class DocumentLayout {
                 // ascent grows to fit it and the text next to it stays aligned.
                 let ascent = rendering.ascent
                 let descent = rendering.size.height - ascent
-                let delegate = makeBoxRunDelegate(width: rendering.size.width, ascent: ascent, descent: descent)
+                let box = boxRunAttributes(width: rendering.size.width, ascent: ascent, descent: descent)
                 let attrStart = result.length
-                result.append(NSAttributedString(string: "\u{fffc}", attributes: [kCTRunDelegateAttributeName as NSAttributedString.Key: delegate]))
+                result.append(NSAttributedString(string: "\u{fffc}", attributes: box))
                 mathAtoms.append((attrIndex: attrStart, docOffset: docPos, rendering: rendering))
                 segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: 1, text: nil))
                 docPos += 1
@@ -1872,9 +1977,9 @@ final class DocumentLayout {
                 // same rule as a block image — `width`/`height` mean the same
                 // thing wherever the image sits, and used to be ignored here.
                 let size = Self.imageDisplaySize(child, natural: image.size, available: width)
-                let delegate = makeImageRunDelegate(size)
+                let box = boxRunAttributes(width: size.width, ascent: size.height, descent: 0)
                 let attrStart = result.length
-                result.append(NSAttributedString(string: "\u{fffc}", attributes: [kCTRunDelegateAttributeName as NSAttributedString.Key: delegate]))
+                result.append(NSAttributedString(string: "\u{fffc}", attributes: box))
                 imageAtoms.append((attrIndex: attrStart, image: image, size: size))
                 segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: 1, text: nil))
                 docPos += 1
@@ -1950,17 +2055,15 @@ final class DocumentLayout {
                     let gap = chipIcon != nil ? theme.points(wikiStyle.iconGap) : 0
                     let leading = padX + iconBox + gap
                     if leading > 0 {
-                        let delegate = makeBoxRunDelegate(width: leading, ascent: blockFont.ascender,
-                                                          descent: -blockFont.descender)
+                        var box = boxRunAttributes(width: leading, ascent: blockFont.ascender,
+                                                   descent: -blockFont.descender)
+                        box[.font] = blockFont
                         // The box's own character is U+FFFC, whose line-breaking
                         // class allows a break on either side of it — which put
                         // a chip's glyph at the end of one line and its label at
                         // the start of the next. The word joiner after it
                         // forbids that break without taking any width.
-                        result.append(NSAttributedString(string: "\u{fffc}", attributes: [
-                            kCTRunDelegateAttributeName as NSAttributedString.Key: delegate,
-                            .font: blockFont,
-                        ]))
+                        result.append(NSAttributedString(string: "\u{fffc}", attributes: box))
                         // Its own run, so the delegate still governs exactly one
                         // character and reserves exactly one box.
                         result.append(NSAttributedString(string: "\u{2060}", attributes: [.font: blockFont]))
@@ -2654,7 +2757,12 @@ private func makeBoxRunDelegate(width: CGFloat, ascent: CGFloat, descent: CGFloa
 }
 
 /// An inline image sits on the baseline, so it reserves height above it only.
-private func makeImageRunDelegate(_ size: CGSize) -> CTRunDelegate {
-    makeBoxRunDelegate(width: size.width, ascent: size.height, descent: 0)
+/// An inline atom's attributes: the run delegate that reserves its box, and
+/// the same metrics as a plain value. The delegate is a new object each time
+/// and compares by identity; the value is what lets `LineBreaking` tell that
+/// an atom in an edited paragraph still takes the room it did.
+private func boxRunAttributes(width: CGFloat, ascent: CGFloat, descent: CGFloat) -> [NSAttributedString.Key: Any] {
+    [kCTRunDelegateAttributeName as NSAttributedString.Key: makeBoxRunDelegate(width: width, ascent: ascent, descent: descent),
+     LineBreaking.atomMetricsKey: [width, ascent, descent] as NSArray]
 }
 #endif

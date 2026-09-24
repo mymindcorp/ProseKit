@@ -136,6 +136,21 @@ costs seconds. `testCaretsAdvanceAcrossALine` fails only past about 100: two
 positions on one line drawn in the wrong order, which nothing at the default
 depth sees.
 
+Line breaking resumes from a long paragraph's previous breaks instead of
+breaking it whole after an edit (`Sources/EditorUIKit/LineBreaking.swift`).
+Nothing in CoreText promises that matches a full re-break, so there is a mode
+that makes every paragraph take that path — not only long ones — and stops on
+the first result that differs from a full re-break. It is a compilation
+condition like the fuzzers'; run the whole iOS suite under it, fuzzers
+included, after touching line breaking or anything that feeds the typesetter:
+
+```sh
+xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests -skip-testing:EditorUIKitTests/IncrementalLineBreakTests/testShortBlocksBreakWhole -destination 'platform=iOS Simulator,name=iPhone 17 Pro' SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ PROSEKIT_VERIFY_BREAKS'
+```
+
+(The skipped case asserts that short paragraphs break whole, which this mode
+deliberately undoes.)
+
 `PROSEKIT_TEST_FILTER=<substring>` narrows any headless suite to matching cases.
 
 The opt-in ones generate their documents from the schema's own content

@@ -388,6 +388,27 @@ final class HotPathProbe: XCTestCase {
                 let text = (0 ..< n).map { "word\($0 % 97)" }.joined(separator: " ")
                 return (try! s.node("doc", [:], content: Fragment.from([para(s, text)])), 1 + 4)
             }),
+            // A text node per run: the attribute comparison walks every run,
+            // which a plain paragraph — one run — never exercises.
+            ("one paragraph of n words, every third bold", [500, 1500, 3000], { s, n in
+                let runs = (0 ..< n).map { i in
+                    i % 3 == 0 ? s.text("word\(i % 97) ", [s.mark("bold")]) : s.text("word\(i % 97) ")
+                }
+                return (try! s.node("doc", [:], content: Fragment.from([
+                    try! s.node("paragraph", [:], content: Fragment.from(runs))])), 1 + 4)
+            }),
+            // Linear already — each "\n" ends a CoreText paragraph — so the
+            // question is only whether resuming costs it anything.
+            ("code block of n lines", [500, 3000], { s, n in
+                let text = (0 ..< n).map { "    let value\($0) = compute(\($0), factor: 42) // note" }.joined(separator: "\n")
+                return (try! s.node("doc", [:], content: Fragment.from([
+                    try! s.node("codeBlock", [:], content: Fragment.from([s.text(text)]))])), 1 + 4)
+            }),
+            // No spaces to resume from, so it breaks to the end each time.
+            ("one CJK paragraph of n characters", [3000, 9000], { s, n in
+                let text = String((0 ..< n).map { i in Array("中文字符没有空格的长句子日本語の文章")[i % 18] })
+                return (try! s.node("doc", [:], content: Fragment.from([para(s, text)])), 1 + 4)
+            }),
         ]
         for (label, sizes, build) in cases {
             for n in sizes {
