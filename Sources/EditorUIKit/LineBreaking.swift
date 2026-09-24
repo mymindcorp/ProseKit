@@ -231,12 +231,17 @@ enum LineBreaking {
         let delegate = unsafe Unmanaged.passUnretained(kCTRunDelegateAttributeName).toOpaque()
         let inA = unsafe CFDictionaryContainsKey(xa, delegate), inB = unsafe CFDictionaryContainsKey(xb, delegate)
         if !inA, !inB { return CFEqual(xa, xb) }
-        let metrics = unsafe Unmanaged.passUnretained(atomMetricsKey.rawValue as CFString).toOpaque()
-        guard inA, inB, unsafe CFDictionaryContainsKey(xa, metrics), unsafe CFDictionaryContainsKey(xb, metrics),
-              let ma = CFDictionaryCreateMutableCopy(nil, 0, xa),
-              let mb = CFDictionaryCreateMutableCopy(nil, 0, xb) else { return false }
-        unsafe CFDictionaryRemoveValue(ma, delegate)
-        unsafe CFDictionaryRemoveValue(mb, delegate)
-        return CFEqual(ma, mb)
+        // The key bridged here is a temporary: held alive across every call
+        // that hashes it, or its pointer would dangle.
+        let name = atomMetricsKey.rawValue as CFString
+        return withExtendedLifetime(name) {
+            let metrics = unsafe Unmanaged.passUnretained(name).toOpaque()
+            guard inA, inB, unsafe CFDictionaryContainsKey(xa, metrics), unsafe CFDictionaryContainsKey(xb, metrics),
+                  let ma = CFDictionaryCreateMutableCopy(nil, 0, xa),
+                  let mb = CFDictionaryCreateMutableCopy(nil, 0, xb) else { return false }
+            unsafe CFDictionaryRemoveValue(ma, delegate)
+            unsafe CFDictionaryRemoveValue(mb, delegate)
+            return CFEqual(ma, mb)
+        }
     }
 }

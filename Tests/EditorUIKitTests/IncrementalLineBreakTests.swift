@@ -153,10 +153,12 @@ final class IncrementalLineBreakTests: XCTestCase {
         return nil
     }
 
-    /// How many edits resumed, of how many were compared.
+    /// How many edits resumed, of how many were compared — and how many
+    /// carried an edited paragraph across `LineBreaking.shapingChangeLength`.
     private func sweep(seeds: Range<UInt64>, widths: [CGFloat], words: Int, edits: Int,
-                       file: StaticString = #filePath, line: UInt = #line) -> (resumed: Int, compared: Int) {
-        var resumed = 0, compared = 0
+                       file: StaticString = #filePath, line: UInt = #line)
+        -> (resumed: Int, compared: Int, crossed: Int) {
+        var resumed = 0, compared = 0, crossed = 0
         for seed in seeds {
             for width in widths {
                 var rng = RNG(seed: seed &* 7919 &+ UInt64(width))
@@ -166,7 +168,7 @@ final class IncrementalLineBreakTests: XCTestCase {
                 var paragraphs = [randomPieces(words: words, &rng), [.text("A short one.", [])],
                                   randomPieces(words: words, &rng)]
                 let cache = TextBlockLayoutCache()
-                _ = layout(document(paragraphs), width, cache)
+                var lengths = layout(document(paragraphs), width, cache).blocks.map(\.attributed.length)
                 for step in 0 ..< edits {
                     edit(&paragraphs[Bool.random(using: &rng) ? 0 : 2], &rng)
                     let doc = document(paragraphs)
@@ -174,15 +176,18 @@ final class IncrementalLineBreakTests: XCTestCase {
                     let incremental = layout(doc, width, cache)
                     resumed += cache.debugIncrementalBreaks - before
                     compared += 1
+                    let now = incremental.blocks.map(\.attributed.length)
+                    crossed += zip(lengths, now).filter { !LineBreaking.shapedAlike($0, $1) }.count
+                    lengths = now
                     let whole = layout(doc, width)
                     if let diff = difference(incremental, whole) {
                         XCTFail("seed \(seed), width \(width), edit \(step): \(diff)", file: file, line: line)
-                        return (resumed, compared)
+                        return (resumed, compared, crossed)
                     }
                 }
             }
         }
-        return (resumed, compared)
+        return (resumed, compared, crossed)
     }
 
     func testResumedBreaksMatchABreakFromScratch() {
@@ -199,12 +204,16 @@ final class IncrementalLineBreakTests: XCTestCase {
     /// Around the length where CoreText starts shaping text differently, with
     /// edits that carry a paragraph back and forth across it.
     func testResumedBreaksMatchAcrossTheShapingChangeLength() {
+        // The vocabulary averages ~16 units a word with its space, so ~620
+        // words starts a paragraph right at the threshold, and the sweep's
+        // pastes and deletions carry it back and forth across.
         #if PROSEKIT_FUZZ
-        let resumed = sweep(seeds: 0 ..< 8, widths: [180, 362, 1000], words: 1500, edits: 40)
+        let result = sweep(seeds: 0 ..< 8, widths: [180, 362, 1000], words: 620, edits: 40)
         #else
-        let resumed = sweep(seeds: 0 ..< 1, widths: [362], words: 1500, edits: 20)
+        let result = sweep(seeds: 0 ..< 2, widths: [362], words: 620, edits: 20)
         #endif
-        XCTAssertGreaterThan(resumed.resumed * 2, resumed.compared, "\(resumed)")
+        XCTAssertGreaterThan(result.crossed, 0, "no edit crossed the threshold: \(result)")
+        XCTAssertGreaterThan(result.resumed * 2, result.compared, "\(result)")
     }
 
     /// A string longer than `LineBreaking.shapingChangeLength` is shaped
