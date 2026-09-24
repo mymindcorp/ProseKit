@@ -26,7 +26,7 @@ import TestDocGen
 ///     DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 ///     xcodebuild test -scheme ProseKit-Package \
 ///       -only-testing:EditorUIKitTests/GeometryFuzzTests \
-///       -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+///       -destination 'platform=iOS Simulator,name=iPhone 18 Pro' \
 ///       SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ'
 @MainActor
 final class GeometryFuzzTests: XCTestCase {

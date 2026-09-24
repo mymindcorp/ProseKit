@@ -11,7 +11,7 @@ import SchemaKit
 /// environment variable doesn't survive the trip into the simulator:
 ///
 ///     xcodebuild test -scheme ProseKit-Package -configuration Release \
-///       -destination 'platform=iOS Simulator,name=iPhone 17' \
+///       -destination 'platform=iOS Simulator,name=iPhone 18 Pro' \
 ///       -only-testing:EditorUIKitTests/RealizeBench \
 ///       ENABLE_TESTABILITY=YES SWIFT_OPTIMIZATION_LEVEL=-O \
 ///       SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_BENCH'

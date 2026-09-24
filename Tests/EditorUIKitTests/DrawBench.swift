@@ -10,7 +10,7 @@ import EditorStateKit
 /// paint path `RealizeBench` measures. Compiled out by default; same invocation:
 ///
 ///     xcodebuild test -scheme ProseKit-Package -configuration Release \
-///       -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+///       -destination 'platform=iOS Simulator,name=iPhone 18 Pro' \
 ///       -only-testing:EditorUIKitTests/DrawBench \
 ///       ENABLE_TESTABILITY=YES SWIFT_OPTIMIZATION_LEVEL=-O \
 ///       SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_BENCH'

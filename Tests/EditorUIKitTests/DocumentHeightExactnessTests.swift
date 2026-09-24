@@ -10,25 +10,73 @@ import SchemaKit
 /// short scroll, so the missing tail cannot be reached and never realizes.
 @MainActor
 final class DocumentHeightExactnessTests: XCTestCase {
-    /// The body text every document here is built from. It has to carry two
+    /// The body text the documents here are built from. It has to carry two
     /// properties, each pinned by a test below, because losing either one
     /// quietly empties out the test that depends on it:
     ///
     /// - the estimator under-counts it (`…FallsShortAndMeasuringRecoversIt`);
     /// - its last line has almost no slack, so the list and quote indents each
     ///   push it onto one more line (`…ActuallyDiffersFromAllParagraphs`).
+    ///
+    /// One string can't reliably carry both. The second can't be had from a
+    /// fixed string at all: how full the last line is depends on the body
+    /// font's metrics, which change between simulators, and on the width of
+    /// the block's "Para \(i):" prefix, which changes with the digits in `i` —
+    /// a 54-word corpus that suited one device left only about half the
+    /// indented blocks a line taller on another. So the mixed documents use
+    /// `fittedBody`, fitted per block. And filling the last line takes away
+    /// the wrap waste that is exactly what the estimator misses in a bare
+    /// paragraph — this corpus is narrower per character than the 0.5 em the
+    /// estimator assumes, so without that waste it over-counts — so the
+    /// all-paragraph documents keep the plain corpus.
     private static let corpus: String = {
         let vocab = ["lorem", "ipsum", "dolor", "sit", "amet",
                      "consectetur", "adipiscing", "elit", "sed", "do"]
         return (0 ..< 54).map { vocab[$0 % vocab.count] }.joined(separator: " ")
     }()
 
-    private func editor(_ n: Int, mixed: Bool = false) -> Editor {
+    private static var fitted: [Int: String] = [:]
+    private static let measuringSchema = try! Editor(extensions: fullKit()).schema
+
+    private static func plainBody(_ i: Int) -> String { "Para \(i): \(corpus)" }
+
+    /// Block `i`'s text with its last line filled: the plain text topped up
+    /// with as many " i" as fit without adding a line at a bare paragraph's
+    /// width. The slack that leaves is under the width of " i", and the
+    /// narrowest indent (the quote's) is wider than that, so every indent costs
+    /// a line wherever the lines break: line breaking is greedy, so no line of
+    /// the narrower column ends past where the full-width one did, and the text
+    /// left for its last line is wider than the narrower column.
+    private static func fittedBody(_ i: Int) -> String {
+        if let text = fitted[i] { return text }
+        let base = plainBody(i)
+        func text(_ k: Int) -> String { base + String(repeating: " i", count: k) }
+        func lines(_ k: Int) -> Int {
+            let s = measuringSchema
+            let doc = try! s.node("doc", [:], content: Fragment.from([
+                try! s.node("paragraph", [:], content: Fragment.from([s.text(text(k))])),
+            ]))
+            return DocumentLayout(doc: doc, width: 362, theme: DocumentTheme()).blocks[0].lines.count
+        }
+        // The largest k that keeps the line count: lines(k) is monotone in k,
+        // and 64 of them overflow any line of a phone column.
+        let target = lines(0)
+        var lo = 0, hi = 64
+        precondition(lines(hi) > target)
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2
+            if lines(mid) == target { lo = mid } else { hi = mid }
+        }
+        fitted[i] = text(lo)
+        return text(lo)
+    }
+
+    private func editor(_ n: Int, mixed: Bool = false, fitted: Bool = false) -> Editor {
         let editor = try! Editor(extensions: fullKit())
         let s = editor.schema
         var blocks: [Node] = []
         for i in 0 ..< n {
-            let text = Fragment.from([s.text("Para \(i): \(Self.corpus)")])
+            let text = Fragment.from([s.text(fitted ? Self.fittedBody(i) : Self.plainBody(i))])
             // Block types the estimator under-counts: it assumes a fixed average
             // character width and no wrap overhead, so markers and indents are
             // exactly what it misses.
@@ -93,9 +141,11 @@ final class DocumentHeightExactnessTests: XCTestCase {
     /// The same guarantee over a document carrying lists and quotes as well as
     /// paragraphs.
     func testMeasuredHeightIsExactForAMixOfBlockTypes() {
-        let e = editor(300, mixed: true)
+        let e = editor(300, mixed: true, fitted: true)
         let v = view(e)
         XCTAssertFalse(v.documentHeightIsExact)
+        XCTAssertLessThan(v.documentHeight, fullHeight(e),
+                          "the indents are what the estimator misses here, so it falls short")
         XCTAssertEqual(v.measuredDocumentHeight(), fullHeight(e), accuracy: 0.5)
     }
 
@@ -113,9 +163,9 @@ final class DocumentHeightExactnessTests: XCTestCase {
     func testTheMixedDocumentActuallyDiffersFromAllParagraphs() {
         // What one indent costs, measured rather than assumed, so this doesn't
         // depend on the body font: the same two blocks, listed and not.
-        let oneIndent = fullHeight(editor(2, mixed: true)) - fullHeight(editor(2))
+        let oneIndent = fullHeight(editor(2, mixed: true, fitted: true)) - fullHeight(editor(2, fitted: true))
         XCTAssertGreaterThan(oneIndent, 0, "the list indent has to cost a line for this to cover anything")
-        XCTAssertEqual(fullHeight(editor(300, mixed: true)) - fullHeight(editor(300)),
+        XCTAssertEqual(fullHeight(editor(300, mixed: true, fitted: true)) - fullHeight(editor(300, fitted: true)),
                        200 * oneIndent, accuracy: 0.5,
                        "each of the 200 lists and quotes costs a line")
     }
