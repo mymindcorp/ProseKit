@@ -3277,20 +3277,29 @@ public enum MarkdownParser {
     private static func literalAutolinkBoundary(_ bytes: [UInt8], _ i: Int) -> Bool {
         guard i > 0 else { return true }
         switch bytes[i - 1] {
-        case UInt8(ascii: " "), UInt8(ascii: "\t"), UInt8(ascii: "\n"),
+        case UInt8(ascii: " "), UInt8(ascii: "\t"), UInt8(ascii: "\n"), UInt8(ascii: "\r"),
              UInt8(ascii: "*"), UInt8(ascii: "_"), UInt8(ascii: "~"), UInt8(ascii: "("):
             return true
         default: return false
         }
     }
 
+    private static let wwwPrefix = Array("www.".utf8)
+
     /// A bare URL beginning at `start`, and the index just past it.
-    static func literalAutolink(_ bytes: [UInt8], _ start: Int) -> (text: String, end: Int)? {
+    ///
+    /// `www` also accepts a scheme-less `www.` host. Markdown leaves that out
+    /// (see above); plain text pasted into the editor takes it, because the
+    /// autolink input rule links a typed `www.` host too.
+    static func literalAutolink(_ bytes: [UInt8], _ start: Int,
+                                www: Bool = false) -> (text: String, end: Int)? {
         let mailto = hasPrefix(bytes, start, mailtoPrefix)
         let bodyStart: Int
         if mailto { bodyStart = start + mailtoPrefix.count }
         else if hasPrefix(bytes, start, httpsPrefix) { bodyStart = start + httpsPrefix.count }
         else if hasPrefix(bytes, start, httpPrefix) { bodyStart = start + httpPrefix.count }
+        // The `www.` is part of the host, so the domain check sees it.
+        else if www, hasPrefix(bytes, start, wwwPrefix) { bodyStart = start }
         else { return nil }
 
         // The candidate runs to the next whitespace or `<`. What of its tail is
@@ -3300,7 +3309,7 @@ public enum MarkdownParser {
         while end < bytes.count {
             let b = bytes[end]
             if b == UInt8(ascii: " ") || b == UInt8(ascii: "\t") || b == UInt8(ascii: "\n")
-                || b == UInt8(ascii: "<") { break }
+                || b == UInt8(ascii: "\r") || b == UInt8(ascii: "<") { break }
             end += 1
         }
         end = trimAutolinkTail(bytes, start, end)
@@ -3390,6 +3399,39 @@ public enum MarkdownParser {
         let bytes = Array(text.utf8)
         guard let (matched, end) = literalAutolink(bytes, 0) else { return false }
         return end == bytes.count && matched == text
+    }
+
+    /// Every bare URL in plain text, with the href a link over it should carry.
+    ///
+    /// The same detector the parser runs over Markdown — `http://`, `https://`
+    /// and `mailto:`, at a word boundary, with the sentence's punctuation
+    /// trimmed off the tail — plus a scheme-less `www.` host, which links to
+    /// `https://`. For text that isn't Markdown but still has links in it: a
+    /// paste from a terminal, a chat, or a plain-text mail.
+    public static func literalAutolinks(in text: String) -> [(range: Range<String.Index>, href: String)] {
+        let bytes = Array(text.utf8)
+        var result: [(range: Range<String.Index>, href: String)] = []
+        var i = 0
+        while i < bytes.count {
+            let c = bytes[i] | 0x20
+            if c == UInt8(ascii: "h") || c == UInt8(ascii: "m") || c == UInt8(ascii: "w"),
+               literalAutolinkBoundary(bytes, i),
+               let (url, end) = literalAutolink(bytes, i, www: true) {
+                let href = c == UInt8(ascii: "w") ? "https://" + url : url
+                if let href = sanitizeURL(href, for: .link) {
+                    // Both ends sit next to ASCII (or at an end of the text),
+                    // so both are scalar boundaries.
+                    let utf8 = text.utf8
+                    let lower = utf8.index(utf8.startIndex, offsetBy: i)
+                    let upper = utf8.index(lower, offsetBy: end - i)
+                    result.append((lower..<upper, href))
+                }
+                i = end
+                continue
+            }
+            i += 1
+        }
+        return result
     }
 
     private static func parseLinkLike(_ bytes: [UInt8], _ start: Int,
