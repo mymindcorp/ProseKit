@@ -223,4 +223,5 @@ registerPMCommandsTests(); registerHostAndEdgeCommandTests(); registerSplitBlock
 
 registerKeyStrokeTests()
 registerMutationKillTests()
+registerInputRulesMutationKillTests()
 TestSuite.main("EditorCommandsTests", collector.all)
