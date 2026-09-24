@@ -53,6 +53,15 @@ func registerRTFImportFixTests() {
         try expectEqual(textblocks(d), ["x[^1] after", " Note text. More."])
     }
 
+    test("RTF: a note longer than the schema's definition holds keeps all of its text") {
+        let narrow = try narrowed(["footnoteDefinition": "paragraph"])
+        let d = try RTFParser.parse(fixRTF(
+            #"\pard Claim{\footnote \pard {\chftn } First.\par \pard Second.\par \pard\ls1 {\listtext \'b7\tab}Item.} stands.\par"#),
+            schema: narrow)
+        try d.check()
+        try expectEqual(textblocks(d), ["Claim[^1] stands.", " First. Second. Item."])
+    }
+
     test("RTF: a paragraph the schema can't give a break keeps its text") {
         let narrow = try narrowed(["paragraph": "text*"])
         let d = try RTFParser.parse(fixRTF(#"\pard a\line b\par\pard c\par"#), schema: narrow)

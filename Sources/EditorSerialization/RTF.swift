@@ -736,7 +736,15 @@ private struct RTFReader {
         case "clvmrg" where inTableContext: tables[table(at: rowDefinitionDepth)].pending.verticalMerge = on
         case "itap": group.para.itap = param
         case "cell" where inTableContext:
-            endCell(depth: max(1, tableDepth(group.para)))
+            // `\cell` is the outer table's; a nested cell ends with
+            // `\nestcell`. So a `\cell` read at a depth whose tables have
+            // never ended a cell — a bogus `\itap` — belongs to the table
+            // above them.
+            var depth = max(1, tableDepth(group.para))
+            while depth > 1, depth > tables.count || (tables[depth - 1].rows.isEmpty && tables[depth - 1].cells.isEmpty) {
+                depth -= 1
+            }
+            endCell(depth: depth)
         case "nestcell" where inTableContext:
             endCell(depth: max(2, tableDepth(group.para)))
         case "row" where inTableContext:
@@ -1050,14 +1058,34 @@ private struct RTFReader {
         listMarker = frame.listMarker
         tables = frame.tables
 
-        if let type = schema.nodes["footnoteDefinition"],
-           let node = type.createAndFill(["label": .string(frame.label)], content: Fragment.from(content)) {
-            footnoteDefinitions.append(node)
-        }
+        if let node = footnoteDefinition(frame.label, content) { footnoteDefinitions.append(node) }
         if let type = schema.nodes["footnoteReference"],
            let node = try? type.create(["label": .string(frame.label)]) {
             inline.append(.node(node))
         }
+    }
+
+    /// The definition for a note's blocks. A schema whose definition holds less
+    /// than the note — one paragraph, and the note has two and a list — gets
+    /// the note's text run together into what it does hold, rather than no
+    /// definition at all.
+    func footnoteDefinition(_ label: String, _ content: [Node]) -> Node? {
+        guard let type = schema.nodes["footnoteDefinition"] else { return nil }
+        let attrs: Attrs = ["label": .string(label)]
+        if let node = type.createAndFill(attrs, content: Fragment.from(content)) { return node }
+        var spilled: [Node] = []
+        let fitted = fitContent(content, into: type, schema: schema, overflow: &spilled)
+        if spilled.isEmpty, let node = type.createAndFill(attrs, content: Fragment.from(fitted)) { return node }
+        var inline: [Node] = []
+        Fragment.from(content).descendants { node, _, _, _ in
+            guard node.isTextblock else { return true }
+            if !inline.isEmpty, node.childCount > 0 { inline.append(schema.text(" ")) }
+            for i in 0..<node.childCount { inline.append(node.child(i)) }
+            return false
+        }
+        guard let paragraph = schema.nodes["paragraph"],
+              let joined = paragraph.createAndFill([:], content: Fragment.from(inline)) else { return nil }
+        return type.createAndFill(attrs, content: Fragment.from(fitContent([joined], into: type, schema: schema)))
     }
 
     mutating func recordFont() {
@@ -1200,6 +1228,14 @@ private struct RTFReader {
     mutating func collapseTables(below depth: Int) {
         while tables.count > max(0, depth) {
             var builder = tables.removeLast()
+            // A nested level no cell ever ended in was never a table: `table(at:)`
+            // opened it for a paragraph's `\itap` — rightly, for a table whose
+            // cell starts with a table, but a bogus `\itap3` in a one-deep table
+            // does the same. Its content is the enclosing cell's.
+            if !tables.isEmpty, builder.rows.isEmpty, builder.cells.isEmpty {
+                tables[tables.count - 1].blocks.append(contentsOf: builder.blocks)
+                continue
+            }
             closePendingRow(&builder)
             let nodes = tableNodes(builder.rows)
             guard !nodes.isEmpty else { continue }
