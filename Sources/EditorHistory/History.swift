@@ -95,23 +95,18 @@ struct Branch {
                 continue
             }
             addBefore.append(HistoryItem(map: item.map))
-            // The remapping is there for items a collaborator has rebased
-            // under us. When it refuses a step — `map` returning nil, or the
-            // mapped step failing to apply — that step is dropped and the undo
-            // quietly lands half-done. There is no louder failure than the
-            // document simply not moving, and for a table it does not even do
-            // that: the fixer rebuilds whatever the rest of the undo removed,
-            // so the event leaves the stack having changed nothing at all.
-            // Fall back to the step as recorded, which is what a history with
-            // nothing to rebase would have applied in the first place.
+            // When the remapping refuses a step — `map` returning nil, or the
+            // mapped step failing to apply — the step is dropped, as upstream
+            // does. What it would have undone is gone: something rebased under
+            // us (an untracked edit, a collaborator) deleted it. Applying the
+            // step at its recorded positions instead would land on whatever
+            // now sits there, and delete someone else's text.
+            //
+            // A drop that should not have happened is a mapping bug, and is
+            // fixed there: 41bc71a made an insertion stop reporting
+            // `deletedAfter`, which was dropping steps from table undos.
             var map: StepMap?
-            var applied = false
             if let mapped = itemStep.map(remap.slice(mapFrom)), transform.maybeStep(mapped).failed == nil {
-                applied = true
-            } else if transform.maybeStep(itemStep).failed == nil {
-                applied = true
-            }
-            if applied {
                 map = transform.mapping.maps[transform.mapping.maps.count - 1]
                 addAfter.append(HistoryItem(map: map!, mirrorOffset: addAfter.count + addBefore.count))
             }
