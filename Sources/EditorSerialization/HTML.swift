@@ -37,7 +37,7 @@ public struct HTMLConfig: Sendable {
             "bold": "strong", "italic": "em", "strike": "s", "underline": "u",
             "highlight": "mark", "code": "code", "link": "a",
             "subscript": "sub", "superscript": "sup",
-            // textColor/backgroundColor serialize to styled <span> (see applyMarks).
+            // textColor/backgroundColor serialize to styled <span> (see markOpen).
         ]
         var tagToNode: [String: String] = [:]
         // taskList/taskItem also use ul/li but need a data-type to round-trip,
@@ -85,7 +85,7 @@ public enum HTMLSerializer {
     ///
     /// The choice is invisible in a rendered document, but it isn't arbitrary:
     /// CommonMark writes `<em><strong>x</strong></em>` for `***x***` and puts a
-    /// link outside the emphasis inside it, so every other Markdown renderer
+    /// link outside any emphasis inside it, so every other Markdown renderer
     /// does too. Matching them keeps our HTML comparable with theirs — which is
     /// how the CommonMark suite reads it, and how anyone diffing our output
     /// against a reference implementation will.
@@ -623,7 +623,6 @@ public enum HTMLParser {
 
     // Tags whose children are spliced in transparently (document/section wrappers).
     private static let transparentWrappers: Set<String> = ["html", "body", "tbody", "thead", "tfoot"]
-    // Tags dropped entirely along with their content (document metadata, CSS, JS).
     /// Tags dropped entirely along with their content. Beyond document metadata
     /// and CSS/JS, this covers the embedding elements — an `<iframe>` or an
     /// `<svg>` is a document of its own that can carry script, and none of them
@@ -1027,7 +1026,7 @@ public enum HTMLParser {
     }
 
     /// Parse a `<details>` into `details(detailsSummary, detailsContent)`. The
-    /// `<summary>` (missing in hand-written HTML) becomes the summary; everything
+    /// `<summary>` (which hand-written HTML may omit) becomes the summary; everything
     /// else becomes the content — whether or not it came wrapped in our
     /// `data-type="detailsContent"` div (that div flattens through `parseBlocks`).
     /// With a schema that has no details nodes, the section degrades to the
@@ -1494,7 +1493,8 @@ public enum HTMLParser {
                         var marks: [Mark] = []
                         if let style = attrs["style"] {
                             // Colors are re-serialized into a `style` attribute, so
-                            // anything CSS can express would round-trip with them.
+                            // an unsanitized one would carry anything else CSS can
+                            // express back out with it.
                             if let c = styleValue(style, "background-color").flatMap(sanitizeCSSColor),
                                let mt = schema.marks["backgroundColor"] {
                                 marks.append(mt.create(["color": .string(c)]))
@@ -1687,8 +1687,8 @@ public enum HTMLParser {
             i += 1
         }
         // No close tag: treat everything to the end as the element's children.
-        // (Returning count, not count-1: callers slice (open+1)..<end, and an
-        // unterminated tag as the last token must not produce an inverted range.)
+        // (Returning endIndex, not endIndex - 1: callers slice (open+1)..<end, and
+        // an unterminated tag as the last token must not produce an inverted range.)
         return tokens.endIndex
     }
 
@@ -1995,15 +1995,6 @@ public enum HTMLParser {
         return out
     }
 
-    /// The named character references that actually turn up in web article text.
-    ///
-    /// Not the full HTML5 set (~2,200 names, most of them mathematical): this is
-    /// the long tail that matters for pasted prose — typographic punctuation,
-    /// currency and symbols, and the accented Latin letters. Anything missing
-    /// still round-trips as its literal source rather than being mangled, and
-    /// numeric references (`&#8217;` / `&#xe9;`) are handled by the scanner
-    /// itself, so they need no entries here.
-
     /// A numeric reference's character. Zero, a surrogate, and anything past the
     /// last code point are all errors that both HTML and CommonMark resolve to
     /// the replacement character rather than dropping.
@@ -2058,8 +2049,8 @@ public enum HTMLParser {
             }
             // An entity is "&" + a name or numeric reference + ";". Search for the
             // ";" only within the longest one that could match — an unbounded
-            // scan is quadratic on '&'-dense text like URL lists. Numeric
-            // references can be longer than any name, hence the floor.
+            // scan is quadratic on '&'-dense text like URL lists. The floor
+            // keeps room for a numeric reference whatever the name table holds.
             let start = i + 1
             let windowEnd = min(start + entityWindow, b.count)
             var scan = start

@@ -2,8 +2,8 @@ public import Foundation
 public import DocumentModel
 
 /// ProseMirror-shaped JSON serialization. This is the canonical persistence and
-/// collaboration format; `Node`/`Mark`/`Slice` already encode to the documented
-/// shape via `AttributeValue`'s `Codable` conformance.
+/// collaboration format; `Node`/`Mark`/`Slice` already produce the documented
+/// shape, as `AttributeValue` trees, from their `toJSON()` methods.
 public enum DocumentJSON {
     /// Encode a document.
     ///

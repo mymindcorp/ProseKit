@@ -42,7 +42,8 @@ private func itemLineText(_ item: Node) -> String {
 ///   FIFO queues are consumed in document order, which matches note order.
 /// - `checkedTexts`: texts of checked lines only (the RTF path, which cannot see
 ///   unchecked items). Without `checklistLines`, any matching item converts a list.
-/// No-op if the schema lacks task nodes or there are no checklist lines.
+/// No-op if the schema lacks task nodes or both `checkedTexts` and `checklistLines`
+/// are empty.
 public func applyChecklistMarkers(_ content: Fragment, checkedTexts: Set<String>,
                                   checklistLines: [(text: String, checked: Bool)] = [],
                                   schema: Schema) -> Fragment {

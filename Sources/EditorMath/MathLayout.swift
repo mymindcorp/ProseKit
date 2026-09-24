@@ -60,7 +60,9 @@ private enum MuSpace: Int {
 }
 
 /// The inter-atom space TeX puts between a left and right atom class. Medium and
-/// thick spaces vanish in script styles; thin spaces never do.
+/// thick spaces vanish in script styles, and so do the thin spaces around an
+/// inner atom and after punctuation; only the thin space beside an operator
+/// never does.
 private func interAtomSpace(_ left: MathClass, _ right: MathClass, tight: Bool) -> CGFloat {
     // The TeXbook's Chapter 18 table. `scriptSensitive` marks the entries the
     // book parenthesizes — suppressed in script and scriptscript styles.
@@ -97,7 +99,7 @@ public struct MathLayoutResult {
 
 /// Typesets LaTeX math at a fixed base size.
 public final class MathTypesetter {
-    /// The point size of a display-style formula.
+    /// The point size of a display- or text-style formula.
     private let baseSize: CGFloat
     /// The surrounding text's font, used for `\text{…}`.
     private let bodyFont: CTFont
@@ -360,7 +362,7 @@ public final class MathTypesetter {
             shiftUp = max(shiftUp, minimum * unit, sup.descent + 0.25 * xHeight)
             shiftDown = max(shiftDown, TeXMetrics.sub2 * unit)
             // Keep four rule thicknesses of clear air between the two, and the
-            // superscript's bottom at least 1/5 em above the axis.
+            // superscript's bottom at least 4/5 of an x-height above the baseline.
             let clearance = 4 * rule
             var gap = (shiftUp - sup.descent) - (sub.ascent - shiftDown)
             if gap < clearance {
@@ -432,7 +434,7 @@ public final class MathTypesetter {
         }
 
         // `\binom`'s parentheses, or the space a bare fraction reserves in their
-        // place so `1/2` doesn't butt against its neighbours.
+        // place so `\frac12` doesn't butt against its neighbours.
         let height = max(box.ascent - axis, box.descent + axis) * 2
         let leftBox = left.map { delimiterBox($0, height: height, ctx) }
             ?? .space(TeXMetrics.nullDelimiterSpace * unit)
@@ -451,7 +453,8 @@ public final class MathTypesetter {
         // Under the bar there is no room above, so the body is cramped.
         let body = layout(bodyAtoms, ctx.crampedSelf)
         let rule = TeXMetrics.defaultRuleThickness * unit
-        // TeX gives display style a full x-height of clearance, less elsewhere.
+        // TeX's clearance is a rule plus a quarter of the x-height in display
+        // style, and a rule plus a quarter of a rule elsewhere.
         let clearance = ctx.style == .display ? rule + fonts(for: ctx.style).xHeight / 4 : rule + rule / 4
 
         let innerHeight = body.ascent + body.descent
@@ -676,8 +679,8 @@ public final class MathTypesetter {
                 switch alignment {
                 case .center: dx = x + (columnWidth - cell.width) / 2
                 case .cases: dx = x
-                // `aligned` puts the last column of each pair flush right against
-                // the relation that follows it.
+                // `aligned` puts the first column of each pair flush right against
+                // the relation that starts the next.
                 case .alternating: dx = c % 2 == 0 ? x + (columnWidth - cell.width) : x
                 case let .array(spec):
                     switch spec.alignment(at: c) {

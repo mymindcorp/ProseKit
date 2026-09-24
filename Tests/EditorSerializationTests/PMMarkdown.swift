@@ -57,9 +57,6 @@ func registerPMMarkdownTests() {
     //
     // Nested lists and indented code blocks used to be listed here as known
     // limitations; both are now parsed (see the dedicated tests in main.swift).
-    // What remains of the simplified parser's divergence is documented in
-    // docs/markdown-gaps.md — chiefly that a ProseMirror listItem always holds
-    // block content, so a tight list still serializes in the <li><p> form.
     parses("inline marks", "Hello. Some *em* text, some **strong** text, and some `code`",
            doc(p(t("Hello. Some "), em("em"), t(" text, some "), strong("strong"), t(" text, and some "), codeM("code"))))
     parses("links", "My [link](foo) goes to foo", doc(p(t("My "), a("link"), t(" goes to foo"))))

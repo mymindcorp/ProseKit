@@ -13,10 +13,6 @@ import TestHarness
 // listing the family's members: every Greek letter, every matrix environment,
 // every accent, every size of delimiter. A command that was added and then
 // broken shows up here and nowhere else.
-//
-// Deliberately not here: `\hline`, which the parser rejects as unknown. It's a
-// real construct — a rule between rows of an `array` — and this corpus is for
-// what works. Writing it down as a gap rather than as a failing test.
 let notationCorpus: [(group: String, latex: String)] = [
     // MARK: Greek
     //

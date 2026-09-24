@@ -13,7 +13,9 @@ public final class Transaction: Transform {
     private var meta: [String: Any] = [:]
     /// Whether the view should scroll the selection into view.
     public private(set) var scrolledIntoView = false
-    /// The timestamp (ms) at which the transaction was created.
+    /// The transaction's timestamp in milliseconds, which history uses to group
+    /// adjacent edits. Zero until someone sets it: `Editor` stamps the current
+    /// time on dispatch when it's still zero.
     public var time: Double
 
     init(_ state: EditorState) {

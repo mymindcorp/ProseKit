@@ -162,8 +162,8 @@ final class WikiLinkTriggerTests: XCTestCase {
                        tail.minX, accuracy: 0.5, "the line reflowed when the caret moved")
     }
 
-    /// The ghost sits at the cursor, so text after it reflows rather than being
-    /// painted over — and the caret stays in front of it.
+    /// The ghost sits at the end of the query, so text after it reflows rather
+    /// than being painted over — and the caret stays in front of it.
     func testGhostPushesTheTextAfterItAlong() throws {
         let plain = try makeView()
         let view = try makeView { $0.wikiLink.trigger.showsClosingBrackets = true }

@@ -5,7 +5,9 @@ import EditorStateKit
 import SchemaKit
 import TestHarness
 
-// Subscript / superscript (mutually exclusive) and text / background color marks.
+// Subscript / superscript (mutually exclusive) and text / background color
+// marks, plus color, highlight and link marks applied and cleared across a
+// cell selection.
 
 private func colorAttr(_ editor: Editor, _ markName: String) -> String? {
     guard let type = editor.schema.marks[markName] else { return nil }

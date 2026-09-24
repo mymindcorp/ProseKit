@@ -65,7 +65,7 @@ final class DocumentTokenizer: NSObject, UITextInputTokenizer {
     /// character sits at. `projectedText` is one character per document
     /// position, so within the window an index is just `pos - start` — but only
     /// in *characters*, which is not the same as UTF-16 once emoji appear, so
-    /// `WordScan` carries the conversion.
+    /// `utf16Offsets` carries the conversion.
     private struct Window {
         let chars: [Character]
         let start: Int
@@ -277,7 +277,7 @@ final class DocumentTokenizer: NSObject, UITextInputTokenizer {
         if atBlockEdge(pos) { return true }
         // Not symmetric, and not the same reading of direction as the rest of
         // the protocol: a word's start counts facing backward, its end facing
-        // forward. The layout directions (right/left) behave as backward here
+        // forward. The layout directions (all four) behave as backward here
         // rather than following the writing direction — matched against
         // `UITextInputStringTokenizer` position by position, since word-wise
         // arrow movement and double-tap selection both read this.

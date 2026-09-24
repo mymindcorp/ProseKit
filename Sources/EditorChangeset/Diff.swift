@@ -93,7 +93,8 @@ public func computeDiff<Data>(_ fragA: Fragment, _ fragB: Fragment, _ range: Cha
         endA -= 1
         endB -= 1
     }
-    // Simple, or too big to cheaply compute: the remaining region is the diff.
+    // Simple enough that the remaining region is the diff. (Too big to compute
+    // cheaply is the next check.)
     if endA == start || endB == start || (endA == endB && endA == start + 1) {
         return [range.slice(start, endA, start, endB)]
     }

@@ -180,11 +180,9 @@ final class DocumentViewLifecycleTests: XCTestCase {
 /// says what the shared answer is, so a reader has no way to know that
 /// answering right as forward would be the divergence rather than the fix.
 ///
-/// That is what these pin. See also `DocumentTokenizer.forward(_:)`, whose
-/// `UITextLayoutDirection` branch is unreachable — `UITextStorageDirection`
-/// is an imported Objective-C enum whose `init(rawValue:)` succeeds for every
-/// integer, so the first branch always wins. Reaching the second one would
-/// break the parity these tests hold.
+/// That is what these pin. See also `DocumentTokenizer.forward(_:)`, which
+/// compares the raw value against `UITextStorageDirection.forward` alone, so
+/// every layout direction reads as backward — the parity these tests hold.
 @MainActor
 final class DocumentTokenizerDirectionTests: XCTestCase {
     private func makeView(_ text: String = "alpha bravo charlie") throws -> EditorTextView {

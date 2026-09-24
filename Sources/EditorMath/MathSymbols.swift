@@ -6,7 +6,7 @@ import Foundation
 // rather than all of TeX.
 
 /// A TeX atom class. Which class an atom has decides the space around it (see
-/// `interAtomSpacing`) far more than what it looks like.
+/// `interAtomSpace`) far more than what it looks like.
 public enum MathClass: Sendable, Hashable {
     /// An ordinary symbol: a variable, a digit, `\infty`.
     case ord
@@ -230,7 +230,7 @@ let textCommands: [String: MathFontStyle] = [
     "mbox": .text, "hbox": .text,
 ]
 
-/// `\big`-family sizes, as a multiple of the base delimiter height.
+/// `\big`-family sizes, as a multiple of the em.
 let delimiterSizes: [String: CGFloat] = [
     "big": 1.2, "Big": 1.8, "bigg": 2.4, "Bigg": 3.0,
     "bigl": 1.2, "Bigl": 1.8, "biggl": 2.4, "Biggl": 3.0,
@@ -262,7 +262,7 @@ let delimiterCharacters: [String: String] = [
 func characterClass(_ c: Character) -> MathClass {
     switch c {
     case "+", "-", "−", "*", "±", "∓", "×", "÷", "·": return .bin
-    // `:` is a relation in TeX (`f : A \to B`); `\colon` is the punctuation form.
+    // `:` is a relation in TeX (`f : A \to B`).
     case "=", "<", ">", "≠", "≤", "≥", "≡", "∼", "≈", "→", "←", "↔", "∈", "∉", ":": return .rel
     case "(", "[": return .open
     case ")", "]": return .close

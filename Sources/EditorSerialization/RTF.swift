@@ -5,12 +5,14 @@ public import DocumentModel
 // RTF → document conversion.
 //
 // RTF is what nearly every Mac and Windows app puts on the pasteboard, and on
-// Apple platforms it has so far reached this editor only by way of
+// Apple platforms it used to reach this editor only by way of
 // `NSAttributedString` → Cocoa's HTML writer → `HTMLParser`. That bridge is
 // AppKit/UIKit-only, lossy in its own ways (see `HTML.swift`'s note on the
 // Cocoa HTML Writer), and unavailable anywhere headless. This reader parses the
 // RTF itself: Foundation only, no text system, same shapes out as the HTML and
-// Markdown parsers produce.
+// Markdown parsers produce. Paste uses it when the pasteboard offers nothing
+// richer than RTF (`EditorTextView.nativeRTFPasteDoc`), and falls back to the
+// bridge otherwise.
 //
 // What it understands is driven by what real producers emit — Word, TextEdit,
 // Pages, Apple Notes, LibreOffice, and the RTF that `NSAttributedString`
@@ -21,8 +23,9 @@ public import DocumentModel
 // reader is: node and mark types the schema lacks degrade (heading →
 // paragraph, table → its cells' paragraphs, unknown mark → plain text) rather
 // than failing, and no input — truncated, unbalanced, or hostile — can trap.
-// Only two things throw: bytes that aren't RTF at all, and (defensively) a
-// parsed document the schema rejects.
+// Only three things throw: bytes that aren't RTF at all, groups nested deeper
+// than `RTFConfig.maxGroupDepth`, and (defensively) a parsed document the
+// schema rejects.
 
 /// Knobs for how much interpretation the reader applies to RTF's purely visual
 /// formatting.
@@ -33,9 +36,9 @@ public struct RTFConfig: Sendable {
     /// how a monospaced Apple Note or a fenced block pasted from an editor
     /// keeps its meaning.
     public var monospaceAsCode: Bool
-    /// Convert `\pict` PNG/JPEG/GIF payloads to `image` nodes with `data:` URLs.
-    /// When off (or for a picture in a format we can't name), the picture is
-    /// dropped.
+    /// Convert `\pict` PNG/JPEG payloads (`\pngblip`, `\jpegblip`) to `image`
+    /// nodes with `data:` URLs. When off (or for a picture in any other format),
+    /// the picture is dropped.
     public var embedImages: Bool
     /// Pictures whose decoded payload exceeds this are dropped rather than
     /// inlined — a `data:` URL of a 40MB TIFF helps nobody.
@@ -1316,8 +1319,9 @@ private struct RTFReader {
     ///    has no checklist, so the glyph *is* the statement — and only the
     ///    per-paragraph marker can say whether this one is ticked.
     /// 2. The `\listtable` definition this paragraph's `\ls` names, which is
-    ///    the format's own account of the level: `\levelnfc23` is a bullet,
-    ///    every other code numbers.
+    ///    the format's own account of the level: `\levelnfc23` (or 255) is a
+    ///    bullet, every other code numbers. With no list table, an old-style
+    ///    `\pn` group stands in for it.
     /// 3. The drawn `\listtext` marker, for the producers that ship no list
     ///    table (TextEdit's older output, RTF written by hand). A bare `\ls`
     ///    with neither reads as a bullet, which is the safe guess.
@@ -1651,8 +1655,8 @@ private struct RTFReader {
         func pop() {
             guard let level = stack.popLast() else { return }
             // The list node, when the schema has one to build. Otherwise the
-            // items' own blocks — paragraphs already, since that is what the
-            // item was built around above.
+            // items' own blocks — paragraphs already, since that is what each
+            // item is built around below.
             //
             // The guard on building an *item* below catches a schema with no
             // `listItem`, but a schema can have the item and not the list that

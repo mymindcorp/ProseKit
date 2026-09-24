@@ -11,7 +11,7 @@ import TestHarness
 //
 // So these render into a bitmap and count ink. Each of the four primitives has
 // a formula that produces it: glyphs from any letter, a rule from a fraction
-// bar, a path from a radical or a stretched delimiter.
+// bar, a stroked path from a radical, a filled path from a stretched delimiter.
 
 /// A white bitmap context to draw into.
 private func bitmap(_ size: Int = 120) -> CGContext? {

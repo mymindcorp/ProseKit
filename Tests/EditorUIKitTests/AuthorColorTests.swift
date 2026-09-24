@@ -15,8 +15,8 @@ final class AuthorColorTests: XCTestCase {
     }
 
     func testKnownAuthorHashesArePinned() {
-        // Pin the exact mapping so a refactor of the hash is caught (the values
-        // are whatever the current FNV-1a yields — regenerate intentionally).
+        // Not an exact pin: this only checks that the FNV-1a hash keeps these
+        // pairs of authors apart, so a refactor that collapses them is caught.
         let alice = EditorTextView.authorColor("alice")
         let bob = EditorTextView.authorColor("bob")
         XCTAssertNotEqual(alice, EditorTextView.authorColor("carol"))

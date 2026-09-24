@@ -49,7 +49,8 @@ public func isInTable(_ state: EditorState) -> Bool {
     return false
 }
 
-/// A resolved position in front of the cell the selection's "active" side is in.
+/// A resolved position in front of the cell the selection is in. For a cell
+/// selection that is whichever of its anchor and head cells comes later.
 func selectionCell(_ state: EditorState) -> ResolvedPos? {
     let sel = state.selection
     if let cs = sel as? CellSelection {

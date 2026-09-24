@@ -146,8 +146,9 @@ private func selectionRange(_ tr: Transaction, _ startIdx: Int, isColumn: Bool, 
 }
 
 /// Move the row at `originIndex` to `targetIndex` in the table around `pos`,
-/// mutating `tr`. Merged blocks move as units; a move into the middle of a
-/// merged block, out of the table, or onto itself returns false with `tr`
+/// mutating `tr`. Merged blocks move as units, and a target inside another
+/// merged block widens to the whole block. A move onto the origin or into its
+/// own merged block, or an index outside the table, returns false with `tr`
 /// untouched. With `select`, the moved row ends up selected.
 @discardableResult
 public func moveRow(_ tr: Transaction, originIndex: Int, targetIndex: Int,

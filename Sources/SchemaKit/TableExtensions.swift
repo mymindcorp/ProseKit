@@ -156,7 +156,8 @@ private func tableContext(_ state: EditorState) -> TableContext? {
 
 // MARK: - Commands
 
-/// Insert a `rows`×`cols` table (with a header row) at the selection.
+/// Insert a `rows`×`cols` table (with a header row unless `withHeaderRow` is
+/// false) at the selection.
 public func insertTable(rows: Int = 3, cols: Int = 3, withHeaderRow: Bool = true) -> Command {
     { state, dispatch, _ in
         guard let table = createTable(state.schema, rows: rows, cols: cols, withHeaderRow: withHeaderRow) else { return false }

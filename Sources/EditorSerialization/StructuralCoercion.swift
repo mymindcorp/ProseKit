@@ -21,9 +21,12 @@ import DocumentModel
 /// 1. **as-is**, when the content expression already allows it there;
 /// 2. **wrapped**, in the shallowest chain of nodes that makes it legal — a
 ///    stray `listItem` becomes a list, a stray `tableCell` a table with a row;
-/// 3. **unwrapped**, splicing its children in and fitting each of those, which
+/// 3. **filled in front of**, when the content expression requires something
+///    before it — a block image at the start of a list item goes after an
+///    empty paragraph;
+/// 4. **unwrapped**, splicing its children in and fitting each of those, which
 ///    is what rescues content from a container that has no place here;
-/// 4. **dropped**, only once there is nothing left inside it to keep.
+/// 5. **dropped**, only once there is nothing left inside it to keep.
 ///
 /// Adjacent nodes that needed the same wrapping are merged, so two loose `<li>`s
 /// become one list of two items rather than two lists.

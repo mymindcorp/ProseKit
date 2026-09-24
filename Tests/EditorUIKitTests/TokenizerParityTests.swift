@@ -366,7 +366,7 @@ final class TokenizerParityTests: XCTestCase {
         }
     }
 
-    /// The one place parity is the wrong goal.
+    /// The third place parity is the wrong goal.
     ///
     /// `projectedText` returns one *character* per document position, so a
     /// non-BMP character is one position but two UTF-16 units. The system

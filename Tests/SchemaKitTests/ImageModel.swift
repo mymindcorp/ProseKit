@@ -151,7 +151,7 @@ private func expectUnwrap<T>(_ value: T?, file: StaticString = #file, line: UInt
 }
 
 private extension Editor {
-    /// Set the document and hand back its HTML, for the loops above.
+    /// Set the document and hand back its HTML, for the loop above.
     func getHTMLAfterSetting(_ doc: Node) -> String {
         setContent(doc)
         return getHTML()
