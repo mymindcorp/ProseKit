@@ -307,8 +307,8 @@ struct ListRemap {
 
 /// Reorder one list on `tr`, returning its new homes and — when the order
 /// actually changed — how positions inside it moved. Only the span between the
-/// first and last index that changed is replaced, so checking the last item of
-/// a long list is a step over one item, not over the list.
+/// first and last item that moved is replaced, so checking the last item of a
+/// long list is a step over one item, not over the list.
 func sortList(_ tr: Transaction, listPos: Int, list: Node, changed: Set<Int>, homes: TaskHomes)
     -> (remap: ListRemap?, homes: TaskHomes, itemStarts: [Int])? {
     let count = list.childCount
@@ -354,9 +354,9 @@ func sortList(_ tr: Transaction, listPos: Int, list: Node, changed: Set<Int>, ho
                       sizes: sizes, newIndexOfOld: newIndexOfOld), newHomes, oldStarts)
 }
 
-/// Keep the caret in the text it was in. Without this the caret lands at the top
-/// of the list every time you check the item you are typing in — the reorder is
-/// a replace, and a replace drops what was inside it.
+/// Keep the caret in the text it was in. Without this the caret is thrown out of
+/// the item you are typing in every time you check it — the reorder is a
+/// replace, and a replace drops what was inside it.
 func restoreSelection(_ tr: Transaction, _ selection: Selection, _ remaps: [ListRemap]) {
     if let selected = selection as? NodeSelection {
         var pos = selected.from

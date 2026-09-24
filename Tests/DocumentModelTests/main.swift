@@ -130,7 +130,7 @@ test("mark addToSet keeps sorted, dedups") {
     let italic = B.schema.mark("italic")
     let set = italic.addToSet(bold.addToSet([]))
     try expectEqual(set.count, 2)
-    // bold has lower rank than italic in TestSchema (italic, bold order -> ranks)
+    // italic ranks before bold in TestSchema (ranks follow declaration order)
     try expect(Mark.sameSet(bold.addToSet(set), set), "adding existing mark is a no-op")
 }
 
@@ -150,7 +150,7 @@ test("code mark excludes others (excludes _)") {
 
 test("resolve position depth/parent") {
     let doc = B.doc(B.blockquote(B.p("hi")))
-    // doc(0) > blockquote(1) > p(2) ; pos 2 is inside the paragraph at "h|i" start
+    // doc(0) > blockquote(1) > p(2); pos 2 is the start of the paragraph, before "hi"
     let r = doc.resolve(2)
     try expectEqual(r.depth, 2)
     try expectEqual(r.parent.type.name, "paragraph")

@@ -95,7 +95,7 @@ func sanitizeCSSColor(_ raw: String) -> String? {
     guard !value.isEmpty, value.count <= 64 else { return nil }
     let lower = value.lowercased()
 
-    // #rgb / #rrggbb / #rrggbbaa
+    // #rgb / #rgba / #rrggbb / #rrggbbaa
     if lower.hasPrefix("#") {
         let digits = lower.dropFirst()
         guard [3, 4, 6, 8].contains(digits.count),

@@ -86,8 +86,8 @@ func registerSerializationFuzzTests() {
 
     test("serialization fuzz: HTML keeps every node a document was built from") {
         // Stronger than "the text survives", and weaker than equality: HTML is
-        // the clipboard format, so what it may lose is an attribute Markdown
-        // has no word for, not a *node*. A dropped wrapper is a figure that
+        // the clipboard format, so what it may lose is an attribute it has no
+        // word for, not a *node*. A dropped wrapper is a figure that
         // came back as a loose image and a stray paragraph; an invented one is
         // a bullet list that pasted back as a checklist.
         //

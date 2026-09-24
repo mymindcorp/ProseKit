@@ -45,7 +45,10 @@ private func itemPos(_ editor: Editor, _ index: Int) -> Int {
     return positions[index]
 }
 
-/// Check or uncheck the nth item the way the checkbox overlay does.
+/// Check or uncheck the nth item by writing its `checked` attribute directly —
+/// the route a collab step or a script takes, which the plugin's
+/// `appendTransaction` sorts. (The checkbox overlay goes through
+/// `setTaskChecked` instead.)
 private func setChecked(_ editor: Editor, _ index: Int, _ checked: Bool) {
     let tr = editor.state.tr
     _ = try? tr.setNodeAttribute(itemPos(editor, index), "checked", .bool(checked))

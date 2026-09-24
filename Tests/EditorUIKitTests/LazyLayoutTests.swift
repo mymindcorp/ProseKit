@@ -74,8 +74,8 @@ final class LazyLayoutTests: XCTestCase {
 
     func testColdLazyLayoutIsFasterThanFull() {
         let (_, doc) = bigDoc(520)
-        // Best of 3 for each, so a CPU-load spike on one sample (the suite
-        // runs in parallel) affects both equally, then compare best-of-N.
+        // Best of 7 for each, alternating, so a CPU-load spike on one sample
+        // (the suite runs in parallel) can't decide the comparison.
         func time(_ body: () -> Void) -> Double {
             let t = CFAbsoluteTimeGetCurrent()
             body()

@@ -23,7 +23,8 @@ public struct MapResult {
         self.recover = recover
     }
 
-    /// Tells whether the side of the position that was at the position is gone.
+    /// Whether the content on the side of the position that `assoc` points to
+    /// was deleted.
     public var deleted: Bool { (delInfo & DEL_SIDE) > 0 }
     public var deletedBefore: Bool { (delInfo & (DEL_BEFORE | DEL_ACROSS)) > 0 }
     public var deletedAfter: Bool { (delInfo & (DEL_AFTER | DEL_ACROSS)) > 0 }

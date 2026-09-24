@@ -111,7 +111,7 @@ public func insertMath(_ type: NodeType, latex: String, pos: Int? = nil) -> Comm
 }
 
 /// Rewrite the `latex` of the math node at `pos` — or, with `pos` nil, of the
-/// node the selection covers or sits directly after.
+/// node the selection covers, or the one right after or before the cursor.
 public func updateMath(_ type: NodeType, latex: String, pos: Int? = nil) -> Command {
     { state, dispatch, _ in
         guard let target = pos ?? mathNodePos(state, type) else { return false }
@@ -124,7 +124,7 @@ public func updateMath(_ type: NodeType, latex: String, pos: Int? = nil) -> Comm
 }
 
 /// Delete the math node at `pos` — or, with `pos` nil, the one the selection
-/// covers or sits directly after.
+/// covers, or the one right after or before the cursor.
 public func deleteMath(_ type: NodeType, pos: Int? = nil) -> Command {
     { state, dispatch, _ in
         guard let target = pos ?? mathNodePos(state, type) else { return false }
@@ -137,7 +137,8 @@ public func deleteMath(_ type: NodeType, pos: Int? = nil) -> Command {
 }
 
 /// The position of the math node the selection addresses: the node a
-/// `NodeSelection` covers, else the one immediately before or after the cursor.
+/// `NodeSelection` covers, else the one immediately after the cursor, else (for
+/// an empty selection) the one immediately before it.
 private func mathNodePos(_ state: EditorState, _ type: NodeType) -> Int? {
     if let sel = state.selection as? NodeSelection { return sel.node.type === type ? sel.from : nil }
     let from = state.selection.resolvedFrom
@@ -210,8 +211,9 @@ public func addMathMigrationSteps(_ doc: Node, _ tr: Transaction, pattern: Strin
     // (from, to, latex) for every match, in document order.
     var found: [(from: Int, to: Int, latex: String)] = []
     doc.descendants { node, pos, _, _ in
-        // Skip code, where `$` is literal. Whether a formula fits depends on
-        // its actual position, not the content match at the start of the block.
+        // Skip code, where `$` is literal. Whether a formula fits is left to the
+        // replacement below: it depends on the formula's actual position, not
+        // the content match at the start of the block.
         guard node.isTextblock, !node.type.spec.code else { return true }
         let text = node.textBetween(0, node.content.size, blockSeparator: nil, leafText: "\u{fffc}")
         let ns = text as NSString

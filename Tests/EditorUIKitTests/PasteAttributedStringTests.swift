@@ -29,9 +29,10 @@ final class PasteAttributedStringTests: XCTestCase {
 
     // MARK: - The RTF flavours
     //
-    // Pages, TextEdit and Mail put RTF on the pasteboard and no HTML at all, so
-    // this bridge is the only way their content reaches the document. Only the
-    // archived-attributed-string flavour above was covered.
+    // Pages, TextEdit and Mail put RTF on the pasteboard and no HTML at all.
+    // Plain RTF is read directly first (`nativeRTFPasteDoc`, covered by
+    // `NativeRTFPasteTests`); this bridge is where RTF lands when that reader
+    // declines, and the only path for RTFD.
 
     private func view() throws -> EditorTextView {
         let editor = try Editor(extensions: fullKit())
@@ -51,7 +52,7 @@ final class PasteAttributedStringTests: XCTestCase {
     }
 
     func testConvertsPublicRTF() throws {
-        // The flavour Pages offers, and the one nothing exercised.
+        // The flavour Pages offers.
         let view = try view()
         let pb = UIPasteboard.withUniqueName()
         pb.setData(try richData(.rtf), forPasteboardType: "public.rtf")

@@ -5,8 +5,10 @@ import EditorStateKit
 import SchemaKit
 import TestHarness
 
-// Leftover coverage: a GapCursor selection restored through undo, and the
-// autolink input rule staying out of code blocks.
+// Leftover coverage: where the link, highlight and color marks can be applied,
+// the autolink input rule's limits (embedded atoms, formatting boundaries, code
+// blocks), the link and highlight commands, and a GapCursor selection restored
+// through undo.
 
 private func fullEditor() throws -> Editor { try Editor(extensions: fullKit()) }
 
@@ -95,7 +97,8 @@ func registerPolishCoverageTests() {
                 try! s.node("tableRow", [:], content: Fragment.from([cell(t)])),
             ]))
         }
-        // Two tables → a valid gap between them.
+        // Two tables, with a valid gap before, between and after them. The
+        // search from 0 finds the first of those, before table A.
         editor.setContent(try s.node("doc", [:], content: Fragment.from([table("A"), table("B")])))
 
         let foundGap = GapCursor.findGapCursorFrom(editor.doc.resolve(0), 1)
@@ -107,7 +110,7 @@ func registerPolishCoverageTests() {
         // A position-targeted edit (independent of the selection) so the
         // GapCursor is what history records as the selection-before.
         editor.dispatch(EditorHistory.closeHistory(editor.state.tr))
-        let cellTextPos = 3 // inside the first cell's paragraph
+        let cellTextPos = 3 // inside the first cell, just before its paragraph
         let tr = editor.state.tr
         try tr.insertText("x", cellTextPos)
         editor.dispatch(tr)

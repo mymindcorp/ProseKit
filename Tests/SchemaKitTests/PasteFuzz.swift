@@ -50,7 +50,7 @@ func registerPasteFuzzTests() {
                     try checkPaste(state, target, source.content(), "slice — \(ctx)")
 
                     // 2. The clipboard paste: through HTML and back, opened the
-                    //    way `insertContent` opens it.
+                    //    way `EditorTextView.insertContent` opens it.
                     guard let parsed = try? HTMLParser.parse(html, schema: schema) else {
                         try expect(false, "the parser rejected our own clipboard HTML — \(ctx)\n  \(html.debugDescription)")
                         continue

@@ -129,7 +129,6 @@ test("splitListItem on Enter inside a list creates a new item") {
     }
     select(editor, textEnd, textEnd)
     _ = key(editor, "Enter")
-    // Expect two list items now
     var listItems = 0
     editor.doc.descendants { node, _, _, _ in
         if node.type.name == "listItem" { listItems += 1 }

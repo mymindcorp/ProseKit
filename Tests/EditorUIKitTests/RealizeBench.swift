@@ -7,8 +7,8 @@ import SchemaKit
 
 /// What `DocumentLayout.realize(window:)` costs, since `draw(_:)` calls it via
 /// `realizeForPaint`. Compiled out by default so the suite stays quiet — a
-/// compilation condition rather than an environment check, because xcodebuild's
-/// `TEST_RUNNER_` prefix does not reach an SPM scheme's test runner:
+/// compilation condition rather than an environment check, because a plain
+/// environment variable doesn't survive the trip into the simulator:
 ///
 ///     xcodebuild test -scheme ProseKit-Package -configuration Release \
 ///       -destination 'platform=iOS Simulator,name=iPhone 17' \

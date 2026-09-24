@@ -22,7 +22,7 @@ final class SuggestionPopupView: UIView {
     private let width: CGFloat = 280
     private let maxVisibleRows = 7
 
-    /// Invoked when a row is chosen (by tap).
+    /// Invoked when a row is chosen (on touch-down; see `touchesBegan`).
     var onSelect: ((Int) -> Void)?
 
     var selectedIndex = 0 { didSet { updateHighlight(); scrollToSelection() } }

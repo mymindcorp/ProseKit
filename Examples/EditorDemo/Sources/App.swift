@@ -97,8 +97,8 @@ struct DemoFlags: Equatable {
     /// `DocumentLayout` renderer, seeded from the current document.
     var readOnly = false
 
-    /// How many are on, for the menu's label. `spellCheck` is on by default, so
-    /// this counts what differs from the defaults rather than what is true.
+    /// How many differ from their defaults, for the menu's label. `spellCheck` is
+    /// on by default, so counting the ones that are on would overcount.
     var changedCount: Int {
         var count = 0
         let defaults = DemoFlags()
@@ -572,7 +572,7 @@ struct ThemePanel: View {
 /// Hosts an `EditorTextView` inside a scroll view, virtualized: the editor view
 /// is pinned to the scroll viewport (never taller than the screen) and renders
 /// only the visible window, while the scroll content height is the full document
-/// height. This is what lets a 500-paragraph × 500-word document render at all.
+/// height. This is what lets a 520-paragraph × 500-word document render at all.
 struct EditorContainer: UIViewRepresentable {
     let docIndex: Int
     /// The latest pasted-prose request, or nil. Applied once per `id`.
@@ -746,7 +746,7 @@ struct EditorContainer: UIViewRepresentable {
 
     func makeUIView(context: Context) -> UIScrollView {
         // `[[` wiki-link suggestions via the ASYNC provider — simulating a DB /
-        // search-index lookup (250ms latency). The source debounces, cancels
+        // search-index lookup (50ms latency). The source debounces, cancels
         // superseded queries, and repaints the popup when results arrive; the `/`
         // slash menu stays synchronous (included by `fullKit`).
         let editor = try! Editor(extensions: fullKit(wikiLinkAsyncSuggestions: { query in
@@ -1233,7 +1233,9 @@ func tablesDocument(_ schema: Schema) -> Node {
 // MARK: - Highlighter menu (sample selection edit-menu hook)
 
 /// A dummy highlighter for the selection callout: a "Highlight" submenu with
-/// five color choices plus a remove action. Wired via `EditorTextView.editMenuItems`.
+/// five color choices plus a remove action. Written for
+/// `EditorTextView.editMenuItems`, though the demo leaves that unset (see
+/// `EditorContainer.makeUIView`); the format bubble uses the colors instead.
 enum HighlighterMenu {
     /// A highlighter ink that adapts to light/dark: vivid near-fluorescent over
     /// white paper; on dark, a slightly brighter hue that reads against the

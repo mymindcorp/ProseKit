@@ -74,9 +74,9 @@ final class DrawBench: XCTestCase {
         }
     }
 
-    /// One giant code block, mostly off screen. A visible block draws all of its
-    /// lines — there is no per-line clip — so this measures what scrolling
-    /// through a long code block pays per frame.
+    /// One giant code block, mostly off screen. A visible block draws only the
+    /// lines that meet the band, so this measures what scrolling through a long
+    /// code block still pays per frame.
     func testDrawTallCodeBlock() {
         let s = schema()
         for lines in [200, 2000] {

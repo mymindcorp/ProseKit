@@ -123,10 +123,9 @@ final class DrawScrollPerfTests: XCTestCase {
 
         // A handful of matches really are on screen and really are drawn, so
         // this is not asking for parity — only that the cost tracks the screen
-        // rather than the document. The bound is loose because what is left is
-        // one linear pass: `DecorationSet` is a flat array (by its own
-        // admission), so asking it for a band still walks every decoration,
-        // just with two integer compares each instead of a copy and a draw.
+        // rather than the document. The band's decorations come from
+        // `DecorationSet.find`, a pair of binary searches rather than a copy
+        // and a draw per match.
         // Unfixed, this ran ~7x the idle cost here and ~24x in release.
         XCTAssertLessThan(after, before * 5 + 5.0,
                           "a find-all makes every frame cost the whole document")

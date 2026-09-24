@@ -32,8 +32,8 @@ public struct MathAtom {
         case bigOperator(String, grows: Bool)
         /// A braced group — kept nested so its contents space as a unit.
         case group([MathAtom])
-        /// `\frac` and friends. `bar` false is `\atop`/`\binom`'s bare stack;
-        /// `left`/`right` are `\binom`'s enclosing parentheses.
+        /// `\frac` and friends. `bar` false is `\binom`'s bare stack (the parser
+        /// has no `\atop`); `left`/`right` are `\binom`'s enclosing parentheses.
         case fraction(num: [MathAtom], den: [MathAtom], bar: Bool, left: String?, right: String?)
         /// `\sqrt[index]{body}`.
         case radical(index: [MathAtom]?, body: [MathAtom])
@@ -249,8 +249,8 @@ struct LatexParser {
             if chars[i] == "&", stops.contains("&") { break }
             if let command = peekCommand(), stops.contains(command) { break }
 
-            // A script binds to the atom before it; with none, TeX errors — we
-            // attach it to an empty ord so `^2` still renders something.
+            // A script binds to the atom before it; with none, it goes on an
+            // empty ord, as in TeX, so `^2` still renders something.
             if chars[i] == "^" || chars[i] == "_" {
                 let isSup = chars[i] == "^"
                 i += 1

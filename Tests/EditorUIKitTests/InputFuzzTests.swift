@@ -96,7 +96,7 @@ final class InputFuzzTests: XCTestCase {
                     let len = Int.random(in: 1...3, using: &rng)
                     let s = String((0..<len).map { _ in chars.randomElement(using: &rng)! })
                     view.setMarkedText(s, selectedRange: NSRange(location: s.count, length: 0))
-                default: // commit or cancel a composition, or press Enter
+                default: // commit or cancel a composition
                     if Bool.random(using: &rng) { view.insertText("x") } else { view.unmarkText() }
                 }
                 assertInvariants(view, "seed \(seed), step \(step)")

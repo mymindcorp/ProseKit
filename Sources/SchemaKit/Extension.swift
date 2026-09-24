@@ -70,11 +70,12 @@ public extension Extension {
     func globalAttributes() -> [GlobalAttribute] { [] }
 }
 
-/// HTML round-trip hints for a node/mark, used by the serialization layer (M6).
+/// HTML hints for a node/mark, exposed through `ExtensionManager.html(for:)`.
+/// The HTML serializer and parser don't read them.
 public struct HTMLSpec: Sendable {
     /// The tag this node/mark parses from and renders to (e.g. "p", "strong").
     public var tag: String?
-    /// Extra parse tags (e.g. bold also parses from "b" and font-weight).
+    /// Extra parse tags (e.g. bold also parses from "b").
     public var parseTags: [String]
     public init(tag: String? = nil, parseTags: [String] = []) {
         self.tag = tag

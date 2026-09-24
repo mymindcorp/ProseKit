@@ -8,9 +8,9 @@ public import EditorStateKit
 // position map and optionally an inverted step, so changes that must not be
 // undoable (remote collab steps) can still be mapped through. An item that
 // carries a selection bookmark starts an "event" — the group of changes one
-// undo command reverts. Items are always preserved un-merged (upstream's
+// undo command reverts. Items are never merged as they are added (upstream's
 // `preserveItems` mode), since this editor ships with collab support that
-// needs to rebase them.
+// needs to rebase them; only `compress` merges them.
 
 struct HistoryItem {
     /// The (forward) step map for this item.

@@ -242,12 +242,12 @@ private func spanLength<Data>(_ spans: [Span<Data>]) -> Int {
 ///
 /// The bookkeeping around `expected` is what makes that safe. Plugins append
 /// transactions of their own behind the user's back — table fixing squares up a
-/// ragged table, the unique-id plugin stamps a fresh node — and `Editor`
-/// reports only the root transaction, so those edits reach the document without
-/// their maps ever reaching the set. Checking against the editor's document
-/// then would report the plugin's own work as content the changeset lost. So
-/// the sweep tracks the document the set was actually told about, and starts a
-/// fresh set from wherever a plugin left things whenever the two part company.
+/// ragged table, the unique-id plugin stamps a fresh node — and a transaction
+/// only reaches the set if it starts from the document the set last saw. An
+/// edit whose maps never reached the set would otherwise be reported, checked
+/// against the editor's document, as content the changeset lost. So the sweep
+/// tracks the document the set was actually told about, and starts a fresh set
+/// from wherever the editor stands whenever the two part company.
 private func eachFuzzChangeSet(_ check: (ChangeSet<Int>, Node, Node, () -> String) throws -> Void) throws {
     for seed in 1 ... fuzzOpSeeds {
         var rng = SelRNG(seed &* 17 &+ 9)

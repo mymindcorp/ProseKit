@@ -1,6 +1,6 @@
 import Foundation
 
-/// This class represents a node in the document tree.
+/// A node in the document tree.
 ///
 /// Nodes are persistent data structures. Instead of changing them, you create
 /// new ones with the content you want. Old ones keep pointing at the old
@@ -87,7 +87,9 @@ public struct Node: Hashable, Sendable {
     public var isTextblock: Bool { type.isTextblock }
     public var inlineContent: Bool { type.inlineContent }
 
-    /// The string representation of this node's content type description.
+    /// The text of this node and its descendants, concatenated with no
+    /// separator between blocks. A leaf contributes its `leafText`, if its
+    /// spec defines one.
     public var textContent: String {
         if let text { return text }
         return (isLeaf && type.spec.leafText != nil) ? type.spec.leafText!(self)
@@ -246,8 +248,8 @@ public struct Node: Hashable, Sendable {
         return Node(type: type, attrs: attrs, content: content, marks: marks, text: text)
     }
 
-    /// Create a copy of this node with only the part of its content between the
-    /// given positions. (For text nodes, slices the text.)
+    /// Create a copy of this node with the given marks in place of its own.
+    /// The same as `mark(_:)`.
     public func withMarks(_ marks: [Mark]) -> Node { mark(marks) }
 
     /// Test whether two nodes represent the same piece of document.
@@ -259,7 +261,7 @@ public struct Node: Hashable, Sendable {
         hasMarkup(other.type, other.attrs, other.marks)
     }
 
-    /// Check whether this node's markup correspond to the given type, attributes,
+    /// Check whether this node's markup corresponds to the given type, attributes,
     /// and marks.
     public func hasMarkup(_ type: NodeType, _ attrs: Attrs? = nil, _ marks: [Mark] = []) -> Bool {
         self.type === type &&
@@ -288,7 +290,9 @@ public struct Node: Hashable, Sendable {
         }
     }
 
-    /// Check whether the given content can be appended at the given position.
+    /// Test whether replacing the children between indices `from` and `to` with
+    /// `replacement` (optionally only its children from `start` to `end`) would
+    /// leave this node's content valid, marks included.
     public func canReplace(_ from: Int, _ to: Int, replacement: Fragment = .empty, start: Int = 0, end: Int? = nil) -> Bool {
         let end = end ?? replacement.childCount
         let one = contentMatchAt(from).matchFragment(replacement, start: start, end: end)
