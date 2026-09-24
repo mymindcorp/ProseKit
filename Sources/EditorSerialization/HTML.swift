@@ -667,13 +667,6 @@ public enum HTMLParser {
         return [docAttr: .string(value)]
     }
 
-    /// Wrap inline content as a textblock, but split it around any block-level
-    /// atoms (e.g. a block `image`) so each becomes its own sibling rather than an
-    /// invalid child of the textblock. With an inline-image schema nothing splits.
-    private static func textblockSplittingBlocks(_ inline: [Node], wrap: ([Node]) -> Node?) -> [Node] {
-        EditorSerialization.textblockSplittingBlocks(inline, wrap: wrap)
-    }
-
     // Parse a single block-level element starting at `start`, yielding zero or
     // more sibling nodes (an inline-context `<img>` in a block-image schema lifts
     // out of its paragraph, so one element can produce several blocks).
@@ -733,7 +726,7 @@ public enum HTMLParser {
         case "paragraph":
             let inline = parseInline(tokens[(start + 1)..<end], schema, config)
             let a = idAttrs(attrs, "paragraph", schema, config)
-            return (textblockSplittingBlocks(inline) { try? schema.node("paragraph", a, content: Fragment.from($0)) }, end + 1)
+            return (textblocks(inline, as: "paragraph", a, schema: schema), end + 1)
         case "bulletList", "orderedList":
             // ul/ol may actually be a task list (Tiptap data-type, or items with checkboxes).
             return (parseList(tag, attrs, tokens, start, end, schema, config), end + 1)
@@ -745,47 +738,36 @@ public enum HTMLParser {
             if let style = attrs["style"] {
                 parsed = inheritMarks(parsed, styleMarks(style, schema))
             }
-            let children = schema.nodes[nodeName!].map { fitContent(parsed, into: $0, schema: schema) } ?? parsed
             var a: Attrs = idAttrs(attrs, nodeName!, schema, config)
             if let cs = attrs["colspan"].flatMap({ Int($0) }), cs != 1 { a["colspan"] = .int(cs) }
             if let rs = attrs["rowspan"].flatMap({ Int($0) }), rs != 1 { a["rowspan"] = .int(rs) }
             if let cw = parseColwidth(attrs) { a["colwidth"] = .array(cw.map { .int($0) }) }
             if let align = parseCellAlign(attrs) { a["align"] = .string(align) }
             if let type = schema.nodes[nodeName!] {
-                // `createChecked`, not `create`, throughout this parser: `create`
-                // validates the *attributes* and takes whatever content it is
-                // handed, so every "build it, or fall back to filling it in"
-                // pair here had a dead second line and shipped nodes the schema
-                // rejects — an empty `<li data-type="taskItem">` from our own
-                // serializer failed the whole parse on the way back in.
-                if let n = try? type.createChecked(a, content: Fragment.from(children)) { return ([n], end + 1) }
-                if let filled = type.createAndFill(a, content: Fragment.from(children)) { return ([filled], end + 1) }
+                let cells = spillingCells(parsed, type, a, schema)
+                if !cells.isEmpty { return (cells, end + 1) }
             }
             return (parsed, end + 1)
         case "figcaption":
             // A textblock like a paragraph, but keeping its own type.
             let inline = parseInline(tokens[(start + 1)..<end], schema, config)
+            // With no caption node, `textblocks` keeps the words as a paragraph
+            // rather than dropping them on the floor.
             let a = idAttrs(attrs, "figcaption", schema, config)
-            guard schema.nodes["figcaption"] != nil else {
-                // No caption node: keep the words as a paragraph rather than
-                // dropping them on the floor.
-                return (textblockSplittingBlocks(inline) {
-                    try? schema.node("paragraph", [:], content: Fragment.from($0))
-                }, end + 1)
-            }
-            return (textblockSplittingBlocks(inline) {
-                try? schema.node("figcaption", a, content: Fragment.from($0))
-            }, end + 1)
+            return (textblocks(inline, as: "figcaption", a, schema: schema), end + 1)
         case "table":
-            let parsed = parseBlocks(tokens[(start + 1)..<end], schema, config)
+            let (caption, rows) = liftingCaptions(tokens, start, end, schema, config)
+            let parsed = parseBlocks(rows, schema, config)
             let a = idAttrs(attrs, "table", schema, config)
             if let type = schema.nodes["table"] {
                 let children = applyColumnWidths(columnWidths(tokens, start + 1, end),
                                                  to: fitContent(parsed, into: type, schema: schema))
-                if let n = try? type.createChecked(a, content: Fragment.from(children)) { return ([n], end + 1) }
-                if let filled = type.createAndFill(a, content: Fragment.from(children)) { return ([filled], end + 1) }
+                if let n = try? type.createChecked(a, content: Fragment.from(children)) { return (caption + [n], end + 1) }
+                if let filled = type.createAndFill(a, content: Fragment.from(children)) {
+                    return (caption + [filled], end + 1)
+                }
             }
-            return (parsed, end + 1)
+            return (caption + parsed, end + 1)
         case "blockquote", "listItem", "tableRow", "figure":
             let parsed = parseBlocks(tokens[(start + 1)..<end], schema, config)
             let name = nodeName!
@@ -807,6 +789,36 @@ public enum HTMLParser {
         }
     }
 
+    /// The cells `blocks` fill: one, unless they overflow what the schema's
+    /// cell holds. Then, as ProseMirror's DOM parser does, the block that
+    /// doesn't fit closes the cell and opens another — so a cell of two
+    /// paragraphs in a one-paragraph schema spills into a second cell, the way
+    /// the RTF importer's does, rather than losing the second. The first cell
+    /// keeps the span and widths; the ones it spilled into are plain.
+    private static func spillingCells(_ blocks: [Node], _ type: NodeType, _ attrs: Attrs, _ schema: Schema) -> [Node] {
+        var cells: [Node] = []
+        var rest = blocks
+        var cellAttrs = attrs
+        repeat {
+            var spilled: [Node] = []
+            let children = Fragment.from(fitContent(rest, into: type, schema: schema, overflow: &spilled))
+            // `createChecked`, not `create`, throughout this parser: `create`
+            // validates the *attributes* and takes whatever content it is
+            // handed, so every "build it, or fall back to filling it in" pair
+            // here had a dead second line and shipped nodes the schema rejects
+            // — an empty `<li data-type="taskItem">` from our own serializer
+            // failed the whole parse on the way back in.
+            guard let cell = (try? type.createChecked(cellAttrs, content: children))
+                    ?? type.createAndFill(cellAttrs, content: children) else { break }
+            cells.append(cell)
+            // Each pass places something before anything overflows, so this
+            // runs out.
+            rest = spilled
+            cellAttrs = [:]
+        } while !rest.isEmpty
+        return cells
+    }
+
     /// Elements that belong inside a paragraph rather than beside one.
     ///
     /// Everything else keeps the old treatment — parsed as a block, or as an
@@ -825,6 +837,29 @@ public enum HTMLParser {
         // `<li>a <strong>b</strong> c</li>` came back as three unformatted
         // paragraphs — only `<p>` and `<div>` ever routed through `parseInline`.
         var inlineRun: Tokens = []
+
+        // Inline elements open around block content: the `<b>` Google Docs
+        // wraps every copy in, a link around a whole card. Read as one inline
+        // run, every block inside collapsed into a single paragraph and their
+        // words ran together — a pasted list arrived as "ApplesGranny Smith".
+        // ProseMirror's reading instead: the element's marks stay open while
+        // the blocks inside it are parsed as blocks, and land on their text.
+        // Each is kept with the index of its close tag, and its open tag
+        // starts every inline run inside it so the run's text is marked too.
+        var wrappers: [(close: Int, open: Token, marks: [Mark])] = []
+        // How much of `result` already carries the open wrappers' marks.
+        var marked = 0
+        func markBlocks() {
+            defer { marked = result.count }
+            guard marked < result.count, !wrappers.isEmpty else { return }
+            let marks = wrappers.flatMap(\.marks).reduce(into: [Mark]()) { $0 = $1.addToSet($0) }
+            result.replaceSubrange(marked..., with: inheritMarks(Array(result[marked...]), marks))
+        }
+        func appendInline(_ run: Tokens) {
+            if inlineRun.isEmpty { inlineRun.append(contentsOf: wrappers.map(\.open)) }
+            inlineRun.append(contentsOf: run)
+        }
+
         func flushInline() {
             guard !inlineRun.isEmpty else { return }
             let inline = parseInline(inlineRun, schema, config)
@@ -835,32 +870,49 @@ public enum HTMLParser {
                inline.map({ $0.text ?? "" }).joined().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return
             }
-            result.append(contentsOf: textblockSplittingBlocks(inline) {
-                try? schema.node("paragraph", [:], content: Fragment.from($0))
-            })
+            result.append(contentsOf: textblocks(inline, as: "paragraph", schema: schema))
+            // Marked already, by the wrappers' open tags at the head of the run
+            // — and only from where each opened, which marking the paragraph
+            // whole would ignore.
+            marked = result.count
         }
 
         var i = tokens.startIndex
         while i < tokens.endIndex {
+            markBlocks()
             if case .text = tokens[i] {
-                inlineRun.append(tokens[i]); i += 1; continue
+                appendInline(tokens[i...i]); i += 1; continue
             }
-            if case let .open(tag, _, selfClosing) = tokens[i] {
+            if case let .open(tag, attrs, selfClosing) = tokens[i] {
                 // An inline element mid-run stays in the paragraph. A `<math>`
                 // standing alone still reaches the block handling below, so
                 // display maths becomes a block node rather than a paragraph.
                 if inlineTags.contains(tag), !(tag == "math" && inlineRun.isEmpty) {
                     if selfClosing {
-                        inlineRun.append(tokens[i]); i += 1
+                        appendInline(tokens[i...i]); i += 1
                     } else {
-                        let close = min(matchingClose(tokens, i, tag), tokens.endIndex - 1)
-                        inlineRun.append(contentsOf: tokens[i...close])
-                        i = close + 1
+                        let close = matchingClose(tokens, i, tag)
+                        if isMarkWrapper(tag, attrs), containsBlockTag(tokens[(i + 1)..<close]) {
+                            appendInline(tokens[i...i])
+                            wrappers.append((close, tokens[i], scopeMarks(tag, attrs, schema, config) ?? []))
+                            i += 1
+                            continue
+                        }
+                        let last = min(close, tokens.endIndex - 1)
+                        appendInline(tokens[i...last])
+                        i = last + 1
                     }
                     continue
                 }
             }
-            if case .close = tokens[i] { i += 1; continue }
+            if case .close = tokens[i] {
+                if let w = wrappers.lastIndex(where: { $0.close == i }) {
+                    wrappers.remove(at: w)
+                    // The run continuing past it is no longer inside it.
+                    if !inlineRun.isEmpty { inlineRun.append(tokens[i]) }
+                }
+                i += 1; continue
+            }
             flushInline()
             if case let .open(tag, attrs, _) = tokens[i] {
                 // A `data-type="block-math"` div, before the generic <div> branch
@@ -927,9 +979,7 @@ public enum HTMLParser {
                         // `flushInline` already does for the same run.
                         let inline = parseInline(inner, schema, config)
                         if !inline.isEmpty {
-                            result.append(contentsOf: textblockSplittingBlocks(inline) {
-                                try? schema.node("paragraph", [:], content: Fragment.from($0))
-                            })
+                            result.append(contentsOf: textblocks(inline, as: "paragraph", schema: schema))
                         }
                     }
                     i = e + 1; continue
@@ -940,8 +990,18 @@ public enum HTMLParser {
                 i = next
             } else { i += 1 }
         }
+        markBlocks()
         flushInline()
         return result
+    }
+
+    /// Whether an inline element holding blocks opens marks around them,
+    /// rather than being an atom — a mention, a formula, a footnote reference —
+    /// that holds its content for its own reasons. `aria-hidden` content is
+    /// dropped whole by `parseInline`, so it stays a run for that to skip.
+    private static func isMarkWrapper(_ tag: String, _ attrs: [String: String]) -> Bool {
+        tag != "math" && attrs["aria-hidden"] != "true" && attrs["data-type"] == nil
+            && attrs["data-mention"] == nil && attrs["data-wikilink"] == nil
     }
 
     /// Parse a `<ul>`/`<ol>` as a task list (Tiptap `data-type`, or `<li>`s with
@@ -961,7 +1021,7 @@ public enum HTMLParser {
             for (open, close) in directItems(tokens, start, end, subLists: true) {
                 guard case let .open(tag, liAttrs, _) = tokens[open] else { continue }
                 if tag == "li" {
-                    if let item = parseTaskItem(tokens, open, close, liAttrs, schema, config) { items.append(item) }
+                    items.append(contentsOf: parseTaskItem(tokens, open, close, liAttrs, schema, config))
                     continue
                 }
                 // A sub-list sitting directly in the list, not in an item. As
@@ -975,10 +1035,16 @@ public enum HTMLParser {
                     items.append(contentsOf: fitContent(sub, into: listType, schema: schema))
                 }
             }
-            if !items.isEmpty, let n = try? listType.createChecked(idAttrs(attrs, "taskList", schema, config), content: Fragment.from(items)) { return [n] }
+            // What overflowed an item is fitted here, as ProseMirror places
+            // what closes a node: in the node around it.
+            let fitted = fitContent(items, into: listType, schema: schema)
+            if !fitted.isEmpty,
+               let n = try? listType.createChecked(idAttrs(attrs, "taskList", schema, config), content: Fragment.from(fitted)) {
+                return [n]
+            }
         }
         let name = config.tagToNode[tag] ?? "bulletList"
-        let parsed = parseBlocks(tokens[(start + 1)..<end], schema, config)
+        let parsed = joiningSubLists(parseBlocks(tokens[(start + 1)..<end], schema, config))
         guard let type = schema.nodes[name] else { return parsed }
         // A `<ul>` can contain things that aren't list items — real pages put
         // stray paragraphs and nested markup in there.
@@ -999,6 +1065,59 @@ public enum HTMLParser {
         if let n = try? type.createChecked(a, content: Fragment.from(children)) { return [n] }
         if let filled = type.createAndFill(a, content: Fragment.from(children)) { return [filled] }
         return parsed
+    }
+
+    /// A table's `<caption>`, parsed as the blocks that go before the table,
+    /// and the table's content without it.
+    ///
+    /// The schema has no node for a caption, and left in place its words were
+    /// fitted into the table as one more row — the first row, or one in the
+    /// middle, wherever the markup happened to put it. A caption titles the
+    /// table, so it goes above it.
+    private static func liftingCaptions(_ tokens: Tokens, _ start: Int, _ end: Int, _ schema: Schema,
+                                        _ config: HTMLConfig) -> (caption: [Node], rows: Tokens) {
+        var caption: [Node] = []
+        var rows: [Token] = []
+        var nested = 0
+        var i = start + 1
+        while i < end {
+            switch tokens[i] {
+            case let .open(tag, _, selfClosing) where !selfClosing:
+                if tag == "caption", nested == 0 {
+                    let close = min(matchingClose(tokens, i, tag), end)
+                    caption += parseBlocks(tokens[(i + 1)..<close], schema, config)
+                    i = close + 1
+                    continue
+                }
+                if tag == "table" { nested += 1 }
+            case let .close(tag) where tag == "table":
+                nested -= 1
+            default: break
+            }
+            rows.append(tokens[i])
+            i += 1
+        }
+        // Most tables have no caption; they keep their own slice.
+        return caption.isEmpty && rows.count == end - start - 1 ? ([], tokens[(start + 1)..<end]) : (caption, rows[...])
+    }
+
+    /// A sub-list written directly in a list rather than in an item — how
+    /// Google Docs writes every nested list — joined to the item above it, as
+    /// ProseMirror's `normalizeList` reads it. Fitted as it stood, its items
+    /// were unwrapped into the outer list and the nesting was lost.
+    private static func joiningSubLists(_ nodes: [Node]) -> [Node] {
+        var out: [Node] = []
+        for node in nodes {
+            if ["bulletList", "orderedList", "taskList"].contains(node.type.name), let last = out.last,
+               last.type.name == "listItem" || last.type.name == "taskItem",
+               let joined = try? last.type.createChecked(last.attrs, content: last.content.append(Fragment.from(node)),
+                                                         marks: last.marks) {
+                out[out.count - 1] = joined
+                continue
+            }
+            out.append(node)
+        }
+        return out
     }
 
     /// Whether any `<li>` directly under this list wraps its content in a `<p>`.
@@ -1060,32 +1179,47 @@ public enum HTMLParser {
         }
         let summaryInline = parseInline(summaryTokens, schema, config)
         let body = parseBlocks(bodyTokens[...], schema, config)
+        // Whenever the section can't be built, it degrades to the summary as a
+        // paragraph followed by its body blocks — never to the body alone.
+        func degraded() -> [Node] {
+            (summaryInline.isEmpty ? [] : textblocks(summaryInline, as: "paragraph", schema: schema)) + body
+        }
         guard let detailsType = schema.nodes["details"],
               let summaryType = schema.nodes["detailsSummary"],
               let contentType = schema.nodes["detailsContent"] else {
             // No details in this schema: keep the text rather than dropping it.
-            var out: [Node] = []
-            if !summaryInline.isEmpty {
-                out.append(contentsOf: textblockSplittingBlocks(summaryInline) {
-                    try? schema.node("paragraph", [:], content: Fragment.from($0))
-                })
-            }
-            return out + body
+            return degraded()
         }
+        // The summary is a textblock: a block node inside it (an image, in a
+        // block-image schema) opens the body instead, and what the summary's
+        // content or marks won't take is fitted rather than failing it — which
+        // left an empty summary, the words gone.
+        let summaryContent = conformMarks(fitInline(summaryInline.filter { !$0.type.isBlock }, into: summaryType),
+                                          in: summaryType)
+        let lifted = summaryInline.filter(\.type.isBlock)
+        // A body the section can't hold closes it, and follows it out.
+        var after: [Node] = []
+        let bodyContent = Fragment.from(fitContent(lifted + body, into: contentType, schema: schema, overflow: &after))
         let summaryNodeAttrs = idAttrs(summaryAttrs, "detailsSummary", schema, config)
-        guard let summary = (try? summaryType.createChecked(summaryNodeAttrs, content: Fragment.from(summaryInline)))
-                ?? summaryType.createAndFill(summaryNodeAttrs),
-              let content = (try? contentType.createChecked([:], content: Fragment.from(body)))
-                ?? contentType.createAndFill([:], content: Fragment.from(body))
-        else { return body }
+        guard let summary = (try? summaryType.createChecked(summaryNodeAttrs, content: Fragment.from(summaryContent)))
+                ?? summaryType.createAndFill(summaryNodeAttrs, content: Fragment.from(summaryContent)),
+              let content = (try? contentType.createChecked([:], content: bodyContent))
+                ?? contentType.createAndFill([:], content: bodyContent)
+        else { return degraded() }
         var a: Attrs = ["open": .bool(attrs["open"] != nil)]
         a.merge(idAttrs(attrs, "details", schema, config)) { _, new in new }
-        guard let node = try? detailsType.createChecked(a, content: Fragment.from([summary, content])) else { return body }
-        return [node]
+        guard let node = try? detailsType.createChecked(a, content: Fragment.from([summary, content])) else {
+            return degraded()
+        }
+        return [node] + after
     }
 
-    private static func parseTaskItem(_ tokens: Tokens, _ liStart: Int, _ liEnd: Int, _ liAttrs: [String: String], _ schema: Schema, _ config: HTMLConfig) -> Node? {
-        guard let itemType = schema.nodes["taskItem"] else { return nil }
+    /// A task item, followed by whatever it holds that the schema's task item
+    /// can't — the way a list item's content overflows it — so an item holding
+    /// a nested list in a schema whose items hold one paragraph keeps the
+    /// nested tasks rather than being dropped with them.
+    private static func parseTaskItem(_ tokens: Tokens, _ liStart: Int, _ liEnd: Int, _ liAttrs: [String: String], _ schema: Schema, _ config: HTMLConfig) -> [Node] {
+        guard let itemType = schema.nodes["taskItem"] else { return [] }
         var checked = liAttrs["data-checked"] == "true"
         // Drop the checkbox <input> from the item's content, recording its
         // state. Only the item's own checkbox: one belonging to a nested list's
@@ -1116,8 +1250,11 @@ public enum HTMLParser {
         let children = parseBlocks(inner[...], schema, config)
         var a: Attrs = ["checked": .bool(checked)]
         a.merge(idAttrs(liAttrs, "taskItem", schema, config)) { _, new in new }
-        if let n = try? itemType.createChecked(a, content: Fragment.from(children)) { return n }
-        return itemType.createAndFill(a, content: Fragment.from(children))
+        var after: [Node] = []
+        let content = Fragment.from(fitContent(children, into: itemType, schema: schema, overflow: &after))
+        guard let item = (try? itemType.createChecked(a, content: content)) ?? itemType.createAndFill(a, content: content)
+        else { return children }
+        return [item] + after
     }
 
     /// The `<li>` elements directly inside this list, as (open, close) index
@@ -1270,7 +1407,10 @@ public enum HTMLParser {
     /// every header plain.
     ///
     /// Only where the schema allows it: a code block takes no marks, and adding
-    /// one would build a document that fails its own check.
+    /// one would build a document that fails its own check. The textblock is
+    /// what decides — a list or a quote allows no marks of its own, but the
+    /// paragraphs inside it do, and filtering at the list lost the emphasis of
+    /// everything in it.
     private static func inheritMarks(_ nodes: [Node], _ marks: [Mark]) -> [Node] {
         guard !marks.isEmpty else { return nodes }
         return nodes.map { node in
@@ -1278,7 +1418,7 @@ public enum HTMLParser {
                 return node.mark(marks.reduce(node.marks) { $1.addToSet($0) })
             }
             guard node.childCount > 0 else { return node }
-            let allowed = marks.filter { node.type.allowsMarkType($0.type) }
+            let allowed = node.inlineContent ? marks.filter { node.type.allowsMarkType($0.type) } : marks
             let inner = (0..<node.childCount).map { node.child($0) }
             return node.copy(content: Fragment.from(inheritMarks(inner, allowed)))
         }
@@ -1487,29 +1627,6 @@ public enum HTMLParser {
                         result.append(m); i = close + 1; continue
                     }
                 }
-                // A styled <span> opens a scope contributing textColor / backgroundColor.
-                if tag == "span" {
-                    if !selfClosing {
-                        var marks: [Mark] = []
-                        if let style = attrs["style"] {
-                            // Colors are re-serialized into a `style` attribute, so
-                            // an unsanitized one would carry anything else CSS can
-                            // express back out with it.
-                            if let c = styleValue(style, "background-color").flatMap(sanitizeCSSColor),
-                               let mt = schema.marks["backgroundColor"] {
-                                marks.append(mt.create(["color": .string(c)]))
-                            }
-                            if let c = styleValue(style, "color").flatMap(sanitizeCSSColor),
-                               let mt = schema.marks["textColor"] {
-                                marks.append(mt.create(["color": .string(c)]))
-                            }
-                            marks.append(contentsOf: styleMarks(style, schema))
-                        }
-                        openMarks.append((tag: "span", marks: marks))
-                        marksChanged()
-                    }
-                    i += 1; continue
-                }
                 if tag == "a", attrs["data-wikilink"] != nil || schema.nodes["wikiLink"] != nil, attrs["data-wikilink"] != nil {
                     let rawTarget = attrs["data-wikilink"] ?? attrs["href"] ?? ""
                     let close = matchingClose(tokens, i, tag)
@@ -1529,43 +1646,8 @@ public enum HTMLParser {
                     }
                 }
                 // A self-closing mark tag opens no lasting scope.
-                if !selfClosing, let markName = config.tagToMark[tag], let markType = schema.marks[markName] {
-                    // Google Docs wraps a whole copied document in
-                    // `<b style="font-weight:normal">`, which is not bold and
-                    // never was — taking the tag at its word made every paste
-                    // from it arrive entirely bold. ProseMirror's own schema
-                    // reads the style over the tag here for the same reason.
-                    if markName == "bold", let style = attrs["style"],
-                       let weight = styleValue(style, "font-weight")?
-                           .trimmingCharacters(in: .whitespaces).lowercased(),
-                       !isBoldWeight(weight) {
-                        openMarks.append((tag: tag, marks: []))
-                        marksChanged()
-                        i += 1; continue
-                    }
-                    var attrsDict: Attrs = [:]
-                    if markName == "link" {
-                        // A `javascript:` href would become a link the editor
-                        // hands to the system on tap. Drop the mark, keep the text.
-                        guard let href = sanitizeURL(attrs["href"] ?? "", for: .link) else {
-                            openMarks.append((tag: tag, marks: []))
-                            marksChanged()
-                            i += 1; continue
-                        }
-                        attrsDict["href"] = .string(href)
-                        if let title = attrs["title"] { attrsDict["title"] = .string(title) }
-                    }
-                    // `data-color` is what this serializer writes; a bare
-                    // `background-color` style is what other editors emit.
-                    if markName == "highlight", markType.attrs["color"] != nil {
-                        if let color = attrs["data-color"] {
-                            attrsDict["color"] = .string(color)
-                        } else if let style = attrs["style"],
-                                  let css = styleValue(style, "background-color").flatMap(sanitizeCSSColor) {
-                            attrsDict["color"] = .string(css)
-                        }
-                    }
-                    openMarks.append((tag: tag, marks: [markType.create(attrsDict)]))
+                if !selfClosing, let marks = scopeMarks(tag, attrs, schema, config) {
+                    openMarks.append((tag: tag, marks: marks))
                     marksChanged()
                 }
                 i += 1
@@ -1580,6 +1662,65 @@ public enum HTMLParser {
             }
         }
         return result
+    }
+
+    /// The marks an inline element puts on the content it holds, or nil when
+    /// it isn't an element that marks anything. Empty, rather than nil, for
+    /// one that is a mark's element but asks for no mark — a `<span>` with no
+    /// style, or a link whose href was unsafe — so it still opens a scope for
+    /// its close tag to end.
+    private static func scopeMarks(_ tag: String, _ attrs: [String: String],
+                                   _ schema: Schema, _ config: HTMLConfig) -> [Mark]? {
+        // A styled <span> contributes textColor / backgroundColor and whatever
+        // emphasis its style spells.
+        if tag == "span" {
+            var marks: [Mark] = []
+            if let style = attrs["style"] {
+                // Colors are re-serialized into a `style` attribute, so an
+                // unsanitized one would carry anything else CSS can express
+                // back out with it.
+                if let c = styleValue(style, "background-color").flatMap(sanitizeCSSColor),
+                   let mt = schema.marks["backgroundColor"] {
+                    marks.append(mt.create(["color": .string(c)]))
+                }
+                if let c = styleValue(style, "color").flatMap(sanitizeCSSColor),
+                   let mt = schema.marks["textColor"] {
+                    marks.append(mt.create(["color": .string(c)]))
+                }
+                marks.append(contentsOf: styleMarks(style, schema))
+            }
+            return marks
+        }
+        guard let markName = config.tagToMark[tag], let markType = schema.marks[markName] else { return nil }
+        // Google Docs wraps a whole copied document in
+        // `<b style="font-weight:normal">`, which is not bold and never was —
+        // taking the tag at its word made every paste from it arrive entirely
+        // bold. ProseMirror's own schema reads the style over the tag here for
+        // the same reason.
+        if markName == "bold", let style = attrs["style"],
+           let weight = styleValue(style, "font-weight")?.trimmingCharacters(in: .whitespaces).lowercased(),
+           !isBoldWeight(weight) {
+            return []
+        }
+        var attrsDict: Attrs = [:]
+        if markName == "link" {
+            // A `javascript:` href would become a link the editor hands to the
+            // system on tap. Drop the mark, keep the text.
+            guard let href = sanitizeURL(attrs["href"] ?? "", for: .link) else { return [] }
+            attrsDict["href"] = .string(href)
+            if let title = attrs["title"] { attrsDict["title"] = .string(title) }
+        }
+        // `data-color` is what this serializer writes; a bare
+        // `background-color` style is what other editors emit.
+        if markName == "highlight", markType.attrs["color"] != nil {
+            if let color = attrs["data-color"] {
+                attrsDict["color"] = .string(color)
+            } else if let style = attrs["style"],
+                      let css = styleValue(style, "background-color").flatMap(sanitizeCSSColor) {
+                attrsDict["color"] = .string(css)
+            }
+        }
+        return [markType.create(attrsDict)]
     }
 
     /// A math node from an element carrying Tiptap's `data-type="inline-math"` /

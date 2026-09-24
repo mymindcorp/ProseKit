@@ -388,37 +388,7 @@ private enum KnownIssue {
     case losesWords
 }
 
-private let knownIssues: [(schema: String, source: String, issue: KnownIssue, bug: String)] = [
-    // An inline element (`<b>`, `<a>`) wrapping *block* content at block level
-    // is read as one inline run, so every block inside it collapses into a
-    // single paragraph and adjacent blocks' words run together. Google Docs
-    // wraps every copy in such a `<b>`, so a pasted list or table arrives as
-    // one line: "ApplesGranny SmithPears".
-    ("*", "Google Docs: lists with a sub-list directly in the list", .losesWords, "inline wrapper around blocks"),
-    ("*", "Google Docs: table with colgroup and bold header cells", .losesWords, "inline wrapper around blocks"),
-    ("*", "Images inside links, and links around blocks", .losesWords, "inline wrapper around blocks"),
-    // An inline node the textblock's content doesn't allow (a hard break or an
-    // image where only text may go) is never fitted, so the whole parse throws.
-    ("paragraph: text*", "*", .throwsInvalidDocument, "disallowed inline node in a textblock"),
-    ("heading: text*", "*", .throwsInvalidDocument, "disallowed inline node in a textblock"),
-    // A `<details>` whose body the schema can't hold returns only the body —
-    // the summary's words are dropped; and a summary carrying a mark the
-    // schema forbids there is replaced by an empty one.
-    ("detailsContent: paragraph+", "Notion: headings, toggle, quote holding a list, figure", .losesWords,
-     "details summary dropped"),
-    ("detailsContent: paragraph+", "Details with block content and a nested details", .losesWords,
-     "details summary dropped"),
-    ("detailsSummary marks \"\"", "Details with block content and a nested details", .losesWords,
-     "details summary dropped"),
-    // A task item whose content doesn't fit `taskItem` is dropped whole, with
-    // everything nested in it.
-    ("taskItem: paragraph", "Task list with a sub-list and nested checkboxes", .losesWords, "task item dropped"),
-    // Content unwrapped from two separate blocks is merged into one wrapping
-    // paragraph: two headings in a `paragraph+` document become one paragraph.
-    ("doc: paragraph+", "Headings holding blocks and images", .losesWords, "unwrapped blocks merged"),
-    // What doesn't fit a single-paragraph cell after its paragraph is dropped.
-    ("tableCell: paragraph", "A cell holding lists and a nested table", .losesWords, "cell overflow dropped"),
-]
+private let knownIssues: [(schema: String, source: String, issue: KnownIssue, bug: String)] = []
 
 private func knownIssue(_ schemaLabel: String, _ source: String, _ issue: KnownIssue) -> Bool {
     knownIssues.contains { entry in
