@@ -48,6 +48,23 @@ final class ThemeFontTests: XCTestCase {
         XCTAssertEqual(theme.blockFont(paragraph()).familyName, "Georgia")
     }
 
+    func testHeadingWeightAppliesToANamedFace() {
+        // A weight added to a descriptor that names a face keeps that face, so
+        // this used to come back as plain HelveticaNeue whatever was asked.
+        var theme = DocumentTheme()
+        theme.dynamicType = false
+        theme.heading.fontName = "HelveticaNeue"
+        theme.heading.weight = .light
+        XCTAssertEqual(theme.blockFont(heading(1)).fontName, "HelveticaNeue-Light")
+        theme.heading.weight = .heavy
+        let heavy = theme.blockFont(heading(1))
+        XCTAssertEqual(heavy.familyName, "Helvetica Neue")
+        XCTAssertNotEqual(heavy.fontName, "HelveticaNeue", "a heavier face than the regular one")
+        // No weight asked for: bolded, as before.
+        theme.heading.weight = nil
+        XCTAssertEqual(theme.blockFont(heading(1)).fontName, "HelveticaNeue-Bold")
+    }
+
     func testHeadingFaceAppliesOverSystemBodyFont() {
         var theme = DocumentTheme()
         theme.dynamicType = false

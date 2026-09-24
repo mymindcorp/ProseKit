@@ -183,7 +183,6 @@ enum DecorationItem {
     case math(MathRendering, CGRect)
     case roundedFill(CGRect, UIColor, CGFloat)
     case roundedStroke(CGRect, UIColor, CGFloat, CGFloat)
-    case checkmark(CGRect, UIColor, CGFloat)
 }
 
 /// A text block typeset in local coordinates (block top at y = 0), cached and
@@ -912,7 +911,6 @@ final class DocumentLayout {
         case let .math(m, r): return .math(m, r.offsetBy(dx: 0, dy: dy))
         case let .roundedFill(r, c, rad): return .roundedFill(r.offsetBy(dx: 0, dy: dy), c, rad)
         case let .roundedStroke(r, c, w, rad): return .roundedStroke(r.offsetBy(dx: 0, dy: dy), c, w, rad)
-        case let .checkmark(r, c, w): return .checkmark(r.offsetBy(dx: 0, dy: dy), c, w)
         }
     }
 
@@ -1449,9 +1447,8 @@ final class DocumentLayout {
         return (midline - boxSize / 2).rounded()
     }
 
-    /// The checkmark glyph for a checkbox of the given rect — shared between
-    /// the canvas drawing and the view's check-on animation so the animated
-    /// stroke and the final drawn glyph are pixel-identical.
+    /// The checkmark glyph for a checkbox of the given rect, drawn by
+    /// `TaskCheckboxView`.
     static func checkmarkPath(in rect: CGRect) -> UIBezierPath {
         let path = UIBezierPath()
         path.move(to: CGPoint(x: rect.minX + rect.width * 0.22, y: rect.minY + rect.height * 0.54))
@@ -2253,6 +2250,9 @@ final class DocumentLayout {
         for d in e.decorations {
             if case let .image(_, r) = d { return r }
             if case let .stroke(r, _, _) = d { return r }
+            // The placeholder while the bytes load, when the theme rounds
+            // image corners.
+            if case let .roundedStroke(r, _, _, _) = d { return r }
         }
         return nil
     }
@@ -2549,14 +2549,6 @@ final class DocumentLayout {
                 color.setStroke()
                 let path = UIBezierPath(roundedRect: rect.insetBy(dx: w / 2, dy: w / 2), cornerRadius: radius)
                 path.lineWidth = w
-                path.stroke()
-            case let .checkmark(rect, color, w):
-                guard visible(rect.minY, rect.maxY) else { continue }
-                let path = Self.checkmarkPath(in: rect)
-                path.lineWidth = w
-                path.lineCapStyle = .round
-                path.lineJoinStyle = .round
-                color.setStroke()
                 path.stroke()
             }
         }

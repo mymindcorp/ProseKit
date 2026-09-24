@@ -609,7 +609,14 @@ public struct DocumentTheme: Sendable, Equatable {
             let descriptor = font.fontDescriptor.withSymbolicTraits(.traitBold) ?? font.fontDescriptor
             return UIFont(descriptor: descriptor, size: font.pointSize)
         }
-        let descriptor = font.fontDescriptor.addingAttributes(
+        // A descriptor that names a face resolves to that face whatever weight
+        // trait is added to it, so a named face asks its family for the weight
+        // instead. The system font keeps its own descriptor, which carries the
+        // Dynamic Type text style the family route would drop.
+        let base = font.fontName.hasPrefix(".")
+            ? font.fontDescriptor
+            : UIFontDescriptor(fontAttributes: [.family: font.familyName])
+        let descriptor = base.addingAttributes(
             [.traits: [UIFontDescriptor.TraitKey.weight: weight]])
         return UIFont(descriptor: descriptor, size: font.pointSize)
     }

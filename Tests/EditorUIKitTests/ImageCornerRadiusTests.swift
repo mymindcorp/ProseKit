@@ -24,11 +24,13 @@ final class ImageCornerRadiusTests: XCTestCase {
         }.pngData()!
     }
 
-    private func makeView(radius: CGFloat, bytes: Data?) throws -> EditorTextView {
+    private func makeView(radius: CGFloat, bytes: Data?, width: Int? = nil) throws -> EditorTextView {
         let editor = try Editor(extensions: fullKit())
         let s = editor.schema
+        var attrs: Attrs = ["src": .string("asset://photo")]
+        if let width { attrs["width"] = .int(width) }
         editor.setContent(try s.node("doc", [:], content: Fragment.from([
-            try s.node("image", ["src": .string("asset://photo")]),
+            try s.node("image", attrs),
         ])))
         let view = EditorTextView(editor: editor)
         var theme = DocumentTheme()
@@ -131,6 +133,27 @@ final class ImageCornerRadiusTests: XCTestCase {
             return false
         }
         XCTAssertTrue(rounded)
+    }
+
+    func testARoundedPlaceholderIsHitLikeASquareOne() throws {
+        // The rounded placeholder is a different decoration from the square
+        // one, and was once not recognised as the image's box: no image rects,
+        // so it couldn't be tapped, dragged or resized, and a node selection
+        // over it highlighted the whole row.
+        for radius: CGFloat in [0, 8] {
+            let layout = try makeView(radius: radius, bytes: nil, width: 100).ensureLayout()
+            let box = try XCTUnwrap(layout.imageRects.first, "radius \(radius)")
+            XCTAssertEqual(box.pos, 0)
+            XCTAssertEqual(box.rect.width, 100, "radius \(radius): the image's own box, not the row")
+            XCTAssertEqual(layout.blockAtomRect(at: 0), box.rect, "radius \(radius)")
+            let inside = CGPoint(x: box.rect.midX, y: box.rect.midY)
+            XCTAssertEqual(layout.blockImage(at: inside), 0, "radius \(radius)")
+            XCTAssertEqual(layout.blockAtom(at: inside), 0, "radius \(radius)")
+            XCTAssertNil(layout.blockImage(at: CGPoint(x: box.rect.maxX + 20, y: box.rect.midY)),
+                         "radius \(radius): the margin beside a narrow image is not the image")
+        }
+        XCTAssertEqual(try makeView(radius: 8, bytes: nil, width: 100).ensureLayout().imageRects.first?.rect,
+                       try makeView(radius: 0, bytes: nil, width: 100).ensureLayout().imageRects.first?.rect)
     }
 
     func testThePlaceholderBoxStaysSquareByDefault() throws {

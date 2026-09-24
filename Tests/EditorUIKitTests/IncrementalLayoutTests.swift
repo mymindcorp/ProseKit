@@ -91,7 +91,6 @@ final class IncrementalLayoutTests: XCTestCase {
         case let .math(_, rect): return "math\(r(rect))"
         case let .roundedFill(rect, color, radius): return "roundedFill\(r(rect))\(colorKey(color))\(radius)"
         case let .roundedStroke(rect, color, w, radius): return "roundedStroke\(r(rect))\(colorKey(color))\(w)\(radius)"
-        case let .checkmark(rect, color, w): return "checkmark\(r(rect))\(colorKey(color))\(w)"
         }
     }
 
