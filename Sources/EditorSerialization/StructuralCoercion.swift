@@ -28,8 +28,12 @@ import DocumentModel
 ///    is what rescues content from a container that has no place here;
 /// 5. **dropped**, only once there is nothing left inside it to keep.
 ///
-/// Adjacent nodes that needed the same wrapping are merged, so two loose `<li>`s
-/// become one list of two items rather than two lists.
+/// Adjacent nodes whose wrappings begin the same way are merged, so two loose
+/// `<li>`s become one list of two items rather than two lists, and a loose
+/// `<td>` followed by a `<tr>` one table of two rows. Only nodes that stood
+/// side by side are merged: what was unwrapped out of one node never joins what
+/// came out of its neighbour, so two headings in a paragraphs-only document
+/// stay two paragraphs rather than running their words together.
 func fitContent(_ nodes: [Node], into container: NodeType, schema: Schema) -> [Node] {
     var fitter = ContentFitter(container: container, schema: schema)
     for node in nodes { fitter.place(node, depth: 0) }
@@ -45,6 +49,13 @@ func fitContent(_ nodes: [Node], into container: NodeType, schema: Schema) -> [N
 /// the open node closes it, and lands after it in the parent. So
 /// `<figure><p>x</p><figcaption>c</figcaption><p>after</p></figure>` is a
 /// figure followed by a paragraph, rather than a figure that lost "after".
+///
+/// It holds however deep the node that doesn't fit sits. In a schema whose
+/// blockquote holds one paragraph, `<blockquote><ul><li>x</li><li>y</li></ul>`
+/// unwraps the list to find "x" a place, which fills the quote; the second
+/// item, met while unwrapping, is overflow like any other and follows the
+/// quote out — where only the list's top-level siblings used to, and the rest
+/// of the list was dropped.
 func fitContent(_ nodes: [Node], into container: NodeType, schema: Schema, overflow: inout [Node]) -> [Node] {
     var fitter = ContentFitter(container: container, schema: schema)
     fitter.overflow = []
@@ -62,9 +73,16 @@ private struct ContentFitter {
     var overflow: [Node]?
 
     /// Placed nodes, with the wrapping each one needed (empty when it fitted as
-    /// it was). The chain is kept so the next node can be merged into it.
-    private var placed: [(node: Node, wrapping: [NodeType])] = []
+    /// it was) and the run of siblings it came from. The chain is kept so the
+    /// next node can be merged into it.
+    private var placed: [(node: Node, wrapping: [NodeType], run: Int)] = []
     private var match: ContentMatch
+
+    /// The run of siblings being placed. Unwrapping a node starts a new run for
+    /// its children and another for whatever follows it, and only nodes of one
+    /// run merge.
+    private var run = 0
+    private var runs = 0
 
     /// Unwrapping descends; a document nested past this is malformed by any
     /// measure, and the bound keeps a pathological one from recursing away.
@@ -79,13 +97,13 @@ private struct ContentFitter {
     mutating func place(_ node: Node, depth: Int) {
         // Once something has overflowed, the container is closed: everything
         // after it follows it out.
-        if depth == 0, let spilled = overflow, !spilled.isEmpty {
+        if let spilled = overflow, !spilled.isEmpty {
             overflow = spilled + [node]
             return
         }
         // 1. Already legal here.
         if let next = match.matchType(node.type) {
-            placed.append((node, []))
+            placed.append((node, [], run))
             match = next
             return
         }
@@ -94,7 +112,7 @@ private struct ContentFitter {
         if let wrapping = match.findWrapping(node.type), !wrapping.isEmpty {
             if mergeIntoPrevious(node, wrapping: wrapping) { return }
             if let wrapped = wrap(node, in: wrapping), let next = match.matchType(wrapped.type) {
-                placed.append((wrapped, wrapping))
+                placed.append((wrapped, wrapping, run))
                 match = next
                 return
             }
@@ -105,19 +123,25 @@ private struct ContentFitter {
         //    being dropped for arriving too early.
         if let fill = match.fillBefore(Fragment.from(node)), fill.childCount > 0,
            let next = match.matchFragment(fill)?.matchType(node.type) {
-            for i in 0..<fill.childCount { placed.append((fill.child(i), [])) }
-            placed.append((node, []))
+            for i in 0..<fill.childCount { placed.append((fill.child(i), [], run)) }
+            placed.append((node, [], run))
             match = next
             return
         }
-        // A full container closes, rather than taking the node apart.
-        if depth == 0, overflow != nil, match.validEnd, match.edgeTypes.isEmpty {
+        // A full container closes, rather than taking the node apart. Only once
+        // it holds something: one that accepts nothing at all is never going
+        // to, and handing everything out of it would only come back again.
+        if overflow != nil, !placed.isEmpty, match.validEnd, match.edgeTypes.isEmpty {
             overflow = [node]
             return
         }
         // 4. Nothing fits, but its children might.
         guard depth < Self.maxUnwrapDepth, node.childCount > 0 else { return }
+        runs += 1
+        run = runs
         for i in 0..<node.childCount { place(node.child(i), depth: depth + 1) }
+        runs += 1
+        run = runs
     }
 
     /// Close the run, adding whatever the content expression still requires (an
@@ -147,30 +171,83 @@ private struct ContentFitter {
         wrap(Fragment.from(node), in: types)
     }
 
-    /// Fold `node` into the previously placed node when that one needed exactly
-    /// the same wrapping — two loose `<li>`s belong in one list, and two loose
-    /// `<td>`s in one row.
+    /// Fold `node` into the previously placed node when their wrappings begin
+    /// with the same chain — two loose `<li>`s belong in one list, two loose
+    /// `<td>`s in one row, and a `<tr>` after a loose `<td>` in that cell's
+    /// table, as a row of its own after the cell's.
     private mutating func mergeIntoPrevious(_ node: Node, wrapping: [NodeType]) -> Bool {
-        guard let last = placed.last, last.wrapping.count == wrapping.count,
-              zip(last.wrapping, wrapping).allSatisfy({ $0 === $1 }) else { return false }
-        // Both were built as the same chain around their content, so merging is
-        // concatenating what sits at the bottom of it and rebuilding.
-        let levels = wrapping.count - 1
-        guard let existing = innermostContent(last.node, levels: levels),
-              let innermost = wrapping.last,
-              innermost.contentMatch.matchFragment(existing.append(Fragment.from(node)))?.validEnd == true,
-              let merged = wrap(existing.append(Fragment.from(node)), in: wrapping) else { return false }
-        placed[placed.count - 1] = (merged, wrapping)
+        guard let last = placed.last, last.run == run else { return false }
+        let shared = zip(last.wrapping, wrapping).prefix { $0 === $1 }.count
+        guard shared > 0 else { return false }
+        // What goes in at the deepest shared level: the node, in whatever of
+        // its own wrapping lies below that.
+        let addition = shared == wrapping.count ? node : wrap(node, in: Array(wrapping[shared...]))
+        guard let addition,
+              let merged = appending(Fragment.from(addition), to: last.node, levels: shared - 1) else { return false }
+        // The merged node's last child at every level is now the chain this
+        // node was wrapped in, so that is what the next one merges against.
+        placed[placed.count - 1] = (merged, wrapping, run)
         return true
     }
 
-    /// The content of the innermost wrapper, `levels` deep along a chain this
-    /// fitter built (so each level has exactly the one child it was given).
-    private func innermostContent(_ node: Node, levels: Int) -> Fragment? {
-        guard levels > 0 else { return node.content }
-        guard let child = node.firstChild else { return nil }
-        return innermostContent(child, levels: levels - 1)
+    /// `node` with `addition` appended to the content `levels` deep, following
+    /// the last child down — the chain the last merge left there. Nil when the
+    /// content there wouldn't be complete with it.
+    private func appending(_ addition: Fragment, to node: Node, levels: Int) -> Node? {
+        guard levels > 0 else {
+            let content = node.content.append(addition)
+            guard node.type.contentMatch.matchFragment(content)?.validEnd == true else { return nil }
+            return node.copy(content: content)
+        }
+        guard let child = node.lastChild,
+              let merged = appending(addition, to: child, levels: levels - 1) else { return nil }
+        return node.copy(content: node.content.replaceChild(node.childCount - 1, merged))
     }
+}
+
+/// `inline` as content a `type` textblock accepts: a leaf its content
+/// expression won't take is replaced by the text it stands for, or — a hard
+/// break, an image — by a space, so the words either side of it stay two
+/// words rather than running together. Anything else it won't take is dropped.
+///
+/// A textblock's content is inline, so there is nothing to wrap or unwrap:
+/// this is `fitContent` for a run of text. Building without it, a schema
+/// whose paragraphs hold only text threw the whole parse away over the first
+/// `<br>` in it.
+func fitInline(_ inline: [Node], into type: NodeType) -> [Node] {
+    var match = type.contentMatch
+    var out: [Node] = []
+    var changed = false
+    // A space owed between the words either side of a dropped leaf — written
+    // only once there is a word after it, and only where neither side already
+    // has one, so a break at the end of a line leaves nothing behind.
+    var gap: [Mark]?
+    func append(_ node: Node) {
+        if let marks = gap, let schema = type.schema, let textType = schema.nodes["text"],
+           let last = out.last?.text?.last, !last.isWhitespace,
+           !(node.text?.first?.isWhitespace ?? false), let next = match.matchType(textType) {
+            out.append(schema.text(" ", marks))
+            match = next
+        }
+        gap = nil
+        guard let next = match.matchType(node.type) else { return }
+        out.append(node)
+        match = next
+    }
+    for node in inline {
+        if match.matchType(node.type) != nil {
+            append(node)
+            continue
+        }
+        changed = true
+        guard node.isLeaf, let schema = type.schema else { continue }
+        guard let leafText = node.type.spec.leafText else { gap = gap ?? node.marks; continue }
+        let text = String(leafText(node).map { $0.isNewline ? " " : $0 })
+        if !text.isEmpty { append(schema.text(text, node.marks)) }
+    }
+    guard changed else { return inline }
+    // Replacement text can land beside text; the fragment joins them.
+    return Fragment.from(out).content
 }
 
 /// Wrap inline content as a textblock, split around any block-level nodes so
@@ -274,6 +351,7 @@ private func conformed(_ node: Node, in container: NodeType) -> Node {
 /// assume one — so nil means the caller should keep whatever it had.
 func degradedParagraph(_ content: Fragment, schema: Schema) -> Node? {
     guard let type = schema.nodes["paragraph"] else { return nil }
+    let content = Fragment.from(fitInline(content.content, into: type))
     return (try? type.createChecked([:], content: content))
         ?? type.createAndFill([:], content: content)
 }
@@ -288,9 +366,10 @@ func degradedParagraph(_ content: Fragment, schema: Schema) -> Node? {
 func textblocks(_ inline: [Node], as name: String, _ attrs: Attrs = [:], schema: Schema) -> [Node] {
     let type = schema.nodes[name]
     return textblockSplittingBlocks(inline) { run in
-        let content = Fragment.from(run)
-        if let type, let node = try? type.create(attrs, content: content) { return node }
-        return degradedParagraph(content, schema: schema)
+        if let type, let node = try? type.create(attrs, content: Fragment.from(fitInline(run, into: type))) {
+            return node
+        }
+        return degradedParagraph(Fragment.from(run), schema: schema)
     }
 }
 

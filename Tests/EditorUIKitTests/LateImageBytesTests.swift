@@ -153,6 +153,56 @@ final class LateImageBytesTests: XCTestCase {
                              "the loaded image never reached the layout")
     }
 
+    /// A paragraph holding an inline image whose `src` is a PNG file on disk,
+    /// which the renderer's own loader fetches after the first layout.
+    private func inlineFileDoc(_ url: URL, schema s: Schema) throws -> Node {
+        try s.node("doc", [:], content: Fragment.from([
+            try s.node("paragraph", [:], content: Fragment.from([
+                s.text("before "), try s.node("image", ["src": .string(url.path)]), s.text(" after"),
+            ])),
+        ]))
+    }
+
+    private func pump(until done: () -> Bool) {
+        let deadline = Date().addingTimeInterval(10)
+        while !done(), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+    }
+
+    func testAnInlineImageLoadedFromItsSrcReplacesThePlaceholderInItsLine() throws {
+        // The paragraph's typeset block is cached by node and width, neither of
+        // which changed when the bytes arrived — so only evicting that block
+        // lets the relayout see the picture.
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("inline-\(UUID().uuidString).png")
+        try png(120, .red).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let editor = try Editor(extensions: starterKit() + [ImageExtension(inline: true)])
+        editor.setContent(try inlineFileDoc(url, schema: editor.schema))
+        let view = EditorTextView(editor: editor)
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 600)
+        view.layoutIfNeeded()
+        let placeholderHeight = view.ensureLayout().height
+
+        pump { view.ensureLayout().height > placeholderHeight }
+        XCTAssertGreaterThan(view.ensureLayout().height, placeholderHeight, "the line grew to fit the loaded image")
+        XCTAssertEqual(view.editor.doc.textContent, "before  after", "the document itself is untouched")
+    }
+
+    func testDocumentViewAdoptsAnInlineImageLoadedFromItsSrc() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("inline-\(UUID().uuidString).png")
+        try png(120, .red).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let schema = try Editor(extensions: starterKit() + [ImageExtension(inline: true)]).schema
+        let view = DocumentView(document: try inlineFileDoc(url, schema: schema))
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 600)
+        view.layoutIfNeeded()
+        let placeholderHeight = try XCTUnwrap(view.ensureLayout()).height
+
+        pump { (view.ensureLayout()?.height ?? 0) > placeholderHeight }
+        XCTAssertGreaterThan(try XCTUnwrap(view.ensureLayout()).height, placeholderHeight)
+    }
+
     // MARK: - The read-only renderer
 
     func testDocumentViewAdoptsLateHostBytes() throws {

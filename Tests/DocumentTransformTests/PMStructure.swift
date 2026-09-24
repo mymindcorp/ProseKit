@@ -189,5 +189,37 @@ func registerPMStructureTests() {
          pn("doc", pn("sect", pn("head"), pn("figure", pn("caption"), pn("figureimage")))),
          7, 9, pn("doc", pn("para", pt("hi"))), 0, 0,
          pn("doc", pn("sect", pn("head"), pn("figure", pn("caption"), pn("figureimage")), pn("para", pt("hi")))))
-}
 
+    // MARK: insertPoint
+    // Where a node of a type can go near a position: right there, or out past
+    // the ancestors the position is at the very start or end of.
+    let pmTypes = basicSchema.nodes
+    test("insertPoint: right at the position when the parent takes the type") {
+        let d = doc(p("one")).node
+        try expectEqual(insertPoint(d, 4, pmTypes["image"]!), 4)
+    }
+    test("insertPoint: after the textblock whose end it is at") {
+        let d = doc(p("one"), p("two")).node
+        try expectEqual(insertPoint(d, 4, pmTypes["horizontal_rule"]!), 5)
+        try expectEqual(insertPoint(d, 1, pmTypes["horizontal_rule"]!), 0, "and before one it's at the start of")
+    }
+    test("insertPoint: climbs out through ancestors it is at the end of") {
+        // At the end of the only item's paragraph: neither the paragraph nor
+        // the item takes a list item, but the list does, after the item.
+        let d = doc(ul(li(p("a")))).node
+        try expectEqual(insertPoint(d, 4, pmTypes["list_item"]!), 6)
+    }
+    test("insertPoint: stops at an ancestor that has more content after") {
+        // The paragraph ends here, but the item goes on past it — so the list
+        // beyond isn't "right after" this position, even though it would take
+        // a list item.
+        let list = doc(ul(li(p("a"), p("b")))).node
+        try expectNil(insertPoint(list, 4, pmTypes["list_item"]!))
+        // Nor is anywhere when the parent level refuses the type outright.
+        try expectNil(insertPoint(doc(p("one"), p("two")).node, 4, pmTypes["list_item"]!))
+    }
+    test("insertPoint: nowhere in the middle of a textblock") {
+        let d = doc(p("one")).node
+        try expectNil(insertPoint(d, 2, pmTypes["horizontal_rule"]!))
+    }
+}

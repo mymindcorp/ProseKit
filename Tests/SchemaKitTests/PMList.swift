@@ -215,6 +215,14 @@ func registerPMListTests() {
     c("wrapInList: doesn't wrap the first para in a different type of list item") { try run(doc(ol(li(p("<a>foo")))), wrapInList(lt("ordered_list")), nil) }
     c("wrapInList: does wrap the second paragraph in a list item") { try run(doc(ul(li(p("foo"), p("<a>bar")))), wrapInList(lt("bullet_list")), doc(ul(li(p("foo"), ul(li(p("bar"))))))) }
     c("wrapInList: joins with the list item above when wrapping its first paragraph") { try run(doc(ul(li(p("foo")), li(p("<a>bar")), li(p("baz")))), wrapInList(lt("ordered_list")), doc(ul(li(p("foo"), ol(li(p("bar")))), li(p("baz"))))) }
+    // Joining the item above takes the rest of the item along — the paragraph
+    // after the one being wrapped can't stay behind in an item that no longer
+    // has its leading paragraph — and, like any wrapped run of blocks, each
+    // becomes an item of the new list.
+    c("wrapInList: joining with the item above brings the rest of the item") {
+        try run(doc(ul(li(p("foo")), li(p("<a>bar"), p("baz")))), wrapInList(lt("ordered_list")),
+                doc(ul(li(p("foo"), ol(li(p("bar")), li(p("baz")))))))
+    }
     c("wrapInList: only splits items where valid") { try run(doc(p("<a>one"), ol(li(p("two"))), p("three<b>")), wrapInList(lt("ordered_list")), doc(ol(li(p("one"), ol(li(p("two")))), li(p("three"))))) }
 
     // MARK: splitListItem

@@ -215,9 +215,74 @@ func registerModelAPIEdgeTests() {
         try expect(closed.topNodeType.validContent(Fragment.from([try p.create()].map { _ in try! closed.nodes["paragraph"]!.create() })))
         try expect(!closed.topNodeType.validContent(Fragment.from((0..<3).map { _ in try! closed.nodes["paragraph"]!.create() })))
     }
+    test("content expression: a character outside the grammar is rejected") {
+        // Anything that is neither a name nor one of the operators becomes a
+        // token of its own, which then fails as an unknown name — it isn't
+        // silently skipped the way whitespace is.
+        try expectThrows { _ = try schema(withDocContent: "paragraph & heading") }
+        try expectThrows { _ = try schema(withDocContent: "paragraph.") }
+        // The same names without the stray character compile.
+        _ = try schema(withDocContent: "paragraph heading")
+    }
+    test("content expression: two readings of one type merge into a single state") {
+        // `heading` can start the sequence *or* be the whole `block` choice, so
+        // after one heading the match has to allow both stopping and carrying
+        // on with a paragraph.
+        let s = try schema(withDocContent: "heading paragraph | block")
+        let h = s.nodes["heading"]!, p = s.nodes["paragraph"]!
+        let doc = s.topNodeType
+        try expect(doc.validContent(Fragment.from([try h.create()])))
+        try expect(doc.validContent(Fragment.from([try h.create(), try p.create()])))
+        try expect(doc.validContent(Fragment.from([try p.create()])))
+        try expect(!doc.validContent(Fragment.from([try p.create(), try p.create()])))
+        try expect(!doc.validContent(Fragment.from([try h.create(), try h.create()])))
+        let afterHeading = doc.contentMatch.matchType(h)
+        try expect(afterHeading?.validEnd == true)
+        try expectEqual(afterHeading?.edgeTypes.map(\.name), ["paragraph"])
+    }
     test("content expression: an operator with nothing before it is a stray token") {
         // "+" on its own is tokenized as punctuation and then rejected as a
         // name; the point is that it fails rather than compiling to anything.
         try expectThrows { _ = try schema(withDocContent: "+paragraph") }
+    }
+
+    // MARK: Content matching on nodes
+
+    test("defaultType: the first type a fill could generate, or none") {
+        // Text can't be generated from nothing, and neither can a node with a
+        // required attribute: an inline match skips both and settles on the
+        // hard break, a text-only one has nothing to offer.
+        let s = B.schema
+        try expectEqual(s.nodes["paragraph"]!.contentMatch.defaultType?.name, "hardBreak")
+        try expectNil(s.nodes["codeBlock"]!.contentMatch.defaultType)
+        try expectEqual(s.nodes["doc"]!.contentMatch.defaultType?.name, "paragraph")
+        // A leaf's match has no edges at all, so nothing either.
+        try expectNil(s.nodes["horizontalRule"]!.contentMatch.defaultType)
+    }
+
+    test("canAppend: an empty node appends when its content is compatible") {
+        // With nothing to append, the question is whether the two types could
+        // share content at all — the same type, or overlapping expressions.
+        let para = B.p("a")
+        try expect(para.canAppend(B.p()))
+        try expect(para.canAppend(B.h(1)), "heading and paragraph both hold inline*")
+        try expect(!para.canAppend(B.hr()), "a leaf has no content to share")
+        try expect(!para.canAppend(B.node("bulletList")), "list items are not inline")
+        // With content, the content itself has to fit.
+        try expect(para.canAppend(B.h(1, B.t("b"))))
+        try expect(!para.canAppend(B.blockquote(B.p("b"))))
+    }
+
+    test("contentMatchAt: content the expression rejects answers the start state") {
+        // `create` doesn't validate, so a node can hold content its expression
+        // can't match. ProseMirror throws here; this port answers the type's
+        // start state instead, so a query on such a node degrades rather than
+        // trapping.
+        let paragraph = B.schema.nodes["paragraph"]!
+        let broken = try paragraph.create(content: Fragment.from(B.p("x")))
+        try expect(broken.contentMatchAt(1) === paragraph.contentMatch)
+        try expect(broken.contentMatchAt(0) === paragraph.contentMatch)
+        // A valid node's match moves on past its children.
+        try expect(B.p("x").contentMatchAt(1) !== paragraph.contentMatch)
     }
 }

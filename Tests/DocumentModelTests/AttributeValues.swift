@@ -131,6 +131,20 @@ func registerAttributeValueTests() {
         ]))
     }
 
+    test("AttributeValue: a value no case can hold is a decoding error") {
+        // JSON has nothing outside the six cases, but a property list does:
+        // raw bytes decode as none of string, bool or number, and guessing one
+        // would quietly turn an attribute into something it never was.
+        let plist = try PropertyListEncoder().encode(["x": Data([1, 2, 3])])
+        try expectThrows {
+            _ = try PropertyListDecoder().decode([String: AttributeValue].self, from: plist)
+        }
+        // The same container with a value that fits decodes fine.
+        let fine = try PropertyListEncoder().encode(["x": "y"])
+        try expectEqual(try PropertyListDecoder().decode([String: AttributeValue].self, from: fine),
+                        ["x": .string("y")])
+    }
+
     test("AttributeValue: encoding writes plain JSON, not a tagged case") {
         // What goes over the collab wire and into a saved document, so the
         // shape matters beyond round-tripping with ourselves.

@@ -161,6 +161,19 @@ func registerPMTableMoveTests() {
                                            tr(cell(1, 1, "A1"), tdAttrs(["rowspan": .int(2)], p("B1"))),
                                            tr(cell(1, 1, "A2")))).node)
     }
+    // Asking for a row inside a merged block moves the whole block. With the
+    // span down the first column, the last row of the block has no cell of its
+    // own in that column, so the selection range's head is found a row higher.
+    test("PM moveRow: a row inside a merged first-column block moves the block") {
+        let d = doc(table(tr(tdAttrs(["rowspan": .int(2)], p("A1")), cell(1, 1, "B1")),
+                          tr(cell(1, 1, "B2")),
+                          tr(cell(1, 1, "A3"), cell(1, 1, "B3"))))
+        let txn = moveState(d).tr
+        try expect(moveRow(txn, originIndex: 1, targetIndex: 2, pos: 4))
+        try expectEqual(txn.doc, doc(table(tr(cell(1, 1, "A3"), cell(1, 1, "B3")),
+                                           tr(tdAttrs(["rowspan": .int(2)], p("A1")), cell(1, 1, "B1")),
+                                           tr(cell(1, 1, "B2")))).node)
+    }
     test("PM moveRow: refuses a move onto itself or into its own range") {
         let d = doc(table(tr(cell(1, 1, "A1"), tdAttrs(["rowspan": .int(2)], p("B1"))),
                           tr(cell(1, 1, "A2")),

@@ -48,9 +48,8 @@ enum MathML {
         var i = start + 1
         while i < end {
             if case let .open(tag, attributes, selfClosing) = tokens[i], tag == "annotation", !selfClosing {
-                let encoding = (attributes["encoding"] ?? "").lowercased()
                 let close = HTMLParser.matchingClose(tokens, i, tag)
-                if encoding.contains("x-tex") || encoding.contains("x-latex") || encoding.contains("tex") {
+                if isTeXEncoding(attributes["encoding"] ?? "") {
                     let text = HTMLParser.innerText(tokens, i + 1, min(close, end))
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     if !text.isEmpty { return unwrapDisplayStyle(text) }
@@ -62,6 +61,21 @@ enum MathML {
         }
         return nil
     }
+
+    /// Whether an annotation's `encoding` says TeX. Matched whole, never by
+    /// substring: `text/x-asciimath` contains "tex" too, and AsciiMath read as
+    /// LaTeX renders as an error or as the wrong formula.
+    private static func isTeXEncoding(_ encoding: String) -> Bool {
+        // A media type can carry parameters (`application/x-tex; charset=…`).
+        let type = encoding.split(separator: ";", maxSplits: 1).first
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
+        return texEncodings.contains(type)
+    }
+
+    private static let texEncodings: Set<String> = [
+        "application/x-tex", "application/x-latex", "application/tex", "application/latex",
+        "text/x-tex", "text/x-latex", "text/tex", "text/latex", "tex", "latex",
+    ]
 
     /// Strip the `{\displaystyle …}` wrapper Wikipedia's `alttext` uses, since
     /// the node already records whether it's display maths.
@@ -148,7 +162,10 @@ enum MathML {
             return "\(braced(base))_{\(script)}"
         case "mover":
             let (base, script) = pair(children)
-            if let accent = accentCommand(script) { return "\\\(accent){\(base)}" }
+            // The accent is recognised by the character MathML wrote, not by
+            // its conversion: an `<mo>→</mo>` has become `\to` by then.
+            let written = leafText(tokens, childAt: 1, from: from + 1, to: to) ?? script
+            if let accent = accentCommand(written) { return "\\\(accent){\(base)}" }
             return "\(braced(base))^{\(script)}"
         case "munderover":
             let base = children.first ?? ""
@@ -158,8 +175,15 @@ enum MathML {
             let open = attributes["open"] ?? "("
             let close = attributes["close"] ?? ")"
             let separator = attributes["separators"] ?? ","
-            let body = children.joined(separator: separator.isEmpty ? "" : escapeText(separator))
-            return "\\left\(delimiter(open))\(body)\\right\(delimiter(close))"
+            var pieces = ["\\left" + delimiter(open)]
+            for (index, child) in children.enumerated() {
+                if index > 0, !separator.isEmpty { pieces.append(escapeText(separator)) }
+                pieces.append(child)
+            }
+            pieces.append("\\right" + delimiter(close))
+            // Joined, so a command delimiter isn't run into a letter-first body:
+            // `\left\langle u`, not `\left\langleu`.
+            return joined(pieces)
         case "mtable":
             return "\\begin{matrix}\(children.joined(separator: " \\\\ "))\\end{matrix}"
         case "mtr", "mlabeledtr":
@@ -182,24 +206,51 @@ enum MathML {
         case "mspace":
             return "\\;"
         case "mtext":
-            return text.isEmpty ? "" : "\\text{\(text)}"
+            // Spaces are the point of text in a formula — `0 \text{ if } x` —
+            // so they're collapsed rather than trimmed.
+            let spaced = HTMLParser.decodeEntities(rawText)
+                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            return spaced.isEmpty ? "" : "\\text{\(escapeTextMode(spaced))}"
         case "mo":
+            // Some producers write a named operator as an `<mo>`: `lim`, `max`.
+            if text.count > 1, text.allSatisfy(\.isLetter) { return namedIdentifier(text) }
             return operatorLatex(text)
         case "mi":
             if text.isEmpty { return "" }
             if let command = symbolCommand(text) { return command }
             // A multi-letter identifier is a function or a name, not a product
             // of variables — `sin`, not `s·i·n`.
-            if text.count > 1 {
-                let name = text.lowercased()
-                return functionNames.contains(name) ? "\\\(name)" : "\\mathrm{\(escapeText(text))}"
-            }
+            if text.count > 1 { return namedIdentifier(text) }
             // `mathvariant="normal"` is MathML's way of saying "upright".
             if attributes["mathvariant"] == "normal" { return "\\mathrm{\(escapeText(text))}" }
             return escapeText(text)
         default:
             return symbolCommand(text) ?? escapeText(text)
         }
+    }
+
+    /// A multi-letter name: a function, or else upright text.
+    private static func namedIdentifier(_ text: String) -> String {
+        let name = text.lowercased()
+        return functionNames.contains(name) ? "\\\(name)" : "\\mathrm{\(escapeText(text))}"
+    }
+
+    /// The text of the `index`th child element between `from` and `to`, when
+    /// that child is a token element (`mo`, `mi`, `mtext`…).
+    private static func leafText(_ tokens: HTMLParser.Tokens, childAt index: Int, from: Int, to: Int) -> String? {
+        var i = from
+        var seen = 0
+        while i < to {
+            guard case let .open(tag, _, selfClosing) = tokens[i] else { i += 1; continue }
+            let close = selfClosing ? i : min(HTMLParser.matchingClose(tokens, i, tag), to)
+            if seen == index {
+                guard ["mi", "mn", "mo", "mtext", "ms"].contains(tag) else { return nil }
+                return HTMLParser.decodeEntities(HTMLParser.innerText(tokens, i + 1, close))
+            }
+            seen += 1
+            i = close + 1
+        }
+        return nil
     }
 
     /// Join sibling pieces, keeping a trailing command clear of a following
@@ -300,6 +351,24 @@ enum MathML {
             case "{", "}", "%", "&", "#", "_", "$": out += "\\\(character)"
             case "−": out += "-"      // U+2212, the real minus sign
             case "\u{2062}", "\u{2061}", "\u{2063}", "\u{2064}": break // invisible operators
+            default: out.append(character)
+            }
+        }
+        return out
+    }
+
+    /// Escape text for the inside of `\text{…}`, which is text mode: braces and
+    /// the specials are escaped, and the characters with no escape of their
+    /// own — `\`, `~`, `^` — use their text-mode names.
+    private static func escapeTextMode(_ text: String) -> String {
+        var out = ""
+        for character in text {
+            switch character {
+            case "\\": out += "\\textbackslash{}"
+            case "~": out += "\\textasciitilde{}"
+            case "^": out += "\\textasciicircum{}"
+            case "{", "}", "%", "&", "#", "_", "$": out += "\\\(character)"
+            case "\u{2062}", "\u{2061}", "\u{2063}", "\u{2064}": break
             default: out.append(character)
             }
         }

@@ -35,8 +35,13 @@ Claim a suite passes only from something that actually reports pass/fail.
 - iOS — needs a `-destination`, or it builds for the wrong platform:
 
   ```sh
-  xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
+  xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests -destination 'platform=iOS Simulator,name=iPhone 18 Pro'
   ```
+
+  CI doesn't name a device: it takes the first iPhone in
+  `xcrun simctl list devices available`. Name the same one locally — iPhone 18
+  Pro as of Xcode 27 — since text layout, and so some of these tests, varies
+  with the device's font metrics. A name that isn't installed exits 70.
 
   Piping it (`| tail`, `| grep`) makes `$?` the *pipe's* exit code, not
   `xcodebuild`'s, so a failing run can look clean. Redirect to a file and check
@@ -118,7 +123,7 @@ gated by a *compilation condition* rather than an environment variable. The
 condition compiles both in; drop the `-only-testing:` to run them together:
 
 ```sh
-xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests/GeometryFuzzTests -destination 'platform=iOS Simulator,name=iPhone 17 Pro' SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ'
+xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests/GeometryFuzzTests -destination 'platform=iOS Simulator,name=iPhone 18 Pro' SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ'
 ```
 
 **These deepen too.** A plain environment variable doesn't survive the trip into
@@ -128,7 +133,7 @@ arrives as `PROSEKIT_FUZZ_DOCS=250`, and `FuzzViews` builds its corpus through
 the same `Sources/TestDocGen` the headless sweeps use, so the knob lands:
 
 ```sh
-TEST_RUNNER_PROSEKIT_FUZZ_DOCS=250 xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests/GeometryFuzzTests -destination 'platform=iOS Simulator,name=iPhone 17 Pro' SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ'
+TEST_RUNNER_PROSEKIT_FUZZ_DOCS=250 xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests/GeometryFuzzTests -destination 'platform=iOS Simulator,name=iPhone 18 Pro' SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ'
 ```
 
 Worth doing, and cheap — the corpus defaults to 8 documents, and 250 of them
@@ -185,7 +190,7 @@ paths — scroll ticks, cursor moves, and typing, with and without the find bar
 open). Swap the `-only-testing:` below for whichever you want:
 
 ```sh
-xcodebuild test -scheme ProseKit-Package -configuration Release -only-testing:EditorUIKitTests/RealizeBench -destination 'platform=iOS Simulator,name=iPhone 17 Pro' ENABLE_TESTABILITY=YES SWIFT_OPTIMIZATION_LEVEL=-O SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_BENCH'
+xcodebuild test -scheme ProseKit-Package -configuration Release -only-testing:EditorUIKitTests/RealizeBench -destination 'platform=iOS Simulator,name=iPhone 18 Pro' ENABLE_TESTABILITY=YES SWIFT_OPTIMIZATION_LEVEL=-O SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_BENCH'
 ```
 
 Run benchmarks in release — debug numbers are dominated by unspecialized

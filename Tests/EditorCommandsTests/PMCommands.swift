@@ -32,6 +32,24 @@ private func run(_ d: TaggedNode, _ command: Command, _ result: TaggedNode?) thr
 private func bq(_ name: String) -> NodeType { basicSchema.nodes[name]! }
 private func mk(_ name: String) -> MarkType { basicSchema.marks[name]! }
 
+// A schema whose `block` holds exactly one textblock, as in upstream's
+// "can join single-textblock-child nodes". Nothing can wrap a block into
+// another and nothing can lift a `para` out of one, so joining falls through
+// to merging the textblocks directly. `rule` is a selectable leaf.
+private let singleChildSchema: Schema = try! Schema(nodes: [
+    ("doc", NodeSpec(content: "(block | rule)+")),
+    ("block", NodeSpec(content: "para")),
+    ("para", NodeSpec(content: "text*")),
+    ("rule", NodeSpec()),
+    ("text", NodeSpec()),
+], marks: [], topNode: "doc")
+private func sc(_ type: String, _ content: [Node] = []) -> Node {
+    try! singleChildSchema.node(type, [:], content: Fragment.from(content))
+}
+private func scBlock(_ text: String) -> Node {
+    sc("block", [sc("para", text.isEmpty ? [] : [singleChildSchema.text(text)])])
+}
+
 func registerPMCommandsTests() {
     func c(_ name: String, _ body: @escaping @Sendable () throws -> Void) { test("PM cmd \(name)") { try body() } }
 
@@ -50,6 +68,22 @@ func registerPMCommandsTests() {
     c("joinBackward: lifts before it deletes") { try run(doc(hr(), blockquote(p("<a>there"))), joinBackward, doc(hr(), p("there"))) }
     c("joinBackward: does nothing at start of doc") { try run(doc(p("<a>foo")), joinBackward, nil) }
     c("joinBackward: doesn't join surrounding nodes of different types") { try run(doc(ul(li(p("a"))), p("<a>"), ol(li(p("b")))), joinBackward, doc(ul(li(p("a")), li(p("<a>"))), ol(li(p("b"))))) }
+    c("joinBackward: doesn't return true on empty blocks that can't be deleted") { try run(doc(p("a"), ul(li(p("<a>"), ul(li(p("b")))))), joinBackward, nil) }
+    c("joinBackward: can join single-textblock-child nodes") {
+        let d = sc("doc", [scBlock("a"), scBlock("b")])
+        var state = EditorState.create(EditorStateConfig(schema: singleChildSchema, doc: d, selection: TextSelection.near(d.resolve(7))))
+        try expect(joinBackward(state, { tr in state = state.apply(tr) }, nil))
+        try expectEqual(state.doc, sc("doc", [scBlock("ab")]))
+    }
+    c("joinBackward: deletes the wrapper of an empty textblock after a selectable leaf, selecting the leaf") {
+        // The empty `para` can't go on its own — its `block` must hold one — so
+        // the delete climbs to the block, and the leaf before it is selected.
+        let d = sc("doc", [sc("rule"), scBlock("")])
+        var state = EditorState.create(EditorStateConfig(schema: singleChildSchema, doc: d, selection: TextSelection.create(d, 3)))
+        try expect(joinBackward(state, { tr in state = state.apply(tr) }, nil))
+        try expectEqual(state.doc, sc("doc", [sc("rule")]))
+        try expect(state.selection.eq(NodeSelection.create(state.doc, 0)), "got \(state.selection)")
+    }
 
     // MARK: selectNodeBackward
     c("selectNodeBackward: selects the node before the cut") { try run(doc(blockquote(p("a")), blockquote(p("<a>b"))), selectNodeBackward, doc("<a>", blockquote(p("a")), blockquote(p("b")))) }
@@ -78,6 +112,12 @@ func registerPMCommandsTests() {
     c("joinForward: deletes a leaf node at the end of the document") { try run(doc(p("there<a>"), hr()), joinForward, doc(p("there"))) }
     c("joinForward: moves before it deletes a leaf node") { try run(doc(blockquote(p("there<a>")), hr()), joinForward, doc(blockquote(p("there"), hr()))) }
     c("joinForward: does nothing when it can't join") { try run(doc(p("foo<a>"), ul(li(p("bar"), ul(li(p("baz")))))), joinForward, nil) }
+    c("joinForward: can join single-textblock-child nodes") {
+        let d = sc("doc", [scBlock("a"), scBlock("b")])
+        var state = EditorState.create(EditorStateConfig(schema: singleChildSchema, doc: d, selection: TextSelection.create(d, 3)))
+        try expect(joinForward(state, { tr in state = state.apply(tr) }, nil))
+        try expectEqual(state.doc, sc("doc", [scBlock("ab")]))
+    }
 
     // MARK: selectNodeForward
     c("selectNodeForward: does nothing at end of document") { try run(doc(p("foo<a>")), selectNodeForward, nil) }
@@ -176,6 +216,60 @@ func registerPMCommandsTests() {
     c("toggleMark: skips whitespace at selection ends when adding marks") { try run(doc(p("one<a> two  <b>three")), toggleMark(mk("em")), doc(p("one ", em("two"), "  three"))) }
     c("toggleMark: doesn't skip whitespace-only selections") { try run(doc(p("one<a> <b>two")), toggleMark(mk("em")), doc(p("one", em(" "), "two"))) }
 
+    c("toggleMark: includes whitespace when asked") {
+        try run(doc(p("one<a> two  <b>three")), toggleMark(mk("em"), options: ToggleMarkOptions(includeWhitespace: true)),
+                doc(p("one", em(" two  "), "three")))
+    }
+    let toggleEm2 = toggleMark(mk("em"), options: ToggleMarkOptions(removeWhenPresent: false))
+    c("toggleMark: can add marks with remove-when-present off") {
+        try run(doc(p("<a>", em("one"), " two<b>")), toggleEm2, doc(p(em("one two"))))
+        try run(doc(p("<a>three<b>")), toggleEm2, doc(p(em("three"))))
+    }
+    c("toggleMark: can remove marks with remove-when-present off") {
+        try run(doc(p(em("o<a>ne two<b>"))), toggleEm2, doc(p(em("o"), "ne two")))
+    }
+    c("toggleMark: can remove marks with trailing space when remove-when-present is off") {
+        try run(doc(p(em("o<a>ne two"), "  <b>three")), toggleEm2, doc(p(em("o"), "ne two  three")))
+    }
+    c("toggleMark: enters inline atoms by default") {
+        let f = FootnoteDocs()
+        let out = f.apply(f.doc(f.para(f.text("hello"), f.footnote(f.text("okay")))), 2, 12, toggleMark(f.em))
+        try expectEqual(out, f.doc(f.para(f.text("h"), f.text("ello", [f.em.create()]),
+                                          f.footnote(f.text("okay", [f.em.create()]), marks: [f.em.create()]))))
+    }
+    c("toggleMark: doesn't enter inline atoms to add a mark when told not to") {
+        let f = FootnoteDocs()
+        let out = f.apply(f.doc(f.para(f.text("hello"), f.footnote(f.text("okay")))), 2, 12,
+                          toggleMark(f.em, options: ToggleMarkOptions(enterInlineAtoms: false)))
+        try expectEqual(out, f.doc(f.para(f.text("h"), f.text("ello", [f.em.create()]),
+                                          f.footnote(f.text("okay"), marks: [f.em.create()]))))
+    }
+    c("toggleMark: can apply styles inside inline atoms") {
+        let f = FootnoteDocs()
+        let out = f.apply(f.doc(f.para(f.text("hello"), f.footnote(f.text("okay")))), 8, 11,
+                          toggleMark(f.em, options: ToggleMarkOptions(enterInlineAtoms: false)))
+        try expectEqual(out, f.doc(f.para(f.text("hello"), f.footnote(f.text("o"), f.text("kay", [f.em.create()])))))
+    }
+
+    // Not from upstream: a selection of several ranges (a table's CellSelection,
+    // in the app) loses the mark when *any* range has it, as prosemirror-commands
+    // does — not only when every range has it.
+    c("toggleMark: removes the mark when any range of a multi-range selection has it") {
+        let d = doc(p("one"), p(em("two"))).node
+        try expectEqual(toggleOverRanges(d, [(1, 4), (6, 9)], toggleMark(mk("em"))), doc(p("one"), p("two")).node)
+        try expectEqual(toggleOverRanges(d, [(6, 9), (1, 4)], toggleMark(mk("em"))), doc(p("one"), p("two")).node)
+    }
+    c("toggleMark: adds the mark when no range of a multi-range selection has it") {
+        let d = doc(p("one"), p("two")).node
+        try expectEqual(toggleOverRanges(d, [(1, 4), (6, 9)], toggleMark(mk("em"))), doc(p(em("one")), p(em("two"))).node)
+    }
+    c("toggleMark: with remove-when-present off, adds unless every range has the mark") {
+        let d = doc(p("one"), p(em("two"))).node
+        try expectEqual(toggleOverRanges(d, [(1, 4), (6, 9)], toggleEm2), doc(p(em("one")), p(em("two"))).node)
+        let both = doc(p(em("one")), p(em("two"))).node
+        try expectEqual(toggleOverRanges(both, [(1, 4), (6, 9)], toggleEm2), doc(p("one"), p("two")).node)
+    }
+
     c("toggleMark: can toggle pending marks") {
         var state = mkState(doc(p("hell<a>o")))
         _ = toggleMark(mk("em"))(state, { tr in state = state.apply(tr) }, nil)
@@ -242,6 +336,25 @@ func registerPMCommandsTests() {
         try run(doc(p("one <a>two"), p("three<b> four")), selectTextblockStart, doc(p("<a>one two"), p("three four")))
         try run(doc(p("one <a>two"), p("three<b> four")), selectTextblockEnd, doc(p("one two"), p("three four<a>")))
     }
+    c("selectTextblockStart/End: climbs out of an inline node with content") {
+        // The cursor's parent is the inline `chip`, not the textblock.
+        let s = try! Schema(nodes: [
+            ("doc", NodeSpec(content: "para+")),
+            ("para", NodeSpec(content: "(text | chip)*")),
+            ("chip", NodeSpec(content: "text*", inline: true)),
+            ("text", NodeSpec()),
+        ], marks: [], topNode: "doc")
+        let chip = try! s.node("chip", [:], content: Fragment.from(s.text("cd")))
+        let d = try! s.node("doc", [:], content: Fragment.from(
+            try! s.node("para", [:], content: Fragment.from([s.text("ab"), chip, s.text("ef")]))))
+        let state = EditorState.create(EditorStateConfig(schema: s, doc: d, selection: TextSelection.create(d, 5)))
+        var start: EditorState?
+        try expect(selectTextblockStart(state, { start = state.apply($0) }, nil))
+        try expectEqual(start?.selection.head, 1)
+        var end: EditorState?
+        try expect(selectTextblockEnd(state, { end = state.apply($0) }, nil))
+        try expectEqual(end?.selection.head, 9)
+    }
 
     // MARK: autoJoin
     c("autoJoin: joins lists when deleting a paragraph between them") {
@@ -268,5 +381,43 @@ func registerPMCommandsTests() {
         try run(doc(ul(li(p("a"))), blockquote("<a>", ul(li(p("b")))), ul(li(p("c")))),
                 autoJoin(lift, ["bullet_list"]),
                 doc(ul(li(p("a")), li(p("b")), li(p("c")))))
+    }
+}
+
+/// A selection of several text ranges, standing in for a table's CellSelection.
+private final class MultiRangeSelection: Selection {
+    init(_ doc: Node, _ ranges: [(Int, Int)]) {
+        let resolved = ranges.map { SelectionRange(doc.resolve($0.0), doc.resolve($0.1)) }
+        super.init(resolved[0].from, resolved[0].to, ranges: resolved)
+    }
+    override func eq(_ other: Selection) -> Bool { other === self }
+    override func map(_ doc: Node, _ mapping: any Mappable) -> Selection {
+        TextSelection.create(doc, mapping.map(from), mapping.map(to))
+    }
+}
+
+private func toggleOverRanges(_ d: Node, _ ranges: [(Int, Int)], _ command: Command) -> Node {
+    var state = EditorState.create(EditorStateConfig(schema: basicSchema, doc: d, selection: MultiRangeSelection(d, ranges)))
+    _ = command(state, { tr in state = state.apply(tr) }, nil)
+    return state.doc
+}
+
+/// Upstream's footnote schema: an inline atom holding text.
+private struct FootnoteDocs {
+    let schema = try! Schema(nodes: [
+        ("doc", NodeSpec(content: "para+")),
+        ("para", NodeSpec(content: "(text | footnote)*")),
+        ("footnote", NodeSpec(content: "text*", group: nil, inline: true, atom: true)),
+        ("text", NodeSpec()),
+    ], marks: [("em", MarkSpec())], topNode: "doc")
+    var em: MarkType { schema.marks["em"]! }
+    func doc(_ c: Node...) -> Node { try! schema.node("doc", [:], content: Fragment.from(c)) }
+    func para(_ c: Node...) -> Node { try! schema.node("para", [:], content: Fragment.from(c)) }
+    func footnote(_ c: Node..., marks: [Mark] = []) -> Node { try! schema.node("footnote", [:], content: Fragment.from(c), marks: marks) }
+    func text(_ s: String, _ marks: [Mark] = []) -> Node { schema.text(s, marks) }
+    func apply(_ d: Node, _ from: Int, _ to: Int, _ command: Command) -> Node {
+        var state = EditorState.create(EditorStateConfig(schema: schema, doc: d, selection: TextSelection.create(d, from, to)))
+        _ = command(state, { tr in state = state.apply(tr) }, nil)
+        return state.doc
     }
 }

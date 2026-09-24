@@ -114,26 +114,33 @@ final class SelectionScrollPerfTests: XCTestCase {
         // it passes the character test, so a per-block clip still pays for the
         // whole paragraph on every frame of a scroll. This is the demo's Long
         // view, and it stayed slow after the per-block clip landed.
-        let doc = longParagraphDoc(8)
+        //
+        // A thousand words rather than the demo's 500: what the test needs is a
+        // block several screens tall, and 500 words is only that in some fonts
+        // — it lays out 1982 pt tall on an iPhone 18 Pro, short of the three
+        // screens the assertions below depend on.
+        let doc = longParagraphDoc(8, words: 1000)
         let l = layout(doc)
         let block = l.blocks[1]                       // the first full paragraph
+        let screen: CGFloat = 800
         XCTAssertGreaterThan(block.lines.count, 60,
-                             "a 500-word paragraph should be many screens tall")
-        XCTAssertGreaterThan(block.frame.height, 2400, "and far taller than a screen")
+                             "a long paragraph should be many screens tall")
+        XCTAssertGreaterThan(block.frame.height, 3 * screen, "and far taller than a screen")
 
         let from = block.contentStart, to = block.contentEnd
         // A band in the middle of the block: every edge of it is inside the
         // same block, so nothing but per-line clipping can help here.
         let mid = block.frame.minY + block.frame.height / 2
-        let band = mid ... (mid + 800)
+        let band = mid ... (mid + screen)
+        XCTAssertLessThan(band.upperBound, block.frame.maxY)
         let whole = bestMs(20) { _ = l.selectionRects(from: from, to: to) }
         let clipped = bestMs(20) { _ = l.selectionRects(from: from, to: to, clipY: band) }
         print(unsafe "SELBLOCK lines=\(block.lines.count) whole=\(String(format: "%.3f", whole))ms "
             + "clipped=\(String(format: "%.3f", clipped))ms ratio=\(String(format: "%.1f", whole / clipped))x")
 
-        // An 800pt band of a ~2400pt block: the rects it keeps are about a
-        // third of the paragraph's lines, so the offset lookups drop by that
-        // much. The line loop still *visits* every line (it does not break out
+        // A screen-high band of a block over three screens: the rects it keeps
+        // are under a third of the paragraph's lines, so the offset lookups
+        // drop by that much. The line loop still *visits* every line (it does not break out
         // — nothing here promises the lines are in vertical order), so the win
         // inside one block is a fraction, not an order of magnitude. The claim
         // that matters for scrolling is the flatness one, tested below.
