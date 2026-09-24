@@ -141,7 +141,6 @@ func tr(_ c: any PMContentChild...) -> TaggedNode { block("tableRow", [:], c) }
 func td(_ c: any PMContentChild...) -> TaggedNode { block("tableCell", [:], c) }
 func th(_ c: any PMContentChild...) -> TaggedNode { block("tableHeader", [:], c) }
 func tdAttrs(_ attrs: Attrs, _ c: any PMContentChild...) -> TaggedNode { block("tableCell", attrs, c) }
-func thAttrs(_ attrs: Attrs, _ c: any PMContentChild...) -> TaggedNode { block("tableHeader", attrs, c) }
 func cell(_ colspan: Int, _ rowspan: Int, _ text: String = "x") -> TaggedNode {
     block("tableCell", ["colspan": .int(colspan), "rowspan": .int(rowspan)], [p(text)])
 }
@@ -153,7 +152,6 @@ func h11() -> TaggedNode { head(1, 1) }
 func cEmpty() -> TaggedNode { block("tableCell", [:], [p()]) }
 func hEmpty() -> TaggedNode { block("tableHeader", [:], [p()]) }
 func cCursor() -> TaggedNode { block("tableCell", [:], [p("x<cursor>")]) }
-func cCursorBefore() -> TaggedNode { block("tableCell", [:], [p("<cursor>x")]) }
 func hCursor() -> TaggedNode { block("tableHeader", [:], [p("x<cursor>")]) }
 func cAnchor() -> TaggedNode { block("tableCell", [:], [p("x<anchor>")]) }
 func cHead() -> TaggedNode { block("tableCell", [:], [p("x<head>")]) }

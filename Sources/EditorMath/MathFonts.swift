@@ -41,8 +41,6 @@ struct MathFontSet {
         }
     }
 
-    /// One em at the current size.
-    var em: CGFloat { size }
     var xHeight: CGFloat { CTFontGetXHeight(roman) }
 }
 
