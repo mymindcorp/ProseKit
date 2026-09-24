@@ -3790,6 +3790,7 @@ registerSerializerEdgeTests()
 registerRTFEdgeTests()
 registerJSONReaderTests()
 registerJSONByteFuzzTests()
+registerPlainTextAutolinkTests()
 
 // MARK: - CommonMark long tail, second batch
 
