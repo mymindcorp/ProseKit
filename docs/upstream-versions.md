@@ -189,6 +189,27 @@ doesn't have to rediscover them.
 
 ## Ported-fix log
 
+- **2026-09-23** — `prosemirror-commands` `toggleMark`: over a selection of
+  several ranges — a table `CellSelection`, so Mod-b/Mod-i on selected cells —
+  the mark was removed only when *every* range had it; upstream removes it when
+  *any* range does, so one bold cell among plain ones bolded the rest instead of
+  clearing it. Fixed, and upstream's `removeWhenPresent`, `enterInlineAtoms` and
+  `includeWhitespace` options ported as `ToggleMarkOptions` (with `markApplies`
+  gaining upstream's `doc.inlineContent` check at depth 0).
+  `Sources/EditorCommands/Commands.swift`; upstream's tests plus multi-range
+  ones in `Tests/EditorCommandsTests/PMCommands.swift`, and a `CellSelection`
+  one in `Tests/SchemaKitTests/PMTableExtra.swift`.
+- **2026-09-23** — Markdown, not an upstream port (prosemirror-markdown has the
+  same gap): a paragraph line's leading whitespace, which the reader strips,
+  was written out — four columns of it opened an indented code block
+  (`p("    x")` read back as a code block), and fewer sat ahead of the
+  backslash escaping a rule or setext underline, so `p("   ---")` came back as
+  "\   ---". The writer now drops each paragraph line's indentation before
+  escaping. The round-trip property over indents × block markers also found a
+  reader bug: any line starting with `#` ended the paragraph above it, though
+  `#tag` or seven hashes is text; it now asks `headingMatch`.
+  `Sources/EditorSerialization/Markdown.swift`; tests in
+  `Tests/EditorSerializationTests/MarkdownLeadingWhitespace.swift`.
 - **2026-09-18** — Tiptap Table 3.27.4, in kind: the HTML importer read a
   column width only from a cell's `data-colwidth`, which is our own
   serializer's spelling; `colgroup` was a wrapper it skipped wholesale, so a

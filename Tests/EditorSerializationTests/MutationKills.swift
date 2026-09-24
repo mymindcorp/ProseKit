@@ -128,16 +128,15 @@ func registerSerializationMutationKillTests() {
         try expectEqual(try parseMD(md(d)), d)
     }
 
-    test("mut: a marker indented four columns on a continuation line isn't escaped") {
-        // Four columns in, `# x` can't open a heading — and on a paragraph's
-        // continuation line it can't open indented code either — so it needs
-        // no backslash. Three columns in, it would open one, so it does.
-        let four = doc(p(t("a"), br(), t("    # x")))
-        try expectEqual(md(four), "a\\\n    # x")
-        try expectEqual(types(try parseMD(md(four))), ["paragraph"])
-        let three = doc(p(t("a"), br(), t("   # x")))
-        try expectEqual(md(three), "a\\\n   \\# x")
-        try expectEqual(types(try parseMD(md(three))), ["paragraph"])
+    test("mut: an indented marker on a continuation line loses its indent and is escaped") {
+        // The reader strips a paragraph line's indentation, so the writer drops
+        // it too — four columns would otherwise open indented code — and the
+        // marker then sits at the line start, where it needs its backslash.
+        for indent in ["   ", "    "] {
+            let d = doc(p(t("a"), br(), t(indent + "# x")))
+            try expectEqual(md(d), "a\\\n\\# x")
+            try expectEqual(types(try parseMD(md(d))), ["paragraph"])
+        }
     }
 
     // MARK: Markdown writer — destinations, titles, alt text
@@ -160,9 +159,9 @@ func registerSerializationMutationKillTests() {
         try expectEqual(try parseMD(md(doc(p(img)))), doc(p(img)))
     }
 
-    test("mut: a link title holding a double quote is single-quoted") {
+    test("mut: a double quote in a link title is escaped") {
         let d = doc(p(linked("x", "u", title: #"say "hi""#)))
-        try expectEqual(md(d), #"[x](u 'say "hi"')"#)
+        try expectEqual(md(d), #"[x](u "say \"hi\"")"#)
         try expectEqual(try parseMD(md(d)), d)
     }
 

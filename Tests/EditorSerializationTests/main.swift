@@ -3790,6 +3790,7 @@ registerSerializerEdgeTests()
 registerRTFEdgeTests()
 registerJSONReaderTests()
 registerJSONByteFuzzTests()
+registerPlainTextAutolinkTests()
 
 // MARK: - CommonMark long tail, second batch
 
@@ -4803,6 +4804,7 @@ test("HTML paste: a <style> block is never content") {
 
 registerAdversarialMarkdownTests()
 registerMarkdownInlineParityTests()
+registerMarkdownLeadingWhitespaceTests()
 registerMarkdownReferenceTests()
 registerMarkdownScalingTests()
 registerMarkdownDelimiterWhitespaceTests()

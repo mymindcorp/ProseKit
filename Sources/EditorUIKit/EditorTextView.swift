@@ -2752,7 +2752,7 @@ open class EditorTextView: UIView, UIKeyInput {
             if looksLikeMarkdown(string), let doc = try? MarkdownParser.parse(string, schema: editor.schema) {
                 insertContent(doc.content)
             } else {
-                pastePlainText(string)
+                pastePlainText(string, linkingURLs: true)
             }
         }
     }
@@ -2996,18 +2996,51 @@ open class EditorTextView: UIView, UIKeyInput {
         editor.dispatch(editor.state.tr.replaceSelection(Slice.maxOpen(content)))
     }
 
-    private func pastePlainText(_ string: String) {
+    /// Insert `string` as text: one line inline, several as paragraphs.
+    ///
+    /// With `linkingURLs`, the bare URLs in it become links — the same ones the
+    /// Markdown path links, so text doesn't have to look like Markdown for a
+    /// pasted URL to be clickable. Paste and Match Style leaves them plain.
+    private func pastePlainText(_ string: String, linkingURLs: Bool = false) {
+        let linkType = linkingURLs ? editor.schema.marks["link"] : nil
         let lines = string.components(separatedBy: "\n")
         if lines.count <= 1 {
             let tr = editor.state.tr
+            let start = tr.selection.from
             _ = try? tr.insertText(string)
+            // `addMark` skips a parent that disallows links, so a paste into a
+            // code block stays plain; inside a code mark, which excludes every
+            // other mark, the link would be dropped on the way in anyway.
+            if let linkType {
+                for (range, href) in MarkdownParser.literalAutolinks(in: string) {
+                    let from = start + string[..<range.lowerBound].count
+                    let to = from + string[range].count
+                    _ = try? tr.addMark(from, to, linkType.create(["href": .string(href)]))
+                }
+            }
             editor.dispatch(tr)
             return
         }
         let paragraphs = lines.compactMap { line -> Node? in
-            try? editor.schema.node("paragraph", [:], content: Fragment.from(line.isEmpty ? [] : [editor.schema.text(line)]))
+            try? editor.schema.node("paragraph", [:], content: Fragment.from(linkedText(line, linkType)))
         }
         insertContent(Fragment.from(paragraphs))
+    }
+
+    /// `line` as text nodes, its bare URLs carrying a link when `linkType` is
+    /// given.
+    private func linkedText(_ line: String, _ linkType: MarkType?) -> [Node] {
+        guard !line.isEmpty else { return [] }
+        guard let linkType else { return [editor.schema.text(line)] }
+        var nodes: [Node] = []
+        var cursor = line.startIndex
+        for (range, href) in MarkdownParser.literalAutolinks(in: line) {
+            if cursor < range.lowerBound { nodes.append(editor.schema.text(String(line[cursor..<range.lowerBound]))) }
+            nodes.append(editor.schema.text(String(line[range]), [linkType.create(["href": .string(href)])]))
+            cursor = range.upperBound
+        }
+        if cursor < line.endIndex { nodes.append(editor.schema.text(String(line[cursor...]))) }
+        return nodes
     }
 
     // MARK: - Key handling

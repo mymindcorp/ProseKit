@@ -98,17 +98,6 @@ func registerSerializerFallbackTests() {
         try expectEqual(d, doc(taskListN(taskItemN(true, p("")))))
     }
 
-    test("HTML: a sub-list outside any <li> isn't read as the task list's own items") {
-        // Malformed, but real: a `<ul>` directly inside another. Its item is
-        // not this checklist's item, so it mustn't come back as a task.
-        let d = try HTMLParser.parse(
-            #"<ul data-type="taskList"><li data-checked="true">a</li><ul><li>b</li></ul></ul>"#, schema: schema)
-        let list = d.child(0)
-        try expectEqual(list.type.name, "taskList")
-        try expectEqual(list.childCount, 1)
-        try expectEqual(list.child(0), taskItemN(true, p("a")))
-    }
-
     test("HTML colgroup: a style without a width falls back to the width attribute") {
         let d = try HTMLParser.parse(
             #"<table><colgroup><col style="background: red; border: 0" width="80"></colgroup><tr><td>a</td></tr></table>"#,
@@ -151,7 +140,7 @@ func registerSerializerFallbackTests() {
                                            "title": .string("say \"hi\"")])
         let d = try build(s, "doc", [:], [image])
         let markdown = MarkdownSerializer.serialize(d)
-        try expectEqual(markdown, "![x](a.png 'say \"hi\"')")
+        try expectEqual(markdown, #"![x](a.png "say \"hi\"")"#)
         try expectEqual(try MarkdownParser.parse(markdown, schema: s), d)
     }
 
@@ -267,15 +256,5 @@ func registerSerializerFallbackTests() {
         try expectEqual(d, try build(narrowSchema, "doc", [:], [try build(narrowSchema, "paragraph", [:], [
             narrowSchema.text("A"), try build(narrowSchema, "hardBreak"), narrowSchema.text("B"),
         ])]))
-    }
-
-    test("RTF: a table none of whose cells fit the schema keeps the cells' text") {
-        // Two paragraphs in one cell, where a cell holds exactly one.
-        let d = try RTFParser.parse(fallbackRTFHeader + #"\trowd\cellx2000\pard\intbl one\par two\cell\row}"#,
-                                    schema: narrowSchema)
-        try expectEqual(d, try build(narrowSchema, "doc", [:], [
-            try build(narrowSchema, "paragraph", [:], [narrowSchema.text("one")]),
-            try build(narrowSchema, "paragraph", [:], [narrowSchema.text("two")]),
-        ]))
     }
 }

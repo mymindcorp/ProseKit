@@ -193,8 +193,7 @@ public enum MarkdownSerializer {
             let src = node.attrs["src"]?.stringValue ?? ""
             let alt = altText(node.attrs["alt"]?.stringValue ?? "")
             if let title = node.attrs["title"]?.stringValue, !title.isEmpty {
-                let q = title.contains("\"") ? "'" : "\""
-                return "![\(alt)](\(destination(src)) \(q)\(titleText(title))\(q))"
+                return "![\(alt)](\(destination(src)) \(titleText(title)))"
             }
             return "![\(alt)](\(destination(src)))"
         case "blockMath":
@@ -346,6 +345,11 @@ public enum MarkdownSerializer {
     /// Every line, not just the first: a hard break starts a new source line,
     /// and a `>` at the head of *that* line opens a blockquote just as surely.
     ///
+    /// Each line's leading spaces and tabs are dropped. The reader strips them
+    /// from every paragraph line anyway, so they never survived a round trip —
+    /// and four columns of them opened an indented code block instead, while
+    /// fewer hid a marker from an escape written ahead of them.
+    ///
     /// Nearly every paragraph is one line with an ordinary first character, so
     /// the single-line case never copies the string and the scan gives up on
     /// the opening run.
@@ -357,27 +361,25 @@ public enum MarkdownSerializer {
     }
 
     private static func escapeBlockMarkerLine(_ line: String) -> String {
-        guard let at = blockMarkerEscape(line) else { return line }
         var out = line
+        if let first = line.first, first == " " || first == "\t" {
+            out = String(line.drop(while: { $0 == " " || $0 == "\t" }))
+        }
+        guard let at = blockMarkerEscape(out) else { return out }
         out.insert("\\", at: at)
         return out
     }
 
-    /// Where a backslash has to go to stop this line reading as block structure,
-    /// or nil when it reads as prose already.
+    /// Where a backslash has to go to stop this line — with its indentation
+    /// already dropped — reading as block structure, or nil when it reads as
+    /// prose already.
     private static func blockMarkerEscape(_ line: String) -> String.Index? {
         // A run of `-` or `=` under a paragraph line retitles the paragraph, and
         // a run of `-`/`*`/`_` is a thematic break wherever it stands. Both are
-        // about the whole line, and both allow the marker to be indented.
+        // about the whole line.
         if MarkdownParser.setextUnderline(line) != nil || MarkdownParser.isThematicBreak(line) { return line.startIndex }
 
-        // A marker keeps its meaning indented up to three columns.
-        var start = line.startIndex
-        var indent = 0
-        while start < line.endIndex, line[start] == " ", indent < 3 {
-            indent += 1
-            start = line.index(after: start)
-        }
+        let start = line.startIndex
         let body = line[start...]
         guard let first = body.first else { return nil }
 
@@ -539,8 +541,7 @@ public enum MarkdownSerializer {
         case "link":
             let href = mark.attrs["href"]?.stringValue ?? ""
             if let title = mark.attrs["title"]?.stringValue, !title.isEmpty {
-                let q = title.contains("\"") ? "'" : "\""
-                return "](\(destination(href)) \(q)\(titleText(title))\(q))"
+                return "](\(destination(href)) \(titleText(title)))"
             }
             return "](\(destination(href)))"
         case "italic": return "*"
@@ -1043,8 +1044,7 @@ public enum MarkdownSerializer {
             let src = node.attrs["src"]?.stringValue ?? ""
             let alt = altText(node.attrs["alt"]?.stringValue ?? "")
             if let title = node.attrs["title"]?.stringValue, !title.isEmpty {
-                let q = title.contains("\"") ? "'" : "\""
-                out += "![\(alt)](\(destination(src)) \(q)\(title)\(q))"
+                out += "![\(alt)](\(destination(src)) \(titleText(title)))"
             } else {
                 out += "![\(alt)](\(destination(src)))"
             }
@@ -1199,9 +1199,13 @@ public enum MarkdownSerializer {
         return out
     }
 
-    /// A title, with the escapes the reader will resolve written out.
+    /// A title, quoted, with the escapes the reader will resolve written out.
+    /// Always double quotes, with any `"` inside escaped, as upstream writes
+    /// it: switching to single quotes only moves the problem to a title that
+    /// holds both — `it's "x"` would close at the apostrophe.
     static func titleText(_ title: String) -> String {
-        title.replacingOccurrences(of: "\\", with: "\\\\")
+        "\"" + title.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 }
 
@@ -2182,7 +2186,7 @@ public enum MarkdownParser {
         let list = listsMayInterrupt
             ? (bulletMatch(trimmed) != nil || orderedMatch(trimmed) != nil)
             : interruptingList(trimmed)
-        return trimmed.hasPrefix("#") || trimmed.hasPrefix(">") || isOpeningFence(trimmed)
+        return headingMatch(trimmed) != nil || trimmed.hasPrefix(">") || isOpeningFence(trimmed)
             || trimmed.hasPrefix("$$") || isThematicBreak(trimmed)
             || setextUnderline(trimmed) != nil
             || list
@@ -3275,20 +3279,29 @@ public enum MarkdownParser {
     private static func literalAutolinkBoundary(_ bytes: [UInt8], _ i: Int) -> Bool {
         guard i > 0 else { return true }
         switch bytes[i - 1] {
-        case UInt8(ascii: " "), UInt8(ascii: "\t"), UInt8(ascii: "\n"),
+        case UInt8(ascii: " "), UInt8(ascii: "\t"), UInt8(ascii: "\n"), UInt8(ascii: "\r"),
              UInt8(ascii: "*"), UInt8(ascii: "_"), UInt8(ascii: "~"), UInt8(ascii: "("):
             return true
         default: return false
         }
     }
 
+    private static let wwwPrefix = Array("www.".utf8)
+
     /// A bare URL beginning at `start`, and the index just past it.
-    static func literalAutolink(_ bytes: [UInt8], _ start: Int) -> (text: String, end: Int)? {
+    ///
+    /// `www` also accepts a scheme-less `www.` host. Markdown leaves that out
+    /// (see above); plain text pasted into the editor takes it, because the
+    /// autolink input rule links a typed `www.` host too.
+    static func literalAutolink(_ bytes: [UInt8], _ start: Int,
+                                www: Bool = false) -> (text: String, end: Int)? {
         let mailto = hasPrefix(bytes, start, mailtoPrefix)
         let bodyStart: Int
         if mailto { bodyStart = start + mailtoPrefix.count }
         else if hasPrefix(bytes, start, httpsPrefix) { bodyStart = start + httpsPrefix.count }
         else if hasPrefix(bytes, start, httpPrefix) { bodyStart = start + httpPrefix.count }
+        // The `www.` is part of the host, so the domain check sees it.
+        else if www, hasPrefix(bytes, start, wwwPrefix) { bodyStart = start }
         else { return nil }
 
         // The candidate runs to the next whitespace or `<`. What of its tail is
@@ -3298,7 +3311,7 @@ public enum MarkdownParser {
         while end < bytes.count {
             let b = bytes[end]
             if b == UInt8(ascii: " ") || b == UInt8(ascii: "\t") || b == UInt8(ascii: "\n")
-                || b == UInt8(ascii: "<") { break }
+                || b == UInt8(ascii: "\r") || b == UInt8(ascii: "<") { break }
             end += 1
         }
         end = trimAutolinkTail(bytes, start, end)
@@ -3388,6 +3401,39 @@ public enum MarkdownParser {
         let bytes = Array(text.utf8)
         guard let (matched, end) = literalAutolink(bytes, 0) else { return false }
         return end == bytes.count && matched == text
+    }
+
+    /// Every bare URL in plain text, with the href a link over it should carry.
+    ///
+    /// The same detector the parser runs over Markdown — `http://`, `https://`
+    /// and `mailto:`, at a word boundary, with the sentence's punctuation
+    /// trimmed off the tail — plus a scheme-less `www.` host, which links to
+    /// `https://`. For text that isn't Markdown but still has links in it: a
+    /// paste from a terminal, a chat, or a plain-text mail.
+    public static func literalAutolinks(in text: String) -> [(range: Range<String.Index>, href: String)] {
+        let bytes = Array(text.utf8)
+        var result: [(range: Range<String.Index>, href: String)] = []
+        var i = 0
+        while i < bytes.count {
+            let c = bytes[i] | 0x20
+            if c == UInt8(ascii: "h") || c == UInt8(ascii: "m") || c == UInt8(ascii: "w"),
+               literalAutolinkBoundary(bytes, i),
+               let (url, end) = literalAutolink(bytes, i, www: true) {
+                let href = c == UInt8(ascii: "w") ? "https://" + url : url
+                if let href = sanitizeURL(href, for: .link) {
+                    // Both ends sit next to ASCII (or at an end of the text),
+                    // so both are scalar boundaries.
+                    let utf8 = text.utf8
+                    let lower = utf8.index(utf8.startIndex, offsetBy: i)
+                    let upper = utf8.index(lower, offsetBy: end - i)
+                    result.append((lower..<upper, href))
+                }
+                i = end
+                continue
+            }
+            i += 1
+        }
+        return result
     }
 
     private static func parseLinkLike(_ bytes: [UInt8], _ start: Int,
