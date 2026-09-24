@@ -19,14 +19,15 @@ import TestDocGen
 ///
 /// Compiled out by default, because it lays out hundreds of documents. A
 /// compilation condition rather than an environment check for the reason
-/// `RealizeBench` documents: xcodebuild's `TEST_RUNNER_` prefix does not reach
-/// an SPM scheme's test runner.
+/// `RealizeBench` documents: a plain environment variable doesn't survive the
+/// trip into the simulator. (xcodebuild's `TEST_RUNNER_` prefix does, which is
+/// how `PROSEKIT_FUZZ_DOCS` deepens the corpus.)
 ///
 ///     DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 ///     xcodebuild test -scheme ProseKit-Package \
 ///       -only-testing:EditorUIKitTests/GeometryFuzzTests \
 ///       -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
-///       SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ' 
+///       SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ'
 @MainActor
 final class GeometryFuzzTests: XCTestCase {
     // MARK: - The caret and the tap agree

@@ -49,7 +49,7 @@ extension DocumentJSON {
             return try attributeValue(from: try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]))
         }
         // Read from a copy of the bytes rather than a pointer into `data`:
-        // the copy is one pass over the input, which the parse is many of,
+        // the copy costs one pass over the input, against the parse's many,
         // and it keeps this file free of unsafe code.
         var reader = JSONReader([UInt8](data))
         return try reader.parseTopLevel()

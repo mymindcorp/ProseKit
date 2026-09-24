@@ -218,8 +218,9 @@ struct LocalTextBlock {
     let wikiLinkChips: [WikiLinkChip]
 }
 
-/// Caches typeset blocks by (node, width). Mark-and-sweep keeps it bounded to
-/// the blocks used in the most recent layout.
+/// Caches typeset blocks by (node, width). Each entry records the pass that last
+/// used it; `endPass` drops the least recently used half once the cache outgrows
+/// its cap.
 final class TextBlockLayoutCache {
     /// Identity-keyed: the content array's buffer address stands in for the
     /// (expensive-to-hash) subtree, so lookups are O(1) instead of O(text).
@@ -433,14 +434,13 @@ final class DocumentLayout {
         func borderX(after c: Int) -> CGFloat { originX + widths[0...c].reduce(0, +) }
     }
     private(set) var tables: [TableInfo] = []
-    /// Image sources referenced by the document that the provider didn't have
-    /// cached — the view loads these and rebuilds.
     /// Image nodes whose drawable couldn't be resolved from a cache — the host
     /// resolves each (it sees all the node's attrs, not just `src`) and loads it.
     /// Unlike every other output here this is a work list, not something keyed
     /// by position — so `TopEntry` doesn't carry it and reused entries don't
     /// re-emit it. That is safe because `loadPendingImages` is idempotent and a
-    /// finished load clears the block cache, which re-emits from scratch. A load
+    /// finished load re-lays the blocks showing that image (`relayoutImages`),
+    /// first evicting any cached block an inline one was typeset into. A load
     /// that *fails* is not retried while its block stays cached.
     private(set) var pendingImages: [Node] = []
     /// Resolves an image node to a drawable image (host data hook, cache, or a
@@ -1284,8 +1284,6 @@ final class DocumentLayout {
         footnoteOrder[label].map(String.init) ?? label
     }
 
-    /// Every footnote label in the document, numbered in reading order:
-    /// references first, then any note nothing refers to.
     /// Whether any top-level child the edit replaced — in the old document or
     /// the new one — contains a footnote reference or definition. Only those
     /// children are walked; the unchanged prefix and suffix are the same nodes
@@ -1307,6 +1305,8 @@ final class DocumentLayout {
         return false
     }
 
+    /// Every footnote label in the document, numbered in reading order:
+    /// references first, then any note nothing refers to.
     static func footnoteOrdering(_ doc: Node) -> [String: Int] {
         // One walk, not two: this runs for every layout, so a long document
         // shouldn't be traversed more than it has to be. References are
@@ -1365,9 +1365,9 @@ final class DocumentLayout {
                 let boxRect = CGRect(x: max(x, x + indent - boxSize - gap),
                                      y: itemY + Self.checkboxOffset(for: theme, item: item, boxSize: boxSize),
                                      width: boxSize, height: boxSize)
-                // The checkbox itself is a managed UIView (see EditorTextView's
-                // checkbox-view recycling) positioned over this rect — the layout
-                // only reserves its (touch-padded) box for positioning + hit-test.
+                // The checkbox itself is a managed UIView (see `CheckboxOverlay`)
+                // positioned over this rect — the layout only reserves its
+                // (touch-padded) box for positioning + hit-test.
                 checkboxes.append((rect: boxRect.insetBy(dx: -6, dy: -6), pos: itemPos, checked: checked))
                 // The item's whole subtree is typeset in its checked style. Saved and
                 // restored rather than just set, so a nested list under a checked
@@ -1885,8 +1885,8 @@ final class DocumentLayout {
                 segments.append(Segment(docStart: docPos, docLen: 1, attrStart: attrStart, attrLen: 1, text: nil))
                 docPos += 1
             } else {
-                // wikiLink, an image still loading, or math with no renderer
-                // wired up: show a text placeholder.
+                // wikiLink, a footnote reference, an image still loading, math
+                // with no renderer wired up, or any other inline atom: show text.
                 let wikiStyle = theme.wikiLink
                 let wikiColor = wikiStyle.color ?? theme.link.color
                 // The host's glyph, looked up before the label is built: a chip
@@ -2310,8 +2310,7 @@ final class DocumentLayout {
         return nil
     }
 
-    /// Selection highlight rectangles for a document range.
-    /// The rectangles covering `from..<to`, one per line of text.
+    /// Selection highlight rectangles covering `from..<to`, one per line of text.
     ///
     /// `clipY` bounds the work to a band of the document. Every rect costs two
     /// CoreText offset lookups, so a caller that only draws what's on screen
@@ -2354,9 +2353,9 @@ final class DocumentLayout {
         // Entries do run down the page: each is laid out at the y the previous
         // one ended at, so they tile the document top to bottom, and every
         // block one carries was laid out inside its own band. So the band
-        // search and the cut-off are exact over entries, and a child asked
-        // whether its own blocks are in vertical order before they are searched
-        // the same way.
+        // search and the cut-off are exact over entries; inside an entry, its
+        // blocks are band-searched the same way only when `blocksRunDownThePage`
+        // says they are in vertical order.
         var i = 0, hi = entries.count
         while i < hi {
             let mid = (i + hi) / 2
@@ -2598,7 +2597,7 @@ final class DocumentLayout {
             }
         }
         // Text blocks via CoreText. Lines are culled individually as well as
-        // blocks: a paragraph is never much taller than the viewport, but a
+        // blocks: a paragraph is rarely much taller than the viewport, but a
         // code block is a single block, and drawing a 2000-line one to show
         // its top forty lines cost 5 ms a frame. Lines are in top-to-bottom
         // order, so once one starts below the band the rest do too.
@@ -2665,7 +2664,7 @@ private func makeBoxRunDelegate(width: CGFloat, ascent: CGFloat, descent: CGFloa
     return unsafe CTRunDelegateCreate(&callbacks, Unmanaged.passRetained(box).toOpaque())!
 }
 
-/// An inline image hangs from the baseline, so it reserves height above it only.
+/// An inline image sits on the baseline, so it reserves height above it only.
 private func makeImageRunDelegate(_ size: CGSize) -> CTRunDelegate {
     makeBoxRunDelegate(width: size.width, ascent: size.height, descent: 0)
 }

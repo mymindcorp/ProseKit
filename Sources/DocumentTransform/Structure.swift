@@ -84,8 +84,8 @@ private func findWrappingInside(_ range: NodeRange, _ type: NodeType) -> [NodeTy
 // MARK: - Transform structure methods
 
 public extension Transform {
-    /// Split the content in the given range off from its parent, by up to
-    /// `target` depth levels.
+    /// Split the content in the given range off from its parent, where it has
+    /// siblings before or after it, and move it up the tree to depth `target`.
     @discardableResult
     func lift(_ range: NodeRange, _ target: Int) throws -> Self {
         let from = range.from, to = range.to, depth = range.depth
@@ -227,7 +227,7 @@ public extension Transform {
         try step(AddNodeMarkStep(pos, mark))
     }
 
-    /// Remove a mark (or mark of a type) from the node at `pos`.
+    /// Remove a mark from the node at `pos`.
     @discardableResult
     func removeNodeMark(_ pos: Int, _ mark: Mark) throws -> Self {
         try step(RemoveNodeMarkStep(pos, mark))
@@ -480,9 +480,6 @@ public extension Transform {
     }
 }
 
-/// The list of depths, deepest first, at which `from`/`to` cover whole nodes —
-/// i.e. the range runs exactly from a node's start to its end. (ProseMirror's
-/// `coveredDepths`.) Bounded by `min(from.depth, to.depth)`.
 /// Re-close a slice's content to a new open depth, filling required nodes so the
 /// (now shallower) open fragment is valid. (ProseMirror's `closeFragment`.)
 private func closeFragment(_ fragment: Fragment, _ depth: Int, _ oldOpen: Int, _ newOpen: Int, _ parent: Node?) -> Fragment {
@@ -499,6 +496,9 @@ private func closeFragment(_ fragment: Fragment, _ depth: Int, _ oldOpen: Int, _
     return fragment
 }
 
+/// The list of depths, deepest first, at which `from`/`to` cover whole nodes —
+/// i.e. the range runs exactly from a node's start to its end. (ProseMirror's
+/// `coveredDepths`.) Bounded by `min(from.depth, to.depth)`.
 private func coveredDepths(_ from: ResolvedPos, _ to: ResolvedPos) -> [Int] {
     var result: [Int] = []
     let minDepth = min(from.depth, to.depth)

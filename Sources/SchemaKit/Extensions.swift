@@ -653,7 +653,8 @@ public final class GapCursorExtension: Extension {
 
 /// The starter kit plus tables, task lists, collapsible details, LaTeX math,
 /// images (both `image` and the always-full-width `imageBlock`), wiki-links,
-/// and search.
+/// mentions, search, the slash menu, collaborator cursors, the gap cursor, and
+/// suggestion mode.
 /// Pass the `*AsyncSuggestions` variants for a DB/index-backed `[[` or `@` lookup
 /// (each takes precedence over its synchronous counterpart).
 public func fullKit(wikiLinkSuggestions: (@Sendable (String) -> [String])? = nil,

@@ -234,9 +234,9 @@ func registerSelectionFuzzTests() {
                 try expect(tr.doc == before, "mapping a selection changed the document — \(ctx)")
                 try checkSelectionRoundTrips(mapped, in: tr.doc, "mapped — \(ctx)")
 
-                // A bookmark maps to the same place the selection does when the
-                // selection stays the same kind (that is the point of bookmarks:
-                // to survive an edit the selection itself might not).
+                // A bookmark mapped through the same edit resolves to a valid
+                // selection too — surviving an edit the selection itself might
+                // not is the point of bookmarks.
                 let viaBookmark = sel.getBookmark().map(tr.mapping).resolve(tr.doc)
                 try checkSelectionValid(viaBookmark, in: tr.doc, "bookmark mapped — \(ctx)")
 

@@ -10,7 +10,7 @@ import TestHarness
 //
 // So the table is written out here in full. The point isn't the aliases that
 // work today; it's that adding a language, or renaming one, can't quietly
-// leave a hole. The three structural tests at the bottom are what catch that.
+// leave a hole. The structural guards below are what catch that.
 
 /// Every alias `explicitLanguage` accepts, and what it means.
 private let aliases: [(hint: String, language: CodeLanguage)] = [

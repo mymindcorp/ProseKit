@@ -16,7 +16,7 @@ import Foundation
 // Foundation only, and not UIKit-gated — see the note in `CodeLanguage.swift`.
 
 /// The signals a bare identifier contributes to. One identifier can carry
-/// several (`import` is a Python word and part of Go's import-group shape).
+/// several (`import` is both a Python word and a CSS at-rule).
 private struct WordSignals: OptionSet {
     let rawValue: UInt32
     static let python       = WordSignals(rawValue: 1 << 0)
@@ -68,9 +68,9 @@ private let wordSignals: [String: WordSignals] = {
     add(["nameof", "partial", "virtual", "unchecked", "stackalloc", "IEnumerable",
          "IDisposable", "ICollection", "IReadOnlyList", "Nullable"], .csharp)
     // Deliberately excluded: `instanceof` and `extends` (JavaScript), `String`
-    // (Rust's list), `boolean` (TypeScript's), and `println` — Java writes that
-    // one as `System.out.println`, which `javaSystemOut` already catches, while
-    // a bare `println` is Kotlin's.
+    // (see Rust's list), and `println` — Java writes that one as
+    // `System.out.println`, which `javaSystemOut` already catches, while a bare
+    // `println` is Kotlin's.
     add(["ArrayList", "HashMap", "HashSet", "LinkedList", "StringBuilder",
          "Integer", "synchronized", "throws", "final", "boolean"], .java)
     // `echo` is deliberately absent — shell scripts are full of it, and it was

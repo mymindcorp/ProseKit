@@ -50,7 +50,7 @@ final class UITextInputDirectionTests: XCTestCase {
 
     func testVerticalDirectionsMoveByLine() throws {
         let view = try makeView()
-        // Position 12 is inside the second paragraph ("bravo two" starts at 12).
+        // Position 14 is inside the second paragraph ("bravo two" starts at 12).
         let inSecond = DocTextPosition(14)
         let up = try XCTUnwrap(pos(view.position(from: inSecond, in: .up, offset: 1)))
         let down = try XCTUnwrap(pos(view.position(from: inSecond, in: .down, offset: 1)))

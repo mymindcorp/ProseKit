@@ -174,9 +174,8 @@ final class Fitter {
     // Open the unplaced slice one level deeper on its start side, so the next
     // round can try placing its first child's content rather than the child.
     //
-    // The end side only follows when the slice is a single spine — when there
-    // is more than one node in it, the last child is not the one being opened
-    // — and only where the last child can actually be opened. The old rule
+    // The end side follows only while the slice is bigger than one position,
+    // and only where its last child can actually be opened. The old rule
     // pushed `openEnd` along whenever the opened content reached the end of
     // the slice, which could claim an open depth into a text node: a slice no
     // node can supply, which then crashed or looped (prosemirror-transform

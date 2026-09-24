@@ -248,9 +248,10 @@ public final class Editor {
     }
 
     /// The attributes of the given mark where it's active over the selection — the
-    /// stored marks when the selection is empty, otherwise the first instance of
-    /// the mark within it. nil when the mark isn't active. Use this to seed a
-    /// toolbar (e.g. the current link's `href`, or the active text color).
+    /// stored marks (or the cursor's own) when the selection is empty, otherwise
+    /// the first instance of the mark within it. nil when the mark isn't active.
+    /// Use this to seed a toolbar (e.g. the current link's `href`, or the active
+    /// text color).
     public func attributes(ofMark name: String) -> Attrs? {
         guard let type = schema.marks[name] else { return nil }
         let sel = state.selection

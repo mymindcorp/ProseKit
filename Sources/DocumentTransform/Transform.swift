@@ -66,8 +66,8 @@ open class Transform {
         return self
     }
 
-    /// Replace the given range with the given content, which may be a fragment,
-    /// node, or array of nodes.
+    /// Replace the given range with the given content, a fragment or a single
+    /// node.
     @discardableResult
     public func replaceWith(_ from: Int, _ to: Int, _ content: Fragment) throws -> Self {
         try replace(from, to, Slice(content: content, openStart: 0, openEnd: 0))

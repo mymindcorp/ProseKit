@@ -48,8 +48,8 @@ func registerJSONFuzzTests() {
                         try expect(again == loaded, "a built node doesn't survive its own JSON — \(ctx)")
                     }
                 }
-                // And the file loader, which goes through Foundation's JSON on
-                // both sides and has its own attribute-value conversion.
+                // And the file loader, which has its own byte-level JSON writer
+                // and parser, and checks the document it loads.
                 if let data = try? DocumentJSON.encode(mutated), let loaded = try? DocumentJSON.decode(schema, data) {
                     try checkLoaded(loaded, "DocumentJSON — \(ctx)")
                 }

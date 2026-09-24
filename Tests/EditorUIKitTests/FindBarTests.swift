@@ -7,7 +7,7 @@ import SchemaKit
 @testable import EditorUIKit
 
 /// The find / replace bar wiring (the search engine itself is covered in
-/// SchemaKitTests).
+/// EditorStateKitTests and SchemaKitTests).
 @MainActor
 final class FindBarTests: XCTestCase {
     private func makeView(_ text: String = "the cat sat on the mat") throws -> EditorTextView {

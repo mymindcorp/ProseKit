@@ -151,7 +151,7 @@ final class UITextInputTests: XCTestCase {
             }
         }
         // Within a block, the projection is the real text.
-        let bravoStart = editor.doc.content.size // locate "bravo"
+        let bravoStart = editor.doc.content.size
         var pos = 0
         editor.doc.descendants { n, p, _, _ in if n.isText, n.text == "bravo" { pos = p }; return true }
         _ = bravoStart
@@ -176,7 +176,7 @@ final class UITextInputTests: XCTestCase {
 
     func testMarkedTextCompositionThenCommit() throws {
         let view = try makeView("")
-        // Compose "n" → "ni" → "ní" (as an IME would), then commit "你".
+        // Compose "n" → "ni" (as an IME would), then commit "你".
         view.setMarkedText("n", selectedRange: NSRange(location: 1, length: 0))
         XCTAssertNotNil(view.markedTextRange)
         XCTAssertEqual(view.editor.doc.textContent, "n")

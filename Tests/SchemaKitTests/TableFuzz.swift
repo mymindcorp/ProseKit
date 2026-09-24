@@ -197,8 +197,8 @@ func checkTableMap(_ table: Node, _ ctx: @autoclosure () -> String) throws {
         try expectEqual(all, ordered.filter { entries.contains($0) }, "cellsInRect is not the table's cells in order: \(what)")
     }
 
-    // Every row/column has a position, inside the table, that is a cell start
-    // or the end of its row.
+    // Every row and column boundary has a position, and it lies inside the
+    // table.
     for row in 0 ..< map.height {
         for col in 0 ... map.width {
             let pos = map.positionAt(row, Swift.min(col, map.width), table)

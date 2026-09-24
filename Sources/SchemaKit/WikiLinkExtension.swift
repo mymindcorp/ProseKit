@@ -20,7 +20,8 @@ public let wikiLinkSuggestionKey = PluginKey<WikiLinkSuggestion?>("wikiLinkSugge
 
 /// A wiki-link is an inline atom node: the words it reads as (`text`), and
 /// optionally the host's identity for what it points at (`targetId`) and what
-/// kind of thing that is (`targetType`). It serializes to `[[text]]`.
+/// kind of thing that is (`targetType`). It serializes to `[[text]]` in Markdown
+/// and to an `<a data-wikilink>` in HTML.
 public final class WikiLinkExtension: NodeExtension {
     public let name = "wikiLink"
     /// Provides `[[` autocomplete candidates for a typed query (synchronous, for
@@ -63,7 +64,8 @@ public final class WikiLinkExtension: NodeExtension {
 
     public func commands(_ ctx: ExtensionContext) -> [String: Command] {
         guard let type = ctx.nodeType else { return [:] }
-        // Parameterless command is not meaningful; expose via Editor typed method.
+        // Inserting needs a target, so there is no named insert command; hosts
+        // call `Editor.insertWikiLink` instead.
         return ["unsetWikiLink": { state, dispatch, _ in
             guard let ns = state.selection as? NodeSelection, ns.node.type === type else { return false }
             dispatch?(state.tr.deleteSelection())
@@ -140,7 +142,7 @@ private func trimmedQuery(_ query: String) -> String {
     query.trimmingCharacters(in: .whitespaces)
 }
 
-/// Maps a list of target page ids to popup entries for a `[[` range. The range is
+/// Maps a list of target page names to popup entries for a `[[` range. The range is
 /// captured up front (a tap can clear the live suggestion before `apply` runs).
 @MainActor
 private func wikiLinkEntries(_ targets: [String], from: Int, to: Int) -> [SuggestionEntry] {

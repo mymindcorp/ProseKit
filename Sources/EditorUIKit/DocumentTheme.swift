@@ -3,9 +3,9 @@ public import UIKit
 public import DocumentModel
 
 extension UIColor {
-    /// Create a color from a `#RRGGBB` (or `#RRGGBBAA`) hex string.
-    /// Parse `#rgb` / `#rrggbb` / `#rrggbbaa` (with or without `#`). The single
-    /// hex parser in the module — `DocumentTheme.parseColor` adds named colors on top.
+    /// Create a color from a `#rgb` / `#rrggbb` / `#rrggbbaa` hex string (with
+    /// or without `#`). The single hex parser in the module —
+    /// `DocumentTheme.parseColor` adds named colors on top.
     convenience init?(hex: String) {
         var s = hex.trimmingCharacters(in: .whitespaces)
         if s.hasPrefix("#") { s.removeFirst() }
@@ -161,8 +161,9 @@ public struct DocumentTheme: Sendable, Equatable {
         /// A `code` run inside a line of prose: the pill drawn behind it.
         public struct Inline: Sendable, Equatable {
             /// Background pill behind the run. On by default — an inline code
-            /// run is set in the same size as the prose around it, so without a
-            /// pill it reads as ordinary text in a slightly different face.
+            /// run is set only a point smaller than the prose around it, so
+            /// without a pill it reads as ordinary text in a slightly different
+            /// face.
             /// A fill rather than a fixed grey, so it adapts to light and dark
             /// and sits on whatever the document's background is. Set nil for
             /// no pill.

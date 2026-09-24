@@ -93,7 +93,7 @@ private func checkLayout(_ source: String, _ ctx: @autoclosure () -> String) thr
         try expectEqual(second.box.width, box.width, "the width changed between two layouts of \(what)")
         try expectEqual(second.box.ascent, box.ascent, "the ascent changed between two layouts of \(what)")
         try expectEqual(second.box.descent, box.descent, "the descent changed between two layouts of \(what)")
-        // And the items it wants drawn are all inside the box it reports.
+        // And building the items it wants drawn doesn't trap.
         _ = box.drawItems
     }
 }

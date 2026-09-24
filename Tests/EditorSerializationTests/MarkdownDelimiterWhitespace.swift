@@ -90,7 +90,7 @@ func registerMarkdownDelimiterWhitespaceTests() {
            "a== b ==c",
            reads: doc(p(t("a"), highlight(" b "), t("c"))))
 
-    // The space is between two bold runs, so the run doesn't end and there is
+    // The space is between two bold words, so the run doesn't end and there is
     // nothing to expel.
     writes("no expulsion when the mark continues past the space",
            doc(p(strong("foo bar"))),
