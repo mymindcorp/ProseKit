@@ -150,7 +150,7 @@ condition like the fuzzers'; run the whole iOS suite under it, fuzzers
 included, after touching line breaking or anything that feeds the typesetter:
 
 ```sh
-xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests -skip-testing:EditorUIKitTests/IncrementalLineBreakTests/testShortBlocksBreakWhole -destination 'platform=iOS Simulator,name=iPhone 17 Pro' SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ PROSEKIT_VERIFY_BREAKS'
+xcodebuild test -scheme ProseKit-Package -only-testing:EditorUIKitTests -skip-testing:EditorUIKitTests/IncrementalLineBreakTests/testShortBlocksBreakWhole -destination 'platform=iOS Simulator,name=iPhone 18 Pro' SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PROSEKIT_FUZZ PROSEKIT_VERIFY_BREAKS'
 ```
 
 (The skipped case asserts that short paragraphs break whole, which this mode
