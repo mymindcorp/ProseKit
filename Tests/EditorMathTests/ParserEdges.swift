@@ -56,4 +56,65 @@ func registerParserEdgeTests() {
         // beyond the size change the style itself brings.
         try expect(atomDisplay.height < opDisplay.height)
     }
+
+    test("parser: an array spec's unclosed width argument runs to the end") {
+        // Reached only through the public initializer — inside `\begin{array}`
+        // the braces have already been balanced by the group that holds them.
+        try expectEqual(ArrayColumns(spec: "p{3cm").alignments, [.left])
+        try expectEqual(ArrayColumns(spec: "c|p{3cm c").alignments, [.center, .left],
+                        "everything after the open brace is its argument")
+        try expectEqual(ArrayColumns(spec: "c|p{3cm c").rules, [1])
+    }
+
+    test("parser: an array spec skips what it doesn't know") {
+        // `@{…}` inserts material between columns; it is neither a column nor a
+        // rule, and neither is stray whitespace or an unknown letter.
+        let spec = ArrayColumns(spec: "@{\\,} l x r @{}")
+        try expectEqual(spec.alignments, [.left, .right])
+        try expect(spec.rules.isEmpty)
+    }
+
+    test("parser: an escape inside \\text passes its character through") {
+        // `\%` in text mode is a literal percent: the backslash goes, the
+        // character stays, and an escaped brace doesn't open or close a group.
+        let escaped = try layout("\\text{50\\%}")
+        let literal = try layout("\\text{50%}")
+        try expect(abs(escaped.width - literal.width) < 0.01, "\(escaped.width) vs \(literal.width)")
+        let braces = try layout("\\text{\\{x\\}}")
+        try expect(braces.width > (try layout("\\text{x}")).width, "the braces are drawn")
+        // A backslash before a letter is not an escape; it stays in the text.
+        try expectNil(parseError("\\text{a\\b}"))
+    }
+
+    test("parser: a \\text group left open is an error") {
+        try expectNotNil(parseError("\\text{abc"))
+        // The inner group closes; the outer one never does.
+        try expectNotNil(parseError("\\text{a{b}"))
+        try expectNotNil(parseError("\\begin{matrix"))
+    }
+
+    test("parser: a command that isn't a delimiter can't follow \\left") {
+        try expectNotNil(parseError("\\left\\alpha x \\right)"))
+        try expectNotNil(parseError("\\left( x \\right\\foo"))
+        try expectNotNil(parseError("\\bigl\\sum"))
+        try expectNil(parseError("\\left\\langle x \\right\\rangle"))
+    }
+
+    test("layout: an unbarred stack pushes its parts apart to clear each other") {
+        // `\binom` stacks without a bar, so the only thing keeping a tall
+        // numerator off a tall denominator is the minimum gap between them.
+        // Two stacked fractions are each taller than the default shifts allow
+        // for, so the parts have to be pushed apart.
+        let stacked = try layout("\\binom{\\frac{a}{b}}{\\frac{a}{b}}")
+        let bars = ruleRects(stacked)
+        try expectEqual(bars.count, 2)
+        guard bars.count == 2 else { return }
+        let part = try layout("{\\scriptstyle\\frac{a}{b}}")
+        let distance = abs(bars[0].midY - bars[1].midY)
+        // Each bar sits at its fraction's axis, so the parts clear each other
+        // exactly when the bars are at least one part's height apart.
+        try expect(distance >= part.height, "the parts overlap: \(distance) vs \(part.height)")
+        // And that is further apart than the unpushed shifts would put them.
+        try expect(distance > (0.443 + 0.344) * 17, "not pushed: \(distance)")
+    }
 }

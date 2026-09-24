@@ -219,5 +219,6 @@ test("collab fuzz: random concurrent edits converge (2 and 3 peers)") {
 
 registerPMRebaseTests()
 registerPMCollabTests()
+registerCollabMutationKillTests()
 
 TestSuite.main("EditorCollabTests", collector.all)

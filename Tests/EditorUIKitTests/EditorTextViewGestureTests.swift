@@ -171,6 +171,21 @@ final class EditorTextViewGestureTests: XCTestCase {
         XCTAssertEqual(view.editor.doc.textBetween(view.editor.state.selection.from, view.editor.state.selection.to), "one two three")
     }
 
+    func testDoubleClickWithNoWordUnderItPlacesACaret() throws {
+        // An empty paragraph has no word to select in either direction, so the
+        // double-click falls back to a caret where it landed.
+        let view = try paragraphs(["one", "", "three"])
+        let pointer = pointer(view), touch = PointerTouch(), event = PointerEvent()
+        touch.clicks = 2
+        // Right of the line's start, clear of the block drag handle there.
+        touch.point = CGPoint(x: 150, y: point(view, 6).y)
+        pointer.touchesBegan([touch], with: event)
+        XCTAssertEqual(pointer.anchor, 6)
+        view.handleMouseSelection(pointer)
+        XCTAssertTrue(view.editor.state.selection.empty)
+        XCTAssertEqual(view.editor.state.selection.head, 6)
+    }
+
     func testMouseSelectionLeavesTouchAndCommandClicksNative() throws {
         let view = try paragraphs(["one two three four"])
         let touch = PointerTouch(), event = PointerEvent(), pointer = pointer(view)
@@ -556,6 +571,31 @@ final class EditorTextViewGestureTests: XCTestCase {
 
         let width = try XCTUnwrap(view.editor.doc.child(0).attrs["width"]?.intValue)
         XCTAssertGreaterThan(width, 100, "the drag widened the image")
+    }
+
+    func testAnUnexpectedResizeStateNeitherEndsNorAppliesTheDrag() throws {
+        let view = try imageView()
+        view.imageResizingEnabled = true
+        let rect = try XCTUnwrap(view.ensureLayout().imageRects.first)
+        let before = view.editor.doc.child(0).attrs["width"]?.intValue
+
+        let pan = FakePan()
+        pan.point = viewPoint(view, CGPoint(x: rect.rect.maxX - 4, y: rect.rect.maxY - 4))
+        pan.fakeState = .began
+        view.handleImageResize(pan)
+
+        // A state the handler has no case for: nothing is written…
+        pan.point = viewPoint(view, CGPoint(x: rect.rect.minX + 200, y: rect.rect.maxY))
+        pan.fakeState = .possible
+        view.handleImageResize(pan)
+        XCTAssertEqual(view.editor.doc.child(0).attrs["width"]?.intValue, before)
+
+        // …and the drag it interrupted is still live.
+        pan.fakeState = .changed
+        view.handleImageResize(pan)
+        XCTAssertGreaterThan(try XCTUnwrap(view.editor.doc.child(0).attrs["width"]?.intValue), 100)
+        pan.fakeState = .ended
+        view.handleImageResize(pan)
     }
 
     func testImageResizeBeginningOffTheHandleIsIgnored() throws {

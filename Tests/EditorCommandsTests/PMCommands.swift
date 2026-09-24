@@ -32,6 +32,24 @@ private func run(_ d: TaggedNode, _ command: Command, _ result: TaggedNode?) thr
 private func bq(_ name: String) -> NodeType { basicSchema.nodes[name]! }
 private func mk(_ name: String) -> MarkType { basicSchema.marks[name]! }
 
+// A schema whose `block` holds exactly one textblock, as in upstream's
+// "can join single-textblock-child nodes". Nothing can wrap a block into
+// another and nothing can lift a `para` out of one, so joining falls through
+// to merging the textblocks directly. `rule` is a selectable leaf.
+private let singleChildSchema: Schema = try! Schema(nodes: [
+    ("doc", NodeSpec(content: "(block | rule)+")),
+    ("block", NodeSpec(content: "para")),
+    ("para", NodeSpec(content: "text*")),
+    ("rule", NodeSpec()),
+    ("text", NodeSpec()),
+], marks: [], topNode: "doc")
+private func sc(_ type: String, _ content: [Node] = []) -> Node {
+    try! singleChildSchema.node(type, [:], content: Fragment.from(content))
+}
+private func scBlock(_ text: String) -> Node {
+    sc("block", [sc("para", text.isEmpty ? [] : [singleChildSchema.text(text)])])
+}
+
 func registerPMCommandsTests() {
     func c(_ name: String, _ body: @escaping @Sendable () throws -> Void) { test("PM cmd \(name)") { try body() } }
 
@@ -50,6 +68,22 @@ func registerPMCommandsTests() {
     c("joinBackward: lifts before it deletes") { try run(doc(hr(), blockquote(p("<a>there"))), joinBackward, doc(hr(), p("there"))) }
     c("joinBackward: does nothing at start of doc") { try run(doc(p("<a>foo")), joinBackward, nil) }
     c("joinBackward: doesn't join surrounding nodes of different types") { try run(doc(ul(li(p("a"))), p("<a>"), ol(li(p("b")))), joinBackward, doc(ul(li(p("a")), li(p("<a>"))), ol(li(p("b"))))) }
+    c("joinBackward: doesn't return true on empty blocks that can't be deleted") { try run(doc(p("a"), ul(li(p("<a>"), ul(li(p("b")))))), joinBackward, nil) }
+    c("joinBackward: can join single-textblock-child nodes") {
+        let d = sc("doc", [scBlock("a"), scBlock("b")])
+        var state = EditorState.create(EditorStateConfig(schema: singleChildSchema, doc: d, selection: TextSelection.near(d.resolve(7))))
+        try expect(joinBackward(state, { tr in state = state.apply(tr) }, nil))
+        try expectEqual(state.doc, sc("doc", [scBlock("ab")]))
+    }
+    c("joinBackward: deletes the wrapper of an empty textblock after a selectable leaf, selecting the leaf") {
+        // The empty `para` can't go on its own — its `block` must hold one — so
+        // the delete climbs to the block, and the leaf before it is selected.
+        let d = sc("doc", [sc("rule"), scBlock("")])
+        var state = EditorState.create(EditorStateConfig(schema: singleChildSchema, doc: d, selection: TextSelection.create(d, 3)))
+        try expect(joinBackward(state, { tr in state = state.apply(tr) }, nil))
+        try expectEqual(state.doc, sc("doc", [sc("rule")]))
+        try expect(state.selection.eq(NodeSelection.create(state.doc, 0)), "got \(state.selection)")
+    }
 
     // MARK: selectNodeBackward
     c("selectNodeBackward: selects the node before the cut") { try run(doc(blockquote(p("a")), blockquote(p("<a>b"))), selectNodeBackward, doc("<a>", blockquote(p("a")), blockquote(p("b")))) }
@@ -78,6 +112,12 @@ func registerPMCommandsTests() {
     c("joinForward: deletes a leaf node at the end of the document") { try run(doc(p("there<a>"), hr()), joinForward, doc(p("there"))) }
     c("joinForward: moves before it deletes a leaf node") { try run(doc(blockquote(p("there<a>")), hr()), joinForward, doc(blockquote(p("there"), hr()))) }
     c("joinForward: does nothing when it can't join") { try run(doc(p("foo<a>"), ul(li(p("bar"), ul(li(p("baz")))))), joinForward, nil) }
+    c("joinForward: can join single-textblock-child nodes") {
+        let d = sc("doc", [scBlock("a"), scBlock("b")])
+        var state = EditorState.create(EditorStateConfig(schema: singleChildSchema, doc: d, selection: TextSelection.create(d, 3)))
+        try expect(joinForward(state, { tr in state = state.apply(tr) }, nil))
+        try expectEqual(state.doc, sc("doc", [scBlock("ab")]))
+    }
 
     // MARK: selectNodeForward
     c("selectNodeForward: does nothing at end of document") { try run(doc(p("foo<a>")), selectNodeForward, nil) }
@@ -295,6 +335,25 @@ func registerPMCommandsTests() {
     c("selectTextblockStart/End: can move the cursor across multiple text blocks") {
         try run(doc(p("one <a>two"), p("three<b> four")), selectTextblockStart, doc(p("<a>one two"), p("three four")))
         try run(doc(p("one <a>two"), p("three<b> four")), selectTextblockEnd, doc(p("one two"), p("three four<a>")))
+    }
+    c("selectTextblockStart/End: climbs out of an inline node with content") {
+        // The cursor's parent is the inline `chip`, not the textblock.
+        let s = try! Schema(nodes: [
+            ("doc", NodeSpec(content: "para+")),
+            ("para", NodeSpec(content: "(text | chip)*")),
+            ("chip", NodeSpec(content: "text*", inline: true)),
+            ("text", NodeSpec()),
+        ], marks: [], topNode: "doc")
+        let chip = try! s.node("chip", [:], content: Fragment.from(s.text("cd")))
+        let d = try! s.node("doc", [:], content: Fragment.from(
+            try! s.node("para", [:], content: Fragment.from([s.text("ab"), chip, s.text("ef")]))))
+        let state = EditorState.create(EditorStateConfig(schema: s, doc: d, selection: TextSelection.create(d, 5)))
+        var start: EditorState?
+        try expect(selectTextblockStart(state, { start = state.apply($0) }, nil))
+        try expectEqual(start?.selection.head, 1)
+        var end: EditorState?
+        try expect(selectTextblockEnd(state, { end = state.apply($0) }, nil))
+        try expectEqual(end?.selection.head, 9)
     }
 
     // MARK: autoJoin

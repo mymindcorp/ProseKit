@@ -362,6 +362,22 @@ func registerPMHistoryTests() {
             try expectEqual(undoDepth(s), (i - 2) % 21 + 2)
         }
     }
+    test("PM history: truncating to a depth of one drops every older event") {
+        // At depth 1 the cut asks for as many events as the old items hold, so
+        // none of them survive — only the event just added. (Upstream's
+        // `cutOffEvents` keeps all the old items when it runs off the end,
+        // though its event count agrees they are gone.)
+        var s = mkState(nil, HistoryOptions(depth: 1))
+        for _ in 0..<22 {
+            s = typeText(s, "a")
+            s = s.apply(closeHistory(s.tr))
+        }
+        try expectEqual(undoDepth(s), 1)
+        try expectEqual(_undoItemCount(s), 1)
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(p(String(repeating: "a", count: 21))).node)
+        try expect(!undo(s, nil), "nothing older should be left to undo")
+    }
     test("PM history: combines appended transactions in the event started by the base transaction") {
         let appender = Plugin(appendTransaction: { _, _, state in
             state.doc.content.size == 4 ? try! state.tr.insert(1, basicSchema.text("A")) : nil
@@ -477,4 +493,86 @@ func registerPMHistoryTests() {
         try expectEqual(s.doc, doc(p(prefix + "hello world")).node)
     }
 
+
+    test("PM history: rebasing keeps an unconfirmed untracked step as a map") {
+        // Collab rebases every unconfirmed local step, including ones that
+        // stayed out of the history. Such a step has only a map in the branch;
+        // it has to survive the rebase as one, so the tracked step before it
+        // still undoes at the right place.
+        var s = mkState()
+        s = typeText(s, "base")
+        s = s.apply(closeHistory(s.tr))
+        let baseDoc = s.doc
+        let tracked = ReplaceStep(5, 5, Slice(content: Fragment.from([basicSchema.text("X")]), openStart: 0, openEnd: 0))
+        let t1 = s.tr; _ = t1.maybeStep(tracked); s = s.apply(t1)
+        let trackedDoc = s.doc
+        let untracked = ReplaceStep(6, 6, Slice(content: Fragment.from([basicSchema.text("Y")]), openStart: 0, openEnd: 0))
+        let t2 = s.tr; _ = t2.maybeStep(untracked); t2.setMeta("addToHistory", false); s = s.apply(t2)
+        try expectEqual(s.doc, doc(p("baseXY")).node)
+        let remote = ReplaceStep(1, 1, Slice(content: Fragment.from([basicSchema.text("left ")]), openStart: 0, openEnd: 0))
+
+        // What collab's rebaseSteps builds: both local steps undone in
+        // reverse, the remote step, then each local step mapped back on top.
+        let tr = s.tr
+        _ = tr.maybeStep(untracked.invert(trackedDoc))
+        _ = tr.maybeStep(tracked.invert(baseDoc))
+        _ = tr.maybeStep(remote)
+        _ = tr.maybeStep(tracked.map(tr.mapping.slice(2))!)
+        tr.mapping.setMirror(1, tr.steps.count - 1)
+        _ = tr.maybeStep(untracked.map(tr.mapping.slice(1))!)
+        tr.mapping.setMirror(0, tr.steps.count - 1)
+        tr.setMeta("addToHistory", false)
+        tr.setMeta("rebased", 2)
+        s = s.apply(tr)
+        try expectEqual(s.doc, doc(p("left baseXY")).node)
+        try expectEqual(undoDepth(s), 2)
+
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(p("left baseY")).node)
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(p("left Y")).node)
+        s = command(s, redo)
+        s = command(s, redo)
+        try expectEqual(s.doc, doc(p("left baseXY")).node)
+    }
+
+    test("PM history: a rebase over hundreds of remote maps compresses below the rebased tail") {
+        // Past 500 map-only items a rebase compresses the branch, but only
+        // below the items it just rebased — those have to stay paired with
+        // their steps.
+        var s = mkState()
+        s = typeText(s, "hello")
+        s = s.apply(closeHistory(s.tr))
+        let remotes = 520
+        for _ in 0..<remotes {
+            s = s.apply(try! s.tr.insertText("x", 1).setMeta("addToHistory", false))
+        }
+        let prefix = String(repeating: "x", count: remotes)
+        let beforeLocal = s.doc
+        let local = ReplaceStep(s.doc.content.size - 1, s.doc.content.size - 1,
+                                Slice(content: Fragment.from([basicSchema.text("!")]), openStart: 0, openEnd: 0))
+        let t1 = s.tr; _ = t1.maybeStep(local); s = s.apply(t1)
+        let itemsBefore = _undoItemCount(s)
+
+        let remote = ReplaceStep(1, 1, Slice(content: Fragment.from([basicSchema.text("R")]), openStart: 0, openEnd: 0))
+        let tr = s.tr
+        _ = tr.maybeStep(local.invert(beforeLocal))
+        _ = tr.maybeStep(remote)
+        _ = tr.maybeStep(local.map(tr.mapping.slice(1))!)
+        tr.mapping.setMirror(0, tr.steps.count - 1)
+        tr.setMeta("addToHistory", false)
+        tr.setMeta("rebased", 1)
+        s = s.apply(tr)
+        try expectEqual(s.doc, doc(p("R" + prefix + "hello!")).node)
+        try expectEqual(undoDepth(s), 2)
+        try expect(_undoItemCount(s) < itemsBefore, "the rebase should have compressed the branch")
+
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(p("R" + prefix + "hello")).node)
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(p("R" + prefix)).node)
+        s = command(s, redo)
+        s = command(s, redo)
+        try expectEqual(s.doc, doc(p("R" + prefix + "hello!")).node)
+    }
 }

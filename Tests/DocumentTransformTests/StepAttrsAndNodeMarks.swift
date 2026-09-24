@@ -280,6 +280,24 @@ func registerStepAttrAndNodeMarkTests() {
 // MARK: - Mark steps: the paths the node-mark tests above didn't reach
 
 func registerMarkStepEdgeTests() {
+    test("steps with no merge of their own never merge") {
+        // Only replace and the two range-mark steps know how to combine with a
+        // neighbour; the rest take the protocol's default, as upstream's base
+        // `Step.merge` does. Even an identical step stays a separate step.
+        let mark = basicSchema.mark("em")
+        let steps: [any Step] = [
+            AttrStep(0, "level", .int(2)), DocAttrStep("version", .int(1)),
+            AddNodeMarkStep(1, mark), RemoveNodeMarkStep(1, mark),
+            ReplaceAroundStep(0, 4, 1, 3, .empty, 0),
+        ]
+        for step in steps {
+            try expect(step.merge(step) == nil, "\(type(of: step))")
+        }
+        // Whereas a replace does merge with the one that continues it.
+        try expectNotNil(ReplaceStep(1, 1, Slice(content: Fragment.from(basicSchema.text("a")), openStart: 0, openEnd: 0))
+            .merge(ReplaceStep(2, 2, Slice(content: Fragment.from(basicSchema.text("b")), openStart: 0, openEnd: 0))))
+    }
+
     test("step jsonID matches the stepType it encodes") {
         // They are written in two places and read in two more: `toJSON` writes
         // the name, the registry decodes by it. If they drifted apart a step
@@ -289,7 +307,7 @@ func registerMarkStepEdgeTests() {
             AddMarkStep(0, 1, mark), RemoveMarkStep(0, 1, mark),
             AddNodeMarkStep(1, mark), RemoveNodeMarkStep(1, mark),
             AttrStep(0, "level", .int(2)), DocAttrStep("version", .int(1)),
-            ReplaceStep(0, 0, .empty),
+            ReplaceStep(0, 0, .empty), ReplaceAroundStep(0, 4, 1, 3, .empty, 0),
         ]
         for step in steps {
             try expectEqual(step.toJSON()["stepType"], .string(step.jsonID),

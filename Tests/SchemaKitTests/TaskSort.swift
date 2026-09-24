@@ -65,6 +65,33 @@ private func setCheckedTogether(_ editor: Editor, _ changes: [(Int, Bool)]) {
     editor.dispatch(tr)
 }
 
+/// Answers a raw `checked` write with an edit of its own. Listed ahead of the
+/// kit, its plugin appends before the task sort's does, so the sort is handed
+/// the check and this edit together and has to carry the check through both.
+private final class EditAfterCheck: Extension {
+    let name = "editAfterCheck"
+    let edit: @Sendable (EditorState) -> Transaction?
+    init(_ edit: @escaping @Sendable (EditorState) -> Transaction?) { self.edit = edit }
+    func plugins(_ ctx: ExtensionContext) -> [Plugin] {
+        let edit = self.edit
+        return [Plugin(key: name, appendTransaction: { trs, _, state in
+            guard trs.allSatisfy({ $0.getMeta("appendedTransaction") == nil }),
+                  trs.contains(where: { $0.steps.contains { ($0 as? AttrStep)?.attr == "checked" } })
+            else { return nil }
+            return edit(state)
+        })]
+    }
+}
+
+private func editAfterCheckEditor(_ edit: @escaping @Sendable (EditorState) -> Transaction?) throws -> Editor {
+    let editor = try Editor(extensions: [EditAfterCheck(edit)]
+        + fullKit(taskListOptions: TaskListOptions(sortCompletedToBottom: true)))
+    try editor.setContent(html: "<ul data-type=\"taskList\">"
+        + ["a", "b", "c"].map { "<li data-type=\"taskItem\" data-checked=\"false\"><p>\($0)</p></li>" }.joined()
+        + "</ul>")
+    return editor
+}
+
 /// Two outer items, each holding a nested list of two.
 private func nestedEditor() throws -> Editor {
     let editor = try Editor(extensions: fullKit(
@@ -397,6 +424,34 @@ func registerTaskSortTests() {
         setChecked(editor, 5, false)    // uncheck a1 where it now stands
         try expectEqual(texts(editor).filter { $0.count == 2 }, ["b1", "b2", "a1", "a2"],
                         "a1 goes back above a2, where it started")
+    }
+
+    test("task sort: a check still sorts after another plugin's edit moved it") {
+        // The paragraph lands in front of the list, so the checked item's
+        // position in the final document is not the one the check wrote.
+        let editor = try editAfterCheckEditor { state in
+            try? state.tr.insert(0, state.schema.node("paragraph", content: .from(state.schema.text("note"))))
+        }
+        setChecked(editor, 0, true)
+        try expectEqual(editor.doc.firstChild?.textContent, "note")
+        try expectEqual(texts(editor), ["b", "c", "a"])
+        try expectEqual(checks(editor), [false, false, true])
+    }
+
+    test("task sort: a check whose item another plugin deleted sorts nothing") {
+        let editor = try editAfterCheckEditor { state in
+            var first: (pos: Int, size: Int)?
+            state.doc.descendants { node, pos, _, _ in
+                if first == nil, node.type.name == "taskItem" { first = (pos, node.nodeSize) }
+                return first == nil
+            }
+            guard let first else { return nil }
+            return try? state.tr.delete(first.pos, first.pos + first.size)
+        }
+        setChecked(editor, 0, true)
+        try expectEqual(texts(editor), ["b", "c"])
+        try expectEqual(checks(editor), [false, false])
+        try expectEqual(taskSortKey.getState(editor.state)?.count, 0)
     }
 
     test("task sort: an ordinary edit appends nothing") {

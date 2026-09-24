@@ -59,6 +59,29 @@ func registerPMColumnResizingTests() {
         try expectEqual(columnResizingKey.getState(state)?.activeHandle, -1)
     }
 
+    test("PM columnresizing: the plugin draws the hovered handle, and highlights the column while dragging") {
+        let state0 = resizeState(doc(table(tr(cEmpty(), cEmpty()), tr(cEmpty(), cEmpty()))))
+        let decorations = { (s: EditorState) in s.plugins.first?.props?.decorations?(s)?.decorations ?? [] }
+        try expect(decorations(state0).isEmpty, "no handle is active yet")
+
+        // Hovering the first column's edge: a handle at the end of each cell in it.
+        let hovering = state0.apply(setResizeHandle(state0.tr, 2))
+        let handles = decorations(hovering)
+        try expectEqual(handles.count, 2)
+        try expect(handles.allSatisfy { $0.kind == .widget && $0.attributes["class"] == "column-resize-handle" })
+
+        // Dragging adds a node decoration over each of those cells as well.
+        let dragging = hovering.apply(setResizeDragging(hovering.tr, ColumnDragging(startX: 0, startWidth: 100)))
+        let highlighted = decorations(dragging).filter { $0.attributes["class"] == "column-resize-dragging" }
+        try expectEqual(highlighted.count, 2)
+        let table = dragging.doc.child(0)
+        let column = TableMap.get(table).cellsInRect(TableRect(left: 0, top: 0, right: 1, bottom: 2))
+        try expectEqual(highlighted.map { [$0.from, $0.to] }.sorted { $0[0] < $1[0] },
+                        column.map { [1 + $0, 1 + $0 + table.nodeAt($0)!.nodeSize] })
+        try expect(highlighted.allSatisfy { $0.kind == .node })
+        try expectEqual(decorations(dragging).count, 4)
+    }
+
     test("PM columnresizing: updateColumnWidth writes colwidth down the column") {
         let d = doc(table(tr(cEmpty(), cEmpty()), tr(cEmpty(), cEmpty())))
         let state = resizeState(d)
@@ -176,6 +199,27 @@ func registerCellSelectionMappingTests() {
         try expect(cells.count == 3, "expected a ragged 1+2 table, found \(cells.count) cells")
         let selection = CellSelection.colSelection(d.resolve(cells[2]))
         try expect(selection.to <= d.content.size, "selection out of range")
+    }
+
+    test("cellselection: a bookmark whose cells are gone resolves to a caret near its head") {
+        // Upstream's CellBookmark.resolve: when the mapped positions no longer
+        // point at two cells of one table (here the table was deleted, say by
+        // a collaborator, before an undo brought the bookmark back), fall back
+        // to the nearest valid selection after the head.
+        let d = doc(p("before"), table(tr(cEmpty(), cEmpty())), p("after")).node
+        let tablePos = d.child(0).nodeSize
+        let firstCell = tablePos + 2, secondCell = firstCell + d.child(1).child(0).child(0).nodeSize
+        let selection = CellSelection(d.resolve(firstCell), d.resolve(secondCell))
+        let bookmark = selection.getBookmark()
+        try expect(bookmark.resolve(d) is CellSelection, "the intact table still gives a cell selection")
+
+        let state = EditorState.create(EditorStateConfig(schema: basicSchema, doc: d, selection: selection))
+        let deletion = try state.tr.delete(tablePos, tablePos + d.child(1).nodeSize)
+        let resolved = bookmark.map(deletion.mapping).resolve(deletion.doc)
+        try expect(resolved is TextSelection, "expected a caret, got \(type(of: resolved))")
+        try expect(resolved.empty)
+        try expectEqual(resolved.resolvedHead.parent.textContent, "after")
+        try expectEqual(resolved.resolvedHead.parentOffset, 0)
     }
 }
 

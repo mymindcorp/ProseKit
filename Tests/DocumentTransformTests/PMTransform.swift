@@ -37,6 +37,19 @@ func registerPMTransformTests() {
     add("should only add a mark once", doc(p("hello ", strong("<a>there"), "!<b>")), basicSchema.mark("strong"), doc(p("hello ", strong("there!"))))
     add("should join overlapping marks", doc(p("one <a>two ", em("three<b> four"))), basicSchema.mark("strong"), doc(p("one ", strong("two ", em("three")), em(" four"))))
     add("should overwrite marks with different attributes", doc(p("this is a ", a("<a>link<b>"))), basicSchema.mark("link", ["href": .string("bar")]), doc(p("this is a ", a("link", href: "bar"))))
+    // The link being replaced (a link excludes its own type) runs across two
+    // text nodes, the second also em, so removing the old link is one step
+    // spanning both rather than one per node.
+    add("overwrites a link that spans several nodes", doc(p("this is a ", a("<a>li", em("nk<b>")))), basicSchema.mark("link", ["href": .string("bar")]), doc(p("this is a ", a("li", em("nk"), href: "bar"))))
+    test("PM addMark: removing an excluded mark across nodes is a single step") {
+        let d = doc(p("this is a ", a("<a>li", em("nk<b>"))))
+        let tr = Transform(d.node)
+        try tr.addMark(tag(d, "a"), tag(d, "b"), basicSchema.mark("link", ["href": .string("bar")]))
+        let removes = tr.steps.compactMap { $0 as? RemoveMarkStep }
+        try expectEqual(removes.count, 1)
+        try expectEqual(removes.first?.from, tag(d, "a"))
+        try expectEqual(removes.first?.to, tag(d, "b"))
+    }
     add("can add a mark in a nested node", doc(p("before"), blockquote(p("the variable is called <a>i<b>")), p("after")), basicSchema.mark("code"), doc(p("before"), blockquote(p("the variable is called ", code("i"))), p("after")))
     add("can add a mark across blocks", doc(p("hi <a>this"), blockquote(p("is")), p("a docu<b>ment"), p("!")), basicSchema.mark("em"), doc(p("hi ", em("this")), blockquote(p(em("is"))), p(em("a docu"), "ment"), p("!")))
 
@@ -188,6 +201,31 @@ func registerPMTransformTests() {
         try tr.doc.check()
         try expectEqual(tr.doc.child(1).type.name, "bullet_list")
         try expect(tr.doc.child(1).childCount > 0, "the list came back empty")
+    }
+
+    test("PM setNodeMarkup: a leaf can't become a type that can't be filled") {
+        // `figure` has to end in an image, and an image needs a `src` nothing
+        // here can supply — so there is no valid empty figure to put in the
+        // leaf's place, and the retype is refused rather than leaving an invalid
+        // one behind. (The schema accepts the expression: the dead-end check
+        // only asks that each state has *some* generatable way on, and after a
+        // paragraph there is one — another paragraph — that never reaches the end.)
+        let schema = try Schema(nodes: [
+            ("doc", NodeSpec(content: "block+")),
+            ("paragraph", NodeSpec(content: "text*", group: "block")),
+            ("rule", NodeSpec(group: "block")),
+            ("figure", NodeSpec(content: "paragraph+ image", group: "block")),
+            ("image", NodeSpec(attrs: ["src": AttributeSpec()])),
+            ("text", NodeSpec()),
+        ], marks: [])
+        let before = try schema.node("doc", [:], content: Fragment.from([
+            try schema.node("paragraph", [:], content: Fragment.from([schema.text("a")])),
+            try schema.node("rule"),
+        ]))
+        let tr = Transform(before)
+        try expectThrows { try tr.setNodeMarkup(3, schema.nodes["figure"]!) }
+        try expectEqual(tr.doc, before)
+        try expect(tr.steps.isEmpty)
     }
 
     test("PM setNodeMarkup: a leaf type still refuses a node that holds content") {
