@@ -265,11 +265,13 @@ registerMalformedTableImportTests()
 registerPMTableMapTests(); registerPMTableCommandsTests(); registerPMCellCopyPasteTests(); registerPMTableExtraTests()
 registerPMTableMoveTests()
 registerFootnoteTests(); registerPMColumnResizingTests(); registerTableOptionTests(); registerCellSelectionMappingTests()
+registerTableMutationKillTests()
 registerSuggestionModeTests()
 registerPolishCoverageTests()
 registerFigureTests()
 registerEdgeCommandTests()
 registerMathMLShapeTests()
+registerExtensionMutationKillTests()
 
 // Shared builders for the checklist-import tests below.
 private let clSchema = try! makeFullEditor().schema
