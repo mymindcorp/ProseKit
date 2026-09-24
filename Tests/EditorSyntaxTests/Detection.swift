@@ -259,4 +259,24 @@ func registerDetectionTests() {
             try expectNil(guessLanguage("   ")?.language)
         }
     }
+
+    test("detect: a colon ending the last line counts without a newline after it") {
+        // A block opener's trailing colon is Python's shape, and the last line
+        // of a snippet usually has no newline to close it. Counted only at a
+        // newline, the same code would get two verdicts depending on whether
+        // the paste kept its final line break.
+        for code in ["class Foo(Base):", "for item in items:", "try:", "with open(p) as f:"] {
+            let bare = guessLanguage(code)
+            let closed = guessLanguage(code + "\n")
+            try expectEqual(bare?.language, .python, code)
+            try expectEqual(bare?.language, closed?.language, code)
+            try expectEqual(bare?.confident, closed?.confident, code)
+        }
+        // The colon is what carries these: without it there is nothing, or
+        // nothing confident, to go on.
+        try expectEqual(detectCodeLanguage("class Foo(Base):", hint: nil), .python)
+        try expectNil(detectCodeLanguage("class Foo(Base)", hint: nil))
+        try expectNil(guessLanguage("for item in items"))
+        try expectNil(guessLanguage("try"))
+    }
 }

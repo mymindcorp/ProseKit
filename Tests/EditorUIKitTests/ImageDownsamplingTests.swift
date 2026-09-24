@@ -37,6 +37,22 @@ final class ImageDownsamplingTests: XCTestCase {
         XCTAssertEqual(cg.height, 300)
     }
 
+    func testBytesImageIOCannotOpenDecodeToNothing() {
+        XCTAssertNil(decodeDownsampledImage(Data(), maxPointWidth: 300, displayScale: 2),
+                     "no source, and no plain decode either")
+    }
+
+    func testAnHTTPSourceIsFetchedAndDownsampled() async throws {
+        unsafe StubImageProtocol.payload = png(CGSize(width: 400, height: 200))
+        URLProtocol.registerClass(StubImageProtocol.self)
+        defer { URLProtocol.unregisterClass(StubImageProtocol.self) }
+        let url = try XCTUnwrap(URL(string: "https://\(StubImageProtocol.host)/photo.png"))
+        let loaded = await loadDownsampledImage(from: url, maxPointWidth: 50, displayScale: 2)
+        let image = try XCTUnwrap(loaded)
+        XCTAssertEqual(try XCTUnwrap(image.cgImage).width, 100, "decoded to the box: 50pt at 2x")
+        XCTAssertEqual(image.size.width, 400, accuracy: 0.5, "reporting the natural size")
+    }
+
     func testTheNaturalSizeSurvivesTheDownsample() throws {
         // Layout measures the picture's box from `size`. If downsampling moved
         // it, every image in the document would silently change size.
@@ -390,5 +406,24 @@ final class LoadedImageRelayoutTests: XCTestCase {
         let paragraph = try schema.node("paragraph", [:], content: Fragment.from([schema.text("plain")]))
         XCTAssertFalse(DocumentLayout.containsImage(paragraph) { _ in true })
     }
+}
+
+/// Serves `payload` for one made-up host, so the http(s) branch of the loader
+/// runs without a network.
+private final class StubImageProtocol: URLProtocol {
+    static let host = "prosekit-image-stub.test"
+    nonisolated(unsafe) static var payload = Data()
+
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == host }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url,
+              let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                             headerFields: ["Content-Type": "image/png"]) else { return }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: unsafe Self.payload)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
 #endif

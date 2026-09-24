@@ -181,5 +181,54 @@ final class PasteAttributedStringTests: XCTestCase {
         }
         return bold
     }
+
+    // MARK: - The Apple Notes proto
+    //
+    // A minimal Note protobuf (2: text, 5: attribute runs { 1: length,
+    // 2: paragraph style { 1: style type } }) wrapped the way Notes wraps it:
+    // an NSData blob in a keyed archive's `$objects`.
+
+    private func varint(_ v: Int) -> [UInt8] {
+        var v = UInt64(v), out: [UInt8] = []
+        repeat {
+            var b = UInt8(v & 0x7f)
+            v >>= 7
+            if v != 0 { b |= 0x80 }
+            out.append(b)
+        } while v != 0
+        return out
+    }
+    private func chunk(_ field: Int, _ payload: [UInt8]) -> [UInt8] {
+        varint(field << 3 | 2) + varint(payload.count) + payload
+    }
+    /// "Title" as a title line (style 0), then a body line.
+    private func notesArchive() throws -> Data {
+        let titleRun = varint(1 << 3) + varint(6) + chunk(2, varint(1 << 3) + varint(0))
+        let bodyRun = varint(1 << 3) + varint(5)
+        let note = chunk(2, Array("Title\nbody\n".utf8)) + chunk(5, titleRun) + chunk(5, bodyRun)
+        return try PropertyListSerialization.data(fromPropertyList: ["$objects": ["$null", Data(note)]],
+                                                  format: .binary, options: 0)
+    }
+
+    func testANotesProtoMatchingTheRichTextIsPastedFromTheProto() throws {
+        let view = try view()
+        let rtf = try NSAttributedString(string: "Title\nbody").data(
+            from: NSRange(location: 0, length: 10), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+        let pb = UIPasteboard.withUniqueName()
+        pb.setItems([["public.rtf": rtf, "com.apple.notes.richtext": try notesArchive()]])
+        let doc = try XCTUnwrap(view.richTextPasteDoc(pb))
+        XCTAssertEqual(doc.child(0).type.name, "heading", "the title style only the proto knows about")
+        XCTAssertEqual(doc.child(0).textContent, "Title")
+        XCTAssertEqual(doc.child(1).textContent, "body")
+    }
+
+    func testANotesProtoAloneIsStillPasted() throws {
+        let view = try view()
+        let pb = UIPasteboard.withUniqueName()
+        pb.setItems([["com.apple.notes.richtext": try notesArchive()]])
+        let doc = try XCTUnwrap(view.richTextPasteDoc(pb), "no RTF and no text: the proto is all there is")
+        XCTAssertEqual(doc.child(0).type.name, "heading")
+        XCTAssertEqual(doc.textContent, "Titlebody")
+    }
 }
 #endif

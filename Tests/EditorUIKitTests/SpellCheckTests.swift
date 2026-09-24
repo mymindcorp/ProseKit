@@ -167,6 +167,19 @@ final class SpellCheckTests: XCTestCase {
         XCTAssertNil(v.editMenu(for: DocTextRange(5, 5), suggestedActions: []))
     }
 
+    func testPickingACorrectionFromTheMenuReplacesTheWord() throws {
+        let v = try view("mispeled word")
+        v.spellCache = [decoration(1, 9)]
+        let section = try XCTUnwrap(v.spellingMenu(for: 5, 5))
+        let fix = try XCTUnwrap(section.children.compactMap { $0 as? UIAction }.first { $0.title == "misspelled" },
+                                "got \(section.children.map(\.title))")
+        // A UIAction's handler has no public trigger; this is what the menu calls.
+        let perform = NSSelectorFromString("performWithSender:target:")
+        XCTAssertTrue(fix.responds(to: perform))
+        _ = unsafe fix.perform(perform, with: nil, with: nil)
+        XCTAssertEqual(v.editor.doc.textContent, "misspelled word")
+    }
+
     func testChoosingACorrectionReplacesTheWord() throws {
         let v = try view("mispeled word")
         v.replaceMisspelling("mispeled", from: 1, to: 9, with: "misspelled")

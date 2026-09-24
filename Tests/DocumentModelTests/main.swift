@@ -352,4 +352,5 @@ registerLeafTextTests()
 registerResolvedPosTests()
 
 registerModelAPIEdgeTests()
+registerModelMutationKillTests()
 TestSuite.main("DocumentModelTests", collector.all)

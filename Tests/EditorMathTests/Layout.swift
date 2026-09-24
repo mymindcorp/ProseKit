@@ -126,6 +126,19 @@ func registerLayoutTests() {
                    "the binary form should be wider by more than the bare letter")
     }
 
+    test("layout: a trailing sign is unary too") {
+        // With nothing to bind on its right — the end of the list, or a closing
+        // delimiter — a binary operator is an ordinary atom and gets no medium
+        // spaces. An empty group after it is an operand, so there it keeps them.
+        let medium = 4.0 / 18.0 * 17
+        for (bare, operand) in [("a+", "a+{}"), ("(a+)", "(a+{})"), ("a+,b", "a+{},b")] {
+            let unary = try layout(bare).width
+            let binary = try layout(operand).width
+            try expect(binary - unary > 1.5 * medium,
+                       "\(bare) should lose both medium spaces: \(unary) vs \(binary)")
+        }
+    }
+
     test("layout: medium and thick spaces vanish inside a script") {
         // a+b at full size vs the same in a superscript: the script copy shrinks
         // by more than the size ratio alone, because its spacing is suppressed.

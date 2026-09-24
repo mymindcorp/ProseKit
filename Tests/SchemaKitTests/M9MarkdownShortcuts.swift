@@ -325,6 +325,41 @@ func registerMarkdownShortcutTests() {
         try expect(editor.doc.rangeHasMark(0, editor.doc.content.size, code))
     }
 
+    // prosemirror-inputrules' wrappingInputRule joins the new wrapper to one of
+    // the same type directly above it: "- " under a bullet list extends that
+    // list rather than starting a second one beside it. A different kind of
+    // list above is left alone.
+    for (name, html, type, joins) in [
+        ("bullet list", "<ul><li><p>one</p></li></ul><p>-</p>", "bulletList", true),
+        ("blockquote", "<blockquote><p>one</p></blockquote><p>&gt;</p>", "blockquote", true),
+        ("bullet list under an ordered list", "<ol><li><p>one</p></li></ol><p>-</p>", "orderedList", false)] {
+        test("wrapping shortcut: \(name) \(joins ? "joins" : "doesn't join") the block above") {
+            let editor = try Editor(extensions: starterKit())
+            try editor.setContent(html: html)
+            let end = editor.doc.content.size - 1
+            select(editor, end, end)
+            try expect(textInput(editor, at: end, " "))
+            try expectEqual(editor.doc.childCount, joins ? 1 : 2)
+            try expectEqual(topBlock(editor)?.type.name, type)
+            try expectEqual(topBlock(editor)?.childCount, joins ? 2 : 1)
+            try expectEqual(editor.doc.textContent, "one")
+            try editor.doc.check()
+        }
+    }
+
+    // A list item's first child has to stay a paragraph, so "# " typed there
+    // is declined, as upstream's textblockTypeInputRule declines it: nothing
+    // claims the keystroke and the view inserts the space as text.
+    test("heading shortcut: declines where the schema doesn't allow a heading") {
+        let editor = try Editor(extensions: starterKit())
+        try editor.setContent(html: "<ul><li><p>#</p></li></ul>")
+        let end = editor.doc.content.size - 3 // after "#", inside ul > li > p
+        select(editor, end, end)
+        let original = editor.doc
+        try expect(!textInput(editor, at: end, " "))
+        try expect(editor.doc == original)
+    }
+
 }
 
 private final class ShortcutExclusiveMark: MarkExtension {

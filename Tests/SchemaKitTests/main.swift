@@ -380,4 +380,21 @@ test("checklist import: unrelated bullet list sharing one line text stays a bull
     try expectEqual(out.child(1).type.name, "bulletList")
 }
 
+test("checklist import: a list whose item can't become a task item is left alone") {
+    // Content that never went through the schema's checks (`create` doesn't
+    // validate): an item holding bare text, no paragraph. It still matches its
+    // line by its whole text, but a task item can't hold it, so the list stays
+    // exactly as it was rather than losing the line — and the next list still
+    // converts.
+    let bare = clNode("listItem", [:], [clSchema.text("milk")])
+    let odd = clNode("bulletList", [:], [bare, clItem("eggs")])
+    let fine = clNode("bulletList", [:], [clItem("bread")])
+    let out = applyChecklistMarkers(Fragment.from([odd, fine]), checkedTexts: [],
+                                    checklistLines: [("milk", true), ("eggs", false), ("bread", true)],
+                                    schema: clSchema)
+    try expectEqual(out.child(0), odd)
+    try expectEqual(out.child(1).type.name, "taskList")
+    try expectEqual(out.child(1).child(0).attrs["checked"]?.boolValue, true)
+}
+
 TestSuite.main("SchemaKitTests", collector.all)

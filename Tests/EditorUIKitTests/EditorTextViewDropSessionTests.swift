@@ -424,6 +424,76 @@ final class EditorTextViewDropSessionTests: XCTestCase {
 
     // MARK: - Helpers
 
+    // MARK: - Image bytes and nowhere to drop
+
+    func testPerformDropOfAnImageProviderInsertsItsBytes() throws {
+        let view = try textView("ABCDEF")
+        let session = FakeDropSession()
+        session.items = [UIDragItem(itemProvider: pngProvider())] // bytes, not a UIImage object
+        session.point = try pointFor(view, position: 3)
+
+        view.dropInteraction(dropInteraction, performDrop: session)
+        let deadline = Date().addingTimeInterval(5)
+        while !hasImage(view), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        XCTAssertTrue(hasImage(view), "the provider's PNG bytes became an image node")
+        XCTAssertEqual(view.editor.doc.textContent, "ABCDEF", "and no text was inserted with it")
+    }
+
+    func testTheDropCursorIsClearedWhereNoPositionResolves() throws {
+        let view = try textView("ABCDEF")
+        let session = FakeDropSession()
+        session.point = try pointFor(view, position: 3)
+        _ = view.dropInteraction(dropInteraction, sessionDidUpdate: session)
+        XCTAssertNotNil(dropCursorPath(view))
+
+        // A document with no text in it: no gap between text blocks and no
+        // caret position either, so there is nothing to indicate.
+        let s = view.editor.schema
+        view.editor.setContent(try s.node("doc", [:], content: Fragment.from([try s.node("horizontalRule")])))
+        _ = view.ensureLayout()
+        XCTAssertNil(view.dropCursorRect(at: session.point))
+        _ = view.dropInteraction(dropInteraction, sessionDidUpdate: session)
+        XCTAssertNil(dropCursorPath(view), "the stale indicator is taken down")
+    }
+
+    func testAnImageWhoseFileIsGoneDragsOutAsItsDrawnBitmap() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("drag-\(UUID().uuidString).png")
+        try XCTUnwrap(solidImage().pngData()).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let view = try makeView { s in
+            [try s.node("image", ["src": .string(url.path), "width": .int(100), "height": .int(80)]),
+             try s.node("paragraph", [:], content: Fragment.from([s.text("after")]))]
+        }
+        // Wait for the renderer's own load to land, so there is a drawn bitmap.
+        func drawn() -> Bool {
+            view.ensureLayout().decorations.contains { if case .image = $0 { return true } else { return false } }
+        }
+        let deadline = Date().addingTimeInterval(10)
+        while !drawn(), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertTrue(drawn(), "the image loaded")
+        try FileManager.default.removeItem(at: url) // the original is gone
+
+        let rect = try XCTUnwrap(view.ensureLayout().imageRects.first).rect
+        let drag = FakeDragSession()
+        drag.point = CGPoint(x: rect.midX, y: rect.midY - view.contentOffsetY)
+        let provider = try XCTUnwrap(view.dragInteraction(dragInteraction, itemsForBeginning: drag).first).itemProvider
+        XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.png.identifier))
+
+        let loaded = expectation(description: "png bytes")
+        nonisolated(unsafe) var bytes: Data?
+        _ = provider.loadDataRepresentation(forTypeIdentifier: UTType.png.identifier) { data, _ in
+            unsafe bytes = data
+            loaded.fulfill()
+        }
+        wait(for: [loaded], timeout: 5)
+        let image = try XCTUnwrap(unsafe bytes.flatMap(UIImage.init(data:)), "the drawn bitmap, re-encoded")
+        XCTAssertGreaterThan(image.size.width, 0)
+    }
+
     private func hasImage(_ view: EditorTextView) -> Bool {
         var found = false
         view.editor.doc.descendants { node, _, _, _ in

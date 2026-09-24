@@ -60,6 +60,31 @@ func registerAdversarialStepTests() {
         }
     }
 
+    test("adversarial: step positions out of order are rejected when decoded") {
+        // No step ever writes a range that runs backwards, and applying one
+        // doesn't fail — it edits something, and its inverse doesn't undo it.
+        let italic: AttributeValue = .object(["type": "italic"])
+        let cases: [[String: AttributeValue]] = [
+            ["stepType": "replace", "from": .int(5), "to": .int(2)],
+            ["stepType": "addMark", "from": .int(4), "to": .int(1), "mark": italic],
+            ["stepType": "removeMark", "from": .int(4), "to": .int(1), "mark": italic],
+            // The gap has to sit inside the range, in order.
+            ["stepType": "replaceAround", "from": .int(0), "to": .int(7),
+             "gapFrom": .int(5), "gapTo": .int(2), "insert": .int(0)],
+            ["stepType": "replaceAround", "from": .int(3), "to": .int(7),
+             "gapFrom": .int(1), "gapTo": .int(6), "insert": .int(0)],
+            ["stepType": "replaceAround", "from": .int(0), "to": .int(4),
+             "gapFrom": .int(1), "gapTo": .int(6), "insert": .int(0)],
+        ]
+        for json in cases {
+            try expectThrows({ _ = try decodeStep(B.schema, json) })
+        }
+        // The same steps the right way round decode.
+        _ = try decodeStep(B.schema, ["stepType": "replace", "from": .int(2), "to": .int(5)])
+        _ = try decodeStep(B.schema, ["stepType": "replaceAround", "from": .int(0), "to": .int(7),
+                                      "gapFrom": .int(1), "gapTo": .int(6), "insert": .int(0)])
+    }
+
     // A negative position reaches `getMap`'s `to - from` before any document is
     // in hand, where the full integer range overflows and traps.
     test("adversarial: a step spanning the integer range can't be decoded") {

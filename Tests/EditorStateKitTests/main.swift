@@ -439,6 +439,7 @@ registerSearchIncrementalTests()
 
 registerSelectionJSONGuardTests()
 registerSelectionEndpointTests()
+registerStateMutationKillTests()
 registerEditBench()
 
 TestSuite.main("EditorStateKitTests", collector.all)

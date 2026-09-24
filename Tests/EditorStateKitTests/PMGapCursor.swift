@@ -98,6 +98,36 @@ func registerPMGapCursorTests() {
         try expectEqual(s1.selection.head, 5) // after the trailing unselectable atom
     }
 
+    test("gapcursor arrows: right at the end of the document finds no gap") {
+        let d = gcDoc(gcP("hi"))
+        let s0 = gcState(d, TextSelection.create(d, 3)) // end of "hi"
+        let s1 = pressArrow(s0, "ArrowRight")
+        try expect(s1.selection.eq(s0.selection), "got \(s1.selection)")
+        try expectNil(GapCursor.findGapCursorFrom(d.resolve(4), 1))
+    }
+
+    test("gapcursor arrows: right from a text edge before a selectable atom leaves it to node selection") {
+        // The gap right after the text isn't valid, and a selectable atom is
+        // not skipped the way an unselectable one is — so there is no gap.
+        let d = gcDoc(gcP("hi"), atom())
+        let s0 = gcState(d, TextSelection.create(d, 3))
+        let s1 = pressArrow(s0, "ArrowRight")
+        try expect(s1.selection.eq(s0.selection), "got \(s1.selection)")
+        try expectNil(GapCursor.findGapCursorFrom(d.resolve(4), 1))
+    }
+
+    test("node selection mapping: an unselectable node falls back to a nearby selection") {
+        // `NodeSelection.create` already refuses such a node, but the
+        // initializer doesn't, so code can still node-select one; the first
+        // edit that maps the selection moves it somewhere selectable.
+        let d = gcDoc(gcNode("uatom_block"), gcP("hi"))
+        let s0 = gcState(d, NodeSelection(d.resolve(0)))
+        try expect(s0.selection is NodeSelection)
+        let s1 = s0.apply(try! s0.tr.insertText("!", 4))
+        try expect(s1.selection is TextSelection, "got \(type(of: s1.selection))")
+        try expectEqual(s1.selection.head, 2)
+    }
+
     test("gapcursor arrows: not triggered mid-text") {
         let d = gcDoc(gcP("hi"), atom(), atom())
         let s0 = gcState(d, TextSelection.create(d, 2)) // between h and i

@@ -183,6 +183,24 @@ func registerSuggestionModeTests() {
         try expectEqual(state(editor).changes.count, 0)
     }
 
+    // Wrapping a paragraph is recorded as two insertions: the blockquote's
+    // opening token and its closing one. Neither can be taken out alone — the
+    // schema has no way to delete half a node — so reverting them one by one
+    // leaves the quote in place, and rejectAll has to finish the job by
+    // restoring the whole base document.
+    test("suggestion: rejectAll undoes a wrap the per-change revert can't") {
+        let editor = try suggestionEditor()
+        try type(editor, "ab")
+        let base = editor.doc
+        enable(editor)
+        try expect(editor.run("toggleBlockquote"))
+        try expectEqual(editor.doc.firstChild?.type.name, "blockquote")
+        try expectEqual(state(editor).changes.count, 2)
+        try expect(editor.run(rejectAllSuggestions))
+        try expectEqual(editor.doc, base)
+        try expectEqual(state(editor).changes.count, 0)
+    }
+
     test("suggestion: toggling off keeps pending suggestions, stops recording") {
         let editor = try suggestionEditor()
         try type(editor, "hello")

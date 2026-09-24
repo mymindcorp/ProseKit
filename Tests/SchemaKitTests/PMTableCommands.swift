@@ -116,6 +116,9 @@ func registerPMTableCommandsTests() {
           table(tr(td(p("foo")), cEmpty(), c11())))
     tcase("splitCell: split a row-spanning cell", table(tr(c11(), tdAttrs(["rowspan": .int(2)], p("foo<anchor>")), c11()), tr(c11(), c11())), splitCell,
           table(tr(c11(), td(p("foo")), c11()), tr(c11(), cEmpty(), c11())))
+    tcase("splitCell: distributes column widths",
+          table(tr(tdAttrs(["colspan": .int(3), "colwidth": .array([.int(100), .int(0), .int(200)])], p("a<anchor>")))), splitCell,
+          table(tr(tdAttrs(["colwidth": .array([.int(100)])], p("a")), cEmpty(), tdAttrs(["colwidth": .array([.int(200)])], p()))))
 
     // MARK: mergeOrSplit — the one command a toolbar button can call
     tcase("mergeOrSplit: merges what can be merged", table(tr(cAnchor(), cHead(), c11())), mergeOrSplit,
@@ -175,6 +178,48 @@ func registerPMTableCommandsTests() {
         let d = table(tr(cAnchor(), cHead()))
         let s = runCmd(d, tableArrow(.horiz, 1))
         try expect(!(s.selection is CellSelection), "cell selection collapsed")
+    }
+
+    // A caret at the edge of a cell leaves it even when the edge is that of a
+    // block nested inside the cell: the walk up from the textblock passes the
+    // blockquote (its last child, so still at the edge) to reach the cell.
+    test("PM tableArrow: leaves a cell from the edge of a block nested in it") {
+        let down = runCmd(table(tr(td(blockquote(p("a<cursor>")))), tr(td(p("b")))), tableArrow(.vert, 1))
+        try expectEqual(down.selection.resolvedHead.parent.textContent, "b")
+        let up = runCmd(table(tr(td(p("a"))), tr(td(blockquote(p("<cursor>b"))))), tableArrow(.vert, -1))
+        try expectEqual(up.selection.resolvedHead.parent.textContent, "a")
+    }
+    test("PM tableArrow: does nothing at the end of a document with no table") {
+        let d = doc(p("a"), p("b<cursor>"))
+        var state = EditorState.create(EditorStateConfig(schema: basicSchema, doc: d.node, selection: selectionFor(d)))
+        try expect(!tableArrow(.vert, 1)(state, { state = state.apply($0) }, nil))
+        try expect(!tableArrow(.horiz, 1)(state, { state = state.apply($0) }, nil))
+    }
+
+    // A row with no cells can't come out of the schema, but a table is ragged
+    // like this mid-transaction and in foreign content: Tab steps over it to
+    // the next row that has a cell, in either direction.
+    test("PM goToNextCell: steps over rows that have no cells") {
+        let d = table(tr(td(p("a")), td(p("b<cursor>"))), tr(), tr(), tr(td(p("c")), td(p("d"))))
+        let forward = runCmd(d, goToNextCell(1))
+        try expectEqual(forward.selection.resolvedHead.parent.textContent, "c")
+        let back = runCmd(table(tr(td(p("a")), td(p("b"))), tr(), tr(), tr(td(p("<cursor>c")), td(p("d")))), goToNextCell(-1))
+        try expectEqual(back.selection.resolvedHead.parent.textContent, "b")
+    }
+
+    // With a row selected the head sits after the row, in the table itself and
+    // in no cell; upstream's `cellNear` then walks back into the row for its
+    // last cell, and that is the rectangle.
+    test("PM selectedRect: a selected row resolves to its last cell") {
+        let d = doc(table(tr(td(p("a")), td(p("b"))), tr(td(p("c")), td(p("d"))))).node
+        let rowPos = 1 + d.child(0).child(0).nodeSize
+        let state = EditorState.create(EditorStateConfig(schema: basicSchema, doc: d,
+                                                         selection: NodeSelection.create(d, rowPos)))
+        let found = selectedRect(state)
+        try expectNotNil(found)
+        let rect = found!
+        try expectEqual([rect.left, rect.top, rect.right, rect.bottom], [1, 1, 2, 2])
+        try expectEqual(rect.table.nodeAt(rect.map.map[3])?.textContent, "d")
     }
 
     // MARK: - Asked outside a table

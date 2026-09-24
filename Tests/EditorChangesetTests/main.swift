@@ -495,6 +495,13 @@ func registerPMDiffTests() {
     test("PM changeset diff: sees the difference between different closing tokens") {
         try diffTest(doc(p("a")), doc(h1("oo")), [[0, 3, 0, 4]])
     }
+    // A leaf is one token, named by its type: swapping an image for a hard
+    // break is a one-position replacement, the same leaf is no change at all.
+    test("changeset diff: tokenizes leaf nodes by their type") {
+        try diffTest(doc(p("ab", img(), "cd")), doc(p("ab", br(), "cd")), [[3, 4, 3, 4]])
+        try diffTest(doc(p("ab", img(), "cd")), doc(p("ab", img(), "cd")), [])
+        try diffTest(doc(p("ab", img(), "cd")), doc(p("abcd")), [[3, 4, 3, 3]])
+    }
 }
 
 // MARK: - test-simplify.ts
@@ -545,6 +552,13 @@ func registerPMSimplifyTests() {
         for filler in ["_____", "^^^^^", "[[[[[", "`````"] {
             try simplifyTest([[7, 10]], doc(p("one two \(filler) four")), [[5, 10]])
         }
+    }
+
+    // Outside ASCII the test is Unicode's: "é" is part of the word, so a
+    // replacement inside "café" grows to cover it; an em dash is not.
+    test("changeset simplify: letters outside ASCII are word characters, other symbols are not") {
+        try simplifyTest([[6, 8]], doc(p("one café three")), [[5, 9]])
+        try simplifyTest([[7, 10]], doc(p("one two \u{2014}\u{2014}\u{2014} four")), [[5, 10]])
     }
 
     test("PM changeset simplify: treats leaf nodes as non-words") {
