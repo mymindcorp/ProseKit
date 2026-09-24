@@ -320,9 +320,6 @@ final class TextBlockLayoutCache {
     /// Test hook: how many item lookups have hit, so a test can say exactly
     /// which items a keystroke reused rather than time it.
     private(set) var debugItemHits = 0
-    /// Test hook: drop the item entries and keep the blocks, to measure what
-    /// the item cache adds over the block cache alone.
-    func debugClearItems() { items.removeAll() }
 
     /// Drop all cached blocks when the theme changes (e.g. the user edits colors,
     /// fonts, or spacing live), so they're re-typeset with the new styling.

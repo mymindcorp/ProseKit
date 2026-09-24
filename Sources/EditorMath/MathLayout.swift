@@ -55,7 +55,7 @@ enum TeXMetrics {
 
 /// A thin/medium/thick space, in TeX's mu (1 mu = 1/18 em).
 private enum MuSpace: Int {
-    case none = 0, thin = 3, medium = 4, thick = 5
+    case thin = 3, medium = 4, thick = 5
     var em: CGFloat { CGFloat(rawValue) / 18 }
 }
 

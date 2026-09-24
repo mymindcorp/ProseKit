@@ -15,17 +15,6 @@ final class ListItemCacheTests: XCTestCase {
     private let width: CGFloat = 362
     private let words = Array(repeating: "lorem ipsum dolor sit amet", count: 4).joined(separator: " ")
 
-    private func listDoc(_ s: Schema, kind: String, items texts: [String]) -> Node {
-        let itemType = kind == "taskList" ? "taskItem" : "listItem"
-        let items = texts.enumerated().map { i, t -> Node in
-            let p = try! s.node("paragraph", [:], content: Fragment.from([s.text(t)]))
-            let attrs: Attrs = kind == "taskList" ? ["checked": .bool(i % 3 == 0)] : [:]
-            return try! s.node(itemType, attrs, content: Fragment.from([p]))
-        }
-        return try! s.node("doc", [:], content: Fragment.from([
-            try! s.node(kind, [:], content: Fragment.from(items))]))
-    }
-
     /// Everything a reader could see or tap, flattened for comparison.
     private func fingerprint(_ l: DocumentLayout) -> String {
         var out: [String] = []

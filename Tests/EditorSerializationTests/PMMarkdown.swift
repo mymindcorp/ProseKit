@@ -17,7 +17,6 @@ import TestHarness
 func ul(tight: Bool = true, _ c: Node...) -> Node { node("bulletList", ["tight": .bool(tight)], c) }
 func ol(tight: Bool = true, _ c: Node...) -> Node { node("orderedList", ["tight": .bool(tight)], c) }
 func li(_ c: Node...) -> Node { node("listItem", [:], c) }
-private func pre(_ s: String) -> Node { node("codeBlock", [:], s.isEmpty ? [] : [t(s)]) }
 private func bq(_ c: Node...) -> Node { node("blockquote", [:], c) }
 private func hr() -> Node { node("horizontalRule", [:]) }
 private func brk() -> Node { node("hardBreak", [:]) }

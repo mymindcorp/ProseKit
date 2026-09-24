@@ -34,19 +34,7 @@ func findTable(_ pos: ResolvedPos) -> FoundNode? {
     findParentNode({ tableRole($0) == "table" }, pos)
 }
 
-/// The cells (with absolute positions) in the column at `columnIndex` of the
-/// table around the selection.
-func getCellsInColumn(_ columnIndex: Int, _ tr: Transaction) -> [FoundNode]? {
-    cells(tr, columnIndex, isColumn: true)
-}
-
-/// The cells (with absolute positions) in the row at `rowIndex`.
-func getCellsInRow(_ rowIndex: Int, _ tr: Transaction) -> [FoundNode]? {
-    cells(tr, rowIndex, isColumn: false)
-}
-
-private func cells(_ tr: Transaction, _ index: Int, isColumn: Bool, table explicitTable: FoundNode? = nil) -> [FoundNode]? {
-    guard let table = explicitTable ?? findTable(tr.doc.resolve(tr.selection.from)) else { return nil }
+private func cells(_ table: FoundNode, _ index: Int, isColumn: Bool) -> [FoundNode]? {
     let map = TableMap.get(table.node)
     if isColumn {
         guard index >= 0, index <= map.width - 1 else { return nil }
@@ -71,24 +59,11 @@ struct CellSelectionRange {
     let indexes: [Int]
 }
 
-/// The selection range around the column at `startColIndex`, widened over
-/// merged cells (prosemirror-tables getSelectionRangeInColumn).
-func getSelectionRangeInColumn(_ tr: Transaction, _ startColIndex: Int) -> CellSelectionRange? {
-    selectionRange(tr, startColIndex, isColumn: true)
-}
-
-/// The selection range around the row at `startRowIndex`, widened over merged
-/// cells (prosemirror-tables getSelectionRangeInRow).
-func getSelectionRangeInRow(_ tr: Transaction, _ startRowIndex: Int) -> CellSelectionRange? {
-    selectionRange(tr, startRowIndex, isColumn: false)
-}
-
-private func selectionRange(_ tr: Transaction, _ startIdx: Int, isColumn: Bool, table explicitTable: FoundNode? = nil) -> CellSelectionRange? {
-    guard let table = explicitTable ?? findTable(tr.doc.resolve(tr.selection.from)) else { return nil }
+private func selectionRange(_ tr: Transaction, _ startIdx: Int, isColumn: Bool, table: FoundNode) -> CellSelectionRange? {
     let map = TableMap.get(table.node)
     guard startIdx >= 0, startIdx < (isColumn ? map.width : map.height) else { return nil }
     func cellsAt(_ i: Int) -> [FoundNode]? {
-        cells(tr, i, isColumn: isColumn, table: table)
+        cells(table, i, isColumn: isColumn)
     }
     func span(_ node: Node) -> Int { isColumn ? cellColspan(node) : cellRowspan(node) }
 
@@ -125,7 +100,7 @@ private func selectionRange(_ tr: Transaction, _ startIdx: Int, isColumn: Bool, 
     endIndex = last
 
     guard let firstSelected = cellsAt(startIndex), !firstSelected.isEmpty,
-          let firstPerpendicular = cells(tr, 0, isColumn: !isColumn, table: table)
+          let firstPerpendicular = cells(table, 0, isColumn: !isColumn)
     else { return nil }
 
     let anchor = tr.doc.resolve(firstSelected[firstSelected.count - 1].pos)

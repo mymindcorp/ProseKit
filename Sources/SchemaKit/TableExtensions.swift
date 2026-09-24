@@ -139,10 +139,6 @@ public func createTable(_ schema: Schema, rows: Int, cols: Int, withHeaderRow: B
     return try? tableType.createChecked([:], content: Fragment.from(rowNodes))
 }
 
-private func isCell(_ node: Node) -> Bool {
-    node.type.name == "tableCell" || node.type.name == "tableHeader"
-}
-
 private struct TableContext {
     let table: Node
     let tablePos: Int
