@@ -12,7 +12,8 @@ import SchemaKit
 ///
 /// Two of them fire per keystroke: the input rules run on every character typed
 /// anywhere in the document, and the find bar searches as you type. The third,
-/// grammar construction, recompiles a language's patterns on every highlight.
+/// grammar construction, compiles a language's patterns; it used to run on every
+/// highlight and is now cached per language, so this measures the cached lookup.
 @MainActor
 final class RegexHotPathPerfTests: XCTestCase {
     private func bestMs(_ runs: Int = 9, _ body: () -> Void) -> Double {
@@ -80,8 +81,9 @@ final class RegexHotPathPerfTests: XCTestCase {
         }
     }
 
-    /// Building a language's rule set compiles its patterns. This happens on
-    /// every highlight of a changed block.
+    /// Building a language's rule set compiles its patterns. Every highlight of
+    /// a changed block asks for one; `rules(for:_:)` caches it, so after the
+    /// first run this times the cache hit.
     func testGrammarConstruction() {
         for language in [CodeLanguage.javascript, .typescript, .csharp] {
             let ms = bestMs(50) { _ = rules(for: language, .default) }

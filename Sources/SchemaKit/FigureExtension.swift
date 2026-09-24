@@ -17,7 +17,7 @@ public import EditorCommands
 // document containing `figure` nodes can't be opened — or collaborated on — by a
 // host whose schema lacks them. Add it explicitly:
 //
-//     let editor = Editor(extensions: fullKit() + figureExtensions())
+//     let editor = try Editor(extensions: fullKit() + figureExtensions())
 
 /// A captioned block: content, then an optional caption.
 public final class FigureExtension: NodeExtension {

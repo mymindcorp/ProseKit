@@ -115,9 +115,10 @@ final class HotPathProbe: XCTestCase {
         }
     }
 
-    /// Moving the cursor with the find bar open. The search plugin rebuilds its
-    /// decorations on `selectionSet` as well as on `docChanged`, because which
-    /// match is the *active* one depends on the selection.
+    /// Moving the cursor with the find bar open. Which match is the *active* one
+    /// depends on the selection, so on `selectionSet` the search plugin finds the
+    /// active match again (without re-searching the document) and restyles the
+    /// matches only when it changed.
     func testCursorMoveWithFindOpen() {
         print("\n  --- one cursor move (no edit) ---")
         for n in [200, 1000, 3000] {

@@ -39,12 +39,12 @@ final class SpellCheckTests: XCTestCase {
     func testWordUnderCaretIsNotUnderlined() throws {
         let v = try view("mispeled")           // misspelled word at [1, 9]
         let decos = [decoration(1, 9)]
-        // Caret inside the word (still typing it) → not underlined.
+        // Caret at the end of the word (still typing it) → not underlined.
         v.editor.dispatch(v.editor.state.tr.setSelection(TextSelection.create(v.editor.doc, 9)))
         XCTAssertTrue(v.visibleSpellingRanges(decos).isEmpty, "the word being typed should not be flagged")
-        // Caret moved past the word (e.g. after a space) → underlined.
+        // Caret moved off the word → underlined.
         v.editor.dispatch(v.editor.state.tr.setSelection(TextSelection.create(v.editor.doc, 1)))
-        // place caret well before by selecting elsewhere: use a range selection
+        // Position 1 is the word's start, which still counts as inside it; 0 doesn't.
         v.editor.dispatch(v.editor.state.tr.setSelection(TextSelection.create(v.editor.doc, 0)))
         XCTAssertEqual(v.visibleSpellingRanges(decos).count, 1, "a word the caret has left should be flagged")
     }

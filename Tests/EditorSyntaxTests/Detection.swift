@@ -57,7 +57,7 @@ func registerDetectionTests() {
                                hint: nil), .csharp)
     }
 
-    /// Four of the supported languages write generics, and `Result<T>` used to
+    /// Most of the supported languages write generics, and `Result<T>` used to
     /// score as an HTML tag. A tag's `<` never follows an identifier character;
     /// a generic's always does.
     test("detect: generics are not read as HTML tags") {

@@ -360,8 +360,8 @@ func registerMathTests() {
     }
 
     test("math: a block formula replaces the paragraph it was typed in") {
-        // Tiptap Mathematics 3.23.0: replacing only the matched text left the
-        // emptied paragraph sitting above the formula.
+        // Replacing only the matched text left the emptied paragraph sitting
+        // above the formula. The fix follows Tiptap Mathematics 3.23.0.
         let editor = try mathEditor()
         try type(editor, "$$a^2$")
         try expect(textInput(editor, at: editor.state.selection.from, "$"))
@@ -371,7 +371,7 @@ func registerMathTests() {
 
     test("math: typing after a block formula at the end of the document starts a paragraph") {
         // With the paragraph gone the mapped selection sat on the formula, so
-        // the next keystroke replaced it. A gap cursor after it instead.
+        // the next keystroke replaced it. Now a gap cursor sits after it.
         let editor = try mathEditor()
         try type(editor, "$$a^2$")
         try expect(textInput(editor, at: editor.state.selection.from, "$"))

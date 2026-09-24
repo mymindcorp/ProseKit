@@ -178,10 +178,10 @@ public final class NodeType: @unchecked Sendable {
 
     public func create(_ attrs: Attrs = [:], content: Fragment = .empty, marks: [Mark] = []) throws(ModelError) -> Node {
         // A text node's text lives outside the content fragment, so building one
-        // this way produces a text node with no text — and `nodeSize` then force
-        // -unwraps it and traps. Use `Schema.text` instead. ProseMirror refuses
-        // here for the same reason; without the check, an `AttrStep` whose
-        // position lands on text — which rebasing a collab step can do — took
+        // this way produces a text node with no text, and so of size zero — the
+        // node `Schema.text` refuses to build. Use `Schema.text` instead.
+        // ProseMirror refuses here for the same reason; without the check, an
+        // `AttrStep` whose position lands on text — which rebasing a collab step can do — took
         // the process down rather than failing the step.
         if isText {
             throw ModelError.invalidContent("Cannot construct a text node with create(); use Schema.text")
@@ -280,8 +280,9 @@ public final class MarkType: @unchecked Sendable {
 
     public private(set) var defaultAttrs: Attrs = [:]
     public private(set) var hasRequiredAttrs: Bool = false
-    /// The marks this type excludes (set during schema compilation). `nil`
-    /// before computed; when the spec excludes "" it excludes all marks.
+    /// The marks this type excludes, filled in during schema compilation. A
+    /// spec that excludes "_" excludes every mark, one that excludes "" excludes
+    /// none, and one that says nothing excludes only its own type.
     var excluded: [MarkType] = []
 
     init(name: String, rank: Int, spec: MarkSpec) {
@@ -334,7 +335,8 @@ public final class Schema: @unchecked Sendable {
     public let nodes: [String: NodeType]
     public let marks: [String: MarkType]
     public let topNodeType: NodeType
-    /// Cached schema spec for serialization / introspection.
+    /// The node and mark names in definition order, for serialization and
+    /// introspection.
     public let nodeSpecOrder: [String]
     public let markSpecOrder: [String]
 

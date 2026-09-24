@@ -53,7 +53,7 @@ public struct DocGen {
         return String((0 ..< n).map { _ in Self.alphabet.randomElement(using: &rng)! })
     }
 
-    /// A random mark set the given parent will accept (`code_block` accepts
+    /// A random mark set the given parent will accept (`codeBlock` accepts
     /// none, and `addToSet` settles the exclusion rules for the rest).
     public mutating func randomMarks(allowedBy parent: NodeType) -> [Mark] {
         var set: [Mark] = []
@@ -76,7 +76,7 @@ public struct DocGen {
     /// `latex` defaults to empty, so every generated formula was blank. Those
     /// are the degenerate cases, not the representative ones — a round-trip
     /// property fed only blanks reports on how blanks travel and never on how a
-    /// footnote does. Each of these still gets an empty value some of the time,
+    /// footnote does. Most of these still get an empty value some of the time,
     /// because the blank *is* a real state (a formula the user hasn't typed
     /// into yet) and worth covering — just not exclusively.
     /// An array rather than a dictionary, because this is walked while drawing
@@ -209,9 +209,9 @@ public struct DocGen {
         let rows = Int.random(in: 1 ... 3, using: &rng)
         let cols = Int.random(in: 1 ... 3, using: &rng)
         let headerRow = wantsHeader || Bool.random(using: &rng)
-        // One in three tables merges; the rest stay uniform, because the plain
-        // grid is still the common case and a corpus of nothing but merged
-        // tables would be as lopsided as one with none.
+        // One in three tables with room to span merges; the rest stay uniform,
+        // because the plain grid is still the common case and a corpus of
+        // nothing but merged tables would be as lopsided as one with none.
         let spanning = rows > 1 && cols > 1 && Int.random(in: 0 ..< 3, using: &rng) == 0
 
         var taken = Array(repeating: false, count: rows * cols)
@@ -231,7 +231,7 @@ public struct DocGen {
                         for cc in c ..< c + wantCols where taken[rr * cols + cc] { free = false }
                     }
                     // Only take the span when every slot under it is still free;
-                    // otherwise this cell stays 1×1 and the grid stays square.
+                    // otherwise this cell stays 1×1 and the grid stays rectangular.
                     if free { colspan = wantCols; rowspan = wantRows }
                 }
                 for rr in r ..< r + rowspan {

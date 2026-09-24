@@ -20,7 +20,7 @@ import DocumentTransform
 /// second caret on the screen. It also declines to hold a caret we hand back
 /// from the space a line broke at, moving it on to the following line, so
 /// neither half of "draw it at the end of the wrapped line" survives contact
-/// with the system. See `testTheCaretWeDrawIsWhereTheSystemDrawsItsOwn`.
+/// with the system. See `testWhereACaretIsDrawnDependsOnlyOnWhereItIs`.
 @MainActor
 final class CaretLineWrapTests: XCTestCase {
     /// A paragraph long enough to wrap several times at this width.

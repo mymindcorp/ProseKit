@@ -19,7 +19,8 @@ public final class ContentMatch: @unchecked Sendable {
         self.validEnd = validEnd
     }
 
-    /// A content match state that matches nothing and is not a valid end.
+    /// A content match state that matches nothing and is a valid end: the
+    /// content of a leaf.
     public static let empty = ContentMatch(validEnd: true)
 
     /// The node types reachable directly from this match state, in order.
@@ -424,7 +425,7 @@ enum ContentExpression {
         return nfa
     }
 
-    // Epsilon-closure of a set of NFA states.
+    // The states reachable from one NFA state by epsilon edges alone.
     static func nullFrom(_ nfa: NFA, _ node: Int) -> [Int] {
         var result: [Int] = []
         func scan(_ n: Int) {

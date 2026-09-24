@@ -99,8 +99,8 @@ public extension Mark {
         a == b
     }
 
-    /// Create a properly sorted mark set from null, a single mark, or an
-    /// unsorted array of marks.
+    /// Create a properly sorted mark set from `nil` or an unsorted array of
+    /// marks.
     static func setFrom(_ marks: [Mark]?) -> [Mark] {
         guard let marks, !marks.isEmpty else { return [] }
         let sorted = marks.sorted { $0.type.rank < $1.type.rank }

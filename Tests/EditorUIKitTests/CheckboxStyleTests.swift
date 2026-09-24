@@ -300,7 +300,7 @@ final class CheckboxStyleTests: XCTestCase {
         // reassigned to different items each sync. Each item must keep its view.
         let view = try taskListView()
         view.syncCheckboxViews()
-        // Map each checkbox view to the text of its task item, before the toggle.
+        // Each checkbox view's identity, in item order (top to bottom).
         func viewsByItem() -> [ObjectIdentifier] {
             boxes(view).sorted { $0.frame.minY < $1.frame.minY }.map { ObjectIdentifier($0) }
         }

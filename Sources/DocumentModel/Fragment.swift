@@ -295,8 +295,9 @@ public struct Fragment: Hashable, Sendable {
     }
 
     /// Find the index and offset corresponding to the given relative position.
-    /// When `round` is positive, positions that fall exactly between two nodes
-    /// resolve to the later index.
+    /// A position exactly between two nodes resolves to the later index. One
+    /// inside a node resolves to that node's index, or to the next one when
+    /// `round` is positive.
     func findIndex(_ pos: Int, round: Int = -1) -> (index: Int, offset: Int) {
         if pos == 0 { return (0, 0) }
         if pos == size { return (content.count, size) }

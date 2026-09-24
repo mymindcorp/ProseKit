@@ -5,9 +5,9 @@ import EditorStateKit
 import TestHarness
 
 // Ported from prosemirror-state/test/test-state.ts. Skipped (no local
-// equivalent): the EditorState toJSON/fromJSON round-trip cases — this port has
-// no state-level JSON serialization (documents serialize via DocumentJSON) —
-// and the `testProp`-bound-to-plugin case (props here are plain closures, not
+// equivalent): the EditorState toJSON/fromJSON round-trip cases — this port's
+// state JSON carries only the document and selection, not plugin fields — and
+// the `testProp`-bound-to-plugin case (props here are plain closures, not
 // this-bound methods).
 
 private let countKey = PluginKey<Int>("messageCount")

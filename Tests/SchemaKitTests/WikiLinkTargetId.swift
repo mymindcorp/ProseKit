@@ -27,8 +27,9 @@ func registerWikiLinkTargetIdTests() {
     test("wiki link: typing `[[Page]]` puts the words in `text`") {
         try MainActor.assumeIsolated {
             let editor = try Editor(extensions: fullKit())
-            // The closing bracket has to go through the input rules — typing it
-            // straight into the document is what the rule watches for.
+            // The closing bracket has to go through the input rules: the rule
+            // fires on typed input, and inserting the bracket straight into the
+            // document would skip it.
             try type(editor, "[[Architecture]")
             _ = textInput(editor, at: editor.doc.content.size - 1, "]")
             let node = try firstWikiLink(editor.doc)

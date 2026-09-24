@@ -12,8 +12,6 @@ private let pngHex =
     "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de" +
     "0000000c49444154789c63f8cfc0000003010100c9fe92ef0000000049454e44ae426082"
 
-/// The header every fixture shares: a Helvetica body font and a Courier one, so
-/// the monospace heuristic has something to recognize.
 private let pngBytes: [UInt8] = {
     var out: [UInt8] = []
     var high: UInt8?
@@ -24,6 +22,8 @@ private let pngBytes: [UInt8] = {
     return out
 }()
 
+/// The header every fixture shares: a Helvetica body font and a Courier one, so
+/// the monospace heuristic has something to recognize.
 private let header = #"{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}"#
 
 private func rtf(_ body: String) -> String { header + body + "}" }

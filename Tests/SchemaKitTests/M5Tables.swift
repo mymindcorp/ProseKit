@@ -293,9 +293,9 @@ func registerM5Tests() {
         try expectEqual(count(editor.doc, "tableRow"), 2)
     }
 
-    // Tiptap Table 3.30.0: prosemirror-tables leaves the caret wherever the
-    // deletion mapped it, which for the last row or column is the paragraph
-    // after the table.
+    // prosemirror-tables leaves the caret wherever the deletion mapped it,
+    // which for the last row or column is the paragraph after the table.
+    // Tiptap Table 3.30.0 puts it back in the table, and so does this port.
     test("table: deleting the last row keeps the caret in the table") {
         let editor = try tableThenParagraph(rows: 2, cols: 2)
         cursorInLastCell(editor)

@@ -3,7 +3,7 @@ public import DocumentTransform
 
 /// A visual decoration over a document range that does not change the document
 /// itself — used for search highlights, spell-check underlines, collaboration
-/// cursors, and similar overlays. (The deferred M2/M7 decoration layer.)
+/// cursors, and similar overlays.
 public struct Decoration: Sendable, Equatable {
     public enum Kind: Sendable, Equatable {
         /// Styles the inline content in `[from, to)`.
@@ -18,8 +18,10 @@ public struct Decoration: Sendable, Equatable {
     public let from: Int
     public let to: Int
     public let kind: Kind
-    /// Style hints the renderer understands: `background`, `underline`,
-    /// `color` (hex), and `class` (an identifying tag, e.g. "search").
+    /// Hints the renderer reads: `background` (a hex fill), `class` (an
+    /// identifying tag, e.g. "search", which picks a fill for the classes it
+    /// knows), `spelling` (a misspelled word), and `data-author`/`data-text`
+    /// on track-changes decorations.
     public let attributes: [String: String]
 
     public init(from: Int, to: Int, kind: Kind = .inline, attributes: [String: String] = [:]) {

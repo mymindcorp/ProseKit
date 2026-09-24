@@ -93,7 +93,7 @@ public extension Step {
     func merge(_ other: any Step) -> (any Step)? { nil }
 }
 
-/// Registry mapping JSON step IDs to decoders, used by `Step.fromJSON`.
+/// Registry mapping JSON step IDs to decoders, used by `decodeStep`.
 public enum StepRegistry {
     public typealias StepDecoder = @Sendable (Schema, [String: AttributeValue]) throws -> any Step
 

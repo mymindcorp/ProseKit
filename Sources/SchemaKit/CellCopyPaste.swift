@@ -136,7 +136,7 @@ private func growTable(_ tr: Transaction, _ map: TableMap, _ table: Node, _ star
     var empty: Node?
     var emptyHead: Node?
     // Lazily build (and cache) a blank body/header cell; nil if the schema can't
-    // fill one, in which case the caller simply skips growing that dimension.
+    // fill one, in which case the loops below skip that row or cell.
     func cell() -> Node? { if empty == nil { empty = types["cell"]?.createAndFill() }; return empty }
     func headerCell() -> Node? { if emptyHead == nil { emptyHead = types["header_cell"]?.createAndFill() }; return emptyHead }
     if width > map.width {

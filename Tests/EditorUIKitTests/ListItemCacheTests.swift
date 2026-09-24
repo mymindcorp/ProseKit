@@ -15,17 +15,6 @@ final class ListItemCacheTests: XCTestCase {
     private let width: CGFloat = 362
     private let words = Array(repeating: "lorem ipsum dolor sit amet", count: 4).joined(separator: " ")
 
-    private func listDoc(_ s: Schema, kind: String, items texts: [String]) -> Node {
-        let itemType = kind == "taskList" ? "taskItem" : "listItem"
-        let items = texts.enumerated().map { i, t -> Node in
-            let p = try! s.node("paragraph", [:], content: Fragment.from([s.text(t)]))
-            let attrs: Attrs = kind == "taskList" ? ["checked": .bool(i % 3 == 0)] : [:]
-            return try! s.node(itemType, attrs, content: Fragment.from([p]))
-        }
-        return try! s.node("doc", [:], content: Fragment.from([
-            try! s.node(kind, [:], content: Fragment.from(items))]))
-    }
-
     /// Everything a reader could see or tap, flattened for comparison.
     private func fingerprint(_ l: DocumentLayout) -> String {
         var out: [String] = []
@@ -72,7 +61,8 @@ final class ListItemCacheTests: XCTestCase {
             // middle, then an item inserted at the top — which moves every item
             // down and, in an ordered list, renumbers every marker — then one
             // deleted, then an edit that changes an item's line count so
-            // everything below it shifts by a line.
+            // everything below it shifts by a line, and last an item cut to one
+            // word and (in a task list) checked.
             let edits: [(inout [Node]) -> Void] = [
                 { $0[5] = self.item(s, kind: kind, "Item 5 x: \(self.words)") },
                 { $0.insert(self.item(s, kind: kind, "Item new: \(self.words)"), at: 0) },

@@ -37,10 +37,6 @@ func registerMathEdgeCaseTests() {
 
     test("math: a formula inside a list item stays valid") {
         let editor = try mathEditor()
-        // Note: an *inline* formula inside a list item is currently lost, along
-        // with every other inline mark there — `<li>` content is parsed as
-        // blocks, so `<span>`/`<strong>`/`<em>` inside one are flattened. That
-        // is a parser bug of its own, not a math one; see the block forms here.
         for html in ["<ul><li><div data-type=\"block-math\" data-latex=\"x\">$$x$$</div></li></ul>",
                      "<ul><li><math><mi>x</mi></math></li></ul>"] {
             let doc = try HTMLParser.parse(html, schema: editor.schema)

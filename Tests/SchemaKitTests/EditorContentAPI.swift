@@ -5,8 +5,8 @@ import SchemaKit
 import TestHarness
 import DocumentTransform
 
-// The Editor content-IO conveniences (getHTML/getMarkdown/getText, setContent(html:))
-// and attributes(ofMark:).
+// The Editor content-IO conveniences (getHTML/getMarkdown/getText, setContent(html:),
+// insertContent), attributes(ofMark:), and onSelectionUpdate.
 
 func registerEditorContentAPITests() {
     for nodeName in ["inlineMath", "blockMath", "image", "horizontalRule", "mention", "wikiLink"] {

@@ -255,7 +255,7 @@ final class DocumentImageStoreTests: XCTestCase {
 
     // MARK: - Loads in flight
 
-    /// A load that runs until it is cancelled, and says so.
+    /// Records that a load ran until it was cancelled.
     private final class Ran: @unchecked Sendable {
         private let lock = NSLock()
         private var done = false
@@ -340,7 +340,7 @@ final class LoadedImageRelayoutTests: XCTestCase {
         let below = try XCTUnwrap(layout.blocks.last).frame
         let placeholderHeight = layout.height
 
-        // 200pt square, well past the 120pt placeholder box.
+        // 200pt square, well past the placeholder box's 120pt height.
         loaded = UIImage(data: png(200))
         XCTAssertTrue(layout.relayoutImages(matching: { $0.attrs["src"]?.stringValue == "asset://late" }))
 

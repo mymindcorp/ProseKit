@@ -19,7 +19,7 @@ public import EditorUIKit
 /// the color at draw time so light/dark switches don't need a re-layout.
 ///
 /// - Parameter cacheLimit: how many laid-out formulas to keep. The cache is
-///   cleared wholesale when it grows past this.
+///   cleared wholesale when it is full.
 public func makeMathRenderer(cacheLimit: Int = 512) -> MathRenderer {
     let cache = MathLayoutCache(limit: cacheLimit)
     return { latex, display, font, color in
