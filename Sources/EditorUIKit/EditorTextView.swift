@@ -266,7 +266,8 @@ open class EditorTextView: UIView, UIKeyInput {
     /// changes (not on selection moves), so caret moves / clicks / scrolling
     /// never invalidate the layout. O(1) cache key.
     private var docVersion: Int { editor.docRevision }
-    private let blockCache = TextBlockLayoutCache()
+    /// Internal so tests can ask it which path a keystroke's layout took.
+    let blockCache = TextBlockLayoutCache()
 
     /// Optional hook to syntax-highlight code blocks. Nil (the default) renders
     /// code as plain monospaced text. Setting it re-typesets code blocks.
