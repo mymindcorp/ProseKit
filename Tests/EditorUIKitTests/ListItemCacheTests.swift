@@ -72,7 +72,8 @@ final class ListItemCacheTests: XCTestCase {
             // middle, then an item inserted at the top — which moves every item
             // down and, in an ordered list, renumbers every marker — then one
             // deleted, then an edit that changes an item's line count so
-            // everything below it shifts by a line.
+            // everything below it shifts by a line, and last an item cut to one
+            // word and (in a task list) checked.
             let edits: [(inout [Node]) -> Void] = [
                 { $0[5] = self.item(s, kind: kind, "Item 5 x: \(self.words)") },
                 { $0.insert(self.item(s, kind: kind, "Item new: \(self.words)"), at: 0) },

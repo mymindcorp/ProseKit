@@ -521,9 +521,9 @@ public func goToNextCell(_ direction: TableDirection) -> Command {
 }
 
 /// Tab inside a table: move to the next cell, or — when already in the last
-/// cell — append a row and land in its first cell. Mirrors Apple Notes (and the
-/// prosemirror-tables demo), where tabbing off the end grows the table rather
-/// than escaping it.
+/// cell — append a row and land in its first cell. Mirrors Apple Notes (and
+/// Tiptap's Table), where tabbing off the end grows the table rather than
+/// escaping it.
 public let goToNextCellOrAddRow: Command = { state, dispatch, host in
     // A next cell exists: ordinary forward navigation.
     if goToNextCell(1)(state, dispatch, host) { return true }

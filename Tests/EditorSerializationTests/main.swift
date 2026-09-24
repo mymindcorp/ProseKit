@@ -2552,9 +2552,7 @@ test("Markdown round-trip: a link and image title") {
     let parsed = try MarkdownParser.parse("[x](/uri \"t\")", schema: schema)
     try expectEqual(parsed.child(0).child(0).marks.first?.attrs["href"], .string("/uri"))
     try expectEqual(parsed.child(0).child(0).marks.first?.attrs["title"], .string("t"))
-    // Single quotes too. (The `(title)` spelling is not supported: the
-    // destination scan ends at the first ")", so it would need balanced-paren
-    // scanning for the rarest of the three forms.)
+    // Single quotes too.
     for md in ["[x](/uri 't')"] {
         let d = try MarkdownParser.parse(md, schema: schema)
         try expectEqual(d.child(0).child(0).marks.first?.attrs["title"], .string("t"), "input: \(md)")
@@ -2720,8 +2718,8 @@ test("Markdown reads a definition's title across lines") {
 test("Markdown: a blank line inside a title unmakes the definition") {
     // Not a definition with the title dropped — not a definition at all, since
     // the destination is followed on its line by something that isn't a title.
-    // (This corrected an assertion of mine from #47; the spec's own example
-    // keeps all three lines as paragraphs.)
+    // (This corrects an assertion from #47; the spec's own example keeps all
+    // three lines as paragraphs.)
     let d = try MarkdownParser.parse("[foo]: /url 'title\n\nwith blank line'\n\n[foo]",
                                      schema: schema)
     try expectNil(firstLink(d))
@@ -3065,9 +3063,6 @@ test("Markdown expands a leading tab to a four-column stop") {
         let same = try MarkdownParser.parse("- foo\n\n\(indent)bar", schema: schema)
         try expectEqual(same, d, "indent: \(indent.debugDescription)")
     }
-    // The exact column an expanded tab lands on only becomes observable once
-    // indented code blocks are supported; until then it is exercised through
-    // the indentation decisions above.
 }
 
 test("Markdown leaves a tab inside the text alone") {

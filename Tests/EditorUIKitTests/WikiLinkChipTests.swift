@@ -81,7 +81,8 @@ final class WikiLinkChipTests: XCTestCase {
         let plain = try makeView()
         XCTAssertEqual(try labelUnderline(plain), NSUnderlineStyle.single.rawValue)
 
-        // No reserved box: the atom's run is exactly its label.
+        // Measured against a styled chip: only the chip's padding pushes the
+        // text after the atom along, so the default reserves nothing.
         let styled = try makeView { $0.wikiLink.background = .secondarySystemFill }
         XCTAssertGreaterThan(try XCTUnwrap(styled.ensureLayout().caretRect(at: posAfterAtom)).minX,
                              try XCTUnwrap(plain.ensureLayout().caretRect(at: posAfterAtom)).minX,

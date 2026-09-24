@@ -18,7 +18,8 @@ import TestHarness
 // produce `ReplaceAroundStep`s whose gap positions have to be mapped through
 // each other, and nothing was exercising that.
 //
-// Three properties, because the obvious one is not enough on its own:
+// Three properties for plain editing, because the obvious one is not enough on
+// its own (a fourth sweep covers undo and redo):
 //
 //   * every peer ends up holding the same document, and one the schema accepts;
 //   * a peer joining late and replaying the log from version 0 builds that same

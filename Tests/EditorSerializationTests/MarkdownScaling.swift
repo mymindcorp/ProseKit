@@ -73,14 +73,14 @@ private let smallFloor = 0.050
 /// Equal exposure alone wasn't enough. The small side is a sum of four parses,
 /// so its noise averages out, while the large side is one parse with nowhere to
 /// hide — a load spike landing on it went straight into the ratio. Under a
-/// parallel build that failed about half of every six runs, always a different
+/// parallel build that failed about three runs in six, always a different
 /// payload, always a ratio a hair over the bound (2.54, 2.81).
 ///
 /// The fastest sample is the least contended one, which is what makes a minimum
 /// the right summary here: work the machine stole is excluded rather than
-/// averaged in. It costs the algorithm nothing to hide behind — quadratic work
-/// is quadratic in its best round too, and these payloads ran 1.7s that way
-/// against the ~200ms they run now.
+/// averaged in. It gives the algorithm nothing to hide behind — quadratic work
+/// is quadratic in its best round too, and these payloads ran 1.7s or more that
+/// way against the ~200ms they run now.
 private func expectLinearGrowth(_ build: @Sendable (Int) -> String, _ n: Int,
                                 file: StaticString = #file, line: UInt = #line) throws {
     let smallInput = build(n), largeInput = build(n * 4)

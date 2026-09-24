@@ -5,9 +5,9 @@ import EditorHistory
 import SchemaKit
 import TestHarness
 
-/// Where `[[` is allowed to autocomplete. Prose — paragraphs, wherever they sit
-/// — offers targets; a heading is a title and code is literal text, so neither
-/// does. The trigger text is still typed either way; only the popup differs.
+// Where `[[` is allowed to autocomplete. Prose — paragraphs, wherever they sit
+// — offers targets; a heading is a title and code is literal text, so neither
+// does. The trigger text is still typed either way; only the popup differs.
 
 /// Put the cursor at the end of the document's last text position and type.
 private func typeAtEnd(_ editor: Editor, _ text: String) throws {

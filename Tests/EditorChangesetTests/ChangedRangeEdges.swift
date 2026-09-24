@@ -4,9 +4,9 @@ import DocumentTransform
 import EditorChangeset
 import TestHarness
 
-// `changedRange` with maps between the two sets: the ported cases only pass a
-// single map with the old change *after* nothing, so the arithmetic that
-// shifts an old change sitting past the touched region, the branch that
+// `changedRange` with maps between the two sets: the ported cases pass at most
+// one map and never have an old change past the region it touches, so the
+// arithmetic that shifts such a change, the branch that
 // reports an old change the new set no longer has, and the fold over more
 // than one map were never run. Plus the diff's give-up path when Myers' search
 // exhausts its budget without finishing — distinct from the early bail on a

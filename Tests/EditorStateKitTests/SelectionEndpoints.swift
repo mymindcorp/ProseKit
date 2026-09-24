@@ -5,9 +5,8 @@ import EditorStateKit
 import TestHarness
 
 // The parts of `Selection` the ported ProseMirror suite doesn't reach: placing
-// a selection at either end of a document, the JSON decoder's refusals, and the
-// base implementations of `content` and `getBookmark` that the concrete types
-// inherit rather than override.
+// a selection at either end of a document, the JSON decoder's refusals, the base
+// `content` that `TextSelection` inherits rather than overrides, and bookmarks.
 
 func registerSelectionEndpointTests() {
     // MARK: atStart / atEnd
@@ -41,8 +40,9 @@ func registerSelectionEndpointTests() {
     }
 
     test("Selection.atEnd: skips past a trailing block that takes no caret") {
-        // A rule can't hold a cursor, so the end of the document is the
-        // paragraph before it rather than the rule itself.
+        // A rule can't hold a cursor. It is selectable, so the end of the
+        // document is a node selection of the rule; a caret in the paragraph
+        // before it would do as well.
         let d = doc(p("text"), hr()).node
         let sel = Selection.atEnd(d)
         try expect(sel is NodeSelection || sel is TextSelection, "got \(type(of: sel))")
@@ -98,7 +98,7 @@ func registerSelectionEndpointTests() {
         try expect(node is NodeSelection, "got \(type(of: node))")
     }
 
-    // MARK: The base implementations the types inherit
+    // MARK: Content and bookmarks
 
     test("Selection.content: a text selection slices what it covers") {
         // TextSelection doesn't override this; it uses the base.

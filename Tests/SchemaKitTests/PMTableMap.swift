@@ -3,7 +3,7 @@ import DocumentModel
 import SchemaKit
 import TestHarness
 
-// Ported from prosemirror-tables/test/tablespanMap.test.ts.
+// Ported from prosemirror-tables/test/tablemap.test.ts.
 
 private func mapStr(_ t: TaggedNode) -> String { TableMap.get(t.node).map.map(String.init).joined(separator: ", ") }
 private let spanMap = TableMap.get(table(tr(cell(2, 3), c11(), cell(1, 2)), tr(c11()), tr(cell(2, 1))).node)

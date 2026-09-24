@@ -181,6 +181,23 @@ func registerPMHistoryTests() {
         s = command(s, undo)
         try expectEqual(s.doc, doc(p()).node)
     }
+    test("PM history: drops a step whose remap is refused rather than applying it where it was") {
+        // Everything "hello" covered is deleted by someone else, and new text
+        // is put in its place. The undo's inverse maps to nothing, so it is
+        // dropped. Applying it at its recorded positions instead deletes 3..8
+        // of the new text — in collab, a collaborator's words.
+        var s = mkState()
+        s = typeText(s, "hi")
+        s = s.apply(closeHistory(s.tr))
+        s = typeText(s, "hello")
+        try expectEqual(s.doc, doc(p("hihello")).node)
+        s = s.apply(try! s.tr.insertText("!!", 8).setMeta("addToHistory", false))
+        s = s.apply(try! s.tr.delete(1, 10).setMeta("addToHistory", false))
+        s = s.apply(try! s.tr.insertText("0123456789", 1).setMeta("addToHistory", false))
+        try expectEqual(s.doc, doc(p("0123456789")).node)
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(p("0123456789")).node)
+    }
     test("PM history: can go back and forth through history multiple times") {
         var s = mkState()
         s = typeText(s, "one")

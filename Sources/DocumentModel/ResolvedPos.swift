@@ -1,7 +1,7 @@
 import Foundation
 
-/// You can resolve a position to get more information about it. Objects of this
-/// class represent such a resolved position, providing various pieces of
+/// You can resolve a position to get more information about it. Values of this
+/// type represent such a resolved position, providing various pieces of
 /// context information, and some helper methods.
 public struct ResolvedPos: Sendable {
     /// The position that was resolved.

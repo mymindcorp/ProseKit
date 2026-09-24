@@ -666,8 +666,7 @@ public enum MarkdownSerializer {
         func closeDown(to keep: Int) {
             guard active.count > keep else { return }
             // A closing delimiter run preceded by whitespace closes nothing —
-            // the whitespace has to end up on the outside of it. Only spaces
-            // and tabs: a newline here is the one a hard break just wrote.
+            // the whitespace has to end up on the outside of it.
             if (keep..<active.count).contains(where: { expelsWhitespace(active[$0]) && !activeHTML[$0] }) {
                 var held = ""
                 while true {
@@ -756,8 +755,8 @@ public enum MarkdownSerializer {
         // A `*`/`**` run only opens emphasis when the character after it isn't
         // whitespace and — where that character is punctuation — only when the
         // one before the run is whitespace or punctuation. Closing has the rule
-        // mirrored. So `a**~~x~~**` is eleven literal characters rather than a
-        // bolded strike, and `**x.**a` isn't bold either. Where the delimiters
+        // mirrored. So `a**~~x~~**` keeps its asterisks as text rather than
+        // bolding the strike, and `**x.**a` isn't bold either. Where the delimiters
         // would land like that, the mark is written as a tag instead, which has
         // no such rule and which the reader takes back as the same mark.
         //
@@ -1081,7 +1080,8 @@ public enum MarkdownSerializer {
         }
     }
 
-    /// A backslash has to be escaped too, or it would escape whatever we add.
+    /// Escaped wherever they appear. A backslash has to be among them, or it
+    /// would escape whatever we add.
     private static func alwaysEscaped(_ b: UInt8) -> Bool {
         switch b {
         case UInt8(ascii: "\\"), UInt8(ascii: "`"), UInt8(ascii: "*"), UInt8(ascii: "_"),
@@ -1178,8 +1178,8 @@ public enum MarkdownSerializer {
         return out
     }
 
-    /// A destination that contains a space, a parenthesis or a backslash can't
-    /// be written bare — CommonMark's answer is to wrap it in angle brackets.
+    /// A destination that contains a space or a parenthesis can't be written
+    /// bare — CommonMark's answer is to wrap it in angle brackets.
     static func destination(_ url: String) -> String {
         // The reader takes backslash escapes off a destination, so a backslash
         // that belongs to the URL has to be written as two.
@@ -1188,7 +1188,6 @@ public enum MarkdownSerializer {
             ? "<\(escaped)>" : escaped
     }
 
-    /// A title, with the escapes the reader will resolve written out.
     /// An image's alt text sits between brackets, so its own brackets are
     /// escaped — otherwise the reader would close the label at the first one.
     static func altText(_ alt: String) -> String {
@@ -1200,6 +1199,7 @@ public enum MarkdownSerializer {
         return out
     }
 
+    /// A title, with the escapes the reader will resolve written out.
     static func titleText(_ title: String) -> String {
         title.replacingOccurrences(of: "\\", with: "\\\\")
     }
@@ -1710,8 +1710,8 @@ public enum MarkdownParser {
     }
 
     /// Build `details(detailsSummary, detailsContent)` from the lines inside a
-    /// `<details>` block. Without those nodes in the schema (or without a
-    /// `<summary>`), it degrades to a paragraph plus the body blocks.
+    /// `<details>` block. Without those nodes in the schema, it degrades to a
+    /// paragraph of the summary plus the body blocks.
     private static func makeDetails(_ lines: [String], open: Bool, schema: Schema, depth: Int) throws -> [Node]? {
         var summaryText = ""
         var body: [String] = []
@@ -1813,11 +1813,6 @@ public enum MarkdownParser {
         return String(repeating: " ", count: column - startColumn) + line[i...]
     }
 
-    /// Whether a line opens a fenced code block.
-    ///
-    /// A backtick fence's info string may not itself contain a backtick — which
-    /// is what keeps a line like ``` `` ``` ``` (an inline code span holding a
-    /// backtick, written with a longer fence) from being read as a code block.
     /// An opening code fence: which character, how long, how far indented, and
     /// the info string after it.
     struct CodeFence {
@@ -1828,7 +1823,10 @@ public enum MarkdownParser {
     }
 
     /// The fence a line opens, if it opens one. Indented four columns it would
-    /// be code, and a backtick fence's info string may not contain a backtick.
+    /// be code, and a backtick fence's info string may not contain a backtick —
+    /// which is what keeps a line like ``` `` ``` ``` (an inline code span
+    /// holding a backtick, written with a longer fence) from being read as a
+    /// code block.
     static func openingFence(_ line: String) -> CodeFence? {
         let indent = indentWidth(line)
         guard indent <= 3 else { return nil }
@@ -2030,7 +2028,6 @@ public enum MarkdownParser {
         return (resolveEscapes(destination), resolveEscapes(title), newlines + titleNewlines)
     }
 
-    /// `[label]:` at the head of a line, returning the label and what follows.
     /// How many extra lines a definition's label needs, when it runs across
     /// them: `[\nfoo\n]: /url` is a label of "foo". Nil when the label never
     /// closes, which means this isn't a definition.
@@ -2047,6 +2044,7 @@ public enum MarkdownParser {
         return parseDefinitionHead(joined) == nil ? nil : extra
     }
 
+    /// `[label]:` at the head of a line, returning the label and what follows.
     private static func parseDefinitionHead(_ line: String) -> (label: String, rest: String)? {
         let t = line.trimmingCharacters(in: markdownSpaces)
         guard t.hasPrefix("[") else { return nil }
@@ -2664,8 +2662,9 @@ public enum MarkdownParser {
         return Array(bytes[at..<(at + want.count)]) == want
     }
 
-    /// The index of the `</name>` closing `openAt`, counting nested opens of the
-    /// same name so `<b>a<b>c</b>d</b>` closes at the outer one.
+    /// The `</name>` tag closing an element whose content starts at `from`,
+    /// counting nested opens of the same name so `<b>a<b>c</b>d</b>` closes at
+    /// the outer one.
     private static func closingTag(_ bytes: [UInt8], _ from: Int, _ name: String) -> InlineTag? {
         var depth = 1
         var i = from
@@ -2750,10 +2749,6 @@ public enum MarkdownParser {
         var i = 0
         var buffer: [UInt8] = []
         func flush(_ marks: [Mark] = []) {
-            // Character references are text, not markup: "&amp;" is an ampersand.
-            // The HTML parser already knows every named, decimal and hex form, so
-            // reuse it rather than growing a second table. Code spans flush their
-            // own literal text and never come through here.
             if !buffer.isEmpty {
                 pieces.append(.node(schema.text(String(decoding: buffer, as: UTF8.self), marks)))
                 buffer = []
@@ -2794,6 +2789,8 @@ public enum MarkdownParser {
             // A character reference is text: "&amp;" is an ampersand. Decoded
             // here rather than over the finished buffer so that an escaped "\&"
             // — already resolved to a literal "&" — isn't decoded a second time.
+            // The HTML parser already knows every named, decimal and hex form, so
+            // it is reused rather than growing a second table.
             if c == UInt8(ascii: "&"), let semi = findByte(chars, i + 1, UInt8(ascii: ";")), semi - i <= 32 {
                 let reference = slice(chars, i..<(semi + 1))
                 let decoded = HTMLParser.decodeEntities(reference, cappingNumericDigits: true)
@@ -3139,6 +3136,7 @@ public enum MarkdownParser {
     /// Emphasis leaves runs of text that carry the same marks side by side —
     /// `Fragment.from` merges those, but the callers that build textblocks want
     /// them merged before schema fitting sees them.
+    ///
     /// A run is accumulated in one buffer and made into a node once, rather than
     /// re-made on every merge. Rebuilding it each time copies the whole run to
     /// add one piece, which is quadratic in the run's length — and a line like
@@ -3209,8 +3207,8 @@ public enum MarkdownParser {
             guard let b = c.asciiValue else { return false }
             return (b >= 48 && b <= 57) || ((b | 0x20) >= 97 && (b | 0x20) <= 122)
         }
-        // The local part, before the last "@" — an address may contain only one,
-        // but the grammar allows "@" in neither side, so the first is the split.
+        // The local part, before the "@". The grammar allows "@" in neither
+        // side, so the first one is the split.
         guard let at = s.firstIndex(of: "@"), at != s.startIndex else { return nil }
         let localPunctuation = Set(".!#$%&'*+/=?^_`{|}~-")
         guard s[s.startIndex..<at].allSatisfy({ isAlphanumeric($0) || localPunctuation.contains($0) })
@@ -3505,6 +3503,7 @@ public enum MarkdownParser {
     /// needs an inner pair to be matched before the outer one can close past it.
     /// Working from the closers, and dropping any delimiters left stranded
     /// between a matched pair, is what gets both right.
+    ///
     /// The delimiters still available to match are held as a linked list rather
     /// than an array, because the algorithm's whole shape is removal from the
     /// middle: every pair drops both its ends and everything stranded between
@@ -3646,9 +3645,6 @@ public enum MarkdownParser {
         return false
     }
 
-    /// The `)` that closes a link, skipping the parts that may contain one:
-    /// an angle-bracketed destination, a quoted title, and balanced parentheses
-    /// (which is also the `(title)` spelling).
     /// How deep parentheses may nest inside a link destination.
     ///
     /// CommonMark lets a destination hold balanced parentheses but says nothing
@@ -3659,6 +3655,9 @@ public enum MarkdownParser {
     /// stays inside one pair.
     public static let maxLinkParenDepth = 32
 
+    /// The `)` that closes a link, skipping the parts that may contain one:
+    /// an angle-bracketed destination, a quoted title, and balanced parentheses
+    /// (which is also the `(title)` spelling).
     private static func findLinkClose(_ bytes: [UInt8], _ from: Int, _ last: LastByte) -> Int? {
         // With no `)` left there is nothing to find, so don't go looking.
         guard last.has(UInt8(ascii: ")"), atOrAfter: from) else { return nil }
@@ -3688,8 +3687,6 @@ public enum MarkdownParser {
         return nil
     }
 
-    /// Split a destination from an optional title. Shared by inline links and by
-    /// reference definitions, which spell this part the same way.
     /// Split the inside of a link's parentheses into destination and title.
     /// Nil when it isn't a well-formed pair — an unclosed angle bracket, a
     /// destination broken across lines, or anything left over after the title —
@@ -3721,7 +3718,7 @@ public enum MarkdownParser {
         }
 
         // Whitespace has to separate the destination from a title — without it,
-        // `[foo]: <bar>(baz)` would read as one.
+        // `[foo](<bar>(baz))` would read as one.
         let afterDestination = i
         skipSpace()
         let hadSpace = i > afterDestination
@@ -3741,11 +3738,6 @@ public enum MarkdownParser {
         return (resolveEscapes(destination), resolveEscapes(title))
     }
 
-    /// The closing `$` of inline math, following Pandoc's `tex_math_dollars`:
-    /// the next unescaped `$` with a non-space immediately to its left and no
-    /// digit immediately to its right. Those two conditions are what stop
-    /// "costs $5 and $6" from pairing its dollars into a formula. Returns nil at
-    /// end of line — inline math never spans lines.
     /// Whether a run of `*` or `_` can open and/or close emphasis, by
     /// CommonMark's delimiter-run rules.
     ///
@@ -3836,14 +3828,6 @@ public enum MarkdownParser {
         return nil
     }
 
-    /// The next `byte` that isn't backslash-escaped. A closing delimiter has to
-    /// skip `\*`, or emphasis ends at an asterisk the author escaped precisely
-    /// so that it would be text. (`findSeq` needs no equivalent: an escaped
-    /// delimiter can't form a run of two.)
-    /// The `]` closing the label that opens at `start`, counting nested pairs so
-    /// that `[link [foo [bar]]]` closes at the last bracket rather than the
-    /// first — and so an image inside a link, `[![alt](img)](url)`, holds
-    /// together.
     /// Every bracket's match, worked out in one pass with a stack.
     ///
     /// Walking forward from a bracket counting depth answers one question in
@@ -3881,6 +3865,9 @@ public enum MarkdownParser {
         }
 
         /// The `]` closing the bracket that opens at `opener`, if it has one.
+        /// Nested pairs are matched, so `[link [foo [bar]]]` closes at the last
+        /// bracket rather than the first — and an image inside a link,
+        /// `[![alt](img)](url)`, holds together.
         func close(openingAt opener: Int) -> Int? {
             guard opener >= 0, opener < closes.count, closes[opener] >= 0 else { return nil }
             return closes[opener]
@@ -3908,6 +3895,10 @@ public enum MarkdownParser {
         return false
     }
 
+    /// The next `byte` that isn't backslash-escaped. A closing delimiter has to
+    /// skip `\*`, or emphasis ends at an asterisk the author escaped precisely
+    /// so that it would be text. (`findSeq` needs no equivalent: an escaped
+    /// delimiter can't form a run of two.)
     private static func findUnescaped(_ bytes: [UInt8], _ from: Int, _ byte: UInt8) -> Int? {
         var i = from
         while i < bytes.count {
@@ -3918,13 +3909,14 @@ public enum MarkdownParser {
         return nil
     }
 
-    /// Resolve backslash escapes inside a mark's text.
+    /// Resolve backslash escapes in a destination, title or info string (see
+    /// `resolveEscapes`).
     ///
-    /// The inline scanner handles escapes as it walks, but a mark's content is
-    /// lifted out as a raw substring, so it never passes through that path — a
-    /// `\*` written inside `**…**` would survive as a literal backslash. Code
-    /// spans are excluded by their callers: they're literal by definition, and
-    /// CommonMark doesn't resolve escapes inside them either.
+    /// The inline scanner handles escapes as it walks, but these are lifted out
+    /// as raw substrings, so they never pass through that path — a `\*` in a
+    /// link's destination would survive as a literal backslash. Code spans
+    /// never come here: they're literal by definition, and CommonMark doesn't
+    /// resolve escapes inside them either.
     private static func unescapeInline(_ s: String) -> String {
         guard s.contains("\\") else { return s }
         let asciiPunct = Set("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
@@ -3944,6 +3936,11 @@ public enum MarkdownParser {
         return out
     }
 
+    /// The closing `$` of inline math, following Pandoc's `tex_math_dollars`:
+    /// the next unescaped `$` with a non-space immediately to its left and no
+    /// digit immediately to its right. Those two conditions are what stop
+    /// "costs $5 and $6" from pairing its dollars into a formula. Returns nil at
+    /// end of line — inline math never spans lines.
     private static func findMathClose(_ bytes: [UInt8], _ from: Int) -> Int? {
         var i = from
         while i < bytes.count {
@@ -4031,11 +4028,12 @@ public enum MarkdownParser {
 
     /// The next `ab` pair at or after `from`.
     ///
-    /// The inline delimiters that come in twos — `]]`, `~~`, `==` — are looked
-    /// for at every position that could open one. Taking the two bytes rather
-    /// than a sequence keeps the caller from building an array per position, and
-    /// the `last` check answers the case that costs the most: a line that opens
-    /// the delimiter over and over and never closes it.
+    /// A wiki link's closing `]]` is looked for at every position that could
+    /// open one. Taking the two bytes rather than a sequence keeps the caller
+    /// from building an array per position, and the `last` check answers the
+    /// case that costs the most: a line that opens the delimiter over and over
+    /// and never closes it.
+    ///
     /// `exhausted` records, per pair, a position from which the search already
     /// came up empty. A forward search that finds nothing from one position
     /// finds nothing from any later one, so that first failure is the only one

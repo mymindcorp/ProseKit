@@ -9,7 +9,7 @@ import CoreGraphics
 // provides. That keeps the renderer working with whatever serif face is
 // available rather than requiring a bundled Computer Modern.
 
-/// The faces a formula is drawn with. Resolved once per (family, size) and
+/// The faces a formula is drawn with. Resolved once per (size, body font) and
 /// cached, since building a `CTFont` is not free.
 struct MathFontSet {
     let roman: CTFont
@@ -24,9 +24,10 @@ struct MathFontSet {
 
     /// The face to draw a style in. Italic, bold, and the decorative alphabets
     /// are normally expressed by *code point* rather than by face
-    /// (`mathAlphabetCharacter`), so they resolve to the upright math face; the
+    /// (`mathAlphabetCharacter`) and drawn in the upright math face; the
     /// slanted and bold faces here are the fallback for a font without those
-    /// Unicode blocks.
+    /// Unicode blocks. The decorative alphabets have no face of their own, so
+    /// they resolve to the upright one.
     func font(for style: MathFontStyle) -> CTFont {
         switch style {
         case .italic: return italic
@@ -46,7 +47,7 @@ struct MathFontSet {
 }
 
 /// Serif families tried in order for the math faces. The first one installed
-/// wins; the last entry is always available.
+/// wins; when none is, the faces fall back to Times.
 private let mathFamilyCandidates = [
     "STIX Two Math", "STIXTwoText", "STIX Two Text", "STIXGeneral",
     "Times New Roman", "Times", "Georgia", "Charter",
@@ -95,8 +96,8 @@ private func variant(of font: CTFont, size: CGFloat, traits: CTFontSymbolicTrait
 // MARK: - Unicode math alphabets
 
 /// Remap a character into the Unicode math alphabet for `style`, when there is
-/// one. Returns nil for styles a face expresses directly (sans-serif,
-/// monospace, `\text`).
+/// one. Returns nil for the styles that have no math alphabet (roman,
+/// `\text`).
 ///
 /// Going through Unicode rather than a font's italic/bold faces is what lets a
 /// dedicated math font work: STIX Two Math is a single upright face whose

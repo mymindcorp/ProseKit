@@ -208,9 +208,9 @@ open class EditorTextView: UIView, UIKeyInput {
         // Tapping the empty space under a document that doesn't end in a
         // paragraph gives it one — see `trailingGapTap`.
         let trailingTap = UITapGestureRecognizer(target: self, action: #selector(handleTrailingTap(_:)))
-        // Long-pressing a rendered image hands it to the host. Only installed in
-        // the sense that it begins at all when `onActivateImage` is set — see
-        // that property for how it and the image drag divide the gesture.
+        // Long-pressing a rendered image hands it to the host. Always installed,
+        // but it only begins when `onActivateImage` is set — see that property
+        // for how it and the image drag divide the gesture.
         let imageLongPress = UILongPressGestureRecognizer(target: self, action: #selector(handleImageLongPress(_:)))
         // Tapping a block-level atom (a block image, a horizontal rule) selects
         // the node itself — a caret beside it is not what the tap meant.
@@ -367,8 +367,8 @@ open class EditorTextView: UIView, UIKeyInput {
     public var onActivateMath: MathActivationHandler?
 
     /// Called when the reader long-presses a rendered image — the image
-    /// counterpart of `onActivateMath`. Unset (the default), a long press
-    /// behaves exactly as it does today.
+    /// counterpart of `onActivateMath`. Unset (the default), a long press on an
+    /// image lifts it for dragging, as it would with no hook at all.
     ///
     /// Setting it takes the long press on an image away from the drag: the
     /// always-installed `UIDragInteraction` checks `imageNode(at:)` first and
@@ -498,8 +498,8 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     /// Supplies raw image bytes for an image node (e.g. from the host's asset
-    /// store). When it returns nil the renderer loads the node's `src` URL, and
-    /// otherwise draws a placeholder. See `ImageDataProvider`.
+    /// store). When it returns nil the renderer loads the node's `src` URL,
+    /// drawing a placeholder until it arrives. See `ImageDataProvider`.
     public var imageData: ImageDataProvider?
 
     /// Handles an image dropped/pasted into the editor — persist the bytes and
@@ -603,15 +603,14 @@ open class EditorTextView: UIView, UIKeyInput {
         if window == nil { releaseOffscreenImages() }
     }
 
-    // A flat text projection with exactly one character per document position
-    // (real characters for text, a placeholder per node-boundary/atom token).
-    // This keeps `text(in:).count == offset(from:to:)`, the invariant UIKit's
-    // text input relies on — without it, character-index arithmetic across block
-    // boundaries lands inserts on the wrong line.
     /// The flat projection of document positions `[from, to)` — exactly one
     /// character per position (text verbatim, `\u{fffc}` for leaf atoms, `\n` for
     /// node-boundary tokens). Computed over only the requested span (via
     /// `nodesBetween`), so `text(in:)` is O(range), not O(document).
+    ///
+    /// One character per position keeps `text(in:).count == offset(from:to:)`,
+    /// the invariant UIKit's text input relies on — without it, character-index
+    /// arithmetic across block boundaries lands inserts on the wrong line.
     func projectedText(from: Int, to: Int) -> String {
         guard to > from else { return "" }
         // Scrolling doesn't change the text, so the questions UIKit repeats
@@ -750,6 +749,7 @@ open class EditorTextView: UIView, UIKeyInput {
     /// COLLAPSED caret too (an empty selection): otherwise UITextInteraction
     /// leaves its native caret stranded on scroll, appearing as a second,
     /// motionless cursor beside the one we draw.
+    ///
     /// UIKit answers this by rebuilding its whole RTI document state — asking
     /// us back for the selected text and for character rects — and on a
     /// document-sized selection that was ~59% of the time spent scrolling.
@@ -1239,7 +1239,8 @@ open class EditorTextView: UIView, UIKeyInput {
         guard hi - lo <= 10_000 else { return }
 
         // A dispatch can include appended transactions. Its observers receive
-        // each one in order, while editor.doc already holds the final state.
+        // each one in order, while editor.doc already holds the final state —
+        // so check `tr.doc`, the document these positions belong to.
         let (checked, fresh) = SpellCheck.recheck(tr.doc, around: lo...hi)
         spellCache = spellCache.filter { deco in
             !checked.contains { deco.to >= $0.lowerBound && deco.from <= $0.upperBound }
@@ -1600,12 +1601,8 @@ open class EditorTextView: UIView, UIKeyInput {
         return resigned
     }
 
-    // MARK: - Gestures
-
     // MARK: - Suggestion popup
 
-    /// Recompute which suggestion source is active and show/position or hide the
-    /// popup. Called on every change and on scroll.
     /// Re-anchor the open popup to where the caret now sits on screen.
     ///
     /// This is the scroll path, and it deliberately does NOT re-pull the
@@ -1629,6 +1626,9 @@ open class EditorTextView: UIView, UIKeyInput {
             .offsetBy(dx: 0, dy: -contentOffsetY)
     }
 
+    /// Recompute which suggestion source is active and show/position or hide the
+    /// popup. Called on every state change and when an async source reports
+    /// new results; a scroll only re-anchors (`repositionSuggestionPopup`).
     private func updateSuggestionPopup() {
         for source in editor.suggestionSources {
             guard let context = source.context(editor) else { continue }
@@ -1781,11 +1781,11 @@ open class EditorTextView: UIView, UIKeyInput {
                              viewportHeight: bounds.height, attached: window != nil)
     }
 
-    /// Flip a task item's `checked` attribute (the checkbox view's toggle
-    /// action). The new state flows back to the view via `syncCheckboxViews`.
     /// Test hook: drive a checkbox toggle by document position.
     func toggleCheckboxForTesting(at pos: Int) { toggleCheckbox(at: pos) }
 
+    /// Flip a task item's `checked` attribute (the checkbox view's toggle
+    /// action). The new state flows back to the view via `syncCheckboxViews`.
     private func toggleCheckbox(at pos: Int) {
         guard isEditable else { return }
         // Deliberately no `becomeFirstResponder()`: ticking a task off is a
@@ -2314,9 +2314,11 @@ open class EditorTextView: UIView, UIKeyInput {
         }
     }
 
-    /// Our checkbox tap and column-resize pan begin only over their target, so
-    /// ordinary taps/selection drags fall through to UITextInteraction. (Must be
-    /// in the class body — it overrides `UIView`'s method.)
+    /// Our own recognizers (column resize, block drag, image resize, and the
+    /// disclosure, math, image, link, trailing-gap and atom taps) begin only
+    /// over their target, so ordinary taps/selection drags fall through to
+    /// UITextInteraction. (Must be in the class body — it overrides `UIView`'s
+    /// method.)
     open override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
         let point = docPoint(gesture.location(in: self))
         if gesture === columnResizeRecognizer { return columnBorderHit(at: point) != nil }
@@ -2368,7 +2370,6 @@ open class EditorTextView: UIView, UIKeyInput {
         return tablePos + 1 + map.map[column]
     }
 
-    /// The internal column border (and its table) within ~6pt of `point`, if any.
     // MARK: - Pointer (trackpad / mouse) cursor targets
 
     /// What the pointer is over, for cursor styling. Rects are in viewport
@@ -2401,8 +2402,8 @@ open class EditorTextView: UIView, UIKeyInput {
             return .columnBorder(rect)
         }
         if let pos = l.position(at: point), let range = linkHoverRange(at: pos) {
-            // Union the link's selection rects (it may wrap lines) into one
-            // hover region; clamp to the line under the pointer if it spans.
+            // A link can wrap across lines: the hover region is its rect on the
+            // line under the pointer, falling back to its first line's.
             let rects = l.selectionRects(from: range.from, to: range.to)
                 .filter { $0.minY - contentOffsetY <= viewPoint.y && viewPoint.y <= $0.maxY - contentOffsetY }
             if let rect = (rects.first ?? l.selectionRects(from: range.from, to: range.to).first) {
@@ -2476,6 +2477,8 @@ open class EditorTextView: UIView, UIKeyInput {
         return nil
     }
 
+    /// The internal column border (and its table) within the resizing plugin's
+    /// `handleWidth` (6pt by default) of `point`, if any.
     func columnBorderHit(at point: CGPoint) -> (table: DocumentLayout.TableInfo, leftColumn: Int)? {
         guard isEditable else { return nil } // read-only: no column resizing
         // No resizing plugin, no resizing: that is how a table configured
@@ -3042,9 +3045,9 @@ open class EditorTextView: UIView, UIKeyInput {
 
     // MARK: - Key handling
 
-    // Arrow keys (and Tab) are claimed via key commands with priority over
-    // system behavior, because an enclosing UIScrollView's keyboard-scrolling
-    // otherwise swallows Up/Down before `pressesBegan` ever sees them.
+    // Home/End and Tab are claimed via key commands with priority over system
+    // behavior, because an enclosing UIScrollView's keyboard scrolling
+    // otherwise swallows them before `pressesBegan` ever sees them.
     open override var keyCommands: [UIKeyCommand]? {
         // All arrows are handled via pressesBegan (not key commands) so holding
         // one auto-repeats — key commands fire once, presses repeat. We keep
@@ -3284,9 +3287,6 @@ open class EditorTextView: UIView, UIKeyInput {
         return parts.joined(separator: "-")
     }
 
-    /// Delete in a direction by a granularity. A plain character delete first
-    /// lets the keymap handle block-edge cases (join/lift/node deletion); only
-    /// when that doesn't apply do we remove the adjacent character/word range.
     /// Delete the current (non-empty) selection — clearing cells for a cell
     /// selection, otherwise removing the selected content.
     private func deleteCurrentSelection() {
@@ -3297,6 +3297,9 @@ open class EditorTextView: UIView, UIKeyInput {
         }
     }
 
+    /// Delete in a direction by a granularity. A plain character delete first
+    /// lets the keymap handle block-edge cases (join/lift/node deletion); only
+    /// when that doesn't apply do we remove the adjacent character/word range.
     private func deleteInDirection(_ direction: TextDirection, by granularity: TextGranularity) {
         let sel = editor.state.selection
         if !sel.empty {
@@ -3436,7 +3439,7 @@ open class EditorTextView: UIView, UIKeyInput {
 extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
     public func dragInteraction(_ interaction: UIDragInteraction, itemsForBeginning session: any UIDragSession) -> [UIDragItem] {
         let start = docPoint(session.location(in: self))
-        // A drag starting on an image's resize handle resizes it, not reorders it.
+        // A drag starting on an image's resize handle resizes it rather than dragging it.
         if imageResizeHit(at: session.location(in: self)) != nil { return [] }
         // Grabbing an existing image starts a drag of that node (move within the
         // document; its bytes are offered to other apps).
@@ -3626,7 +3629,6 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
         if tr.docChanged { editor.dispatch(tr.scrollIntoView()) }
     }
 
-    /// Insert a dropped image as an image node (a `data:` URL it can load/render).
     /// Insert a dropped/pasted image at `dropPos`. The host's `onImageDrop` (if
     /// set) chooses the `image` node's attributes — typically persisting the
     /// bytes and returning a `src`; otherwise the bytes are embedded as a `data:`
@@ -3684,7 +3686,9 @@ extension EditorTextView: UITextInteractionDelegate {
 }
 
 extension EditorTextView: UIGestureRecognizerDelegate {
-    /// Coexist with UITextInteraction's own recognizers.
+    /// Coexist with UITextInteraction's own recognizers. Pointer selection is
+    /// the exception: it runs alongside only the link tap, so a click can both
+    /// place the caret and activate the link under it.
     public func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         if gesture === mouseSelectionRecognizer || other === mouseSelectionRecognizer {
             return gesture === linkTapRecognizer || other === linkTapRecognizer

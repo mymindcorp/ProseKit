@@ -152,9 +152,8 @@ private func downsample(_ source: CGImageSource, maxPointWidth: CGFloat, display
     guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
     // Keep the original's point size: layout measures the image's box from it,
     // so the bitmap may shrink but the picture may not. Taken from the longer
-    // side, which carries the most pixels and so the least rounding — the
-    // thumbnail's dimensions are whole numbers, and the shorter side's are the
-    // ones a half-pixel of that is worth more of.
+    // side: the thumbnail's dimensions are rounded to whole pixels, and half a
+    // pixel of rounding is the smallest fraction of the side with the most.
     let pointScale = natural.width >= natural.height
         ? CGFloat(cgImage.width) / natural.width
         : CGFloat(cgImage.height) / natural.height

@@ -278,17 +278,16 @@ test("appendTransaction lets a plugin react") {
             return nil
         })
     let state = freshState(B.doc(B.p("y")), plugins: [appended])
-    let tr = state.tr // no-op user tr, but mark docChanged via insert
-    try tr.insertText("", 1, 1) // still no change; force a real change:
-    try tr.insertText("", 1) // noop
-    // Make a real change:
+    // None of these three changes the document, and none is applied.
+    let tr = state.tr
+    try tr.insertText("", 1, 1)
+    try tr.insertText("", 1)
     let tr2 = state.tr
-    try tr2.delete(1, 1) // noop, won't trigger
-    // Use a genuine edit:
+    try tr2.delete(1, 1)
     let tr3 = state.tr
     try tr3.insertText("", 1)
     _ = (tr, tr2, tr3)
-    // Genuine edit that triggers append:
+    // A genuine edit, which triggers the append:
     let edit = state.tr
     try edit.insertText("!", 2)
     let result = state.applyTransaction(edit)
@@ -316,7 +315,7 @@ test("word move jumps over a word") {
     let doc = B.doc(B.p("foo bar baz"))
     // from start (pos 1), forward lands after "foo" (pos 4)
     try expectEqual(TextNavigation.position(in: doc, from: 1, moving: .forward, by: .word), 4)
-    // from pos 8 (start of "baz"), backward lands at start of "bar" (pos 5)
+    // from pos 8 (end of "bar"), backward lands at the start of "bar" (pos 5)
     try expectEqual(TextNavigation.position(in: doc, from: 8, moving: .backward, by: .word), 5)
 }
 

@@ -7,7 +7,8 @@ import TestDocGen
 import TestHarness
 
 // A shared driver for the fuzz suites that need an editor being *used* rather
-// than a document being inspected: history, steps, collaboration.
+// than a document being inspected: history, steps, collaboration, changesets,
+// track changes, tables and more.
 //
 // `SelectionFuzz` sweeps every position of a static document. These sweeps need
 // the opposite — a live editor taking a long, varied sequence of edits — and
@@ -357,11 +358,9 @@ func fuzzSlice(_ schema: Schema, _ rng: inout SelRNG, cutFrom doc: Node? = nil) 
 /// An editor plus the transactions it dispatched, so a property can look at the
 /// steps a command produced rather than only at the document it left behind.
 ///
-/// Only the *root* transaction of each dispatch is recorded: `Editor.dispatch`
-/// reports that one, and the transactions plugins append (table fixing, unique
-/// IDs) stay inside `EditorState.applyTransaction`. Their steps are ordinary
-/// replaces and attribute changes that the recorded ones cover too, so the loss
-/// is coverage of who built the step, not of what kinds of step get checked.
+/// Every transaction a dispatch applied is recorded, including the ones plugins
+/// append (table fixing, unique IDs): `Editor.dispatch` reports each of them
+/// through `onTransaction`.
 final class FuzzRecorder {
     let editor: Editor
     private(set) var transactions: [Transaction] = []

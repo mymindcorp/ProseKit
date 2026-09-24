@@ -4,15 +4,16 @@ import EditorStateKit
 import SchemaKit
 import TestHarness
 
-/// The `[[` and `/` triggers locate themselves by searching the text before the
-/// cursor, then turn a character offset into that string into a document
-/// position. That arithmetic only holds while every inline leaf counts as one
-/// character — `textBetween` otherwise expands a leaf to its `leafText`, and a
-/// wiki-link renders as its whole label.
-///
-/// A paragraph that already held one link put `from` past the cursor, and
-/// resolving it trapped. `MentionExtension` and the input rules always passed
-/// the one-character override; these two didn't.
+// The `[[` and `/` triggers locate themselves by searching the text before the
+// cursor, then turn a character offset into that string into a document
+// position. That arithmetic only holds while every inline leaf counts as one
+// character — `textBetween` otherwise expands a leaf to its `leafText`, and a
+// wiki-link renders as its whole label.
+//
+// A paragraph that already held one link put `from` past the cursor, and
+// resolving it trapped. `MentionExtension` and the input rules always passed
+// the one-character override; these two triggers didn't.
+
 /// A paragraph opening with a wiki-link atom whose label is much longer than
 /// the one position it occupies, then `tail`.
 private func paragraphAfterALink(_ editor: Editor, _ tail: String) throws {

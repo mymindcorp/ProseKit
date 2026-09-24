@@ -87,10 +87,10 @@ public func setDetails(_ detailsType: NodeType, _ summaryType: NodeType, _ conte
         let sel = state.selection
         guard let range = sel.resolvedFrom.blockRange(sel.resolvedTo) else { return false }
         let slice = state.doc.slice(range.start, range.end)
-        // The selected blocks must be valid content for a `detailsContent`.
-        // Checked both ways down: `matchFragment` alone says the content could
-        // still be *continued*, not that it is complete, and `create` doesn't
-        // look at content at all. See the same note in `setFigure`.
+        // The selected blocks must be valid content for a `detailsContent`, so
+        // build it with `createChecked`: `matchFragment` alone says the content
+        // could still be *continued*, not that it is complete, and `create`
+        // doesn't look at content at all. See the same note in `setFigure`.
         guard slice.openStart == 0, slice.openEnd == 0,
               let content = try? contentType.createChecked([:], content: slice.content),
               let summary = summaryType.createAndFill(),

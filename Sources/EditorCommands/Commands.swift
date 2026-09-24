@@ -133,7 +133,8 @@ public let joinBackward: Command = { state, dispatch, host in
     return false
 }
 
-/// Symmetric of `joinBackward`, joining the block after the cursor.
+/// The forward counterpart of `joinBackward`, joining the block after the
+/// cursor.
 public let joinForward: Command = { state, dispatch, host in
     guard let cursor = atBlockEnd(state, host) else { return false }
     guard let cut = findCutAfter(cursor) else { return false }
@@ -265,7 +266,7 @@ public let selectNodeBackward: Command = { state, dispatch, host in
     return true
 }
 
-/// Symmetric of `selectNodeBackward`.
+/// The forward counterpart of `selectNodeBackward`.
 public let selectNodeForward: Command = { state, dispatch, host in
     let sel = state.selection
     guard sel.empty else { return false }
@@ -372,8 +373,8 @@ public let exitCode: Command = { state, dispatch, _ in
 
 // MARK: - Block creation / splitting
 
-/// If a block node is selected, create an empty paragraph before (if it's at
-/// the start of the doc) or after it.
+/// If a block node is selected, create an empty paragraph before it (if it's at
+/// the start of its parent) or after it.
 public let createParagraphNear: Command = { state, dispatch, _ in
     let sel = state.selection
     let from = sel.resolvedFrom, to = sel.resolvedTo
