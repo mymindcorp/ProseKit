@@ -233,6 +233,10 @@ private struct RTFReader {
         var styleDef: Int?
         var pict = Picture()
         var listRole: ListRole?
+        /// This is the group `\footnote` was read in. Every group nested in
+        /// the note inherits its destination — Word wraps each run of a note in
+        /// one — but only this one's close ends the note.
+        var opensFootnote = false
     }
 
     var group = Group()
@@ -422,6 +426,7 @@ private struct RTFReader {
                 // would make `{\levelnumbers}` close as if it were the
                 // `\listlevel` around it.
                 group.listRole = nil
+                group.opensFootnote = false
             case "}":
                 flushBytes()
                 ignorableNext = false
@@ -467,7 +472,10 @@ private struct RTFReader {
         guard k + 3 < s.count, s[k] == "\\", s[k + 1] == "r", s[k + 2] == "t", s[k + 3] == "f" else {
             throw RTFParseError.notRTF
         }
-        i = j
+        // Open the outer group here and resume at `\rtf`, so whitespace a
+        // producer wrote between the brace and the header isn't read as text.
+        stack.append(group)
+        i = k
     }
 
     // MARK: - Control words
@@ -951,7 +959,7 @@ private struct RTFReader {
         case .fieldInstruction: readFieldInstruction()
         case .listText: listMarker = group.buffer
         case .picture: appendPicture()
-        case .footnote: endFootnote()
+        case .footnote where group.opensFootnote: endFootnote()
         case .listTable, .listOverrideTable: closeListTableGroup()
         default: break
         }
@@ -1012,6 +1020,7 @@ private struct RTFReader {
         flushBytes()
         flushRun()
         group.dest = .footnote
+        group.opensFootnote = true
         footnoteCounter += 1
         footnoteStack.append(FootnoteFrame(blocks: blocks, inline: inline, listMarker: listMarker,
                                            tables: tables, label: "\(footnoteCounter)"))
@@ -1172,11 +1181,16 @@ private struct RTFReader {
         max(para.itap ?? 0, para.inTable ? 1 : 0)
     }
 
-    /// The builder for a table `depth` levels in, created on demand. Depth is
-    /// clamped to one more than what exists, so a bogus `\itap9` opens one
-    /// table rather than nine.
+    /// The builder for a table `depth` levels in, created on demand — along
+    /// with any between it and the tables that exist. A cell whose first
+    /// content is a table nested inside a table is written at `\itap3` before
+    /// anything at `\itap2` has been read, so clamping to one level beyond what
+    /// exists flattened the middle table away. Depth is still bounded, so a
+    /// bogus `\itap1000` doesn't open a thousand tables.
+    static let maxTableDepth = 16
+
     mutating func table(at depth: Int) -> Int {
-        let index = max(1, min(depth, tables.count + 1)) - 1
+        let index = max(1, min(depth, Self.maxTableDepth)) - 1
         while tables.count <= index { tables.append(TableBuilder()) }
         return index
     }
@@ -1263,14 +1277,14 @@ private struct RTFReader {
                 if let width { previous.widths.append(width) }
                 // Word leaves these empty, but a producer that puts content in
                 // one shouldn't lose it.
-                previous.blocks.append(contentsOf: raw.blocks)
+                previous.blocks.append(contentsOf: Self.mergedContent(raw))
                 cells[cells.count - 1] = previous
                 continue
             }
             if definition.verticalMerge, let anchor = builder.verticalAnchors[definition.rightBoundary],
                anchor.row < builder.rows.count, anchor.cell < builder.rows[anchor.row].cells.count {
                 builder.rows[anchor.row].cells[anchor.cell].rowspan += 1
-                builder.rows[anchor.row].cells[anchor.cell].blocks.append(contentsOf: raw.blocks)
+                builder.rows[anchor.row].cells[anchor.cell].blocks.append(contentsOf: Self.mergedContent(raw))
                 continue
             }
             var cell = raw
@@ -1281,6 +1295,14 @@ private struct RTFReader {
             }
         }
         return Row(cells: cells, header: builder.header)
+    }
+
+    /// What a merge continuation cell adds to the cell it continues. `endCell`
+    /// gives an empty cell an empty paragraph so it isn't a cell of nothing,
+    /// but a continuation cell isn't a cell of its own: its placeholder would
+    /// be a blank line at the end of the merged one.
+    static func mergedContent(_ cell: Cell) -> [Block] {
+        cell.blocks.filter { !($0.kind == .paragraph && $0.inline.isEmpty) }
     }
 
     /// Classify one finished paragraph: list item, heading, code line, or prose.
@@ -1465,10 +1487,24 @@ private struct RTFReader {
         return out
     }
 
+    /// A paragraph of `items` — or, when it won't take one of their nodes, as a
+    /// `text*` paragraph won't take a break, an image or a footnote reference,
+    /// a paragraph without that node. Refusing the node mustn't take the words
+    /// around it: the paragraph used to be dropped whole, text and all.
     func paragraphNode(_ items: [Inline]) -> Node? {
         guard let type = schema.nodes["paragraph"] else { return nil }
         let nodes = inlineNodes(items)
-        return type.createAndFill([:], content: Fragment.from(nodes))
+        if let node = type.createAndFill([:], content: Fragment.from(nodes)) { return node }
+        var kept: [Node] = []
+        for node in nodes {
+            if node.isText || type.contentMatch.matchType(node.type) != nil {
+                kept.append(node)
+            } else if node.type.name == "hardBreak" {
+                // Still a word boundary, if no longer a line break.
+                kept.append(schema.text(" ", node.marks))
+            }
+        }
+        return type.createAndFill([:], content: Fragment.from(kept))
     }
 
     func plainText(_ items: [Inline]) -> String {
@@ -1583,9 +1619,20 @@ private struct RTFReader {
     /// two paragraphs in a one-paragraph schema spills into a second cell,
     /// rather than the whole cell and its text being dropped.
     func cellNodes(_ cell: Cell, type: NodeType) -> [Node] {
-        let blocks = assembleBlocks(cell.blocks)
+        var blocks = assembleBlocks(cell.blocks)
         let attrs = cellAttrs(cell, type: type)
         if let node = type.createAndFill(attrs, content: Fragment.from(blocks)) { return [node] }
+        // A block the cell can't hold anywhere, even wrapped — a nested table
+        // in a `paragraph`-only cell — is opened up into the blocks it holds
+        // before spilling, so each of those finds a cell. Fitted whole, it
+        // kept only what fitted the first slot.
+        func unpacked(_ node: Node, depth: Int = 0) -> [Node] {
+            let match = type.contentMatch
+            guard depth < 32, match.matchType(node.type) == nil, match.findWrapping(node.type) == nil,
+                  node.childCount > 0, !node.isTextblock else { return [node] }
+            return (0..<node.childCount).flatMap { unpacked(node.child($0), depth: depth + 1) }
+        }
+        blocks = blocks.flatMap { unpacked($0) }
         var groups: [[Node]] = []
         var run: [Node] = []
         var match = type.contentMatch
@@ -1671,8 +1718,27 @@ private struct RTFReader {
             }
             guard !built.isEmpty else { return }
             if let parent = stack.last, let lastItem = parent.items.last {
+                // The sublist goes in the item above it — when the item can
+                // hold one. When it can't (`listItem: paragraph`), what doesn't
+                // fit follows the item as items of the parent list, rather than
+                // making an invalid item that throws the whole paste away.
                 let kids = (0..<lastItem.childCount).map { lastItem.child($0) } + built
-                stack[stack.count - 1].items[parent.items.count - 1] = lastItem.copy(content: Fragment.from(kids))
+                var spilled: [Node] = []
+                let fitted = fitContent(kids, into: lastItem.type, schema: schema, overflow: &spilled)
+                var items = parent.items
+                items[items.count - 1] = lastItem.type.createAndFill(lastItem.attrs, content: Fragment.from(fitted),
+                                                                     marks: lastItem.marks) ?? lastItem
+                if !spilled.isEmpty {
+                    if let listType = schema.nodes[listName(parent.kind)] {
+                        items += fitContent(spilled, into: listType, schema: schema)
+                    } else {
+                        items += spilled.compactMap {
+                            lastItem.type.createAndFill(content: Fragment.from(fitContent([$0], into: lastItem.type,
+                                                                                          schema: schema)))
+                        }
+                    }
+                }
+                stack[stack.count - 1].items = items
             } else {
                 out.append(contentsOf: built)
             }
