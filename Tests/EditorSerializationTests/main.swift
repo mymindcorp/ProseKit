@@ -4804,6 +4804,7 @@ test("HTML paste: a <style> block is never content") {
 
 registerAdversarialMarkdownTests()
 registerMarkdownInlineParityTests()
+registerMarkdownLeadingWhitespaceTests()
 registerMarkdownReferenceTests()
 registerMarkdownScalingTests()
 registerMarkdownDelimiterWhitespaceTests()
