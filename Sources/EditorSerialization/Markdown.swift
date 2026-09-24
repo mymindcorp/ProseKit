@@ -193,8 +193,7 @@ public enum MarkdownSerializer {
             let src = node.attrs["src"]?.stringValue ?? ""
             let alt = altText(node.attrs["alt"]?.stringValue ?? "")
             if let title = node.attrs["title"]?.stringValue, !title.isEmpty {
-                let q = title.contains("\"") ? "'" : "\""
-                return "![\(alt)](\(destination(src)) \(q)\(titleText(title))\(q))"
+                return "![\(alt)](\(destination(src)) \(titleText(title)))"
             }
             return "![\(alt)](\(destination(src)))"
         case "blockMath":
@@ -539,8 +538,7 @@ public enum MarkdownSerializer {
         case "link":
             let href = mark.attrs["href"]?.stringValue ?? ""
             if let title = mark.attrs["title"]?.stringValue, !title.isEmpty {
-                let q = title.contains("\"") ? "'" : "\""
-                return "](\(destination(href)) \(q)\(titleText(title))\(q))"
+                return "](\(destination(href)) \(titleText(title)))"
             }
             return "](\(destination(href)))"
         case "italic": return "*"
@@ -1043,8 +1041,7 @@ public enum MarkdownSerializer {
             let src = node.attrs["src"]?.stringValue ?? ""
             let alt = altText(node.attrs["alt"]?.stringValue ?? "")
             if let title = node.attrs["title"]?.stringValue, !title.isEmpty {
-                let q = title.contains("\"") ? "'" : "\""
-                out += "![\(alt)](\(destination(src)) \(q)\(title)\(q))"
+                out += "![\(alt)](\(destination(src)) \(titleText(title)))"
             } else {
                 out += "![\(alt)](\(destination(src)))"
             }
@@ -1199,9 +1196,13 @@ public enum MarkdownSerializer {
         return out
     }
 
-    /// A title, with the escapes the reader will resolve written out.
+    /// A title, quoted, with the escapes the reader will resolve written out.
+    /// Always double quotes, with any `"` inside escaped, as upstream writes
+    /// it: switching to single quotes only moves the problem to a title that
+    /// holds both — `it's "x"` would close at the apostrophe.
     static func titleText(_ title: String) -> String {
-        title.replacingOccurrences(of: "\\", with: "\\\\")
+        "\"" + title.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 }
 

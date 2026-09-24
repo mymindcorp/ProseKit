@@ -1565,16 +1565,47 @@ private struct RTFReader {
         var rowNodes: [Node] = []
         for row in rows {
             let type = row.header ? headerType : cellType
-            let cells = row.cells.compactMap {
-                type.createAndFill(cellAttrs($0, type: type), content: Fragment.from(assembleBlocks($0.blocks)))
-            }
-            guard !cells.isEmpty, let node = rowType.createAndFill([:], content: Fragment.from(cells)) else { continue }
+            let cells = row.cells.flatMap { cellNodes($0, type: type) }
+            guard !cells.isEmpty else { continue }
+            // A row the schema won't build would take its cells' text with it.
+            guard let node = rowType.createAndFill([:], content: Fragment.from(cells)) else { return contentOnly() }
             rowNodes.append(node)
         }
         guard !rowNodes.isEmpty, let table = tableType.createAndFill([:], content: Fragment.from(rowNodes)) else {
             return contentOnly()
         }
         return [table]
+    }
+
+    /// The cell nodes an RTF cell becomes: one, unless its content overflows
+    /// what the schema's cell holds. Then, as ProseMirror's DOM parser does, the
+    /// block that doesn't fit closes the cell and opens another — so a cell of
+    /// two paragraphs in a one-paragraph schema spills into a second cell,
+    /// rather than the whole cell and its text being dropped.
+    func cellNodes(_ cell: Cell, type: NodeType) -> [Node] {
+        let blocks = assembleBlocks(cell.blocks)
+        let attrs = cellAttrs(cell, type: type)
+        if let node = type.createAndFill(attrs, content: Fragment.from(blocks)) { return [node] }
+        var groups: [[Node]] = []
+        var run: [Node] = []
+        var match = type.contentMatch
+        for block in blocks {
+            if let next = match.matchType(block.type) {
+                run.append(block)
+                match = next
+                continue
+            }
+            if !run.isEmpty { groups.append(run) }
+            run = [block]
+            match = type.contentMatch.matchType(block.type) ?? type.contentMatch
+        }
+        if !run.isEmpty || groups.isEmpty { groups.append(run) }
+        // The first cell keeps the span and widths; the ones it spilled into
+        // are plain.
+        return groups.enumerated().compactMap { i, group in
+            type.createAndFill(i == 0 ? attrs : [:],
+                               content: Fragment.from(fitContent(group, into: type, schema: schema)))
+        }
     }
 
     /// A cell's span and column widths, for the attributes the schema declares.

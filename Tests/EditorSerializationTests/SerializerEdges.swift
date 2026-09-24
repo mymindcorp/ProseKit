@@ -21,6 +21,23 @@ private let minimalSchema: Schema = try! Schema(nodes: [
     ("text", NodeSpec(group: "inline")),
 ])
 
+/// An image that stands as a block, as the editor's default schema has it —
+/// which the serializer writes by a separate path from an inline one.
+private let blockImageSchema: Schema = try! Schema(nodes: [
+    ("doc", NodeSpec(content: "block+")),
+    ("paragraph", NodeSpec(content: "inline*", group: "block")),
+    ("image", NodeSpec(group: "block", atom: true, attrs: ["src": AttributeSpec(),
+        "alt": AttributeSpec(default: .null), "title": AttributeSpec(default: .null)])),
+    ("text", NodeSpec(group: "inline")),
+])
+
+/// A document's structure as nested type names, text included.
+private func outline(_ n: Node) -> String {
+    if n.isText { return "\"" + (n.text ?? "") + "\"" }
+    let kids = (0..<n.childCount).map { outline(n.child($0)) }
+    return kids.isEmpty ? n.type.name : n.type.name + "(" + kids.joined(separator: " ") + ")"
+}
+
 private func rtf(_ body: String) -> String { "{\\rtf1\\ansi\\deff0 " + body + "}" }
 
 /// `schema` with `dropped` node types removed, for asking what a parser does
@@ -546,12 +563,66 @@ func registerSerializerEdgeTests() {
         try expect(bare.toMarkdown().contains("@u1"), "got: \(bare.toMarkdown())")
     }
 
-    test("md: an image title containing a double quote is written in single quotes") {
+    test("md: an image title containing a double quote escapes it") {
         let d = doc(p(node("image", ["src": .string("a.png"), "alt": .string("x"), "title": .string("say \"hi\"")])))
         let md = d.toMarkdown()
-        try expect(md.contains("![x](a.png 'say \"hi\"')"), "got: \(md)")
+        try expect(md.contains(#"![x](a.png "say \"hi\"")"#), "got: \(md)")
         let back = try MarkdownParser.parse(md, schema: schema)
         try expectEqual(back, d)
+    }
+
+    // Switching to single quotes for a title holding `"` left one holding both
+    // closing at the apostrophe, and the whole link read back as text. And the
+    // inline image path wrote its title raw, so a trailing backslash escaped
+    // the closing quote.
+    test("md: link and image titles holding both quotes, or a backslash, round-trip") {
+        for title in [#"it's "x""#, #"C:\"#, #"a\"b'c"#, "'", "\"", #"\\"#] {
+            let attrs: Attrs = ["src": .string("a.png"), "alt": .string("x"), "title": .string(title)]
+            let link = schema.mark("link", ["href": .string("x"), "title": .string(title)])
+            for d in [doc(p(t("see "), node("image", attrs))),
+                      doc(p(schema.text("go", [link])))] {
+                let md = d.toMarkdown()
+                try expectEqual(try MarkdownParser.parse(md, schema: schema), d, "title \(title) wrote:\n\(md)")
+            }
+            // The block-level spelling, where an image stands alone.
+            let block = try blockImageSchema.node("image", ["src": .string("a.png"),
+                                                            "alt": .string("x"), "title": .string(title)])
+            let blockDoc = try blockImageSchema.node("doc", content: .from(block))
+            let md = blockDoc.toMarkdown()
+            try expectEqual(try MarkdownParser.parse(md, schema: blockImageSchema), blockDoc,
+                            "title \(title) wrote:\n\(md)")
+        }
+        let quoted = doc(p(schema.text("go", [schema.mark("link", ["href": .string("x"), "title": .string(#"it's "x""#)])])))
+        try expectEqual(quoted.toMarkdown(), #"[go](x "it's \"x\"")"#)
+        let slash = doc(p(t("see "), node("image", ["src": .string("a.png"), "alt": .string("x"), "title": .string(#"C:\"#)])))
+        try expect(slash.toMarkdown().contains(#"![x](a.png "C:\\")"#), "got: \(slash.toMarkdown())")
+    }
+
+    // MARK: HTML content that overflows its element
+
+    test("html: a paragraph after a figure's caption lands after the figure") {
+        // The caption ends the figure's content, so fitting "after" into it
+        // unwrapped it to text the figure couldn't hold, and it was dropped.
+        // ProseMirror closes the figure and puts the paragraph after it.
+        let d = try HTMLParser.parse(
+            "<figure><p>x</p><figcaption>c</figcaption><p>after</p><p>more</p></figure><p>end</p>", schema: schema)
+        try d.check()
+        try expectEqual(outline(d), #"doc(figure(paragraph("x") figcaption("c")) paragraph("after") paragraph("more") paragraph("end"))"#)
+        // Content that fits stays inside.
+        let fits = try HTMLParser.parse("<figure><p>x</p><p>y</p><figcaption>c</figcaption></figure>", schema: schema)
+        try expectEqual(outline(fits), #"doc(figure(paragraph("x") paragraph("y") figcaption("c")))"#)
+    }
+
+    test("html: a sub-list directly inside a task list joins the item above it") {
+        // `directItems` skipped it, and "b" was lost. ProseMirror's
+        // `normalizeList` moves such a list into the preceding item.
+        let d = try HTMLParser.parse(#"<ul data-type="taskList"><li>a</li><ul><li>b</li></ul></ul>"#, schema: schema)
+        try d.check()
+        try expectEqual(outline(d), #"doc(taskList(taskItem(paragraph("a") bulletList(listItem(paragraph("b"))))))"#)
+        // With no item above it, it is still kept.
+        let first = try HTMLParser.parse(#"<ul data-type="taskList"><ul><li>b</li></ul><li>a</li></ul>"#, schema: schema)
+        try first.check()
+        try expect(first.textContent.contains("b") && first.textContent.contains("a"), "got: \(outline(first))")
     }
 
     test("md: a loose list with a single item stays loose through a round trip") {

@@ -36,9 +36,30 @@ func fitContent(_ nodes: [Node], into container: NodeType, schema: Schema) -> [N
     return fitter.finish()
 }
 
+/// Fit `nodes` into `container` as above, except that once the container is
+/// *full* — nothing more may follow what it holds, as after a figure's caption —
+/// the node that doesn't fit and everything after it are handed back in
+/// `overflow` instead of being unwrapped or dropped.
+///
+/// That is ProseMirror's DOM parser's reading: content that has no place in
+/// the open node closes it, and lands after it in the parent. So
+/// `<figure><p>x</p><figcaption>c</figcaption><p>after</p></figure>` is a
+/// figure followed by a paragraph, rather than a figure that lost "after".
+func fitContent(_ nodes: [Node], into container: NodeType, schema: Schema, overflow: inout [Node]) -> [Node] {
+    var fitter = ContentFitter(container: container, schema: schema)
+    fitter.overflow = []
+    for node in nodes { fitter.place(node, depth: 0) }
+    overflow = fitter.overflow ?? []
+    return fitter.finish()
+}
+
 private struct ContentFitter {
     let container: NodeType
     let schema: Schema
+
+    /// Where content goes once the container is full, when the caller asked
+    /// for it back (nil: unwrap or drop it, as ever).
+    var overflow: [Node]?
 
     /// Placed nodes, with the wrapping each one needed (empty when it fitted as
     /// it was). The chain is kept so the next node can be merged into it.
@@ -56,6 +77,12 @@ private struct ContentFitter {
     }
 
     mutating func place(_ node: Node, depth: Int) {
+        // Once something has overflowed, the container is closed: everything
+        // after it follows it out.
+        if depth == 0, let spilled = overflow, !spilled.isEmpty {
+            overflow = spilled + [node]
+            return
+        }
         // 1. Already legal here.
         if let next = match.matchType(node.type) {
             placed.append((node, []))
@@ -81,6 +108,11 @@ private struct ContentFitter {
             for i in 0..<fill.childCount { placed.append((fill.child(i), [])) }
             placed.append((node, []))
             match = next
+            return
+        }
+        // A full container closes, rather than taking the node apart.
+        if depth == 0, overflow != nil, match.validEnd, match.edgeTypes.isEmpty {
+            overflow = [node]
             return
         }
         // 4. Nothing fits, but its children might.
