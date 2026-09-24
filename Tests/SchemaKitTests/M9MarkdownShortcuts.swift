@@ -40,6 +40,8 @@ private func hasMark(_ editor: Editor, _ name: String) -> Bool {
     return (editor, fired)
 }
 
+private func topBlock(_ editor: Editor) -> Node? { editor.doc.firstChild }
+
 func registerMarkdownShortcutTests() {
     for (name, prefix, trigger) in [("bold", "**text*", "*"), ("italic", "*text", "*"),
                                     ("strike", "~~text~", "~"), ("highlight", "==text=", "=")] {
