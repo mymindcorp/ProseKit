@@ -156,4 +156,15 @@ func registerPMTableExtraTests() {
     test("PM normalizeSelection: cell node selection → cell selection") {
         try expect(normalize(NodeSelection.create(nt, 2)).eq(CellSelection.create(nt, 2, 2)))
     }
+
+    // Mod-b / Mod-i over a CellSelection: one range per cell. prosemirror-commands
+    // removes the mark when any cell has it; this used to need every cell to.
+    test("toggleMark over a CellSelection removes the mark when any cell has it") {
+        let d = doc(table(tr(td(p("one")), td(p(em("two")))))).node
+        var state = EditorState.create(EditorStateConfig(schema: basicSchema, doc: d, selection: CellSelection.create(d, 2, 9)))
+        _ = toggleMark(basicSchema.marks["em"]!)(state, { tr in state = state.apply(tr) }, nil)
+        try expectEqual(state.doc, doc(table(tr(td(p("one")), td(p("two"))))).node)
+        _ = toggleMark(basicSchema.marks["em"]!)(state, { tr in state = state.apply(tr) }, nil)
+        try expectEqual(state.doc, doc(table(tr(td(p(em("one"))), td(p(em("two")))))).node)
+    }
 }

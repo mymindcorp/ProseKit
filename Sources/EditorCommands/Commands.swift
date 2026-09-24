@@ -511,11 +511,15 @@ public let selectAll: Command = { state, dispatch, _ in
 // MARK: - Marks
 
 /// Whether the given mark type can be applied across the current selection.
-private func markApplies(_ doc: Node, _ ranges: [SelectionRange], _ type: MarkType) -> Bool {
+/// With `enterAtoms` off, an inline atom wholly inside a range is not looked into.
+private func markApplies(_ doc: Node, _ ranges: [SelectionRange], _ type: MarkType, _ enterAtoms: Bool) -> Bool {
     for range in ranges {
-        var can = range.from.depth == 0 ? doc.type.allowsMarkType(type) : false
-        doc.nodesBetween(range.from.pos, range.to.pos, { node, _, _, _ in
-            if can { return false }
+        let from = range.from.pos, to = range.to.pos
+        var can = range.from.depth == 0 ? doc.inlineContent && doc.type.allowsMarkType(type) : false
+        doc.nodesBetween(from, to, { node, pos, _, _ in
+            if can || (!enterAtoms && node.isAtom && node.isInline && pos >= from && pos + node.nodeSize <= to) {
+                return false
+            }
             can = node.inlineContent && node.type.allowsMarkType(type)
             return true
         })
@@ -524,13 +528,54 @@ private func markApplies(_ doc: Node, _ ranges: [SelectionRange], _ type: MarkTy
     return false
 }
 
-/// Toggle the given mark over the selection (or stored marks when empty).
-public func toggleMark(_ markType: MarkType, _ attrs: Attrs = [:]) -> Command {
+/// Split the ranges around the content of inline atoms they wholly cover, so a
+/// mark stops at the atom instead of reaching into it.
+private func removeInlineAtoms(_ ranges: [SelectionRange]) -> [SelectionRange] {
+    var result: [SelectionRange] = []
+    for range in ranges {
+        var from = range.from
+        let to = range.to, doc = from.doc
+        doc.nodesBetween(from.pos, to.pos, { node, pos, _, _ in
+            if node.isAtom && node.content.size > 0 && node.isInline && pos >= from.pos && pos + node.nodeSize <= to.pos {
+                if pos + 1 > from.pos { result.append(SelectionRange(from, doc.resolve(pos + 1))) }
+                from = doc.resolve(pos + 1 + node.content.size)
+                return false
+            }
+            return true
+        })
+        if from.pos < to.pos { result.append(SelectionRange(from, to)) }
+    }
+    return result
+}
+
+/// Options for ``toggleMark(_:_:options:)``, matching prosemirror-commands.
+public struct ToggleMarkOptions: Sendable {
+    /// When part of the selection has the mark and part doesn't, remove it
+    /// (`true`, the default) or add it (`false`).
+    public var removeWhenPresent: Bool
+    /// When `false`, the command doesn't act on the content of inline atoms
+    /// that a selection range covers completely.
+    public var enterInlineAtoms: Bool
+    /// When `true`, a mark being added also covers the selection's leading and
+    /// trailing whitespace, which is skipped by default.
+    public var includeWhitespace: Bool
+
+    public init(removeWhenPresent: Bool = true, enterInlineAtoms: Bool = true, includeWhitespace: Bool = false) {
+        self.removeWhenPresent = removeWhenPresent
+        self.enterInlineAtoms = enterInlineAtoms
+        self.includeWhitespace = includeWhitespace
+    }
+}
+
+/// Toggle the given mark over the selection (or stored marks when empty). The
+/// mark is removed if any range of the selection has it, and added otherwise
+/// (see ``ToggleMarkOptions/removeWhenPresent``).
+public func toggleMark(_ markType: MarkType, _ attrs: Attrs = [:], options: ToggleMarkOptions = ToggleMarkOptions()) -> Command {
     { state, dispatch, _ in
         let sel = state.selection
         let empty = sel.empty
-        let ranges = sel.ranges
-        if (empty && (sel as? TextSelection)?.cursor == nil) || !markApplies(state.doc, ranges, markType) {
+        var ranges = sel.ranges
+        if (empty && (sel as? TextSelection)?.cursor == nil) || !markApplies(state.doc, ranges, markType, options.enterInlineAtoms) {
             return false
         }
         if let dispatch {
@@ -542,20 +587,37 @@ public func toggleMark(_ markType: MarkType, _ attrs: Attrs = [:]) -> Command {
                     dispatch(state.tr.addStoredMark(mark))
                 }
             } else {
-                var has = true
                 let tr = state.tr
-                for range in ranges where has {
-                    has = state.doc.rangeHasMark(range.from.pos, range.to.pos, markType)
+                if !options.enterInlineAtoms { ranges = removeInlineAtoms(ranges) }
+                let add: Bool
+                if options.removeWhenPresent {
+                    add = !ranges.contains { state.doc.rangeHasMark($0.from.pos, $0.to.pos, markType) }
+                } else {
+                    // Add unless every range already has the mark wherever it
+                    // could go (whitespace-only text doesn't count as missing it).
+                    add = !ranges.allSatisfy { range in
+                        let from = range.from.pos, to = range.to.pos
+                        var missing = false
+                        tr.doc.nodesBetween(from, to, { node, pos, parent, _ in
+                            if missing { return false }
+                            missing = markType.isInSet(node.marks) == nil && parent != nil
+                                && parent!.type.allowsMarkType(markType)
+                                && !(node.isText && isWhitespaceOnly(node, max(0, from - pos), min(node.nodeSize, to - pos)))
+                            return true
+                        })
+                        return !missing
+                    }
                 }
                 for range in ranges {
-                    if has {
+                    if !add {
                         _ = try? tr.removeMark(range.from.pos, range.to.pos, markType)
                     } else {
                         // Skip leading/trailing whitespace when adding a mark (but
                         // not for whitespace-only selections), matching ProseMirror.
                         var from = range.from.pos, to = range.to.pos
-                        let spaceStart = range.from.nodeAfter?.isText == true ? leadingWhitespace(range.from.nodeAfter!.text ?? "") : 0
-                        let spaceEnd = range.to.nodeBefore?.isText == true ? trailingWhitespace(range.to.nodeBefore!.text ?? "") : 0
+                        let dropSpace = !options.includeWhitespace
+                        let spaceStart = dropSpace && range.from.nodeAfter?.isText == true ? leadingWhitespace(range.from.nodeAfter!.text ?? "") : 0
+                        let spaceEnd = dropSpace && range.to.nodeBefore?.isText == true ? trailingWhitespace(range.to.nodeBefore!.text ?? "") : 0
                         if from + spaceStart < to { from += spaceStart; to -= spaceEnd }
                         _ = try? tr.addMark(from, to, markType.create(attrs))
                     }
@@ -565,6 +627,11 @@ public func toggleMark(_ markType: MarkType, _ attrs: Attrs = [:]) -> Command {
         }
         return true
     }
+}
+
+/// Whether the text node's text between the given offsets is all whitespace.
+private func isWhitespaceOnly(_ node: Node, _ from: Int, _ to: Int) -> Bool {
+    from >= to || (node.cut(from, to).text ?? "").allSatisfy(\.isWhitespace)
 }
 
 // MARK: - Block type / wrapping

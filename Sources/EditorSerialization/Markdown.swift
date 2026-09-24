@@ -346,6 +346,11 @@ public enum MarkdownSerializer {
     /// Every line, not just the first: a hard break starts a new source line,
     /// and a `>` at the head of *that* line opens a blockquote just as surely.
     ///
+    /// Each line's leading spaces and tabs are dropped. The reader strips them
+    /// from every paragraph line anyway, so they never survived a round trip —
+    /// and four columns of them opened an indented code block instead, while
+    /// fewer hid a marker from an escape written ahead of them.
+    ///
     /// Nearly every paragraph is one line with an ordinary first character, so
     /// the single-line case never copies the string and the scan gives up on
     /// the opening run.
@@ -357,27 +362,25 @@ public enum MarkdownSerializer {
     }
 
     private static func escapeBlockMarkerLine(_ line: String) -> String {
-        guard let at = blockMarkerEscape(line) else { return line }
         var out = line
+        if let first = line.first, first == " " || first == "\t" {
+            out = String(line.drop(while: { $0 == " " || $0 == "\t" }))
+        }
+        guard let at = blockMarkerEscape(out) else { return out }
         out.insert("\\", at: at)
         return out
     }
 
-    /// Where a backslash has to go to stop this line reading as block structure,
-    /// or nil when it reads as prose already.
+    /// Where a backslash has to go to stop this line — with its indentation
+    /// already dropped — reading as block structure, or nil when it reads as
+    /// prose already.
     private static func blockMarkerEscape(_ line: String) -> String.Index? {
         // A run of `-` or `=` under a paragraph line retitles the paragraph, and
         // a run of `-`/`*`/`_` is a thematic break wherever it stands. Both are
-        // about the whole line, and both allow the marker to be indented.
+        // about the whole line.
         if MarkdownParser.setextUnderline(line) != nil || MarkdownParser.isThematicBreak(line) { return line.startIndex }
 
-        // A marker keeps its meaning indented up to three columns.
-        var start = line.startIndex
-        var indent = 0
-        while start < line.endIndex, line[start] == " ", indent < 3 {
-            indent += 1
-            start = line.index(after: start)
-        }
+        let start = line.startIndex
         let body = line[start...]
         guard let first = body.first else { return nil }
 
@@ -2182,7 +2185,7 @@ public enum MarkdownParser {
         let list = listsMayInterrupt
             ? (bulletMatch(trimmed) != nil || orderedMatch(trimmed) != nil)
             : interruptingList(trimmed)
-        return trimmed.hasPrefix("#") || trimmed.hasPrefix(">") || isOpeningFence(trimmed)
+        return headingMatch(trimmed) != nil || trimmed.hasPrefix(">") || isOpeningFence(trimmed)
             || trimmed.hasPrefix("$$") || isThematicBreak(trimmed)
             || setextUnderline(trimmed) != nil
             || list

@@ -176,6 +176,60 @@ func registerPMCommandsTests() {
     c("toggleMark: skips whitespace at selection ends when adding marks") { try run(doc(p("one<a> two  <b>three")), toggleMark(mk("em")), doc(p("one ", em("two"), "  three"))) }
     c("toggleMark: doesn't skip whitespace-only selections") { try run(doc(p("one<a> <b>two")), toggleMark(mk("em")), doc(p("one", em(" "), "two"))) }
 
+    c("toggleMark: includes whitespace when asked") {
+        try run(doc(p("one<a> two  <b>three")), toggleMark(mk("em"), options: ToggleMarkOptions(includeWhitespace: true)),
+                doc(p("one", em(" two  "), "three")))
+    }
+    let toggleEm2 = toggleMark(mk("em"), options: ToggleMarkOptions(removeWhenPresent: false))
+    c("toggleMark: can add marks with remove-when-present off") {
+        try run(doc(p("<a>", em("one"), " two<b>")), toggleEm2, doc(p(em("one two"))))
+        try run(doc(p("<a>three<b>")), toggleEm2, doc(p(em("three"))))
+    }
+    c("toggleMark: can remove marks with remove-when-present off") {
+        try run(doc(p(em("o<a>ne two<b>"))), toggleEm2, doc(p(em("o"), "ne two")))
+    }
+    c("toggleMark: can remove marks with trailing space when remove-when-present is off") {
+        try run(doc(p(em("o<a>ne two"), "  <b>three")), toggleEm2, doc(p(em("o"), "ne two  three")))
+    }
+    c("toggleMark: enters inline atoms by default") {
+        let f = FootnoteDocs()
+        let out = f.apply(f.doc(f.para(f.text("hello"), f.footnote(f.text("okay")))), 2, 12, toggleMark(f.em))
+        try expectEqual(out, f.doc(f.para(f.text("h"), f.text("ello", [f.em.create()]),
+                                          f.footnote(f.text("okay", [f.em.create()]), marks: [f.em.create()]))))
+    }
+    c("toggleMark: doesn't enter inline atoms to add a mark when told not to") {
+        let f = FootnoteDocs()
+        let out = f.apply(f.doc(f.para(f.text("hello"), f.footnote(f.text("okay")))), 2, 12,
+                          toggleMark(f.em, options: ToggleMarkOptions(enterInlineAtoms: false)))
+        try expectEqual(out, f.doc(f.para(f.text("h"), f.text("ello", [f.em.create()]),
+                                          f.footnote(f.text("okay"), marks: [f.em.create()]))))
+    }
+    c("toggleMark: can apply styles inside inline atoms") {
+        let f = FootnoteDocs()
+        let out = f.apply(f.doc(f.para(f.text("hello"), f.footnote(f.text("okay")))), 8, 11,
+                          toggleMark(f.em, options: ToggleMarkOptions(enterInlineAtoms: false)))
+        try expectEqual(out, f.doc(f.para(f.text("hello"), f.footnote(f.text("o"), f.text("kay", [f.em.create()])))))
+    }
+
+    // Not from upstream: a selection of several ranges (a table's CellSelection,
+    // in the app) loses the mark when *any* range has it, as prosemirror-commands
+    // does — not only when every range has it.
+    c("toggleMark: removes the mark when any range of a multi-range selection has it") {
+        let d = doc(p("one"), p(em("two"))).node
+        try expectEqual(toggleOverRanges(d, [(1, 4), (6, 9)], toggleMark(mk("em"))), doc(p("one"), p("two")).node)
+        try expectEqual(toggleOverRanges(d, [(6, 9), (1, 4)], toggleMark(mk("em"))), doc(p("one"), p("two")).node)
+    }
+    c("toggleMark: adds the mark when no range of a multi-range selection has it") {
+        let d = doc(p("one"), p("two")).node
+        try expectEqual(toggleOverRanges(d, [(1, 4), (6, 9)], toggleMark(mk("em"))), doc(p(em("one")), p(em("two"))).node)
+    }
+    c("toggleMark: with remove-when-present off, adds unless every range has the mark") {
+        let d = doc(p("one"), p(em("two"))).node
+        try expectEqual(toggleOverRanges(d, [(1, 4), (6, 9)], toggleEm2), doc(p(em("one")), p(em("two"))).node)
+        let both = doc(p(em("one")), p(em("two"))).node
+        try expectEqual(toggleOverRanges(both, [(1, 4), (6, 9)], toggleEm2), doc(p("one"), p("two")).node)
+    }
+
     c("toggleMark: can toggle pending marks") {
         var state = mkState(doc(p("hell<a>o")))
         _ = toggleMark(mk("em"))(state, { tr in state = state.apply(tr) }, nil)
@@ -268,5 +322,43 @@ func registerPMCommandsTests() {
         try run(doc(ul(li(p("a"))), blockquote("<a>", ul(li(p("b")))), ul(li(p("c")))),
                 autoJoin(lift, ["bullet_list"]),
                 doc(ul(li(p("a")), li(p("b")), li(p("c")))))
+    }
+}
+
+/// A selection of several text ranges, standing in for a table's CellSelection.
+private final class MultiRangeSelection: Selection {
+    init(_ doc: Node, _ ranges: [(Int, Int)]) {
+        let resolved = ranges.map { SelectionRange(doc.resolve($0.0), doc.resolve($0.1)) }
+        super.init(resolved[0].from, resolved[0].to, ranges: resolved)
+    }
+    override func eq(_ other: Selection) -> Bool { other === self }
+    override func map(_ doc: Node, _ mapping: any Mappable) -> Selection {
+        TextSelection.create(doc, mapping.map(from), mapping.map(to))
+    }
+}
+
+private func toggleOverRanges(_ d: Node, _ ranges: [(Int, Int)], _ command: Command) -> Node {
+    var state = EditorState.create(EditorStateConfig(schema: basicSchema, doc: d, selection: MultiRangeSelection(d, ranges)))
+    _ = command(state, { tr in state = state.apply(tr) }, nil)
+    return state.doc
+}
+
+/// Upstream's footnote schema: an inline atom holding text.
+private struct FootnoteDocs {
+    let schema = try! Schema(nodes: [
+        ("doc", NodeSpec(content: "para+")),
+        ("para", NodeSpec(content: "(text | footnote)*")),
+        ("footnote", NodeSpec(content: "text*", group: nil, inline: true, atom: true)),
+        ("text", NodeSpec()),
+    ], marks: [("em", MarkSpec())], topNode: "doc")
+    var em: MarkType { schema.marks["em"]! }
+    func doc(_ c: Node...) -> Node { try! schema.node("doc", [:], content: Fragment.from(c)) }
+    func para(_ c: Node...) -> Node { try! schema.node("para", [:], content: Fragment.from(c)) }
+    func footnote(_ c: Node..., marks: [Mark] = []) -> Node { try! schema.node("footnote", [:], content: Fragment.from(c), marks: marks) }
+    func text(_ s: String, _ marks: [Mark] = []) -> Node { schema.text(s, marks) }
+    func apply(_ d: Node, _ from: Int, _ to: Int, _ command: Command) -> Node {
+        var state = EditorState.create(EditorStateConfig(schema: schema, doc: d, selection: TextSelection.create(d, from, to)))
+        _ = command(state, { tr in state = state.apply(tr) }, nil)
+        return state.doc
     }
 }
