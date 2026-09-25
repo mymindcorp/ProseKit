@@ -272,6 +272,7 @@ registerFigureTests()
 registerEdgeCommandTests()
 registerMathMLShapeTests()
 registerExtensionMutationKillTests()
+registerEditorWiringMutationKillTests()
 
 // Shared builders for the checklist-import tests below.
 private let clSchema = try! makeFullEditor().schema
