@@ -2183,23 +2183,43 @@ final class DocumentLayout {
         let attrIndex = block.attrIndex(forDocPos: pos)
         guard let li = lineIndex(block, attrIndex) else { return nil }
 
-        var target: (block: TextBlock, line: LineLayout)?
-        if up {
-            if li > 0 {
-                target = (block, block.lines[li - 1])
-            } else if let nb = neighbourBlock(below: false, of: block, preferredX: preferredX) {
-                target = (nb, nb.lines.last!)
+        // A line can hold no caret position at all: an atom drawn as text (math
+        // with no renderer, a wiki link that isn't a chip) is one position wide
+        // but can be wider than its column, and then it wraps — and the lines
+        // in the middle of it belong to neither side. Landing on one puts the
+        // caret on the line before or after it, so ↓ and ↑ stop being inverses,
+        // and ↓ from the atom's start comes straight back to it forever. Such a
+        // line is passed over, the way a line the caret can't stop on should be.
+        var current = (block: block, line: li)
+        while let next = adjacentLine(to: current, up: up, preferredX: preferredX) {
+            if let landing = position(onLine: next.line, of: next.block, preferredX: preferredX) {
+                return landing
             }
-        } else {
-            if li < block.lines.count - 1 {
-                target = (block, block.lines[li + 1])
-            } else if let nb = neighbourBlock(below: true, of: block, preferredX: preferredX) {
-                target = (nb, nb.lines.first!)
-            }
+            current = next
         }
-        guard let target else { return nil }
-        let relative = CGPoint(x: preferredX - target.line.baselineOrigin.x, y: 0)
-        var attr = CTLineGetStringIndexForPosition(target.line.ctLine, relative)
+        return nil
+    }
+
+    /// The line above/below line `line` of `block`: its neighbour in the block,
+    /// or the nearest line of the neighbouring block.
+    private func adjacentLine(to current: (block: TextBlock, line: Int), up: Bool,
+                              preferredX: CGFloat) -> (block: TextBlock, line: Int)? {
+        let (block, li) = current
+        if up {
+            if li > 0 { return (block, li - 1) }
+            return neighbourBlock(below: false, of: block, preferredX: preferredX).map { ($0, $0.lines.count - 1) }
+        }
+        if li < block.lines.count - 1 { return (block, li + 1) }
+        return neighbourBlock(below: true, of: block, preferredX: preferredX).map { ($0, 0) }
+    }
+
+    /// The position nearest `preferredX` among those whose caret is drawn on
+    /// line `li` of `block`, or nil when the line has none.
+    private func position(onLine li: Int, of block: TextBlock, preferredX: CGFloat) -> Int? {
+        let line = block.lines[li]
+        func isOnLine(_ p: Int) -> Bool { isDrawn(p, onLine: li, of: block) }
+        let relative = CGPoint(x: preferredX - line.baselineOrigin.x, y: 0)
+        var attr = CTLineGetStringIndexForPosition(line.ctLine, relative)
         // The index at the end of the target line is the NEXT line's start, and
         // the caret for it is drawn there — so landing on it bounces the caret
         // straight past the line we aimed at (the "stuck" arrow). Clamp to the
@@ -2211,23 +2231,40 @@ final class DocumentLayout {
         // with its end, which is the next line's start — ↓ from a long line
         // then skips the short one, and ↑ from where it lands comes back to the
         // same place forever.
-        let lineEnd = target.line.stringRange.location + target.line.stringRange.length
-        if attr >= lineEnd, lineEnd > target.line.stringRange.location {
-            let endsInBreak = Unicode.Scalar((target.block.attributed.string as NSString).character(at: lineEnd - 1))
+        let lineEnd = line.stringRange.location + line.stringRange.length
+        if attr >= lineEnd, lineEnd > line.stringRange.location {
+            let endsInBreak = Unicode.Scalar((block.attributed.string as NSString).character(at: lineEnd - 1))
                 .map { CharacterSet(charactersIn: "\n\r\u{2028}\u{2029}").contains($0) } ?? false
-            let isLastLine = target.line.stringRange.location == target.block.lines.last?.stringRange.location
+            let isLastLine = line.stringRange.location == block.lines.last?.stringRange.location
             if endsInBreak || !isLastLine {
                 // One *character* back, not one UTF-16 unit. Backing into the
                 // middle of a surrogate pair (an emoji at the wrap) leaves an
                 // index that maps forward to a whole cluster again — landing on
                 // the next line's start, which is the bounce this clamp exists
                 // to stop.
-                let ns = target.block.attributed.string as NSString
+                let ns = block.attributed.string as NSString
                 attr = max(ns.rangeOfComposedCharacterSequence(at: lineEnd - 1).location,
-                           target.line.stringRange.location)
+                           line.stringRange.location)
             }
         }
-        return target.block.docPos(forAttrIndex: attr)
+        let landing = block.docPos(forAttrIndex: attr)
+        if isOnLine(landing) { return landing }
+        // The column answered with a position drawn on another line — the atom
+        // that wraps onto or off this one. Take the nearest one this line does
+        // draw, if any.
+        let lo = block.docPos(forAttrIndex: line.stringRange.location)
+        let hi = block.docPos(forAttrIndex: lineEnd)
+        guard lo <= hi else { return nil }
+        func x(_ p: Int) -> CGFloat { line.baselineOrigin.x + line.offset(forStringIndex: block.attrIndex(forDocPos: p)) }
+        return (lo ... hi).filter(isOnLine).min { abs(x($0) - preferredX) < abs(x($1) - preferredX) }
+    }
+
+    /// Whether the caret for `pos` is drawn on line `li` of `block`. Not the
+    /// same as the line's string range containing the position's index: an
+    /// atom that wraps covers indices on several lines and draws its positions
+    /// on only the first and last of them.
+    private func isDrawn(_ pos: Int, onLine li: Int, of block: TextBlock) -> Bool {
+        lineIndex(block, block.attrIndex(forDocPos: pos)) == li
     }
 
     /// The block directly above/below `block` at `preferredX`. For normal
@@ -2282,7 +2319,15 @@ final class DocumentLayout {
             end -= 1
         }
         let targetAttr = toEnd ? end : line.stringRange.location
-        return block.docPos(forAttrIndex: targetAttr)
+        let target = block.docPos(forAttrIndex: targetAttr)
+        // A line that opens partway through an atom (one drawn as text, wrapped)
+        // starts on an index that maps to the atom's start — a position drawn
+        // on the line above. The start is the first position this line draws,
+        // which the caret's own position bounds.
+        if !toEnd, target < pos, !isDrawn(target, onLine: li, of: block) {
+            return (target + 1 ... pos).first { isDrawn($0, onLine: li, of: block) } ?? pos
+        }
+        return target
     }
 
     /// The document position nearest to a point in view coordinates.
