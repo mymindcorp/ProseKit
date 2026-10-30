@@ -104,6 +104,38 @@ func registerPMTableExtraTests() {
             table(tr(td(p("x"), table(tr(c11(), c11()), tr(c11()))), c11())),
             table(tr(td(p("x"), table(tr(c11(), c11()), tr(c11(), cEmpty()))), c11())))
 
+    test("PM fixTables: with a known-good old state, only changed tables are checked") {
+        // Upstream's scoping: after a keystroke, the tables the edit didn't
+        // touch were checked last time and are skipped. Pinned from outside by
+        // a malformed table the edit doesn't reach, which a full walk would
+        // repair and a scoped one leaves alone — and by an edit inside it,
+        // which the scoped walk still finds.
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        func cell() throws -> Node {
+            try s.node("tableCell", [:], content: Fragment.from([try s.node("paragraph")]))
+        }
+        let malformed = try s.node("doc", [:], content: Fragment.from([
+            try s.node("table", [:], content: Fragment.from([
+                try s.node("tableRow", [:], content: Fragment.from([cell(), cell()])),
+                try s.node("tableRow", [:], content: Fragment.from([cell()])),
+            ])),
+            try s.node("paragraph", [:], content: Fragment.from([s.text("after")])),
+        ]))
+        let old = EditorState.create(EditorStateConfig(schema: s, doc: malformed))
+        let end = malformed.content.size
+
+        let outside = old.tr
+        _ = try outside.insertText("x", end - 2, end - 2)
+        let typedAfter = old.apply(outside)
+        try expect(fixTables(typedAfter, nil) != nil, "a full walk finds the malformed table")
+        try expect(fixTables(typedAfter, old) == nil, "the edit didn't touch it, so a scoped walk skips it")
+
+        let inside = old.tr
+        _ = try inside.insertText("x", 4, 4) // the first cell's paragraph
+        try expect(fixTables(old.apply(inside), old) != nil, "an edit inside the table is checked")
+    }
+
     test("PM fixTables: a selection-only transaction skips the fix pass") {
         // The fix pass walks the document, and it runs from appendTransaction —
         // on every transaction, including each tick of a selection drag. Only a

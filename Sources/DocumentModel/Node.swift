@@ -110,6 +110,44 @@ public struct Node: Hashable, Sendable {
         nodesBetween(0, content.size, f)
     }
 
+    /// Call `f` for every descendant of this node that isn't also in `old` —
+    /// prosemirror-tables' `changedDescendants`. A child found unchanged among
+    /// the next few children of `old` is skipped with its whole subtree; a
+    /// changed child is visited, then compared with its counterpart in `old`
+    /// one level down. Returning false from `f` skips a node's children, as in
+    /// `descendants`.
+    ///
+    /// An edit leaves every sibling it didn't touch sharing storage with the
+    /// document it was made from, so after a keystroke this visits one path
+    /// from the root instead of the whole tree.
+    public func changedDescendants(since old: Node, _ f: (_ node: Node, _ pos: Int) -> Bool) {
+        Node.changedDescendants(old, self, 0, f)
+    }
+
+    private static func changedDescendants(_ old: Node, _ cur: Node, _ offset: Int,
+                                           _ f: (_ node: Node, _ pos: Int) -> Bool) {
+        let oldSize = old.childCount
+        var offset = offset
+        var j = 0
+        outer: for i in 0..<cur.childCount {
+            let child = cur.child(i)
+            for scan in j..<max(j, min(oldSize, i + 3)) where old.child(scan).sameStorage(as: child) {
+                j = scan + 1
+                offset += child.nodeSize
+                continue outer
+            }
+            if f(child, offset) {
+                if j < oldSize, old.child(j).sameMarkup(child) {
+                    changedDescendants(old.child(j), child, offset + 1, f)
+                } else {
+                    child.nodesBetween(0, child.content.size, { node, pos, _, _ in f(node, pos) },
+                                       startPos: offset + 1)
+                }
+            }
+            offset += child.nodeSize
+        }
+    }
+
     // MARK: - Slicing
 
     /// Cut out the part of the document between the given positions, and return

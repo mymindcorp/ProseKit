@@ -7,16 +7,27 @@ public import EditorStateKit
 // Wired as the table extension's appendTransaction plugin so tables stay
 // rectangular after every edit (the invariant our commands assume).
 
-/// Inspect every table in the state and return a transaction that fixes any
+/// Inspect the tables in the state and return a transaction that fixes any
 /// malformed ones, or nil if all are already well-formed.
+///
+/// With an `oldState` whose document is known to be well-formed, only the
+/// tables in subtrees that changed since it are inspected, as upstream does;
+/// without one, every table is. Walking all of them on every keystroke cost
+/// a pass over the document plus a TableMap per table, for an edit nowhere
+/// near one.
 public func fixTables(_ state: EditorState, _ oldState: EditorState?) -> Transaction? {
     var tr: Transaction?
-    state.doc.descendants { node, pos, _, _ in
+    func check(_ node: Node, _ pos: Int) -> Bool {
         if node.type.name == "table" { tr = fixTable(state, node, pos, tr) }
         // A textblock holds inline content, and a table is not inline: nothing
         // below one can be a table, so don't walk the document's actual text.
         // Tables themselves are still descended into — a cell can nest one.
         return !node.isTextblock
+    }
+    if let oldState {
+        state.doc.changedDescendants(since: oldState.doc, check)
+    } else {
+        state.doc.descendants { node, pos, _, _ in check(node, pos) }
     }
     return tr
 }

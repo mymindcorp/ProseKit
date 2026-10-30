@@ -60,7 +60,9 @@ public final class SlashMenuExtension: Extension {
             key: slashMenuKey.key,
             stateField: PluginStateField(
                 initialize: { _, _ in Optional<SlashMenuState>.none as Any },
-                apply: { _, _, _, newState in computeSlashMenu(newState, atLineStart: atLineStart) as Any }))]
+                apply: { tr, value, _, newState in
+                    suggestionInputsUnchanged(tr) ? value : computeSlashMenu(newState, atLineStart: atLineStart) as Any
+                }))]
     }
 
     public func suggestionSources(_ ctx: ExtensionContext) -> [any SuggestionSource] {
@@ -95,6 +97,10 @@ private func computeSlashMenu(_ state: EditorState, atLineStart: Bool) -> SlashM
     guard let cursor = (state.selection as? TextSelection)?.cursor else { return nil }
     let parent = cursor.parent
     guard parent.isTextblock, !parent.type.spec.code else { return nil }
+    // At line start the `/` has to be the block's first character, so a block
+    // that doesn't begin with one needs no look at the text before the cursor —
+    // the common case on every keystroke.
+    if atLineStart, parent.firstChild?.text?.unicodeScalars.first != "/" { return nil }
     // Use placeholders so the display label of an inline leaf cannot be
     // mistaken for typed trigger text.
     let textBefore = parent.textBetween(0, cursor.parentOffset, blockSeparator: nil, leafText: "\u{fffc}")
