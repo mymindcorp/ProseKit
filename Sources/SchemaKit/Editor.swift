@@ -134,11 +134,19 @@ public final class Editor {
     }
 
     /// Highlight the selection with a named color (a `theme.highlighters` name,
-    /// e.g. "yellow"); pass nil for the default highlight. No-op without the mark.
+    /// e.g. "yellow"); pass nil for the default highlight, and `removeHighlight()`
+    /// to take one off. No-op without the mark.
     @discardableResult
     public func setHighlight(_ color: String?) -> Bool {
         guard let type = schema.marks["highlight"] else { return false }
         return run(SchemaKit.setHighlight(type, color: color))
+    }
+
+    /// Remove any highlight from the selection. No-op without the mark.
+    @discardableResult
+    public func removeHighlight() -> Bool {
+        guard let type = schema.marks["highlight"] else { return false }
+        return run(unsetColor(type))
     }
 
     /// Run a sequence of commands as a chain, threading state through each.

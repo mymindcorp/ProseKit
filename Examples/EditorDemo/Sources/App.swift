@@ -1380,7 +1380,7 @@ final class DryingInk {
             strokes.append(Stroke(from: sel.from, to: sel.to, at: CACurrentMediaTime()))
             startLink()
         }
-        editor.setHighlight(color)
+        if let color { editor.setHighlight(color) } else { editor.removeHighlight() }
         // Replace the system (blue) selection with the ink: collapse the caret to
         // the end of the highlighted range so the marker shows, not the selection.
         if color != nil, !sel.empty {

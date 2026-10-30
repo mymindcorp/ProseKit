@@ -256,5 +256,172 @@ final class HighlightRenderTests: XCTestCase {
         XCTAssertTrue(hasPixel(image) { r, g, b in r > 235 && g > 205 && b < 195 && b < g },
                       "highlight still renders after an edit before it")
     }
+
+    // MARK: - One highlight, one background
+
+    private func paragraphView(_ inline: (Schema) throws -> [Node]) throws -> EditorTextView {
+        let editor = try Editor(extensions: fullKit())
+        let s = editor.schema
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            try s.node("paragraph", [:], content: Fragment.from(try inline(s))),
+        ])))
+        let v = EditorTextView(editor: editor)
+        v.frame = CGRect(x: 0, y: 0, width: 320, height: 600)
+        v.backgroundColor = .white
+        v.layoutIfNeeded()
+        return v
+    }
+
+    /// The pixel at a point of the view, as (r, g, b).
+    private func pixel(_ image: UIImage, _ point: CGPoint) throws -> [UInt8] {
+        let cg = try XCTUnwrap(image.cgImage)
+        let w = cg.width, h = cg.height
+        var data = [UInt8](repeating: 0, count: w * h * 4)
+        let ctx = try XCTUnwrap(unsafe CGContext(data: &data, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                                 space: CGColorSpaceCreateDeviceRGB(),
+                                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let i = (Int(point.y * image.scale) * w + Int(point.x * image.scale)) * 4
+        return [data[i], data[i + 1], data[i + 2]]
+    }
+
+    func testABoldWordInsideAHighlightDoesNotCutIt() throws {
+        let v = try paragraphView { s in
+            let h = s.marks["highlight"]!.create([:]), b = s.marks["bold"]!.create([:])
+            return [s.text("AAAA", [h]), s.text("BBBB", [b, h]), s.text("CCCC", [h])]
+        }
+        XCTAssertEqual(v.ensureLayout().highlights.map { [$0.from, $0.to] }, [[1, 13]])
+        var runs: [HighlightRun] = []
+        v.highlightRenderer = { _, r in runs.append(contentsOf: r) }
+        _ = render(v)
+        XCTAssertEqual(runs.map { [$0.from, $0.to, $0.lineFrom, $0.lineTo] }, [[1, 13, 1, 13]])
+    }
+
+    func testHighlightsOfDifferentColorsStaySeparate() throws {
+        let v = try paragraphView { s in
+            [s.text("AAAA", [s.marks["highlight"]!.create(["color": .string("yellow")])]),
+             s.text("BBBB", [s.marks["highlight"]!.create(["color": .string("green")])])]
+        }
+        XCTAssertEqual(v.ensureLayout().highlights.count, 2)
+    }
+
+    func testAHighlightCoversTheAtomsInsideIt() throws {
+        let v = try paragraphView { s in
+            let h = s.marks["highlight"]!.create([:])
+            return [s.text("one", [h]), try s.node("wikiLink", [:], content: .empty, marks: [h]),
+                    s.text("two", [h])]
+        }
+        XCTAssertEqual(v.ensureLayout().highlights.map { [$0.from, $0.to] }, [[1, 8]])
+    }
+
+    func testWrappedLinesDoNotPaintADarkStripeBetweenThem() throws {
+        let v = try paragraphView { s in
+            [s.text(String(repeating: "wrap ", count: 40), [s.marks["highlight"]!.create([:])])]
+        }
+        let layout = v.ensureLayout()
+        let h = try XCTUnwrap(layout.highlights.first)
+        let rects = layout.selectionRects(from: h.from, to: h.to)
+        XCTAssertGreaterThan(rects.count, 1)
+        let image = render(v)
+        // "wrap" has a descender, but the seam's row and the line's top are both
+        // clear of glyphs, so they should show the same single coat of ink.
+        let x = rects[0].midX
+        let seam = try pixel(image, CGPoint(x: x, y: rects[0].maxY))
+        let band = try pixel(image, CGPoint(x: x, y: rects[0].minY + 0.5))
+        XCTAssertEqual(seam, band, "the overlap between two lines must not paint twice")
+    }
+
+    func testABackgroundColorMarkStaysOutOfTheHostRenderer() throws {
+        let v = try paragraphView { s in
+            let bg = s.marks["backgroundColor"]!.create(["color": .string("#00ff00")])
+            return [s.text("back", [bg]), s.text(" high", [s.marks["highlight"]!.create([:])])]
+        }
+        var runs: [HighlightRun] = []
+        v.highlightRenderer = { _, r in runs.append(contentsOf: r) }
+        let image = render(v)
+        XCTAssertEqual(runs.map { [$0.from, $0.to] }, [[5, 10]], "only the highlight mark is the host's to draw")
+        XCTAssertTrue(hasPixel(image) { r, g, b in g > 180 && r < 120 && b < 120 },
+                      "the background color still paints, as a flat fill")
+    }
+
+    func testABackgroundColorUnderAHighlightStillPaints() throws {
+        let v = try paragraphView { s in
+            [s.text("both", [s.marks["backgroundColor"]!.create(["color": .string("#00ff00")]),
+                             s.marks["highlight"]!.create([:])])]
+        }
+        XCTAssertEqual(v.ensureLayout().highlights.map(\.isHighlight), [false, true])
+    }
+
+    // MARK: - Right-to-left
+
+    /// Each case is (before, highlighted, after); widths are from the plain run
+    /// measured alone, so a zero-width rect can't pass.
+    func testAHighlightCoversRightToLeftTextWhereverItSits() throws {
+        let cases: [(String, String, String)] = [
+            ("abc ", "אבג דהו", " def"),   // a whole Hebrew run in Latin text
+            ("abc ", "مرحبا", " def"),     // and Arabic
+            ("אבג ", "abc", " דהו"),       // Latin inside Hebrew
+            ("", "אבג דהו", ""),           // a wholly right-to-left paragraph
+            ("אבג ", "דהו", " זחט"),       // a word inside one
+        ]
+        for (before, marked, after) in cases {
+            let v = try paragraphView { s in
+                var nodes: [Node] = []
+                if !before.isEmpty { nodes.append(s.text(before)) }
+                nodes.append(s.text(marked, [s.marks["highlight"]!.create([:])]))
+                if !after.isEmpty { nodes.append(s.text(after)) }
+                return nodes
+            }
+            let layout = v.ensureLayout()
+            let h = try XCTUnwrap(layout.highlights.first)
+            let rects = layout.selectionRects(from: h.from, to: h.to)
+            let plain = (marked as NSString).size(withAttributes: [.font: v.theme.bodyFont]).width
+            guard rects.count == 1 else { XCTFail("\(before)|\(marked)|\(after): \(rects)"); continue }
+            XCTAssertEqual(rects[0].width, plain, accuracy: 2, "\(before)|\(marked)|\(after)")
+        }
+    }
+
+    func testARangeAcrossADirectionChangeIsPaintedInBothPieces() throws {
+        // Logical "bc אב" of "abc אבג": the Hebrew's first two letters sit at its
+        // right, so `ג` between them and the Latin stays unpainted.
+        let v = try paragraphView { s in
+            [s.text("a"), s.text("bc אב", [s.marks["highlight"]!.create([:])]), s.text("ג")]
+        }
+        let layout = v.ensureLayout()
+        let h = try XCTUnwrap(layout.highlights.first)
+        let rects = layout.selectionRects(from: h.from, to: h.to)
+        guard rects.count == 2 else { return XCTFail("expected two pieces, got \(rects)") }
+        XCTAssertTrue(rects.allSatisfy { $0.width > 0 })
+        XCTAssertGreaterThan(rects[1].minX, rects[0].maxX, "a gap for the unmarked letter between them")
+    }
+
+    func testRightToLeftRunsReportTheirOwnSliceToTheRenderer() throws {
+        let v = try paragraphView { s in
+            [s.text("abc "), s.text("אבג", [s.marks["highlight"]!.create([:])]), s.text(" def")]
+        }
+        var runs: [HighlightRun] = []
+        v.highlightRenderer = { _, r in runs.append(contentsOf: r) }
+        _ = render(v)
+        XCTAssertEqual(runs.map { [$0.lineFrom, $0.lineTo] }, [[5, 8]])
+        XCTAssertGreaterThan(try XCTUnwrap(runs.first).rect.width, 1)
+    }
+
+    // MARK: - Imported colors
+
+    func testAHighlightFromAnotherEditorPaintsItsOwnColor() throws {
+        for color in ["#ff0000", "rgb(255, 0, 0)"] {
+            let v = try paragraphView { s in
+                [s.text("IMPORTED", [s.marks["highlight"]!.create(["color": .string(color)])])]
+            }
+            XCTAssertTrue(hasPixel(render(v)) { r, g, b in r > 200 && g < 60 && b < 60 }, color)
+        }
+    }
+
+    func testAHighlighterNameTheThemeLacksStillFallsBack() {
+        let theme = DocumentTheme()
+        for name in ["brand-2", "chartreuse", "beef"] {
+            XCTAssertEqual(theme.highlightColor(name), theme.highlightColor(nil), name)
+        }
+    }
 }
 #endif

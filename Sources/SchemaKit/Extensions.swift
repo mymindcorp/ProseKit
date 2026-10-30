@@ -379,7 +379,7 @@ public final class StrikeExtension: MarkExtension {
     }
     public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
         guard let type = ctx.markType else { return [] }
-        return [markInputRule("(?:~~)([^~]+)(?:~~)$", type)]
+        return [markInputRule("(?:^|\\s)(~~([^~\\s]|[^~\\s][^~]*[^~\\s])~~)$", type)]
     }
 }
 
@@ -415,7 +415,7 @@ public final class HighlightExtension: MarkExtension {
     }
     public func inputRules(_ ctx: ExtensionContext) -> [InputRule] {
         guard let type = ctx.markType else { return [] }
-        return [markInputRule("(?:==)([^=]+)(?:==)$", type)]
+        return [markInputRule("(?:^|\\s)(==([^=\\s]|[^=\\s][^=]*[^=\\s])==)$", type)]
     }
 }
 
@@ -428,8 +428,10 @@ public func setHighlight(_ markType: MarkType, color: String?) -> Command {
         let tr = state.tr
         var attrs: Attrs = [:]
         if let color { attrs["color"] = .string(color) }
+        // `addMark` alone replaces another color, and leaves text already in this
+        // one untouched — removing first would make re-applying a color an edit
+        // that changes nothing, and spend an undo on it.
         for range in sel.ranges {
-            _ = try? tr.removeMark(range.from.pos, range.to.pos, markType)
             _ = try? tr.addMark(range.from.pos, range.to.pos, markType.create(attrs))
         }
         guard sel.ranges.contains(where: { tr.doc.rangeHasMark($0.from.pos, $0.to.pos, markType) }) else { return false }
