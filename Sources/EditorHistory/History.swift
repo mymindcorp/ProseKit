@@ -489,6 +489,11 @@ public func _undoItemCount(_ state: EditorState) -> Int {
     historyKey.getState(state)?.done.items.count ?? 0
 }
 
+/// The same count for the redo branch.
+public func _redoItemCount(_ state: EditorState) -> Int {
+    historyKey.getState(state)?.undone.items.count ?? 0
+}
+
 /// The number of undoable events.
 public func undoDepth(_ state: EditorState) -> Int { historyKey.getState(state)?.done.eventCount ?? 0 }
 /// The number of redoable events.

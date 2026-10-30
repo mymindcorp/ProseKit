@@ -519,6 +519,61 @@ func registerPMHistoryTests() {
     }
 
 
+    test("PM history: can undo mark replacement") {
+        // prosemirror-transform 1.12.3: the inverse of an add-mark step that
+        // replaced a link was a plain remove, so undo left no link at all.
+        var s = mkState(doc(p(a("abc", href: "/a"))))
+        s = s.apply(try s.tr.addMark(1, 4, basicSchema.mark("link", ["href": .string("/b")])))
+        try expectEqual(s.doc, doc(p(a("abc", href: "/b"))).node)
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(p(a("abc", href: "/a"))).node)
+        s = command(s, redo)
+        try expectEqual(s.doc, doc(p(a("abc", href: "/b"))).node)
+    }
+
+    test("PM history: a rebase over more local steps than a branch holds redoes the right step") {
+        // prosemirror-history 1.5.1 clips the rebased count to the branch's
+        // length. A branch can be that short: an undo is a local step too, but
+        // it puts an item on `undone` without a step to match. Here two
+        // unconfirmed steps (typing "a", then undoing it) are rebased over
+        // one remote step, and `undone` holds only the item that redoes "a".
+        // Pairing items with steps by an unclipped count matches that item
+        // with the re-applied *typing* step, so redo deleted the "a" instead.
+        var s = mkState()
+        s = typeText(s, "base")
+        s = s.apply(closeHistory(s.tr))
+        let baseDoc = s.doc
+        let typed = ReplaceStep(5, 5, Slice(content: Fragment.from([basicSchema.text("a")]), openStart: 0, openEnd: 0))
+        let t1 = s.tr; _ = t1.maybeStep(typed); s = s.apply(t1)
+        let typedDoc = s.doc
+        s = command(s, undo)
+        try expectEqual(s.doc, baseDoc)
+        let undoStep = ReplaceStep(5, 6, .empty)
+        try expectEqual(undoStep.apply(typedDoc).doc, s.doc)
+        try expectEqual(_redoItemCount(s), 1, "undone must be shorter than the two steps rebased below")
+
+        let remote = ReplaceStep(1, 1, Slice(content: Fragment.from([basicSchema.text("left ")]), openStart: 0, openEnd: 0))
+        let tr = s.tr
+        _ = tr.maybeStep(undoStep.invert(typedDoc))
+        _ = tr.maybeStep(typed.invert(baseDoc))
+        _ = tr.maybeStep(remote)
+        _ = tr.maybeStep(typed.map(tr.mapping.slice(2))!)
+        tr.mapping.setMirror(1, tr.steps.count - 1)
+        _ = tr.maybeStep(undoStep.map(tr.mapping.slice(1))!)
+        tr.mapping.setMirror(0, tr.steps.count - 1)
+        tr.setMeta("addToHistory", false)
+        tr.setMeta("rebased", 2)
+        s = s.apply(tr)
+        try expectEqual(s.doc, doc(p("left base")).node)
+        try expectEqual(undoDepth(s), 1, "the confirmed \"base\" event")
+        try expectEqual(redoDepth(s), 1, "the undone \"a\"")
+
+        let undone = command(s, undo)
+        try expectEqual(undone.doc, doc(p("left ")).node)
+        let redone = command(s, redo)
+        try expectEqual(redone.doc, doc(p("left basea")).node)
+    }
+
     test("PM history: rebasing keeps an unconfirmed untracked step as a map") {
         // Collab rebases every unconfirmed local step, including ones that
         // stayed out of the history. Such a step has only a map in the branch;

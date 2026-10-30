@@ -4,37 +4,16 @@ public extension Transform {
     /// Add the given mark to the inline content between `from` and `to`.
     @discardableResult
     func addMark(_ from: Int, _ to: Int, _ mark: Mark) throws -> Self {
-        var removed: [RemoveMarkStep] = []
-        var added: [AddMarkStep] = []
-        // Track the currently-extending steps so adjacent ranges merge.
-        var removingIndexByMark: [Mark: Int] = [:]
-        var addingIndex: Int? = nil
-
+        // No separate steps to remove the marks this one excludes:
+        // `AddMarkStep.apply` drops them, and its `invert` puts them back.
+        var added: [any Step] = []
         doc.nodesBetween(from, to, { node, pos, parent, _ in
             guard node.isInline, let parent else { return true }
-            let marks = node.marks
-            if !mark.isInSet(marks) && parent.type.allowsMarkType(mark.type) {
-                let start = Swift.max(pos, from)
-                let end = Swift.min(pos + node.nodeSize, to)
-                let newSet = mark.addToSet(marks)
-                for m in marks where !m.isInSet(newSet) {
-                    if let idx = removingIndexByMark[m], removed[idx].to == start {
-                        removed[idx] = RemoveMarkStep(removed[idx].from, end, m)
-                    } else {
-                        removingIndexByMark[m] = removed.count
-                        removed.append(RemoveMarkStep(start, end, m))
-                    }
-                }
-                if let idx = addingIndex, added[idx].to == start {
-                    added[idx] = AddMarkStep(added[idx].from, end, mark)
-                } else {
-                    addingIndex = added.count
-                    added.append(AddMarkStep(start, end, mark))
-                }
+            if !mark.isInSet(node.marks) && parent.type.allowsMarkType(mark.type) {
+                pushMarkStep(&added, adding: true, Swift.max(pos, from), Swift.min(pos + node.nodeSize, to), mark)
             }
             return true
         })
-        for s in removed { try step(s) }
         for s in added { try step(s) }
         return self
     }
@@ -74,7 +53,7 @@ public extension Transform {
         var matched: [Matched] = []
         var stepCount = 0
         doc.nodesBetween(from, to, { node, pos, _, _ in
-            guard node.isInline else { return true }
+            guard node.isInline, node.isAtom else { return true }
             stepCount += 1
             let toRemove = toRemoveFor(node)
             if !toRemove.isEmpty {

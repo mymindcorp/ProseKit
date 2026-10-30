@@ -38,17 +38,18 @@ func registerPMTransformTests() {
     add("should join overlapping marks", doc(p("one <a>two ", em("three<b> four"))), basicSchema.mark("strong"), doc(p("one ", strong("two ", em("three")), em(" four"))))
     add("should overwrite marks with different attributes", doc(p("this is a ", a("<a>link<b>"))), basicSchema.mark("link", ["href": .string("bar")]), doc(p("this is a ", a("link", href: "bar"))))
     // The link being replaced (a link excludes its own type) runs across two
-    // text nodes, the second also em, so removing the old link is one step
-    // spanning both rather than one per node.
+    // text nodes, the second also em.
     add("overwrites a link that spans several nodes", doc(p("this is a ", a("<a>li", em("nk<b>")))), basicSchema.mark("link", ["href": .string("bar")]), doc(p("this is a ", a("li", em("nk"), href: "bar"))))
-    test("PM addMark: removing an excluded mark across nodes is a single step") {
+    test("PM addMark: replacing a mark is one add step, whose inverse restores the old mark") {
+        // Since prosemirror-transform 1.12.3 there is no separate step removing
+        // the excluded link: the add step drops it, and its inverse puts it back.
         let d = doc(p("this is a ", a("<a>li", em("nk<b>"))))
         let tr = Transform(d.node)
         try tr.addMark(tag(d, "a"), tag(d, "b"), basicSchema.mark("link", ["href": .string("bar")]))
-        let removes = tr.steps.compactMap { $0 as? RemoveMarkStep }
-        try expectEqual(removes.count, 1)
-        try expectEqual(removes.first?.from, tag(d, "a"))
-        try expectEqual(removes.first?.to, tag(d, "b"))
+        try expectEqual(tr.steps.count, 1)
+        guard let add = tr.steps.first as? AddMarkStep else { try expect(false, "an add step"); return }
+        try expectEqual([add.from, add.to], [tag(d, "a"), tag(d, "b")])
+        try expectEqual(add.invert(d.node).apply(tr.doc).doc, d.node)
     }
     add("can add a mark in a nested node", doc(p("before"), blockquote(p("the variable is called <a>i<b>")), p("after")), basicSchema.mark("code"), doc(p("before"), blockquote(p("the variable is called ", code("i"))), p("after")))
     add("can add a mark across blocks", doc(p("hi <a>this"), blockquote(p("is")), p("a docu<b>ment"), p("!")), basicSchema.mark("em"), doc(p("hi ", em("this")), blockquote(p(em("is"))), p(em("a docu"), "ment"), p("!")))

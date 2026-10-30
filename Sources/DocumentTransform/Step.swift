@@ -122,6 +122,7 @@ public enum StepRegistry {
         state.decoders["replaceAround"] = { try ReplaceAroundStep.fromJSON($0, $1) }
         state.decoders["addMark"] = { try AddMarkStep.fromJSON($0, $1) }
         state.decoders["removeMark"] = { try RemoveMarkStep.fromJSON($0, $1) }
+        state.decoders["markSet"] = { try MarkSetStep.fromJSON($0, $1) }
         state.decoders["addNodeMark"] = { try AddNodeMarkStep.fromJSON($0, $1) }
         state.decoders["removeNodeMark"] = { try RemoveNodeMarkStep.fromJSON($0, $1) }
         state.decoders["attr"] = { try AttrStep.fromJSON($0, $1) }

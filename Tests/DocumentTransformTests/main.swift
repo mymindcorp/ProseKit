@@ -171,4 +171,5 @@ test("ReplaceStep JSON round-trip") {
 registerPMStructureTests(); registerPMTransformTests(); registerPMReplaceTests(); registerPMContentTests(); registerPMSliceTests(); registerPMMarkTests(); registerPMNodeTests(); registerPMMappingTests(); registerPMResolveTests(); registerPMStepTests(); registerPMDiffTests(); registerStepAttrAndNodeMarkTests(); registerMarkStepEdgeTests(); registerAdversarialStepTests(); registerSliceInsertAtTests(); registerPMReplaceRangeTests()
 
 registerTransformMutationKillTests()
+registerPMInvertTests()
 TestSuite.main("DocumentTransformTests", collector.all)
