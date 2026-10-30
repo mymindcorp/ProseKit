@@ -8,43 +8,69 @@ import Foundation
 /// and new data as much as possible, which a tree shape like this (without back
 /// pointers) makes easy.
 public struct Node: Hashable, Sendable {
+    /// What a node holds, behind one reference.
+    ///
+    /// A node's five reference-counted fields were stored inline, so copying a
+    /// node meant five retains. An edit copies every sibling along its path
+    /// into a new array and later frees the old one, and that traffic was most
+    /// of what a keystroke cost in a document of many blocks. Behind one
+    /// reference a copy is a single retain — and a node is what upstream's is,
+    /// an object that can be compared by identity.
+    private final class Storage: Sendable {
+        let type: NodeType
+        let attrs: Attrs
+        let content: Fragment
+        let marks: [Mark]
+        let text: String?
+        /// `nodeSize`, measured once here. It is read for every sibling on
+        /// every walk of a fragment — `findIndex`, `cut`, `replace`, resolving
+        /// a position. For a text node it is the character count, which
+        /// JavaScript strings know but `String.count` has to walk the grapheme
+        /// clusters for; for the rest, the leaf test reads a class `var`, whose
+        /// exclusivity check and retain were most of what resolving a position
+        /// cost.
+        let size: Int
+
+        init(type: NodeType, attrs: Attrs, content: Fragment, marks: [Mark], text: String?, size: Int) {
+            self.type = type
+            self.attrs = attrs
+            self.content = content
+            self.marks = marks
+            self.text = text
+            self.size = size
+        }
+    }
+
+    private let storage: Storage
+
     /// The type of node that this is.
-    public let type: NodeType
+    public var type: NodeType { storage.type }
     /// An object mapping attribute names to values.
-    public let attrs: Attrs
+    public var attrs: Attrs { storage.attrs }
     /// A fragment holding the node's children.
-    public let content: Fragment
+    public var content: Fragment { storage.content }
     /// The marks (things like whether it is emphasized or part of a link)
     /// applied to this node.
-    public let marks: [Mark]
+    public var marks: [Mark] { storage.marks }
     /// For text nodes, this contains the node's text content.
-    public let text: String?
-    /// A text node's length in grapheme clusters, measured once here.
-    ///
-    /// `nodeSize` is read on every walk of a fragment — `findIndex`, `cut`,
-    /// `replace`, resolving a position — and for a text node it is the
-    /// character count. ProseMirror can answer that in constant time because a
-    /// JavaScript string carries its UTF-16 length; `String.count` in Swift
-    /// walks the grapheme clusters instead, so the port inherited an
-    /// assumption of O(1) that had become O(n). Measuring it once per node
-    /// costs a walk that constructing the string paid for anyway.
-    private let textCount: Int
+    public var text: String? { storage.text }
 
-    init(type: NodeType, attrs: Attrs, content: Fragment = .empty, marks: [Mark] = [], text: String? = nil) {
-        self.type = type
-        self.attrs = attrs
-        self.content = content
-        self.marks = marks
-        self.text = text
-        self.textCount = text?.count ?? 0
+    /// `textCount` is the text's length in characters, for a caller that
+    /// already knows it — every position in the document rests on it being
+    /// right, so debug builds, and so the fuzzers, recount it.
+    init(type: NodeType, attrs: Attrs, content: Fragment = .empty, marks: [Mark] = [], text: String? = nil,
+         textCount: Int? = nil) {
+        assert(textCount == nil || textCount == text?.count, "Wrong character count for \(text ?? "nil")")
+        let size = type.isText ? (textCount ?? text?.count ?? 0) : type.isLeaf ? 1 : 2 + content.size
+        storage = Storage(type: type, attrs: attrs, content: content, marks: marks, text: text, size: size)
     }
 
     public static func == (lhs: Node, rhs: Node) -> Bool {
-        lhs.type === rhs.type &&
+        lhs.storage === rhs.storage || (lhs.type === rhs.type &&
             lhs.text == rhs.text &&
             lhs.attrs == rhs.attrs &&
             lhs.marks == rhs.marks &&
-            lhs.content == rhs.content
+            lhs.content == rhs.content)
     }
 
     public func hash(into hasher: inout Hasher) {
@@ -61,11 +87,7 @@ public struct Node: Hashable, Sendable {
     /// For text nodes, this is the amount of characters. For other leaf nodes,
     /// it is one. For non-leaf nodes, it is the size of the content plus two
     /// (the start and end token).
-    public var nodeSize: Int {
-        if isText { return textCount }
-        if isLeaf { return 1 }
-        return 2 + content.size
-    }
+    public var nodeSize: Int { storage.size }
 
     /// The number of children this node has.
     public var childCount: Int { content.childCount }
@@ -153,15 +175,7 @@ public struct Node: Hashable, Sendable {
     /// Cut out the part of the document between the given positions, and return
     /// it as a `Node`. For text nodes, this slices the text content.
     public func cut(_ from: Int, _ to: Int? = nil) -> Node {
-        if isText {
-            let s = text ?? ""
-            let count = s.count
-            let to = to ?? count
-            if from == 0 && to == count { return self }
-            let start = s.index(s.startIndex, offsetBy: from)
-            let end = s.index(start, offsetBy: to - from)
-            return withText(String(s[start..<end]))
-        }
+        if isText { return cutText(from, to ?? nodeSize) }
         let to = to ?? content.size
         if from == 0 && to == content.size { return self }
         return copy(content: content.cut(from, to))
@@ -267,8 +281,8 @@ public struct Node: Hashable, Sendable {
     /// content sharing storage. The cheap stand-in for the reference check
     /// upstream uses to skip rebuilding a node that hasn't changed.
     func sameStorage(as other: Node) -> Bool {
-        type === other.type && text == other.text && marks == other.marks
-            && attrs == other.attrs && content.sharesStorage(with: other.content)
+        storage === other.storage || (type === other.type && text == other.text && marks == other.marks
+            && attrs == other.attrs && content.sharesStorage(with: other.content))
     }
 
     /// Create a copy of this node, with the given set of marks instead of the
@@ -284,6 +298,54 @@ public struct Node: Hashable, Sendable {
         precondition(isText, "withText called on non-text node")
         precondition(!text.isEmpty, "Empty text nodes are not allowed")
         return Node(type: type, attrs: attrs, content: content, marks: marks, text: text)
+    }
+
+    /// The string indices of characters `lo..<hi` of this text node.
+    ///
+    /// Offsets are in characters, and a `String` finds a character offset by
+    /// walking grapheme clusters from one end. A string with one byte per
+    /// character doesn't need the walk; any other walks from the nearer end.
+    func textRange(_ lo: Int, _ hi: Int) -> Range<String.Index> {
+        let s = text ?? ""
+        let utf8 = s.utf8
+        if utf8.count == nodeSize {
+            let start = utf8.index(utf8.startIndex, offsetBy: lo)
+            return start..<utf8.index(start, offsetBy: hi - lo)
+        }
+        if lo > nodeSize / 2 {
+            let end = s.index(s.endIndex, offsetBy: hi - nodeSize)
+            return s.index(end, offsetBy: lo - hi)..<end
+        }
+        let start = s.index(s.startIndex, offsetBy: lo)
+        return start..<s.index(start, offsetBy: hi - lo)
+    }
+
+    /// For text nodes: the characters `lo..<hi` as a node of their own. Cutting
+    /// at character boundaries keeps the characters either side of the cut, so
+    /// the length is known and needs no count.
+    func cutText(_ lo: Int, _ hi: Int) -> Node {
+        if lo == 0 && hi == nodeSize { return self }
+        precondition(hi > lo, "Empty text nodes are not allowed")
+        return Node(type: type, attrs: attrs, content: content, marks: marks,
+                    text: String((text ?? "")[textRange(lo, hi)]), textCount: hi - lo)
+    }
+
+    /// For text nodes: this node with `other`'s text added to its end. Lengths
+    /// are not additive — a combining mark or regional indicator can join the
+    /// character before it — but a join can only reach this node's last
+    /// character, so that is all that needs counting again.
+    func appendingText(_ other: Node) -> Node {
+        let a = text ?? "", b = other.text ?? ""
+        let count: Int
+        if let last = a.utf8.last, let first = b.utf8.first, last < 0x80, first < 0x80, last != 0x0D {
+            // ASCII either side, and not a CR that a LF would join, can't join.
+            count = nodeSize + other.nodeSize
+        } else if let last = a.last {
+            count = nodeSize - 1 + (String(last) + b).count
+        } else {
+            count = other.nodeSize
+        }
+        return Node(type: type, attrs: attrs, content: content, marks: marks, text: a + b, textCount: count)
     }
 
     /// Create a copy of this node with the given marks in place of its own.

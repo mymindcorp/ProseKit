@@ -14,6 +14,51 @@ import TestHarness
 // the same either way, since that is the whole claim: only the work changes.
 
 func registerStorageIdentityTests() {
+    // Cuts and joins pass along a length they already know rather than counting
+    // the result, and every document position rests on that length. The strings
+    // are the ones where characters and scalars part company.
+    let trickyText = ["abc", "a\r", "\nb", "e\u{301}x", "\u{301}y", "🇺", "🇸🇬🇧", "x🇺", "👩", "\u{200D}💻z",
+                      "👩\u{200D}💻", "漢字", "é", "\u{0600}", "\u{0600}q", "क", "\u{94D}ष", "abc🙂def"]
+
+    test("text cuts: every cut holds the characters it says, and knows their count") {
+        for string in trickyText {
+            let node = B.t(string)
+            let chars = Array(string)
+            for lo in 0..<chars.count {
+                for hi in (lo + 1)...chars.count {
+                    let cut = node.cut(lo, hi)
+                    try expectEqual(cut.text, String(chars[lo..<hi]), "\(string.debugDescription) \(lo)..<\(hi)")
+                    try expectEqual(cut.nodeSize, hi - lo, "\(string.debugDescription) \(lo)..<\(hi)")
+                    try expectEqual(cut.nodeSize, cut.text?.count)
+                    let fragment = Fragment.from(node).cut(lo, hi)
+                    try expectEqual(fragment.size, hi - lo)
+                    try expectEqual(fragment.textBetween(0, hi - lo), String(chars[lo..<hi]))
+                }
+            }
+        }
+    }
+
+    test("text joins: a joined node's size is its real character count") {
+        for left in trickyText {
+            for right in trickyText {
+                let joined = Fragment.from(B.t(left)).append(Fragment.from(B.t(right)))
+                let whole = left + right
+                try expectEqual(joined.size, whole.count, "\(left.debugDescription) + \(right.debugDescription)")
+                try expectEqual(joined.child(0).nodeSize, whole.count)
+                try expectEqual(Fragment.from([B.t(left), B.t(right)]).size, whole.count)
+            }
+        }
+    }
+
+    test("copies of a node compare equal, and differ once anything does") {
+        let node = B.p("hello")
+        let copy = node
+        try expect(copy == node)
+        try expectEqual(copy.hashValue, node.hashValue)
+        try expect(B.p("hello") == node, "equal in value, separate in storage")
+        try expect(B.p("hellp") != node)
+    }
+
     test("changedDescendants: visits only what an edit rebuilt") {
         let old = B.doc(B.p("a"), B.p("b"), B.p("c"))
         var visited: [String] = []

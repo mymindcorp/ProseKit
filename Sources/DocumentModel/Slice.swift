@@ -252,7 +252,7 @@ enum ReplaceAlgorithm {
 
     private static func addNode(_ child: Node, _ target: inout [Node]) {
         if let last = target.last, child.isText, child.sameMarkup(last) {
-            target[target.count - 1] = last.withText((last.text ?? "") + (child.text ?? ""))
+            target[target.count - 1] = last.appendingText(child)
         } else {
             target.append(child)
         }

@@ -110,15 +110,13 @@ public struct Fragment: Hashable, Sendable {
             var nodeText = ""
             if node.isText {
                 let s = node.text ?? ""
-                let count = s.count
+                let count = node.nodeSize
                 let lo = max(0, max(from, pos) - pos)
                 let hi = max(0, min(count, to - pos))
                 if lo == 0 && hi >= count {
                     nodeText = s
                 } else if lo < hi {
-                    let start = s.index(s.startIndex, offsetBy: lo)
-                    let end = s.index(start, offsetBy: hi - lo)
-                    nodeText = String(s[start..<end])
+                    nodeText = String(s[node.textRange(lo, hi)])
                 }
             } else if node.isLeaf {
                 if let leafText {
@@ -153,7 +151,7 @@ public struct Fragment: Hashable, Sendable {
         var newSize = size + other.size
         if let first = rest.first, last.isText, first.isText, Mark.sameSet(last.marks, first.marks) {
             let oldSize = last.nodeSize + first.nodeSize
-            last = last.withText((last.text ?? "") + (first.text ?? ""))
+            last = last.appendingText(first)
             // Grapheme counts are not additive: a combining mark or regional
             // indicator can join the preceding character when text is merged.
             newSize += last.nodeSize - oldSize
@@ -180,13 +178,7 @@ public struct Fragment: Hashable, Sendable {
                     var c = child
                     if pos < from || end > to {
                         if c.isText {
-                            let s = c.text ?? ""
-                            let lo = max(0, from - pos)
-                            // `child.nodeSize` is the same count, already measured.
-                            let hi = min(child.nodeSize, to - pos)
-                            let start = s.index(s.startIndex, offsetBy: lo)
-                            let end = s.index(start, offsetBy: max(0, hi - lo))
-                            c = c.withText(String(s[start..<end]))
+                            c = c.cutText(max(0, from - pos), min(child.nodeSize, to - pos))
                         } else {
                             c = c.cut(max(0, from - pos - 1), min(c.content.size, to - pos - 1))
                         }
@@ -347,7 +339,7 @@ public struct Fragment: Hashable, Sendable {
             if i > 0, node.isText, nodes[i - 1].sameMarkup(node) {
                 if joined == nil { joined = Array(nodes[0..<i]) }
                 let prev = joined![joined!.count - 1]
-                joined![joined!.count - 1] = prev.withText((prev.text ?? "") + (node.text ?? ""))
+                joined![joined!.count - 1] = prev.appendingText(node)
             } else {
                 joined?.append(node)
             }
