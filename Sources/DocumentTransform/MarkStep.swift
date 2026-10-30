@@ -41,13 +41,35 @@ public struct AddMarkStep: Step {
         return .fromReplace(doc, from, to, slice)
     }
 
-    public func invert(_ doc: Node) -> any Step { RemoveMarkStep(from, to, mark) }
+    /// Remove the mark only where this step added it, and put back any mark
+    /// it pushed out by exclusion. A plain `RemoveMarkStep` over the range
+    /// would also strip the mark from text that already had it, and leave a
+    /// replaced mark (one link swapped for another) gone.
+    public func invert(_ doc: Node) -> any Step {
+        var steps: [any Step] = []
+        doc.nodesBetween(from, to, { node, pos, _, _ in
+            if node.isInline && node.isAtom {
+                let added = mark.addToSet(node.marks)
+                if added != node.marks {
+                    let from = Swift.max(self.from, pos), to = Swift.min(self.to, pos + node.nodeSize)
+                    pushMarkStep(&steps, adding: false, from, to, mark)
+                    for m in node.marks where !m.isInSet(added) {
+                        pushMarkStep(&steps, adding: true, from, to, m)
+                    }
+                }
+            }
+            return true
+        })
+        return steps.count == 1 ? steps[0] : MarkSetStep(steps)
+    }
 
+    /// Dropped only when nothing is left of the range. A step whose two ends
+    /// were both deleted can still cover content between the deletions.
     public func map(_ mapping: any Mappable) -> (any Step)? {
-        let from = mapping.mapResult(self.from, 1)
-        let to = mapping.mapResult(self.to, -1)
-        if (from.deleted && to.deleted) || from.pos >= to.pos { return nil }
-        return AddMarkStep(from.pos, Swift.max(from.pos, to.pos), mark)
+        let from = mapping.map(self.from, 1)
+        let to = mapping.map(self.to, -1)
+        if from >= to { return nil }
+        return AddMarkStep(from, to, mark)
     }
 
     public func merge(_ other: any Step) -> (any Step)? {
@@ -92,13 +114,23 @@ public struct RemoveMarkStep: Step {
         return .fromReplace(doc, from, to, slice)
     }
 
-    public func invert(_ doc: Node) -> any Step { AddMarkStep(from, to, mark) }
+    /// Add the mark back only where this step took it away.
+    public func invert(_ doc: Node) -> any Step {
+        var steps: [any Step] = []
+        doc.nodesBetween(from, to, { node, pos, _, _ in
+            if node.isInline && node.isAtom && mark.isInSet(node.marks) {
+                pushMarkStep(&steps, adding: true, Swift.max(from, pos), Swift.min(to, pos + node.nodeSize), mark)
+            }
+            return true
+        })
+        return steps.count == 1 ? steps[0] : MarkSetStep(steps)
+    }
 
     public func map(_ mapping: any Mappable) -> (any Step)? {
-        let from = mapping.mapResult(self.from, 1)
-        let to = mapping.mapResult(self.to, -1)
-        if (from.deleted && to.deleted) || from.pos >= to.pos { return nil }
-        return RemoveMarkStep(from.pos, Swift.max(from.pos, to.pos), mark)
+        let from = mapping.map(self.from, 1)
+        let to = mapping.map(self.to, -1)
+        if from >= to { return nil }
+        return RemoveMarkStep(from, to, mark)
     }
 
     public func merge(_ other: any Step) -> (any Step)? {
@@ -118,6 +150,88 @@ public struct RemoveMarkStep: Step {
         try checkStepPositions("RemoveMarkStep", from, to)
         try checkStepOrder("RemoveMarkStep", from, to)
         return RemoveMarkStep(from, to, try Mark.fromJSON(schema, markJSON))
+    }
+}
+
+/// Append an add- or remove-mark step to `target`, extending the last step
+/// instead when it is the same kind, for the same mark, and ends where this
+/// one starts.
+func pushMarkStep(_ target: inout [any Step], adding: Bool, _ from: Int, _ to: Int, _ mark: Mark) {
+    if adding, let last = target.last as? AddMarkStep, last.to == from, last.mark == mark {
+        target[target.count - 1] = AddMarkStep(last.from, to, mark)
+    } else if !adding, let last = target.last as? RemoveMarkStep, last.to == from, last.mark == mark {
+        target[target.count - 1] = RemoveMarkStep(last.from, to, mark)
+    } else {
+        target.append(adding ? AddMarkStep(from, to, mark) : RemoveMarkStep(from, to, mark))
+    }
+}
+
+/// Several add- and remove-mark steps applied in order, as one step. This is
+/// what inverting a mark step produces when undoing it takes more than one
+/// range or more than one mark.
+public struct MarkSetStep: Step {
+    /// Only `AddMarkStep`s and `RemoveMarkStep`s. A `MarkSetStep` passed in is
+    /// spliced into its parent, so this never nests.
+    public let steps: [any Step]
+
+    public init(_ steps: [any Step]) {
+        self.steps = steps.flatMap { ($0 as? MarkSetStep)?.steps ?? [$0] }
+    }
+
+    public var jsonID: String { "markSet" }
+
+    public func apply(_ doc: Node) -> StepResult {
+        var doc = doc
+        for step in steps {
+            let result = step.apply(doc)
+            guard let next = result.doc else { return result }
+            doc = next
+        }
+        return .ok(doc)
+    }
+
+    /// Upstream inverts every part against the document *before* the whole
+    /// set and keeps their order. That is right for the sets mark-step
+    /// inversion builds, where the parts never overlap except to swap an
+    /// excluded mark back in, but not for a set in general. Here each part is
+    /// inverted against the document it was actually applied to, and the
+    /// inverses run last-first.
+    public func invert(_ doc: Node) -> any Step {
+        var doc = doc
+        var inverses: [any Step] = []
+        for step in steps {
+            inverses.append(step.invert(doc))
+            guard let next = step.apply(doc).doc else { break }
+            doc = next
+        }
+        return MarkSetStep(inverses.reversed())
+    }
+
+    public func map(_ mapping: any Mappable) -> (any Step)? {
+        let mapped = steps.compactMap { $0.map(mapping) }
+        return mapped.isEmpty ? nil : MarkSetStep(mapped)
+    }
+
+    public func toJSON() -> [String: AttributeValue] {
+        ["stepType": "markSet", "steps": .array(steps.map { .object($0.toJSON()) })]
+    }
+
+    public static func fromJSON(_ schema: Schema, _ json: [String: AttributeValue]) throws(ModelError) -> any Step {
+        guard case let .array(items)? = json["steps"] else {
+            throw ModelError.invalidJSON("Invalid JSON for MarkSetStep")
+        }
+        var steps: [any Step] = []
+        for item in items {
+            guard case let .object(stepJSON) = item else {
+                throw ModelError.invalidJSON("Invalid JSON for MarkSetStep")
+            }
+            switch stepJSON["stepType"]?.stringValue {
+            case "addMark": steps.append(try AddMarkStep.fromJSON(schema, stepJSON))
+            case "removeMark": steps.append(try RemoveMarkStep.fromJSON(schema, stepJSON))
+            default: throw ModelError.invalidJSON("Invalid JSON for MarkSetStep")
+            }
+        }
+        return MarkSetStep(steps)
     }
 }
 

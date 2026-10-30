@@ -308,6 +308,7 @@ func registerMarkStepEdgeTests() {
             AddNodeMarkStep(1, mark), RemoveNodeMarkStep(1, mark),
             AttrStep(0, "level", .int(2)), DocAttrStep("version", .int(1)),
             ReplaceStep(0, 0, .empty), ReplaceAroundStep(0, 4, 1, 3, .empty, 0),
+            MarkSetStep([AddMarkStep(0, 1, mark), RemoveMarkStep(1, 2, mark)]),
         ]
         for step in steps {
             try expectEqual(step.toJSON()["stepType"], .string(step.jsonID),

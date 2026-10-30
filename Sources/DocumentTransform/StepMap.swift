@@ -92,8 +92,8 @@ public final class StepMap: Mappable, @unchecked Sendable {
                 let result = start + diff + (side < 0 ? 0 : newSize)
                 let recover = pos == (assoc < 0 ? start : end) ? nil : makeRecover(i / 3, pos - start)
                 // An insertion deletes nothing, so none of the deleted flags
-                // belong to it. Upstream spells this line without the
-                // `oldSize == 0` case, and a range that inserts has
+                // belong to it. Upstream spelled this line without the
+                // `oldSize == 0` case until 1.12.2, and a range that inserts has
                 // `start == end == pos` when the loop reaches it — so the first
                 // arm won and every insertion reported `deletedAfter` for the
                 // position it happened at. See the note in

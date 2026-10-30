@@ -15,18 +15,18 @@ Use it to find what's new when re-auditing: read each package's CHANGELOG from t
 
 | Swift module | Upstream package | Reviewed through | Date | Notes |
 | --- | --- | --- | --- | --- |
-| `DocumentModel` | `prosemirror-model` | **1.25.11** | 2026-08-22 | `Fragment.fromJSON` adjacent-text-node join **ported** this pass. The Slice invalid-`ReplaceAroundStep` guard (1.25.3, narrowed in 1.25.5) was **not** present — an earlier pass recorded it as confirmed in error — and is **ported** now. The surrogate-pair fix in `findDiffStart`/`End` (1.25.8) is N/A — positions here are grapheme clusters. `ReplaceError` vs `checkContent` (1.25.9) is free: `StepResult.fromReplace` catches any error. `DOMOutputSpec` typing (1.25.5/1.25.7/1.25.10) is TypeScript-only, and `body` in `blockTags` (1.25.11) is already how our `HTMLParser` treats it. See "Known gaps". |
-| `DocumentTransform` | `prosemirror-transform` | **1.12.1** | 2026-09-17 | Fitter `openMore` rewrite (1.12.1) **ported** this pass — upstream's regression test already passed here, because `fit` re-clamps the slice's open depths every round, but the code now matches. `ReplaceStep.map` structure-flag fix (1.10.4) ported earlier. `liftTarget` split-constraint (1.10.5), `Mapping.appendMap` aliasing (1.10.3, free via Swift value semantics), and `deleteRange` start-to-start (1.12.0) confirmed present. See "Known gaps". |
+| `DocumentModel` | `prosemirror-model` | **1.25.12** | 2026-10-30 | Attribute validation moving into `NodeType`/`MarkType.create` (1.25.12) is N/A until `validate` exists here — see "Known gaps". `Fragment.fromJSON` adjacent-text-node join **ported** this pass. The Slice invalid-`ReplaceAroundStep` guard (1.25.3, narrowed in 1.25.5) was **not** present — an earlier pass recorded it as confirmed in error — and is **ported** now. The surrogate-pair fix in `findDiffStart`/`End` (1.25.8) is N/A — positions here are grapheme clusters. `ReplaceError` vs `checkContent` (1.25.9) is free: `StepResult.fromReplace` catches any error. `DOMOutputSpec` typing (1.25.5/1.25.7/1.25.10) is TypeScript-only, and `body` in `blockTags` (1.25.11) is already how our `HTMLParser` treats it. See "Known gaps". |
+| `DocumentTransform` | `prosemirror-transform` | **1.12.4** | 2026-10-30 | Mark-step inversion (1.12.3) and `MarkSetStep` JSON (1.12.4) **ported** this pass, with upstream's random invert tests — see the log. The `mapResult` insertion flags (1.12.2) were already fixed here ahead of upstream. Fitter `openMore` rewrite (1.12.1) **ported** this pass — upstream's regression test already passed here, because `fit` re-clamps the slice's open depths every round, but the code now matches. `ReplaceStep.map` structure-flag fix (1.10.4) ported earlier. `liftTarget` split-constraint (1.10.5), `Mapping.appendMap` aliasing (1.10.3, free via Swift value semantics), and `deleteRange` start-to-start (1.12.0) confirmed present. See "Known gaps". |
 | `EditorStateKit` | `prosemirror-state` | **1.4.4** | 2025-10-23 | `insertText` selection collapse and empty-text structural deletion restored and regression-tested on 2026-09-15. |
 | `EditorCommands` | `prosemirror-commands` | **1.7.2** | 2026-08-22 | `splitBlock` measuring its split against the post-deletion selection (1.7.2) **ported** in an earlier pass. `splitBlockAs` has now been brought up to upstream's shape wholesale: the multi-depth walk out of an inline node (1.6.2), the reset of the empty leftover a start-of-block split leaves behind, and the `false` return when no split is possible (1.6.1) were all missing — the row previously claimed them as confirmed — and are **ported** this pass. The `splitNode` callback still takes `(node, atEnd)` rather than upstream's third `$from` parameter (an unported feature). See "Known gaps". |
 | `SchemaKit` (tables) | `prosemirror-tables` | **1.8.5** | 2025-12-24 | `fixTables` zero-sized removal (1.6.4), colwidth validation (1.7.1), and keep-cell-type-on-row-move (1.8.1) confirmed present. Newer row/col *move* helpers track the same source. |
-| `EditorHistory` | `prosemirror-history` | **1.5.0** | 2026-07-04 | Mark-step adjacency (1.4.1) and closed-event append guard (1.1.3) confirmed present. Composition grouping (1.3.1) and 1.5.0's beforeinput check N/A (no browser IME/DOM); `isHistoryTransaction` (1.5.0) is a feature, add on demand. |
+| `EditorHistory` | `prosemirror-history` | **1.5.1** | 2026-10-30 | The rebased-count clip (1.5.1) is free: `Branch.rebased` here pairs each item with the step whose map inverts its own instead of counting, so a branch shorter than the rebase never mispairs. Regression test added this pass — see the log. Mark-step adjacency (1.4.1) and closed-event append guard (1.1.3) confirmed present. Composition grouping (1.3.1) and 1.5.0's beforeinput check N/A (no browser IME/DOM); `isHistoryTransaction` (1.5.0) is a feature, add on demand. |
 | `EditorKeymap` | `prosemirror-keymap` | _not yet pinned_ | 2026-09-17 | Upstream fixes through 1.2.3 are all DOM `KeyboardEvent`-specific (key-code fallbacks for non-ASCII characters, macOS Cmd handling); the UIKit key handling is hand-written. Nothing to port. |
 | `EditorInputRules` | `prosemirror-inputrules` | **1.5.1** | 2026-07-04 | Multi-char-input guard + `inCodeMark` code-mark suppression (1.5.0/1.5.1) **ported** this pass, with `MarkSpec.code` (model 1.25.0) added to support them; undo-without-text guard (1.1.3) confirmed present. `inCode: "only"` and the `undoable` option are unported features. |
 | `EditorCollab` | `prosemirror-collab` | **1.3.1** | 2026-07-04 | `mapSelectionBackward` fixes (1.1.1/1.1.2) confirmed present; upstream's clearing of the selection-updated flag after mapping **ported** this pass (`Transaction.clearSelectionSet`). See "Known gaps" re remote-step application. |
-| `EditorChangeset` | `prosemirror-changeset` | **2.4.3** | 2026-09-17 | 2.4.3 fixes the `max(toA - fromA, toB, fromB)` typo in the too-big-to-diff guard; this port had already spelled it as two lengths (see the 2026-08-22 log entry), so nothing to do. Word-character range fix (2.4.1) and the guard itself (2.4.2) ported earlier, both with a correction — see the log. Typed close tokens (2.3.1) and multi-range steps (2.0.4) confirmed present. `Change` JSON serialization (2.4.0) is a feature, add on demand. |
+| `EditorChangeset` | `prosemirror-changeset` | **2.4.5** | 2026-10-30 | 2.4.4/2.4.5 raise the too-big-to-diff limit and add a fragment-level prefix/suffix scan before giving up. This port already measures the limit after trimming the shared ends, which is the substance of both; the pre-tokenizing scan is only a saving on very large ranges and is not ported. Upstream's 2.4.5 calls `cutA.findDiffEnd(cutA)` — the fragment against itself, which returns null and throws on any changed range over 10,000 tokens — so don't copy it as written. 2.4.3 fixes the `max(toA - fromA, toB, fromB)` typo in the too-big-to-diff guard; this port had already spelled it as two lengths (see the 2026-08-22 log entry), so nothing to do. Word-character range fix (2.4.1) and the guard itself (2.4.2) ported earlier, both with a correction — see the log. Typed close tokens (2.3.1) and multi-range steps (2.0.4) confirmed present. `Change` JSON serialization (2.4.0) is a feature, add on demand. |
 | `SchemaKit` (lists) | `prosemirror-schema-list` | **1.5.1** | 2026-07-04 | `liftListItem` type-guarded join (1.5.1), adjacent-sublists join (1.2.2), and `splitListItem` sublist fix (1.1.5) confirmed present. See "Known gaps" re attr validation (1.4.1). |
-| `EditorSerialization` | `prosemirror-markdown` + custom HTML | n/a | 2026-09-17 | HTML/Markdown serializers are hand-written for this editor's shapes, not direct ports; no upstream version to track. Upstream's `expelEnclosingWhitespace` behaviour (the subject of markdown 1.13.3/1.13.4/1.13.6) had no equivalent here and was written on 2026-08-22 — see the log. 1.13.7's case (a bold run broken up by an italic one before whitespace) already read back correctly, but probing around it found overlapping bold/italic shapes that did not; the writer now reads its own output back — see the log. Trailing `order` handling (1.13.5) was already correct. |
+| `EditorSerialization` | `prosemirror-markdown` + custom HTML | n/a | 2026-10-30 | Read through 1.13.9: the heading `level` validator (1.13.8) waits on attribute `validate` (see "Known gaps"), and 1.13.9's serializer speed-up is to code we don't share. HTML/Markdown serializers are hand-written for this editor's shapes, not direct ports; no upstream version to track. Upstream's `expelEnclosingWhitespace` behaviour (the subject of markdown 1.13.3/1.13.4/1.13.6) had no equivalent here and was written on 2026-08-22 — see the log. 1.13.7's case (a bold run broken up by an italic one before whitespace) already read back correctly, but probing around it found overlapping bold/italic shapes that did not; the writer now reads its own output back — see the log. Trailing `order` handling (1.13.5) was already correct. |
 | `EditorMath` | none (TeX/KaTeX box model) | n/a | 2026-07-27 | Not a ProseMirror port. The typesetter implements the algorithms and font parameters from *The TeXbook* Appendix G — the same ones KaTeX implements — written from the published specification, not translated from KaTeX's source. The `SchemaKit` extension follows Tiptap's *documented* Mathematics API (node names, `latex` attribute, `data-type` HTML, command set); see the note in `MathematicsExtension.swift`. |
 
 ## Known gaps / intentional deviations
@@ -58,7 +58,8 @@ Use it to find what's new when re-auditing: read each package's CHANGELOG from t
   as a third argument (`(node, atEnd, $from)`), added in 1.6.0. The Swift closure
   takes `(node, atEnd)`; add the parameter when a caller needs it.
 - **`MapResult`'s deleted flags at an insertion** (prosemirror-transform, all
-  versions through 1.12.1): upstream's `StepMap._map` spells the flag line as
+  versions through 1.12.1; **upstream fixed it in 1.12.2**, so this is no
+  longer a deviation, kept for the history): upstream's `StepMap._map` spells the flag line as
   `del = pos == start ? DEL_AFTER : pos == end ? DEL_BEFORE : DEL_ACROSS`, and a
   range that *inserts* has `start == end == pos` when the loop reaches it — so
   the first arm wins and every insertion reports `deletedAfter` at the position
@@ -180,7 +181,13 @@ doesn't have to rediscover them.
 
    Diffing `src/` between the reviewed-through tarball and the current one
    shows what each entry actually changed, which the changelog prose often
-   doesn't.
+   doesn't. The tarball has no tests; the new host serves each commit as a
+   diff, tests included (it is Forgejo, so the Gitea API lists commits):
+
+   ```sh
+   curl -s 'https://code.haverbeke.berlin/api/v1/repos/prosemirror/prosemirror-transform/commits?limit=10'
+   curl -s https://code.haverbeke.berlin/prosemirror/prosemirror-transform/commit/<sha>.diff
+   ```
 2. For each **bug fix** entry, find the corresponding Swift function and decide:
    already-ported, genuine gap, or N/A (e.g. a DOM/browser-only fix). Swift value
    semantics make some aliasing bugs not-applicable for free.
@@ -189,6 +196,38 @@ doesn't have to rediscover them.
 
 ## Ported-fix log
 
+- **2026-10-30** — `prosemirror-transform` 1.12.3/1.12.4: inverting a mark
+  step now undoes exactly what it did. `AddMarkStep.invert` removed the mark
+  over the whole range, so undoing a link that *replaced* another link left no
+  link at all, and text that already had the mark lost it. It now removes the
+  mark only where the step added it and puts back the marks it pushed out by
+  exclusion; `RemoveMarkStep.invert` likewise re-adds only where the mark was.
+  When that takes more than one step the inverse is a new `MarkSetStep`
+  (`"markSet"` in JSON — **a new step type on the wire**, so peers must run
+  this version to decode an undo that produces one). `addMark` no longer
+  emits separate `RemoveMarkStep`s for excluded marks, and `removeMark` skips
+  non-atom inline nodes, both as upstream. Mark steps' `map` now drops a step
+  only when nothing of its range is left, not whenever both ends were deleted.
+  One deliberate difference: upstream's `MarkSetStep.invert` inverts every part
+  against the starting document, in order; here each part is inverted against
+  the document it was applied to, last-first. The two agree on every set
+  mark-step inversion builds; ours is also right for sets in general.
+  `Sources/DocumentTransform/{MarkStep,MarkTransform,Step}.swift`; upstream's
+  `test-invert.ts` ported (seeded, plus a redo check that is the only route
+  through `MarkSetStep.invert`) in `Tests/DocumentTransformTests/PMInvert.swift`,
+  and upstream's history test in `Tests/EditorCommandsTests/PMHistory.swift`.
+  Mutation-checked: the old `invert` fails seven tests and the old `map` one.
+  Upstream's random mapped test alone did *not* catch the old `map` at 1000
+  seeds; the targeted test does.
+- **2026-10-30** — `prosemirror-history` 1.5.1, confirmed free with a test:
+  upstream clips `rebasedCount` to the branch's length, because pairing items
+  with steps by count went wrong on a branch shorter than the rebase. `undone`
+  is that branch when an undo is among the unconfirmed steps: it holds one redo
+  item while two steps are rebased, and count-pairing matched it with the
+  re-applied *typing* step. Our `rebased` already pairs by inverse map. Test
+  `a rebase over more local steps than a branch holds redoes the right step`
+  in `Tests/EditorCommandsTests/PMHistory.swift`, which fails with count
+  pairing restored; `_redoItemCount` added beside `_undoItemCount` for it.
 - **2026-09-23** — `prosemirror-commands` `toggleMark`: over a selection of
   several ranges — a table `CellSelection`, so Mod-b/Mod-i on selected cells —
   the mark was removed only when *every* range had it; upstream removes it when
