@@ -100,6 +100,14 @@ public extension SuggestionSource {
     var onChange: (() -> Void)? { get { nil } set {} } // sync sources don't refresh
 }
 
+/// Whether `tr` leaves everything a suggestion trigger is computed from — the
+/// document, the selection and the stored marks — as it was. The trigger
+/// plugins rebuild the text before the cursor to find their trigger, and they
+/// were doing it for every transaction, meta-only ones included.
+func suggestionInputsUnchanged(_ tr: Transaction) -> Bool {
+    !tr.docChanged && !tr.selectionSet && !tr.storedMarksSet
+}
+
 /// Where a typed trigger may open a popup: running prose that can actually hold
 /// the node the trigger inserts. Code is literal text — a `[[` there means
 /// brackets and an `@` means an `@` — and the schema has the last word: a

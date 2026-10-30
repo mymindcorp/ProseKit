@@ -14,6 +14,32 @@ import TestHarness
 // the same either way, since that is the whole claim: only the work changes.
 
 func registerStorageIdentityTests() {
+    test("changedDescendants: visits only what an edit rebuilt") {
+        let old = B.doc(B.p("a"), B.p("b"), B.p("c"))
+        var visited: [String] = []
+        func record(_ node: Node, _ pos: Int) -> Bool {
+            visited.append("\(node.type.name)@\(pos)")
+            return true
+        }
+        // One child replaced: the siblings keep their storage and are skipped.
+        let edited = old.copy(content: old.content.replaceChild(1, B.p("bb")))
+        edited.changedDescendants(since: old, record)
+        try expectEqual(visited, ["paragraph@3", "text@4"])
+
+        // A child inserted in front shifts the rest, which are still found.
+        visited = []
+        let inserted = old.copy(content: Fragment.from([B.p("new")] + (0..<old.childCount).map { old.child($0) }))
+        inserted.changedDescendants(since: old, record)
+        try expectEqual(visited, ["paragraph@0", "text@1"])
+
+        // Nothing changed, nothing visited; returning false stops the descent.
+        visited = []
+        old.changedDescendants(since: old, record)
+        try expectEqual(visited, [])
+        edited.changedDescendants(since: old) { node, pos in visited.append("\(node.type.name)@\(pos)"); return false }
+        try expectEqual(visited, ["paragraph@3"])
+    }
+
     test("copy: passing back the same content returns the same node") {
         let node = B.p("hello")
         try expect(node.copy(content: node.content) == node)

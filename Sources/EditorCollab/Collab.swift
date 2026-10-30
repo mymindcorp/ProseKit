@@ -54,7 +54,8 @@ public func collab(version: Int = 0, clientID: Int = Int.random(in: 0..<0x1_0000
                                        clientID: collabState.clientID)
                 }
                 return collabState
-            }))
+            }),
+        historyPreserveItems: true)
 }
 
 private func unconfirmedFrom(_ transform: Transaction) -> [Rebaseable] {

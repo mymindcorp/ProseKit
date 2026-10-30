@@ -284,6 +284,31 @@ func registerPMHistoryTests() {
         try expectEqual(s.doc, doc(p("abcde***")).node)
     }
 
+    test("PM history: adjacent typing merges into one item as it is added") {
+        // Upstream merges each new item into the last unless a plugin asks to
+        // preserve them. Unmerged, a typing session grew the branch by one item
+        // per keystroke, and each keystroke copied the whole branch.
+        var s = mkState()
+        for ch in "hello" { s = typeText(s, String(ch)) }
+        try expectEqual(_undoItemCount(s), 1, "five keystrokes, one item")
+        // A separate event is still its own item, and undoes on its own.
+        s = s.apply(closeHistory(s.tr))
+        s = typeText(s, "!")
+        try expectEqual(undoDepth(s), 2)
+        s = command(s, undo); try expectEqual(s.doc, doc(p("hello")).node)
+        s = command(s, undo); try expectEqual(s.doc, doc(p()).node)
+        s = command(s, redo); try expectEqual(s.doc, doc(p("hello")).node)
+    }
+
+    test("PM history: a plugin asking to preserve items keeps one per step") {
+        // What collab relies on: rebasing pairs items with the steps it rebased.
+        var s = mkState(plugins: [Plugin(historyPreserveItems: true)])
+        for ch in "hello" { s = typeText(s, String(ch)) }
+        try expectEqual(_undoItemCount(s), 5)
+        s = command(s, undo)
+        try expectEqual(s.doc, doc(p()).node)
+    }
+
     test("PM history: compression merges a run of typing") {
         // The forward-order merge didn't just scramble deletes: for ordinary
         // typing it found no join at all and left every keystroke its own item,

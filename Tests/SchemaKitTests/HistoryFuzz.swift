@@ -134,10 +134,14 @@ func registerHistoryFuzzTests() {
         //
         // And no `closeHistory` here, unlike the sweeps above — this one wants
         // ops to *group*, because items within one event are what merge.
+        //
+        // Items are kept one per step, as collab keeps them: without that the
+        // history merges adjacent steps as they are added, and compression —
+        // which only runs during collab anyway — would find little left to do.
         var collapsed = 0
         for seed in 1 ... fuzzOpSeeds {
             var rng = SelRNG(seed &* 17 &+ 9)
-            let editor = try Editor(extensions: fuzzKit())
+            let editor = try Editor(extensions: fuzzKit() + [PreserveHistoryItems()])
             var log: [String] = []
             for _ in 0 ..< fuzzOpHistoryCount { log.append(fuzzStep(editor, &rng)) }
             let saved = editor.state
@@ -231,4 +235,11 @@ private func squashed(_ docs: [Node]) -> [Node] {
     var out: [Node] = []
     for d in docs where out.last != d { out.append(d) }
     return out
+}
+
+/// Asks the history to keep one item per step, the way the collab plugin does,
+/// without bringing in collab itself.
+private final class PreserveHistoryItems: Extension {
+    let name = "preserveHistoryItems"
+    func plugins(_ ctx: ExtensionContext) -> [Plugin] { [Plugin(historyPreserveItems: true)] }
 }

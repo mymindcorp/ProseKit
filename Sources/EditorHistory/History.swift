@@ -8,9 +8,11 @@ public import EditorStateKit
 // position map and optionally an inverted step, so changes that must not be
 // undoable (remote collab steps) can still be mapped through. An item that
 // carries a selection bookmark starts an "event" — the group of changes one
-// undo command reverts. Items are never merged as they are added (upstream's
-// `preserveItems` mode), since this editor ships with collab support that
-// needs to rebase them; only `compress` merges them.
+// undo command reverts. As upstream, a new item is merged into the one before
+// it when their steps combine (adjacent typing), unless a plugin asks for
+// `historyPreserveItems` — collab does, since rebasing pairs items with the
+// steps it rebased. Unmerged, a typing session added one item per keystroke,
+// and every keystroke copied all of them.
 
 struct HistoryItem {
     /// The (forward) step map for this item.
@@ -31,7 +33,8 @@ struct HistoryItem {
     }
 
     /// Merge with a newer step item that doesn't start an event (upstream
-    /// Item.merge) — used by compression to collapse adjacent typing steps.
+    /// Item.merge) — used by `addTransform` and by compression to collapse
+    /// adjacent typing steps.
     ///
     /// The argument order matters and is not symmetric: `self` is the *older*
     /// item, `other` the newer one directly after it. Three things depend on
@@ -126,19 +129,29 @@ struct Branch {
 
     /// A new branch with the given transform's inverted steps appended.
     /// `selection` marks the start of a new event (nil continues the last one).
-    func addTransform(_ transform: Transform, _ selection: (any SelectionBookmark)?, _ depth: Int) -> Branch {
+    /// Unless `preserveItems` is set, each new item is merged into the one
+    /// before it where their steps combine.
+    func addTransform(_ transform: Transform, _ selection: (any SelectionBookmark)?, _ depth: Int,
+                      preserveItems: Bool) -> Branch {
         var newItems: [HistoryItem] = []
         var eventCount = self.eventCount
         var selection = selection
+        var oldItems = items
+        var lastItem = preserveItems ? nil : oldItems.last
         for i in 0..<transform.steps.count {
             let step = transform.steps[i].invert(transform.docs[i])
-            newItems.append(HistoryItem(map: transform.mapping.maps[i], step: step, selection: selection))
+            var item = HistoryItem(map: transform.mapping.maps[i], step: step, selection: selection)
+            if let merged = lastItem?.merge(item) {
+                item = merged
+                if i > 0 { newItems.removeLast() } else { oldItems.removeLast() }
+            }
+            newItems.append(item)
             if selection != nil {
                 eventCount += 1
                 selection = nil
             }
+            if !preserveItems { lastItem = item }
         }
-        var oldItems = items
         let overflow = eventCount - depth
         if overflow > depthOverflow {
             oldItems = cutOffEvents(oldItems, overflow)
@@ -359,6 +372,7 @@ public func history(_ options: HistoryOptions = HistoryOptions()) -> Plugin {
                     hist = HistoryState(done: hist.done, undone: hist.undone, prevRanges: nil, prevTime: nil, options: options)
                 }
                 guard tr.docChanged else { return hist }
+                let preserve = mustPreserveItems(oldState)
 
                 let appended = tr.getMeta(appendedTransactionMeta) as? Transaction
                 if let appended, let update = appended.getMeta(historyMeta) as? HistoryUpdate {
@@ -368,7 +382,7 @@ public func history(_ options: HistoryOptions = HistoryOptions()) -> Plugin {
                     switch update {
                     case .set(_, redo: true):
                         return HistoryState(
-                            done: hist.done.addTransform(tr, nil, options.depth),
+                            done: hist.done.addTransform(tr, nil, options.depth, preserveItems: preserve),
                             undone: hist.undone,
                             prevRanges: rangesFor(tr.mapping.maps),
                             prevTime: hist.prevTime,
@@ -376,7 +390,7 @@ public func history(_ options: HistoryOptions = HistoryOptions()) -> Plugin {
                     case .set(_, redo: false):
                         return HistoryState(
                             done: hist.done,
-                            undone: hist.undone.addTransform(tr, nil, options.depth),
+                            undone: hist.undone.addTransform(tr, nil, options.depth, preserveItems: preserve),
                             prevRanges: nil,
                             prevTime: hist.prevTime,
                             options: options)
@@ -396,7 +410,8 @@ public func history(_ options: HistoryOptions = HistoryOptions()) -> Plugin {
                         ? mapRanges(hist.prevRanges, tr.mapping)
                         : rangesFor(tr.mapping.maps)
                     return HistoryState(
-                        done: hist.done.addTransform(tr, newGroup ? oldState.selection.getBookmark() : nil, options.depth),
+                        done: hist.done.addTransform(tr, newGroup ? oldState.selection.getBookmark() : nil, options.depth,
+                                                     preserveItems: preserve),
                         undone: .empty,
                         prevRanges: prevRanges,
                         prevTime: tr.time,
@@ -422,11 +437,17 @@ public func history(_ options: HistoryOptions = HistoryOptions()) -> Plugin {
             }))
 }
 
+/// Whether a plugin in `state` needs one history item per step.
+private func mustPreserveItems(_ state: EditorState) -> Bool {
+    state.plugins.contains { $0.historyPreserveItems }
+}
+
 /// Apply the latest event of one branch, moving it onto the other branch.
 private func histTransaction(_ hist: HistoryState, _ state: EditorState, redo: Bool) -> Transaction? {
     guard let pop = (redo ? hist.undone : hist.done).popEvent(state) else { return nil }
     let selection = pop.selection.resolve(pop.transform.doc)
-    let added = (redo ? hist.done : hist.undone).addTransform(pop.transform, state.selection.getBookmark(), hist.options.depth)
+    let added = (redo ? hist.done : hist.undone).addTransform(pop.transform, state.selection.getBookmark(), hist.options.depth,
+                                                              preserveItems: mustPreserveItems(state))
     let newHist = HistoryState(done: redo ? added : pop.remaining,
                                undone: redo ? pop.remaining : added,
                                prevRanges: nil, prevTime: nil, options: hist.options)

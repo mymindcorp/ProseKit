@@ -60,8 +60,8 @@ public final class MentionExtension: NodeExtension {
             key: mentionSuggestionKey.key,
             stateField: PluginStateField(
                 initialize: { _, _ in Optional<MentionSuggestion>.none as Any },
-                apply: { _, _, _, newState in
-                    computeMentionSuggestion(newState) as Any
+                apply: { tr, value, _, newState in
+                    suggestionInputsUnchanged(tr) ? value : computeMentionSuggestion(newState) as Any
                 }))]
     }
 

@@ -107,8 +107,8 @@ public final class WikiLinkExtension: NodeExtension {
             key: wikiLinkSuggestionKey.key,
             stateField: PluginStateField(
                 initialize: { _, _ in Optional<WikiLinkSuggestion>.none as Any },
-                apply: { tr, _, _, newState in
-                    computeSuggestion(newState) as Any
+                apply: { tr, value, _, newState in
+                    suggestionInputsUnchanged(tr) ? value : computeSuggestion(newState) as Any
                 }))]
     }
 

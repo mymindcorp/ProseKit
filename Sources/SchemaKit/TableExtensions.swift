@@ -7,6 +7,9 @@ public import EditorCommands
 // (spanning-aware via TableMap/CellSelection — see TableMap.swift / TableUtil.swift
 // / CellSelection.swift / TableCommandsPM.swift).
 
+/// The fixTables plugin's state: whether its document has been through a repair pass.
+private let fixTablesKey = PluginKey<Bool>("fixTables")
+
 private let cellAttrs: [String: AttributeSpec] = [
     "colspan": AttributeSpec(default: .int(1)),
     "rowspan": AttributeSpec(default: .int(1)),
@@ -74,15 +77,26 @@ public final class TableExtension: NodeExtension {
         // and TableMap assume) and normalize cell/row/table node-selections into
         // CellSelections — mirroring prosemirror-tables' fixTables + normalizeSelection.
         let allowNodeSelection = options.allowTableNodeSelection
-        var plugins: [Plugin] = [Plugin(key: "fixTables", appendTransaction: { trs, oldState, newState in
-            // Only a doc change can leave a table malformed, so a selection-only
-            // transaction (every tick of a selection drag) skips the document
-            // walk — as upstream does. Normalizing node selections into cell
-            // selections still runs: that is about the selection, not the doc.
-            let docChanged = trs.contains { $0.docChanged }
-            return normalizeSelection(newState, docChanged ? fixTables(newState, oldState) : nil,
-                                      allowNodeSelection)
-        })]
+        var plugins: [Plugin] = [Plugin(
+            key: fixTablesKey.key,
+            // Whether the document has been through a repair pass. A state
+            // built straight from a document (not through an edit) may hold a
+            // malformed table anywhere, so its first edit checks every table;
+            // after that, a document this plugin has seen is well-formed and
+            // only what changed since needs looking at.
+            stateField: PluginStateField(
+                initialize: { _, _ in false },
+                apply: { tr, value, _, _ in tr.docChanged || value as! Bool }),
+            appendTransaction: { trs, oldState, newState in
+                // Only a doc change can leave a table malformed, so a selection-only
+                // transaction (every tick of a selection drag) skips the document
+                // walk — as upstream does. Normalizing node selections into cell
+                // selections still runs: that is about the selection, not the doc.
+                let docChanged = trs.contains { $0.docChanged }
+                let verified = fixTablesKey.getState(oldState) == true
+                return normalizeSelection(newState, docChanged ? fixTables(newState, verified ? oldState : nil) : nil,
+                                          allowNodeSelection)
+            })]
         // Left out entirely when resizing is off: the view takes the plugin's
         // absence as the answer, so there is one place to ask.
         if options.resizable { plugins.append(columnResizing(options: options.columnResizing)) }

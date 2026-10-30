@@ -83,21 +83,36 @@ private func run(_ state: EditorState, _ from: Int, _ to: Int, _ text: String, _
     let lo = max(0, resolvedFrom.parentOffset - MAX_MATCH)
     let prefix = resolvedFrom.parent.textBetween(lo, resolvedFrom.parentOffset, blockSeparator: nil, leafText: "\u{fffc}")
     let textBefore = prefix + text
+    // Bridged once and handed to every rule as the bridged string, so a rule
+    // doesn't bridge it again; most keystrokes match no rule, so everything
+    // a match needs waits until one does.
+    let ns = textBefore as NSString
+    let bridged = ns as String
+    let length = ns.length
+    let prefixUTF16 = prefix.utf16.count
+    let cursorInCodeMark = resolvedFrom.marks().contains { $0.type.spec.code }
+    let parentIsCode = resolvedFrom.parent.type.spec.code
     // Regex offsets use UTF-16, but document positions count Characters. The
     // incoming text can also combine with the last Character in the prefix.
-    var boundaries = [0: 0]
-    var utf16Offset = 0
-    for (offset, character) in textBefore.enumerated() {
-        utf16Offset += String(character).utf16.count
-        boundaries[utf16Offset] = offset + 1
+    var measured: [Int: Int]?
+    func boundaries() -> [Int: Int] {
+        if let measured { return measured }
+        var boundaries = [0: 0]
+        var utf16Offset = 0
+        for (offset, character) in textBefore.enumerated() {
+            utf16Offset += character.utf16.count
+            boundaries[utf16Offset] = offset + 1
+        }
+        measured = boundaries
+        return boundaries
     }
     for rule in rules {
-        if !rule.inCodeMark, resolvedFrom.marks().contains(where: { $0.type.spec.code }) { continue }
-        if resolvedFrom.parent.type.spec.code, !rule.inCode { continue }
-        let ns = textBefore as NSString
-        guard let m = rule.regex.firstMatch(in: textBefore, range: NSRange(location: 0, length: ns.length)) else { continue }
-        guard NSMaxRange(m.range) == ns.length, m.range.location <= prefix.utf16.count,
-              let matchOffset = boundaries[m.range.location],
+        if !rule.inCodeMark, cursorInCodeMark { continue }
+        if parentIsCode, !rule.inCode { continue }
+        guard let m = rule.regex.firstMatch(in: bridged, range: NSRange(location: 0, length: length)) else { continue }
+        guard NSMaxRange(m.range) == length, m.range.location <= prefixUTF16 else { continue }
+        let boundaries = boundaries()
+        guard let matchOffset = boundaries[m.range.location],
               (0..<m.numberOfRanges).allSatisfy({
                   let range = m.range(at: $0)
                   return range.location == NSNotFound || (boundaries[range.location] != nil && boundaries[NSMaxRange(range)] != nil)

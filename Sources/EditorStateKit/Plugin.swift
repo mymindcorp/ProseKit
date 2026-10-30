@@ -49,19 +49,25 @@ public final class Plugin: @unchecked Sendable {
     public let appendTransaction: (@Sendable (_ transactions: [Transaction], _ oldState: EditorState, _ newState: EditorState) -> Transaction?)?
     public let filterTransaction: (@Sendable (_ tr: Transaction, _ state: EditorState) -> Bool)?
     public let props: PluginProps?
+    /// Asks the history plugin to keep one item per step rather than merging
+    /// adjacent ones (upstream's `historyPreserveItems` spec field). The collab
+    /// plugin sets it: rebasing pairs history items with the steps it rebased.
+    public let historyPreserveItems: Bool
 
     public init(
         key: String? = nil,
         stateField: PluginStateField? = nil,
         appendTransaction: (@Sendable (_ transactions: [Transaction], _ oldState: EditorState, _ newState: EditorState) -> Transaction?)? = nil,
         filterTransaction: (@Sendable (_ tr: Transaction, _ state: EditorState) -> Bool)? = nil,
-        props: PluginProps? = nil
+        props: PluginProps? = nil,
+        historyPreserveItems: Bool = false
     ) {
         self.key = key ?? PluginKeyCounter.next()
         self.stateField = stateField
         self.appendTransaction = appendTransaction
         self.filterTransaction = filterTransaction
         self.props = props
+        self.historyPreserveItems = historyPreserveItems
     }
 
     /// Get this plugin's state from an editor state.
