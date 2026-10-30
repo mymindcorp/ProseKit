@@ -176,6 +176,8 @@ func registerBench() {
             ("unclosed destinations", { n in String(repeating: "[a](", count: n / 4) }),
             ("emphasis runs", { n in String(repeating: "*a", count: n / 2) }),
             ("unclosed angle brackets", { n in String(repeating: "<", count: n) }),
+            ("ampersands, no semicolons", { n in String(repeating: "a&b", count: n / 3) }),
+            ("short lines", { n in String(repeating: "a few words\n", count: n / 12) }),
         ]
         for (name, build) in payloads {
             print("\n  --- markdown: \(name) ---"); unsafe fflush(stdout)

@@ -32,6 +32,13 @@ public final class SuggestionModeState {
         self.changeSet = changeSet
     }
 
+    /// The insertion and deletion decorations for these changes, built the
+    /// first time they are asked for. The decorations prop is read on every
+    /// paint — scroll ticks included — and building them walks every change
+    /// and copies each deleted span's text out of the base document; the
+    /// state is immutable, so one build serves every frame until the next edit.
+    lazy var decorations: DecorationSet? = buildSuggestionDecorations(changeSet)
+
     /// The deleted text of the change at `index` (suggested spans only).
     public func deletedText(at index: Int) -> String {
         guard let set = changeSet, set.changes.indices.contains(index) else { return "" }
@@ -161,8 +168,11 @@ public func suggestionMode(author: String = "user") -> Plugin {
 /// Inline "insertion" decorations over suggested insertions and "deletion"
 /// widgets (carrying the removed text in data-text) at deletion points.
 public func suggestionDecorations(_ state: EditorState) -> DecorationSet? {
-    guard let pluginState = suggestionModeKey.getState(state), let set = pluginState.changeSet,
-          !set.changes.isEmpty else { return nil }
+    suggestionModeKey.getState(state)?.decorations
+}
+
+private func buildSuggestionDecorations(_ changeSet: ChangeSet<String>?) -> DecorationSet? {
+    guard let set = changeSet, !set.changes.isEmpty else { return nil }
     var decorations: [Decoration] = []
     for change in set.changes {
         var offset = change.fromB
