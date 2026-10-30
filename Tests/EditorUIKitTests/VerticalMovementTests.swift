@@ -91,6 +91,7 @@ final class VerticalMovementTests: XCTestCase {
         XCTAssertEqual(resolved.parent.textContent, "ijklmnop")
         XCTAssertGreaterThan(resolved.parentOffset, 0)
     }
+
     // MARK: - An atom that wraps
 
     // An atom drawn as text — math with no renderer, a wiki link that isn't a
@@ -181,6 +182,34 @@ final class VerticalMovementTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(pos, 34, "moving down from \(start) stopped short of the last paragraph, at \(pos)")
         }
     }
+
+    func testTheEndOfALineAWrappedAtomRunsOffIsOnThatLineOrTheNext() throws {
+        // A soft wrap names the end of a line and the start of the next with one
+        // position, so End may answer on the line below. But a line that ends
+        // partway through an atom can map its end to the position *after* the
+        // atom, drawn wherever the atom finishes — several lines down when it
+        // wraps through lines of its own. Where it breaks depends on the width,
+        // so sweep a range of them and check the shape turned up.
+        var wrappedThrough = 0
+        for width in stride(from: CGFloat(100), through: 240, by: 4) {
+            let (l, block) = try atomLayout(latex: "\\frac{abcdefgh}{ijklmnop}", width: width)
+            let tops = block.lines.map { $0.baselineOrigin.y - $0.ascent }
+            func line(_ pos: Int) throws -> Int {
+                let y = try XCTUnwrap(l.caretRect(at: pos)).minY
+                return try XCTUnwrap(tops.firstIndex { abs($0 - y) < 0.5 })
+            }
+            wrappedThrough += Set(try (29 ... 32).map(line)).count < block.lines.count ? 1 : 0
+            for pos in 29 ... 32 {
+                let end = try XCTUnwrap(l.lineBoundary(from: pos, toEnd: true))
+                XCTAssertGreaterThanOrEqual(end, pos, "the line end is before \(pos) at width \(width)")
+                let (here, there) = (try line(pos), try line(end))
+                XCTAssertTrue(there == here || there == here + 1,
+                              "the line end of \(pos) is \(end), on line \(there) of a caret on line \(here), at width \(width)")
+            }
+        }
+        XCTAssertGreaterThan(wrappedThrough, 0, "the atom didn't wrap through a line of its own at any width")
+    }
+
     func testALineThatOpensPartwayThroughAnAtomStartsAtItsOwnFirstCaret() throws {
         // Home from the end of a line holding only the tail of a wrapped atom
         // went to the atom's start — the line's first index maps there — which
