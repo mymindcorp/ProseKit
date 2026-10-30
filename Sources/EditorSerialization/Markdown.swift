@@ -1441,7 +1441,7 @@ public enum MarkdownParser {
             }
             // A `<details>` HTML block (what the serializer emits for a
             // collapsible section, and the GFM convention for one).
-            if trimmed.lowercased().hasPrefix("<details") {
+            if hasTagPrefix(trimmed, "<details") {
                 var inner: [String] = []
                 let open = detailsIsOpen(trimmed)
                 i += 1
@@ -1505,7 +1505,7 @@ public enum MarkdownParser {
             // the pipes can't hold, and what a document pasted from the web
             // carries. Handed to the HTML parser, which already builds the
             // whole grid, spans and all.
-            if trimmed.lowercased().hasPrefix("<table"), schema.nodes["table"] != nil {
+            if hasTagPrefix(trimmed, "<table"), schema.nodes["table"] != nil {
                 var html: [String] = []
                 while i < lines.count {
                     html.append(lines[i])
@@ -1721,7 +1721,7 @@ public enum MarkdownParser {
         var body: [String] = []
         for line in lines {
             let trimmed = line.trimmingCharacters(in: markdownSpaces)
-            if summaryText.isEmpty, trimmed.lowercased().hasPrefix("<summary>") {
+            if summaryText.isEmpty, hasTagPrefix(trimmed, "<summary>") {
                 var s = String(trimmed.dropFirst("<summary>".count))
                 if let close = s.range(of: "</summary>", options: [.backwards, .caseInsensitive]) {
                     s = String(s[..<close.lowerBound])
@@ -2190,9 +2190,9 @@ public enum MarkdownParser {
             || trimmed.hasPrefix("$$") || isThematicBreak(trimmed)
             || setextUnderline(trimmed) != nil
             || list
-            || trimmed.lowercased().hasPrefix("<details")
-            || trimmed.lowercased().hasPrefix("</details>")
-            || trimmed.lowercased().hasPrefix("<table")
+            || hasTagPrefix(trimmed, "<details")
+            || hasTagPrefix(trimmed, "</details>")
+            || hasTagPrefix(trimmed, "<table")
             || footnoteHead(trimmed) != nil
     }
 
@@ -2794,8 +2794,11 @@ public enum MarkdownParser {
             // here rather than over the finished buffer so that an escaped "\&"
             // — already resolved to a literal "&" — isn't decoded a second time.
             // The HTML parser already knows every named, decimal and hex form, so
-            // it is reused rather than growing a second table.
-            if c == UInt8(ascii: "&"), let semi = findByte(chars, i + 1, UInt8(ascii: ";")), semi - i <= 32 {
+            // it is reused rather than growing a second table. The look for
+            // the ";" stops where a reference could no longer end: run to the
+            // end of the paragraph, a line of "&"s with no ";" (query strings,
+            // "a&b&c…") was quadratic in its length.
+            if c == UInt8(ascii: "&"), let semi = findByte(chars, i + 1, UInt8(ascii: ";"), before: i + 33) {
                 let reference = slice(chars, i..<(semi + 1))
                 let decoded = HTMLParser.decodeEntities(reference, cappingNumericDigits: true)
                 // "&#10;" is a newline, which is block structure in this model,
@@ -3962,9 +3965,10 @@ public enum MarkdownParser {
         return nil
     }
 
-    private static func findByte(_ bytes: [UInt8], _ from: Int, _ byte: UInt8) -> Int? {
+    private static func findByte(_ bytes: [UInt8], _ from: Int, _ byte: UInt8, before end: Int = .max) -> Int? {
         var i = from
-        while i < bytes.count { if bytes[i] == byte { return i }; i += 1 }
+        let end = min(end, bytes.count)
+        while i < end { if bytes[i] == byte { return i }; i += 1 }
         return nil
     }
 
@@ -4079,5 +4083,18 @@ public enum MarkdownParser {
             i += 1
         }
         return nil
+    }
+}
+
+/// Whether `line` starts with `tag`, an ASCII string, ignoring ASCII case.
+///
+/// `line.lowercased().hasPrefix(tag)` gave the same answer by copying the
+/// whole line first — three times over in `startsAnyBlock`, which runs on
+/// nearly every line of a document. Only ASCII letters can fold onto a
+/// tag's letters, so a byte comparison of the prefix is enough.
+private func hasTagPrefix(_ line: String, _ tag: String) -> Bool {
+    guard line.utf8.count >= tag.utf8.count else { return false }
+    return zip(line.utf8, tag.utf8).allSatisfy { a, b in
+        a == b || (a >= UInt8(ascii: "A") && a <= UInt8(ascii: "Z") && a | 0x20 == b)
     }
 }

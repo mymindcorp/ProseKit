@@ -290,7 +290,31 @@ private struct RegExpQuery: QueryImpl {
         self.regex = regex
     }
 
-    private func result(from match: NSTextCheckingResult, in hay: String, blockStart: Int) -> SearchResult? {
+    /// A character-aligned index in a haystack and its offset in characters,
+    /// carried from one match to the next. Measuring every match from the
+    /// start of the block made a block with many matches quadratic in its own
+    /// text — the shape the string query's `matchesIn` already avoids.
+    struct Cursor {
+        var index: String.Index
+        var offset = 0
+        init(_ hay: String) { index = hay.startIndex }
+
+        /// `target`'s offset in characters, or nil when it falls inside a
+        /// grapheme. Moves the cursor to `target` when `advance` is set and it
+        /// is a character boundary.
+        mutating func offset(of target: String.Index, in hay: String, advance: Bool) -> Int? {
+            // Captures can sit before the match itself (a group in a
+            // lookbehind), and nothing promises callers only move forward.
+            let base = target >= index ? (index, offset) : (hay.startIndex, 0)
+            let n = base.1 + hay.distance(from: base.0, to: target)
+            guard hay.index(base.0, offsetBy: n - base.1) == target else { return nil }
+            if advance { index = target; offset = n }
+            return n
+        }
+    }
+
+    private func result(from match: NSTextCheckingResult, in hay: String, blockStart: Int,
+                        cursor: inout Cursor) -> SearchResult? {
         var groups: [SearchMatchGroup] = []
         for g in 0..<match.numberOfRanges {
             let nsr = match.range(at: g)
@@ -298,13 +322,11 @@ private struct RegExpQuery: QueryImpl {
                 groups.append(SearchMatchGroup(range: nil, text: nil))
                 continue
             }
-            let lo = hay.distance(from: hay.startIndex, to: r.lowerBound)
-            let hi = hay.distance(from: hay.startIndex, to: r.upperBound)
             // UTF-16 ranges can end inside a grapheme. Rounding their offsets
             // to document positions would select or copy text outside the
             // regex match, so only expose ranges with exact character bounds.
-            guard hay.index(hay.startIndex, offsetBy: lo) == r.lowerBound,
-                  hay.index(hay.startIndex, offsetBy: hi) == r.upperBound else {
+            guard let lo = cursor.offset(of: r.lowerBound, in: hay, advance: g == 0),
+                  let hi = cursor.offset(of: r.upperBound, in: hay, advance: false) else {
                 groups.append(SearchMatchGroup(range: nil, text: nil))
                 continue
             }
@@ -338,8 +360,9 @@ private struct RegExpQuery: QueryImpl {
             let searchRange = NSRange(hay.index(hay.startIndex, offsetBy: lo)..<hay.endIndex, in: hay)
             // `result` is nil for a match with no width in document positions,
             // so the first non-nil result is the first real match.
+            var cursor = Cursor(hay)
             return regex.matches(in: hay, options: [.withTransparentBounds, .withoutAnchoringBounds], range: searchRange)
-                .lazy.compactMap { self.result(from: $0, in: hay, blockStart: start) }.first
+                .lazy.compactMap { self.result(from: $0, in: hay, blockStart: start, cursor: &cursor) }.first
         }
     }
 
@@ -352,6 +375,7 @@ private struct RegExpQuery: QueryImpl {
         guard lo <= hay.count else { return [] }
         var out: [SearchResult] = []
         var cursor = hay.index(hay.startIndex, offsetBy: lo)
+        var measured = Cursor(hay)
         // Successive `firstMatch` from one past the previous start, rather than
         // `matches(in:)`: that returns only non-overlapping matches, and the
         // whole-word test can reject one whose overlapping neighbour is good.
@@ -362,7 +386,7 @@ private struct RegExpQuery: QueryImpl {
             // An empty match is not a match — see `findNext`. `a|` and `.*`
             // produce one at every position, and each would have become a
             // zero-width highlight and a "match" the find bar counts.
-            if !r.isEmpty, let res = result(from: m, in: hay, blockStart: start) { out.append(res) }
+            if !r.isEmpty, let res = result(from: m, in: hay, blockStart: start, cursor: &measured) { out.append(res) }
             guard r.lowerBound < hay.endIndex else { break }
             cursor = hay.index(after: r.lowerBound)
         }
@@ -380,14 +404,18 @@ private struct RegExpQuery: QueryImpl {
             // The first visited block can straddle the search range's lower
             // bound. Keep match starts inside that range, including retries
             // after whole-word or custom-filter rejection.
-            var off = max(0, to - start)
-            while off <= hay.count {
-                let searchRange = NSRange(hay.index(hay.startIndex, offsetBy: off)..<hay.endIndex, in: hay)
+            let off = max(0, to - start)
+            guard off <= hay.count else { return nil }
+            var cursor = hay.index(hay.startIndex, offsetBy: off)
+            var measured = Cursor(hay)
+            while cursor <= hay.endIndex {
+                let searchRange = NSRange(cursor..<hay.endIndex, in: hay)
                 guard let m = regex.firstMatch(in: hay, options: [.withTransparentBounds, .withoutAnchoringBounds], range: searchRange),
                       let r = Range(m.range, in: hay) else { break }
                 // Keep the last match with width; `result` decides width.
-                if let res = result(from: m, in: hay, blockStart: start) { best = res }
-                off = hay.distance(from: hay.startIndex, to: r.lowerBound) + 1
+                if let res = result(from: m, in: hay, blockStart: start, cursor: &measured) { best = res }
+                guard r.lowerBound < hay.endIndex else { break }
+                cursor = hay.index(after: r.lowerBound)
             }
             return best
         }
@@ -545,7 +573,7 @@ public final class SearchQueryState {
     /// Kept so a selection change can decide in O(log n) whether the
     /// highlighting changed at all — moving the caret around usually does not,
     /// and rebuilding it meant searching the whole document again.
-    let activeIndex: Int?
+    public let activeIndex: Int?
     init(query: SearchQuery, range: SearchRange?, deco: DecorationSet, activeIndex: Int? = nil) {
         self.query = query
         self.range = range
