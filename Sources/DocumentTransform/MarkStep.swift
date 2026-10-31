@@ -38,6 +38,9 @@ public struct AddMarkStep: Step {
             return node.mark(mark.addToSet(node.marks))
         }, parent)
         let slice = Slice(content: content, openStart: oldSlice.openStart, openEnd: oldSlice.openEnd)
+        // Text left with equal marks joins, which can merge graphemes: a mark
+        // step has an empty map, so it can't change the document's size.
+        if slice.size != oldSlice.size { return .fail("Mark change would merge graphemes") }
         return .fromReplace(doc, from, to, slice)
     }
 
@@ -111,6 +114,9 @@ public struct RemoveMarkStep: Step {
             node.mark(mark.removeFromSet(node.marks))
         }, nil)
         let slice = Slice(content: content, openStart: oldSlice.openStart, openEnd: oldSlice.openEnd)
+        // Text left with equal marks joins, which can merge graphemes: a mark
+        // step has an empty map, so it can't change the document's size.
+        if slice.size != oldSlice.size { return .fail("Mark change would merge graphemes") }
         return .fromReplace(doc, from, to, slice)
     }
 

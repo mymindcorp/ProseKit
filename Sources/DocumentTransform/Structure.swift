@@ -308,7 +308,14 @@ public extension Transform {
     /// Join the blocks around the given position.
     @discardableResult
     func join(_ pos: Int, _ depth: Int = 1) throws -> Self {
-        try step(ReplaceStep(pos - depth, pos + depth, .empty, structure: true))
+        let before = doc.resolve(pos - depth)
+        let beforeType = before.parent.type
+        let mapFrom = steps.count
+        if beforeType.inlineContent {
+            try clearIncompatible(pos + depth - 1, beforeType, before.parent.contentMatchAt(before.index()))
+        }
+        let map = mapping.slice(mapFrom)
+        return try step(ReplaceStep(map.map(pos - depth), map.map(pos + depth, -1), .empty, structure: true))
     }
 
     // MARK: - Range replacement

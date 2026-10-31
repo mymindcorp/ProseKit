@@ -24,6 +24,25 @@ public struct ReplaceStep: Step {
         return .fromReplace(doc, from, to, slice)
     }
 
+    /// The same edit, for a flat replace whose text merges into the grapheme on
+    /// either side, as a step that also replaces that grapheme. Inserting U+0301
+    /// after "e" becomes replacing "e" with "é", whose map and inverse are true.
+    /// Nil if widening doesn't help.
+    func wideningAcrossGraphemes(_ doc: Node) -> ReplaceStep? {
+        guard !structure, slice.openStart == 0, slice.openEnd == 0,
+              from >= 0, from <= to, to <= doc.content.size else { return nil }
+        let resolvedFrom = doc.resolve(from), resolvedTo = doc.resolve(to)
+        guard resolvedFrom.sameParent(resolvedTo), resolvedFrom.parent.inlineContent else { return nil }
+        let content = resolvedFrom.parent.content
+        let start = resolvedFrom.parentOffset, end = resolvedTo.parentOffset
+        for (left, right) in [(1, 0), (0, 1), (1, 1)] where start >= left && end + right <= content.size {
+            let widened = content.cut(start - left, start).append(slice.content).append(content.cut(end, end + right))
+            let step = ReplaceStep(from - left, to + right, Slice(content: widened, openStart: 0, openEnd: 0))
+            if step.apply(doc).doc != nil { return step }
+        }
+        return nil
+    }
+
     public func getMap() -> StepMap {
         StepMap([from, to - from, slice.size])
     }
@@ -119,6 +138,9 @@ public struct ReplaceAroundStep: Step {
         }
         guard let inserted = slice.insertAt(insert, gap.content) else {
             return .fail("Content does not fit in gap")
+        }
+        if inserted.size != slice.size + (gapTo - gapFrom) {
+            return .fail("Gap would merge graphemes with the slice")
         }
         return .fromReplace(doc, from, to, inserted)
     }

@@ -62,9 +62,15 @@ public final class SuggestionModeState {
     /// document's content for that range, and later changes' base coordinates
     /// shift accordingly. The document is untouched.
     static func accepting(_ set: ChangeSet<String>, _ index: Int, doc: Node) -> ChangeSet<String> {
+        folding(set, index, doc: doc) ?? set
+    }
+
+    /// `accepting`, or nil when the base can't take the change's content: its
+    /// range can be open to a different depth in the base than in the document.
+    private static func folding(_ set: ChangeSet<String>, _ index: Int, doc: Node) -> ChangeSet<String>? {
         let change = set.changes[index]
         guard let newBase = try? set.startDoc.replace(change.fromA, change.toA, doc.slice(change.fromB, change.toB))
-        else { return set }
+        else { return nil }
         let delta = (change.toB - change.fromB) - (change.toA - change.fromA)
         var rest = set.changes
         rest.remove(at: index)
@@ -132,12 +138,19 @@ public final class SuggestionModeState {
         // the committed marker, then fold purely-committed changes into the
         // base so they don't linger as suggestions.
         var s = set.addSteps(tr.doc, tr.mapping.maps, committedData)
-        while let i = s.changes.firstIndex(where: { c in
-            !(c.deleted.isEmpty && c.inserted.isEmpty)
-                && c.deleted.allSatisfy { $0.data == committedData }
-                && c.inserted.allSatisfy { $0.data == committedData }
-        }) {
-            s = Self.accepting(s, i, doc: tr.doc)
+        // A change that can't fold stays in the set and is stepped over, or
+        // this would find it again forever.
+        var i = 0
+        while i < s.changes.count {
+            let c = s.changes[i]
+            if !(c.deleted.isEmpty && c.inserted.isEmpty)
+                && c.deleted.allSatisfy({ $0.data == committedData })
+                && c.inserted.allSatisfy({ $0.data == committedData }),
+               let folded = Self.folding(s, i, doc: tr.doc) {
+                s = folded
+            } else {
+                i += 1
+            }
         }
         return SuggestionModeState(enabled: false, changeSet: s)
     }

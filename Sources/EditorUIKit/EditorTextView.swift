@@ -447,7 +447,13 @@ open class EditorTextView: UIView, UIKeyInput {
     /// of a UITextInput-initiated edit.
     weak var textInputDelegate: (any UITextInputDelegate)?
     /// The marked (composing/IME) range in document positions, if any.
-    var markedRange: (Int, Int)?
+    var markedRange: (Int, Int)? {
+        didSet { if markedRange == nil { markedBase = "" } }
+    }
+    /// The grapheme the marked text merged into, which `markedRange` then starts
+    /// at: "ा" composed after "क" can only be marked as all of "का". Each
+    /// composition update replaces the range, so it has to put this back.
+    var markedBase = ""
     var markedTextStyleStore: [NSAttributedString.Key: Any]?
     /// Set while applying a UITextInput-initiated edit, so our `onChange` hook
     /// doesn't echo the change back to the input delegate (which would confuse
@@ -1299,7 +1305,7 @@ open class EditorTextView: UIView, UIKeyInput {
               projectedText(from: from, to: to) == word else { return }
         let tr = editor.state.tr
         guard (try? tr.insertText(guess, from, to)) != nil else { return }
-        tr.setSelection(TextSelection.create(tr.doc, from + guess.count))
+        placeCaret(tr, afterInsertionEndingAt: to)
         editor.dispatch(tr.scrollIntoView())
     }
 
@@ -2574,9 +2580,10 @@ open class EditorTextView: UIView, UIKeyInput {
         // Committing an IME composition: replace the marked range with the final text.
         if let m = markedRange {
             let from = min(m.0, editor.doc.content.size)
+            let to = min(m.1, editor.doc.content.size)
             let tr = editor.state.tr
-            _ = try? tr.insertText(text, from, min(m.1, editor.doc.content.size))
-            collapseCaret(tr, after: from, text: text)
+            _ = try? tr.insertText(markedBase + text, from, to)
+            placeCaret(tr, afterInsertionEndingAt: to)
             editor.dispatch(tr)
             markedRange = nil
             return
@@ -2595,17 +2602,18 @@ open class EditorTextView: UIView, UIKeyInput {
         // so the next keystroke appends. (Mapping the old ranged selection through
         // the replace would otherwise leave the inserted text selected, so each
         // following character would replace it — "typing eats letters".)
-        let from = sel.from
         let tr = editor.state.tr
         _ = try? tr.insertText(text)
-        collapseCaret(tr, after: from, text: text)
+        placeCaret(tr, afterInsertionEndingAt: sel.to)
         editor.dispatch(tr)
     }
 
-    /// Place a collapsed caret just after text inserted at `from`.
-    private func collapseCaret(_ tr: Transaction, after from: Int, text: String) {
-        let pos = min(from + text.count, tr.doc.content.size)
-        tr.setSelection(TextSelection.create(tr.doc, pos))
+    /// Place a collapsed caret just after text that replaced a range ending at
+    /// `to`. Mapped rather than counted: the text may have merged into the
+    /// grapheme before it, or gone into a paragraph created to hold it.
+    func placeCaret(_ tr: Transaction, afterInsertionEndingAt to: Int) {
+        guard tr.docChanged else { return }
+        tr.setSelection(Selection.near(tr.doc.resolve(tr.mapping.map(to, 1)), -1))
     }
 
     public func deleteBackward() {
@@ -3622,7 +3630,7 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
                 _ = try? tr.insertText(text, clamp(drop - (b - a)))
             } else { // drop < a
                 _ = try? tr.insertText(text, drop)
-                let lo = clamp(a + text.count), hi = clamp(b + text.count)
+                let lo = tr.mapping.map(a, 1), hi = tr.mapping.map(b, 1)
                 if lo < hi { _ = try? tr.delete(lo, hi) }
             }
         } else {

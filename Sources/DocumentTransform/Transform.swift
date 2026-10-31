@@ -39,7 +39,13 @@ open class Transform {
     @discardableResult
     public func maybeStep(_ step: any Step) -> StepResult {
         let result = step.apply(doc)
-        if let newDoc = result.doc { addStep(step, newDoc) }
+        if let newDoc = result.doc {
+            addStep(step, newDoc)
+        } else if let widened = (step as? ReplaceStep)?.wideningAcrossGraphemes(doc),
+                  let newDoc = widened.apply(doc).doc {
+            addStep(widened, newDoc)
+            return .ok(newDoc)
+        }
         return result
     }
 

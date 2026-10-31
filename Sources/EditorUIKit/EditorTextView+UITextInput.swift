@@ -158,8 +158,7 @@ extension EditorTextView: UITextInput {
         // old (often ranged, from a double-tap) selection through the replace can
         // leave the inserted text selected — so the next keystroke replaces it
         // instead of appending, which reads as "typed characters get eaten".
-        let caret = min(from + text.count, tr.doc.content.size)
-        tr.setSelection(TextSelection.create(tr.doc, caret))
+        placeCaret(tr, afterInsertionEndingAt: to)
         editor.dispatch(tr)
     }
 
@@ -185,12 +184,19 @@ extension EditorTextView: UITextInput {
         applyingTextInput = true
         defer { applyingTextInput = false }
         let from = clamp(range.0), to = clamp(range.1)
+        let base = markedRange == nil ? "" : markedBase
         let tr = editor.state.tr
-        _ = try? tr.insertText(text, from, to)
-        let newEnd = from + text.count
-        markedRange = text.isEmpty ? nil : (from, newEnd)
+        _ = try? tr.insertText(base + text, from, to)
+        let newEnd = tr.docChanged ? tr.mapping.map(to, 1) : to
+        // Merged into the grapheme before it: the range has to take that in,
+        // or it would be empty, or run on over the following character.
+        let merged = base.isEmpty && !text.isEmpty && tr.docChanged && newEnd - from < text.count && from > 0
+        let newBase = merged ? editor.doc.textBetween(from - 1, from) : base
+        let start = merged ? from - 1 : from
+        markedRange = text.isEmpty ? nil : (start, newEnd)
+        if !text.isEmpty { markedBase = newBase }
         // Selection within the marked text (UTF-16 range approximated onto graphemes).
-        let selStart = from + min(max(selectedRange.location, 0), text.count)
+        let selStart = start + min(max(selectedRange.location, 0), newEnd - start)
         let selEnd = min(selStart + selectedRange.length, newEnd)
         let size = tr.doc.content.size
         tr.setSelection(TextSelection.between(

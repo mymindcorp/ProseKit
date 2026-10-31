@@ -14,9 +14,19 @@ public struct StepResult {
     public static func fail(_ message: String) -> StepResult { StepResult(doc: nil, failed: message) }
 
     /// Call `Node.replace`, turning any thrown error into a failed result.
+    ///
+    /// Also fails when the new text merges into a neighbouring grapheme, like a
+    /// combining mark landing after its base. Positions count graphemes, so the
+    /// document then grows by less than `slice.size`, and the step's map and
+    /// inverse, which can only go by the slice, would describe another document.
+    /// `Transform.maybeStep` re-expresses such a replace so that it's honest.
     public static func fromReplace(_ doc: Node, _ from: Int, _ to: Int, _ slice: Slice) -> StepResult {
         do {
-            return .ok(try doc.replace(from, to, slice))
+            let result = try doc.replace(from, to, slice)
+            if result.content.size != doc.content.size - (to - from) + slice.size {
+                return .fail("Replace would merge graphemes across its edges")
+            }
+            return .ok(result)
         } catch {
             return .fail("\(error)")
         }

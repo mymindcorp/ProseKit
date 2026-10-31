@@ -413,4 +413,6 @@ test("checklist import: a list that can't convert still uses up its lines") {
     try expectEqual(out.child(1).child(0).attrs["checked"]?.boolValue, false)
 }
 
+registerBugHuntRegressionTests()
+
 TestSuite.main("SchemaKitTests", collector.all)

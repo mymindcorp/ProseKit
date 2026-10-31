@@ -434,7 +434,16 @@ private func blockText(_ node: Node) -> String {
     for i in 0..<node.childCount {
         let child = node.child(i)
         if child.isText {
-            content += child.text ?? ""
+            let text = child.text ?? ""
+            // One character per position. Text whose first grapheme would merge
+            // into the one before, across a change of marks or an atom, keeps
+            // its position with a placeholder; otherwise the offsets of the
+            // whole block drift and none of it can be searched.
+            if let last = content.last, let first = text.first, String(last).appending(String(first)).count == 1 {
+                content += "\u{FFFC}" + text.dropFirst()
+            } else {
+                content += text
+            }
         } else if child.isLeaf {
             content += "\u{FFFC}"
         } else {

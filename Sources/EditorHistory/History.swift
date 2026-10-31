@@ -209,11 +209,23 @@ struct Branch {
         // inverted map is its own, searching downwards so the pairing stays in
         // order; an item with no such step was not rebased and is dropped, as
         // before.
-        var iRebased = rebasedCount
+        //
+        // A map alone can be ambiguous. A mark step's map is empty and a
+        // same-size replace's is its own inverse, so a step and its undo look
+        // alike. An item with a step therefore prefers the rebased step that is
+        // that very step: an item's step and a local step's undo are both the
+        // inverse of the same step on the same document.
+        //
+        // A rebase whose undoing steps failed has fewer maps than `rebasedCount`.
+        var iRebased = min(rebasedCount, mapping.maps.count)
         for item in items[start...] {
-            guard let match = (0 ..< iRebased).reversed().first(where: { j in
+            let candidates = (0 ..< iRebased).reversed().filter { j in
                 mapping.maps[j].inverse(of: item.map)
-            }) else { continue }
+            }
+            let itemJSON = item.step?.toJSON()
+            guard let match = candidates.first(where: { j in
+                itemJSON != nil && rebasedTransform.steps[j].toJSON() == itemJSON
+            }) ?? candidates.first else { continue }
             iRebased = match
             guard let pos = mapping.getMirror(iRebased) else { continue }
             newUntil = min(newUntil, pos)
@@ -229,7 +241,7 @@ struct Branch {
         }
 
         var newMaps: [HistoryItem] = []
-        for i in rebasedCount..<newUntil { newMaps.append(HistoryItem(map: mapping.maps[i])) }
+        for i in min(rebasedCount, newUntil)..<newUntil { newMaps.append(HistoryItem(map: mapping.maps[i])) }
         var branch = Branch(items: Array(items[0..<start]) + newMaps + rebasedItems, eventCount: eventCount)
         if branch.emptyItemCount() > maxEmptyItems {
             // `rebased` relies on a clean tail to associate items with rebased
