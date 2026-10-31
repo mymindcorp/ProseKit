@@ -2666,21 +2666,38 @@ public enum MarkdownParser {
         return Array(bytes[at..<(at + want.count)]) == want
     }
 
+    /// Closing tags already worked out for one line: by tag name, then by where
+    /// the element's content starts. `nil` is an element known never to close.
+    private typealias ClosingTags = [String: [Int: InlineTag?]]
+
     /// The `</name>` tag closing an element whose content starts at `from`,
     /// counting nested opens of the same name so `<b>a<b>c</b>d</b>` closes at
     /// the outer one.
-    private static func closingTag(_ bytes: [UInt8], _ from: Int, _ name: String) -> InlineTag? {
-        var depth = 1
+    ///
+    /// The scanner asks this at every open tag, so walking the line per question
+    /// costs a walk per tag: 78 KB of `<b>a ` took 15 seconds. A walk meets every
+    /// open tag nested inside the one it was asked about, and a stack settles all
+    /// of them at once, so those questions are answered before they're asked.
+    private static func closingTag(_ bytes: [UInt8], _ from: Int, _ name: String,
+                                   _ known: inout ClosingTags) -> InlineTag? {
+        if let answer = known[name]?[from] { return answer }
+        var settled = known[name] ?? [:]
+        var open = [from]
         var i = from
-        while i < bytes.count {
+        while i < bytes.count, !open.isEmpty {
             guard bytes[i] == UInt8(ascii: "<"), let tag = inlineTag(bytes, i) else { i += 1; continue }
             if tag.name == name, !tag.selfClosing {
-                depth += tag.isClosing ? -1 : 1
-                if depth == 0 { return tag }
+                if tag.isClosing {
+                    settled[open.removeLast()] = .some(tag)
+                } else {
+                    open.append(tag.end)
+                }
             }
             i = tag.end
         }
-        return nil
+        for start in open { settled[start] = .some(nil) }
+        known[name] = settled
+        return settled[from] ?? nil
     }
 
     /// The words a label renders to, which is what an image's alt text is: the
@@ -2750,6 +2767,7 @@ public enum MarkdownParser {
         }
         // Where a two-byte delimiter search has already come up empty.
         var pairExhausted: [Int: Int] = [:]
+        var closingTags: ClosingTags = [:]
         var i = 0
         var buffer: [UInt8] = []
         func flush(_ marks: [Mark] = []) {
@@ -2877,7 +2895,7 @@ public enum MarkdownParser {
                 if !tag.isClosing, !tag.selfClosing,
                    let markName = HTMLConfig.default.tagToMark[tag.name],
                    schema.marks[markName] != nil,
-                   let close = closingTag(chars, tag.end, tag.name),
+                   let close = closingTag(chars, tag.end, tag.name, &closingTags),
                    !slice(chars, tag.end..<close.start).contains("\n") {
                     var applied: Mark?
                     if markName == "link" {

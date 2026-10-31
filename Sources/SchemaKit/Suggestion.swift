@@ -108,6 +108,56 @@ func suggestionInputsUnchanged(_ tr: Transaction) -> Bool {
     !tr.docChanged && !tr.selectionSet && !tr.storedMarksSet
 }
 
+/// Whether a query could still be open at `cursor`, from a walk back over the
+/// raw bytes before it. `false` is a promise that the real parse finds nothing;
+/// `true` promises nothing, and the real parse decides.
+///
+/// Every keystroke asks, and the real parse builds the whole paragraph's text to
+/// answer. Almost always the answer is right there: the last word has no `@` in
+/// it. The walk stops at the first `trigger` byte, or at whatever ends a query —
+/// a space for `spaceEnds`, a `closer` otherwise — and only then, since a query
+/// ended here means any earlier trigger's query is ended too.
+///
+/// Those stops have to agree with the real parse, which compares characters. A
+/// space or closer counts only between ASCII neighbours, because an ASCII byte
+/// with one on each side is a character of its own: `]\u{301}` isn't a `]`.
+func suggestionCanStart(before cursor: ResolvedPos, trigger: UInt8,
+                        spaceEnds: Bool = false, closer: UInt8? = nil) -> Bool {
+    let parent = cursor.parent
+    var index = cursor.index(cursor.depth)
+    var end = cursor.textOffset
+    if end == 0 { index -= 1 }
+    // The byte after the one being looked at, in the flattened text: neighbouring
+    // text nodes can combine, so this carries across them. Nothing follows the
+    // cursor as far as the query is concerned.
+    var after: UInt8 = 0
+    while index >= 0 {
+        let child = parent.child(index)
+        if child.isText {
+            let text = child.text ?? ""
+            // From the end: typing is nearly always there, and offsetting from
+            // the start would be a walk over the paragraph's characters.
+            var at = end == 0 ? text.endIndex : text.index(text.endIndex, offsetBy: end - child.nodeSize)
+            while at > text.startIndex {
+                at = text.utf8.index(before: at)
+                let byte = text.utf8[at]
+                if byte == trigger { return true }
+                if byte == closer || (spaceEnds && byte == UInt8(ascii: " ")), after < 0x80,
+                   at > text.startIndex, text.utf8[text.utf8.index(before: at)] < 0x80 {
+                    return false
+                }
+                after = byte
+            }
+        } else if !child.isLeaf {
+            // Inline content with text of its own: leave it to the real parse.
+            return true
+        }
+        end = 0
+        index -= 1
+    }
+    return false
+}
+
 /// Where a typed trigger may open a popup: running prose that can actually hold
 /// the node the trigger inserts. Code is literal text — a `[[` there means
 /// brackets and an `@` means an `@` — and the schema has the last word: a

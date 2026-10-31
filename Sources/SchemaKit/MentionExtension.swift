@@ -113,6 +113,16 @@ private func computeMentionSuggestion(_ state: EditorState) -> MentionSuggestion
     // fail silently after the popup had already offered it.
     guard isSuggestionContext(cursor.parent, state: state, cursor: cursor,
                               excludingHeadings: false) else { return nil }
+    guard suggestionCanStart(before: cursor, trigger: UInt8(ascii: "@"), spaceEnds: true) else {
+        assert(mentionSuggestion(cursor, type) == nil, "ruled out a live @ query")
+        return nil
+    }
+    return mentionSuggestion(cursor, type)
+}
+
+/// The `@` query ending at `cursor`, from the text before it. That text costs a
+/// pass over the paragraph, so `suggestionCanStart` gets to decline first.
+private func mentionSuggestion(_ cursor: ResolvedPos, _ type: NodeType) -> MentionSuggestion? {
     // Neutralize leaf atoms (a mention's own leaf text starts with "@" and
     // must not re-trigger the popup right after insertion).
     let textBefore = cursor.parent.textBetween(0, cursor.parentOffset, blockSeparator: nil, leafText: "\u{fffc}")

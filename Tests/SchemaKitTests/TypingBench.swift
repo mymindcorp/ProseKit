@@ -75,6 +75,18 @@ func registerTypingBench() {
                 editor.dispatch(editor.state.tr.setSelection(Selection.near(editor.doc.resolve(mid + i % 2))))
             }
         }
+        print("\n  --- end of one long paragraph, full kit ---"); unsafe fflush(stdout)
+        for reps in [150, 600, 2400] {
+            let long = String(repeating: "lorem ipsum dolor ", count: reps)
+            try time("typing, \(long.count)-character paragraph", ops: 200, setup: {
+                let editor = try Editor(extensions: fullKit())
+                try editor.setContent(html: "<p>\(long)</p>")
+                editor.dispatch(editor.state.tr.setSelection(Selection.atEnd(editor.doc)))
+                return editor
+            }) { editor in
+                for i in 0..<200 { try typeInput(editor, i % 6 == 5 ? " " : "x") }
+            }
+        }
         // Undo that session must still be one step back to the start.
         editor.dispatch(editor.state.tr.setSelection(Selection.atEnd(editor.doc)))
         let before = editor.doc
