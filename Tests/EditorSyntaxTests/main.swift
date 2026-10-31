@@ -13,5 +13,6 @@ func test(_ name: String, _ body: @escaping @Sendable () throws -> Void) { colle
 registerDetectionTests()
 registerAccuracyTests()
 registerVocabularyTests()
+registerSyntaxMutationKillTests()
 
 TestSuite.main("EditorSyntaxTests", collector.all)
