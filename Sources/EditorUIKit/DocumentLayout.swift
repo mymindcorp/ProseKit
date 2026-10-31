@@ -41,6 +41,49 @@ struct LineLayout {
         return CTLineGetOffsetForStringIndex(ctLine, stringRange.location + stringRange.length, nil)
     }
 
+    /// The stretches of this line that `from..<to` covers on screen, left edge
+    /// and right edge plus the string range each one holds, in string order.
+    ///
+    /// Without right-to-left text that is one stretch. With it, a contiguous
+    /// range of the string can be several apart on the line, and neither end's
+    /// offset says where the range starts: both ends of a Hebrew word in Latin
+    /// text sit at the same x, one of them being the run's trailing edge.
+    func forEachVisualSpan(from: Int, to: Int, _ body: (CGFloat, CGFloat, Int, Int) -> Void) {
+        guard let runs = CTLineGetGlyphRuns(ctLine) as? [CTRun],
+              runs.contains(where: { CTRunGetStatus($0).contains(.rightToLeft) }) else {
+            body(offset(forStringIndex: from), offset(forStringIndex: to), from, to)
+            return
+        }
+        var spans: [(left: CGFloat, right: CGFloat, from: Int, to: Int)] = []
+        for run in runs where CTRunGetGlyphCount(run) > 0 {
+            let range = CTRunGetStringRange(run)
+            let s = max(from, range.location), e = min(to, range.location + range.length)
+            guard s < e else { continue }
+            var origin = CGPoint.zero
+            unsafe CTRunGetPositions(run, CFRange(location: 0, length: 1), &origin)
+            let runLeft = origin.x
+            let runRight = runLeft + CGFloat(CTRunGetTypographicBounds(run, CFRange(location: 0, length: 0), nil, nil, nil))
+            // An index inside a run has one offset. The run's own ends are the
+            // ambiguous ones, and which edge they mean depends on its direction.
+            let rtl = CTRunGetStatus(run).contains(.rightToLeft)
+            let startX = s == range.location ? (rtl ? runRight : runLeft) : offset(forStringIndex: s)
+            let endX = e == range.location + range.length ? (rtl ? runLeft : runRight) : offset(forStringIndex: e)
+            spans.append((min(startX, endX), max(startX, endX), s, e))
+        }
+        spans.sort { $0.left < $1.left }
+        var merged: [(left: CGFloat, right: CGFloat, from: Int, to: Int)] = []
+        for span in spans {
+            if let last = merged.last, span.left - last.right < 0.5,
+               span.from == last.to || span.to == last.from {
+                merged[merged.count - 1] = (last.left, max(last.right, span.right),
+                                            min(last.from, span.from), max(last.to, span.to))
+            } else {
+                merged.append(span)
+            }
+        }
+        for span in merged.sorted(by: { $0.from < $1.from }) { body(span.left, span.right, span.from, span.to) }
+    }
+
     /// The largest string index this line draws a glyph for, or nil if it draws
     /// none at all. Every index past it was dropped in shaping.
     private var lastGlyphStringIndex: Int? {
@@ -211,7 +254,7 @@ struct LocalTextBlock {
     /// block's content start. Carried here rather than emitted while typesetting
     /// because a block served from the cache is never typeset again — and would
     /// otherwise lose its backgrounds entirely.
-    let highlights: [(from: Int, to: Int, color: UIColor)]
+    let highlights: [MarkBackground]
     let codeBackgrounds: [(from: Int, to: Int, color: UIColor)]
     /// Wiki-link chips, positioned once line breaking has placed their runs.
     let wikiLinkChips: [WikiLinkChip]
@@ -464,7 +507,7 @@ final class DocumentLayout {
     private(set) var mathTargets: [(rect: CGRect, pos: Int)] = []
     /// Highlight-mark ranges (document positions) and their colors, drawn as a
     /// background behind the text (CoreText ignores `.backgroundColor`).
-    private(set) var highlights: [(from: Int, to: Int, color: UIColor)] = []
+    private(set) var highlights: [MarkBackground] = []
     /// Inline-code background ranges + color, painted as a rounded pill behind the
     /// run. Kept separate from `highlights` so the (demo) drying-ink renderer,
     /// which consumes `highlights`, never textures a code pill.
@@ -526,7 +569,7 @@ final class DocumentLayout {
         let checkboxes: [(rect: CGRect, pos: Int, checked: Bool)]
         var disclosures: [(rect: CGRect, pos: Int, open: Bool)] = []
         var mathTargets: [(rect: CGRect, pos: Int)] = []
-        let highlights: [(from: Int, to: Int, color: UIColor)]
+        let highlights: [MarkBackground]
         var codeBackgrounds: [(from: Int, to: Int, color: UIColor)] = []
         let tables: [TableInfo]
         /// Whether `blocks` is sorted top to bottom as well as by document
@@ -710,7 +753,7 @@ final class DocumentLayout {
                         checkboxes: e.checkboxes.isEmpty ? e.checkboxes : e.checkboxes.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos, checked: $0.checked) },
                         disclosures: e.disclosures.isEmpty ? e.disclosures : e.disclosures.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos, open: $0.open) },
                         mathTargets: e.mathTargets.isEmpty ? e.mathTargets : e.mathTargets.map { (rect: $0.rect.offsetBy(dx: 0, dy: dy), pos: $0.pos + dPos) },
-                        highlights: e.highlights.isEmpty ? e.highlights : e.highlights.map { (from: $0.from + dPos, to: $0.to + dPos, color: $0.color) },
+                        highlights: e.highlights.isEmpty ? e.highlights : e.highlights.map { (from: $0.from + dPos, to: $0.to + dPos, color: $0.color, isHighlight: $0.isHighlight) },
                         codeBackgrounds: e.codeBackgrounds.isEmpty ? e.codeBackgrounds : e.codeBackgrounds.map { (from: $0.from + dPos, to: $0.to + dPos, color: $0.color) },
                         tables: e.tables.isEmpty ? e.tables : e.tables.map { TableInfo(tablePos: $0.tablePos + dPos, originX: $0.originX, widths: $0.widths, top: $0.top + dy, bottom: $0.bottom + dy) },
                         blocksRunDownThePage: e.blocksRunDownThePage,
@@ -1644,7 +1687,7 @@ final class DocumentLayout {
 
         // Rebase the cached ranges onto where this block actually sits.
         for h in local.highlights {
-            highlights.append((from: contentStart + h.from, to: contentStart + h.to, color: h.color))
+            highlights.append((from: contentStart + h.from, to: contentStart + h.to, color: h.color, isHighlight: h.isHighlight))
         }
         for c in local.codeBackgrounds {
             codeBackgrounds.append((from: contentStart + c.from, to: contentStart + c.to, color: c.color))
@@ -1891,7 +1934,7 @@ final class DocumentLayout {
         -> (NSMutableAttributedString, [Segment],
             [(attrIndex: Int, image: UIImage, size: CGSize)],
             [(attrIndex: Int, docOffset: Int, rendering: MathRendering)],
-            [(from: Int, to: Int, color: UIColor)],
+            [MarkBackground],
             [(from: Int, to: Int, color: UIColor)],
             [WikiLinkChip]) {
         let result = NSMutableAttributedString()
@@ -1902,7 +1945,11 @@ final class DocumentLayout {
         // `codeBackgrounds` they used to append straight to — a block served
         // from the cache is never typeset again, so collecting them here and
         // rebasing at the call site is what keeps them.
-        var blockHighlights: [(from: Int, to: Int, color: UIColor)] = []
+        var blockHighlights: [MarkBackground] = []
+        // Each still-open run, so a mark that continues across a text-node
+        // boundary or an atom extends it instead of starting another.
+        var openHighlight: (key: String?, index: Int)?
+        var openBackground: (key: String?, index: Int)?
         var blockCodeBackgrounds: [(from: Int, to: Int, color: UIColor)] = []
         var wikiLinkChips: [WikiLinkChip] = []
         let blockFont = theme.blockFont(node)
@@ -1928,16 +1975,7 @@ final class DocumentLayout {
             if inCheckedItem, theme.taskItem.strikethroughWhenChecked {
                 attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
             }
-            // Highlight and backgroundColor marks paint a background behind the
-            // run (drawn separately since CoreText ignores `.backgroundColor`).
             if !text.isEmpty {
-                if let mark = marks.first(where: { $0.type.name == "highlight" }) {
-                    blockHighlights.append((from: docPos, to: docPos + text.count,
-                                            color: theme.highlightColor(mark.attrs["color"]?.stringValue)))
-                } else if let mark = marks.first(where: { $0.type.name == "backgroundColor" }),
-                          let color = DocumentTheme.parseColor(mark.attrs["color"]?.stringValue) {
-                    blockHighlights.append((from: docPos, to: docPos + text.count, color: color))
-                }
                 // Inline `code` runs get a themed background pill (if configured).
                 if let codeBg = theme.code.inline.background, marks.contains(where: { $0.type.name == "code" }) {
                     blockCodeBackgrounds.append((from: docPos, to: docPos + text.count, color: codeBg))
@@ -1950,8 +1988,36 @@ final class DocumentLayout {
             docPos += text.count
         }
 
+        // Highlight and backgroundColor marks paint a background behind the run
+        // (drawn separately since CoreText ignores `.backgroundColor`). One mark
+        // is one background however many nodes carry it: a bold word or a formula
+        // inside a highlight doesn't cut it in two, or leave a hole in it.
+        func recordBackgrounds(_ marks: [Mark], length: Int) {
+            func record(_ key: String?, _ color: @autoclosure () -> UIColor, isHighlight: Bool,
+                        _ open: inout (key: String?, index: Int)?) {
+                if let run = open, run.key == key, blockHighlights[run.index].to == docPos {
+                    blockHighlights[run.index].to = docPos + length
+                } else {
+                    blockHighlights.append((from: docPos, to: docPos + length, color: color(), isHighlight: isHighlight))
+                    open = (key, blockHighlights.count - 1)
+                }
+            }
+            if let mark = marks.first(where: { $0.type.name == "backgroundColor" }),
+               let name = mark.attrs["color"]?.stringValue, let color = DocumentTheme.parseColor(name) {
+                record(name, color, isHighlight: false, &openBackground)
+            }
+            if let mark = marks.first(where: { $0.type.name == "highlight" }) {
+                let name = mark.attrs["color"]?.stringValue
+                // No name and the default's name paint the same, so they join.
+                record(name ?? theme.highlighters.first?.name, theme.highlightColor(name),
+                       isHighlight: true, &openHighlight)
+            }
+        }
+
         for i in 0..<node.childCount {
             let child = node.child(i)
+            let length = child.isText ? (child.text ?? "").count : 1
+            if length > 0 { recordBackgrounds(child.marks, length: length) }
             if child.isText {
                 appendText(child.text ?? "", marks: child.marks)
             } else if child.type.name == "hardBreak" {
@@ -2566,10 +2632,10 @@ final class DocumentLayout {
                     // two offset lookups are what a rect costs, so skip them here
                     // rather than let the caller throw the rect away.
                     if let clipY, top > clipY.upperBound || top + line.height < clipY.lowerBound { continue }
-                    let xStart = line.offset(forStringIndex: s)
-                    let xEnd = line.offset(forStringIndex: e)
-                    body(CGRect(x: line.baselineOrigin.x + xStart, y: top, width: xEnd - xStart, height: line.height),
-                         block, s, e)
+                    line.forEachVisualSpan(from: s, to: e) { xStart, xEnd, spanFrom, spanTo in
+                        body(CGRect(x: line.baselineOrigin.x + xStart, y: top, width: xEnd - xStart, height: line.height),
+                             block, spanFrom, spanTo)
+                    }
                 }
             }
         }
@@ -2710,13 +2776,31 @@ final class DocumentLayout {
                              cornerRadius: theme.points(theme.code.inline.cornerRadius)).fill()
             }
         }
-        // Highlight-mark backgrounds, behind the text (CoreText won't draw them).
+        // Mark backgrounds, behind the text (CoreText won't draw them). One path
+        // per mark, because each rect is grown a point past its line and these
+        // fills are translucent: filled apart, the overlap between two wrapped
+        // lines paints twice and reads as a dark stripe.
+        func fillBackground(_ background: MarkBackground) {
+            let path = UIBezierPath()
+            for rect in selectionRects(from: background.from, to: background.to, clipY: clipY)
+            where rect.width > 0 && visible(rect.minY, rect.maxY) {
+                path.append(UIBezierPath(roundedRect: rect.insetBy(dx: -1, dy: -1), cornerRadius: 3))
+            }
+            guard !path.isEmpty else { return }
+            background.color.setFill()
+            path.fill()
+        }
+        for background in highlights
+        where (!background.isHighlight || highlightRenderer == nil) && inBand(background.from, background.to) {
+            fillBackground(background)
+        }
         if let highlightRenderer {
-            // Host-drawn (e.g. a textured "drying ink" effect): hand it the visible runs.
+            // Host-drawn (e.g. a textured "drying ink" effect): hand it the visible
+            // runs. Highlight marks only — a `backgroundColor` mark is a flat fill.
             var runs: [HighlightRun] = []
-            for highlight in highlights where inBand(highlight.from, highlight.to) {
+            for highlight in highlights where highlight.isHighlight && inBand(highlight.from, highlight.to) {
                 forEachLineFragment(from: highlight.from, to: highlight.to, clipY: clipY) { rect, block, s, e in
-                    guard visible(rect.minY, rect.maxY) else { return }
+                    guard rect.width > 0, visible(rect.minY, rect.maxY) else { return }
                     runs.append(HighlightRun(from: highlight.from, to: highlight.to,
                                              lineFrom: block.docPos(forAttrIndex: s),
                                              lineTo: block.docPos(forAttrIndex: e),
@@ -2724,14 +2808,6 @@ final class DocumentLayout {
                 }
             }
             if !runs.isEmpty { highlightRenderer(ctx, runs) }
-        } else {
-            for highlight in highlights where inBand(highlight.from, highlight.to) {
-                for rect in selectionRects(from: highlight.from, to: highlight.to, clipY: clipY) where visible(rect.minY, rect.maxY) {
-                    let r = rect.insetBy(dx: -1, dy: -1)
-                    highlight.color.setFill()
-                    UIBezierPath(roundedRect: r, cornerRadius: 3).fill()
-                }
-            }
         }
         // Text blocks via CoreText. Lines are culled individually as well as
         // blocks: a paragraph is rarely much taller than the viewport, but a
@@ -2757,6 +2833,11 @@ final class DocumentLayout {
         }
     }
 }
+
+/// A background a mark paints behind its text, in document positions.
+/// `isHighlight` tells a `highlight` mark, which a host's `highlightRenderer`
+/// may draw, from a `backgroundColor` mark, which is always a flat fill.
+typealias MarkBackground = (from: Int, to: Int, color: UIColor, isHighlight: Bool)
 
 /// Whether a string's base writing direction is right-to-left, decided by its
 /// first strong directional character (Hebrew/Arabic blocks).

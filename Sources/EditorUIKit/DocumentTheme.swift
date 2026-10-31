@@ -458,7 +458,8 @@ public struct DocumentTheme: Sendable, Equatable {
     ///
     /// `name` is what a highlight mark stores in its `color` attribute, so it
     /// travels with the document — renaming one orphans existing marks, which
-    /// then fall back to the default highlighter.
+    /// then fall back to the default highlighter. (A `#hex` or `rgb()` value from
+    /// another editor's HTML isn't an orphan: it paints as itself.)
     public struct Highlighter: Sendable, Equatable {
         /// The ink for one appearance.
         public struct Style: Sendable, Equatable {
@@ -540,13 +541,13 @@ public struct DocumentTheme: Sendable, Equatable {
 
     /// The background painted behind a highlight mark with the given name.
     public func highlightColor(_ name: String?) -> UIColor {
-        highlighter(name)?.background ?? UIColor.systemYellow.withAlphaComponent(0.40)
+        literalHighlightColor(name) ?? highlighter(name)?.background ?? UIColor.systemYellow.withAlphaComponent(0.40)
     }
 
     /// The text color inside a highlight mark with the given name, if its
     /// highlighter sets one.
     public func highlightTextColor(_ name: String?) -> UIColor? {
-        highlighter(name)?.textColor
+        literalHighlightColor(name) == nil ? highlighter(name)?.textColor : nil
     }
 
     /// Background of the suggestion popup (slash menu / wiki-link menu).
@@ -758,11 +759,31 @@ public struct DocumentTheme: Sendable, Equatable {
         return attrs
     }
 
-    /// Parse a CSS color string — a common named color, or `#rgb`/`#rrggbb`/
-    /// `#rrggbbaa` (with or without `#`) — into a UIColor. nil if unparseable.
+    /// The color a highlight imported from another editor names outright: the
+    /// HTML parser keeps its `background-color`, which is no theme's name. Only
+    /// the unmistakable spellings — a bare word is more likely a highlighter this
+    /// theme has dropped, which falls back rather than turning opaque.
+    private func literalHighlightColor(_ name: String?) -> UIColor? {
+        guard let name, !highlighters.contains(where: { $0.name == name }) else { return nil }
+        let lower = name.lowercased()
+        return lower.hasPrefix("#") || lower.hasPrefix("rgb(") || lower.hasPrefix("rgba(")
+            ? DocumentTheme.parseColor(name) : nil
+    }
+
+    /// Parse a CSS color string — a common named color, `#rgb`/`#rrggbb`/
+    /// `#rrggbbaa` (with or without `#`), or `rgb()`/`rgba()` — into a UIColor.
+    /// nil if unparseable.
     public static func parseColor(_ string: String?) -> UIColor? {
         guard let s = string?.trimmingCharacters(in: .whitespaces), !s.isEmpty else { return nil }
-        if let named = namedColors[s.lowercased()] { return named }
+        let lower = s.lowercased()
+        if let named = namedColors[lower] { return named }
+        if lower.hasPrefix("rgb"), let open = lower.firstIndex(of: "("), lower.hasSuffix(")") {
+            let parts = lower[lower.index(after: open)...].dropLast()
+                .split(whereSeparator: { " ,/".contains($0) }).map { Double($0) }
+            guard parts.count == 3 || parts.count == 4, !parts.contains(where: { $0 == nil }) else { return nil }
+            return UIColor(red: parts[0]! / 255, green: parts[1]! / 255, blue: parts[2]! / 255,
+                           alpha: parts.count == 4 ? parts[3]! : 1)
+        }
         return UIColor(hex: s)
     }
 

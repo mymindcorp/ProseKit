@@ -1549,7 +1549,8 @@ open class EditorTextView: UIView, UIKeyInput {
     /// draw runs at their given rects) and the visible runs. Each `HighlightRun`
     /// carries its document range (a stable identity across scrolling, for
     /// per-highlight animation) plus the on-screen rect and resolved color. Call
-    /// `setNeedsDisplay()` to drive an animation. nil → default rendering.
+    /// `setNeedsDisplay()` to drive an animation. nil → default rendering. Only
+    /// `highlight` marks come here; a `backgroundColor` mark stays a flat fill.
     public var highlightRenderer: ((_ ctx: CGContext, _ runs: [HighlightRun]) -> Void)?
 
     /// Called after every transaction that changed the document, with the

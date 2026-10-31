@@ -43,6 +43,45 @@ private func hasMark(_ editor: Editor, _ name: String) -> Bool {
 private func topBlock(_ editor: Editor) -> Node? { editor.doc.firstChild }
 
 func registerMarkdownShortcutTests() {
+    // Comparison operators and prose: the delimiters are only markup when they
+    // open a word and hug the text, the way `**` already has to.
+    for (typed, trigger, delimiter) in [("a == b && c =", "=", "=="), ("foo==bar=", "=", "=="), ("== a =", "=", "=="),
+                                        ("a ~~ b ~", "~", "~~"), ("foo~~bar~", "~", "~~")] {
+        test("mark shortcut: \(typed)\(trigger) stays plain text") {
+            let editor = try shortcut(typed, trigger)
+            let name = delimiter == "==" ? "highlight" : "strike"
+            try expect(!hasMark(editor, name), "\(typed)\(trigger) must not become a mark")
+        }
+    }
+    for (typed, trigger, name) in [("x ==y=", "=", "highlight"), ("x ==y z=", "=", "highlight"), ("x ~~y~", "~", "strike")] {
+        test("mark shortcut: \(typed)\(trigger) marks the words and keeps the space") {
+            let editor = try shortcut(typed, trigger)
+            try expect(hasMark(editor, name))
+            try expect(editor.doc.textContent.hasPrefix("x "), "the space before the opener is kept")
+            try expect(!editor.doc.textContent.contains(trigger), "the delimiters are consumed")
+        }
+    }
+    test("setHighlight: replaces another color, and re-applying isn't an undo step") {
+        let editor = try Editor(extensions: starterKit())
+        try type(editor, "hello")
+        select(editor, 1, 6)
+        editor.setHighlight("green")
+        editor.setHighlight("yellow")
+        try expect(!editor.getHTML().contains("green"), editor.getHTML())
+        try expect(editor.getHTML().contains("yellow"), editor.getHTML())
+        var steps: Int?
+        let command = setHighlight(editor.schema.marks["highlight"]!, color: "yellow")
+        try expect(command(editor.state, { steps = $0.steps.count }, nil))
+        try expectEqual(steps, 0, "nothing changed, so no step was taken")
+    }
+    test("removeHighlight: takes the mark off") {
+        let editor = try Editor(extensions: starterKit())
+        try type(editor, "hello")
+        select(editor, 1, 6)
+        editor.setHighlight("green")
+        try expect(editor.removeHighlight())
+        try expect(!hasMark(editor, "highlight"), editor.getHTML())
+    }
     for (name, prefix, trigger) in [("bold", "**text*", "*"), ("italic", "*text", "*"),
                                     ("strike", "~~text~", "~"), ("highlight", "==text=", "=")] {
         for excluded in [false, true] {
