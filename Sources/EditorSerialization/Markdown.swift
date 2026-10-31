@@ -1255,19 +1255,60 @@ public enum MarkdownParser {
     public static let maxNestingDepth = 64
 
     public static func parse(_ markdown: String, schema: Schema) throws -> Node {
-        try parse(markdown, schema: schema, depth: 0)
+        try parse(markdown.hasPrefix("\u{FEFF}") ? String(markdown.dropFirst()) : markdown, schema: schema, depth: 0)
     }
 
     static func parse(_ markdown: String, schema: Schema,
                       definitions inherited: [String: LinkDefinition] = [:], depth: Int) throws -> Node {
         // A reference can appear before the definition it uses, so definitions
         // are collected — and their lines removed — before anything is parsed.
-        let expanded = markdown.components(separatedBy: "\n").map { expandLeadingTabs($0) }
+        let expanded = expandingTabsOutsideFences(normalizedLineEndings(markdown).components(separatedBy: "\n"))
         let (lines, definitions) = collectDefinitions(expanded)
         // A definition inside a quote still belongs to the document.
         let all = definitions.merging(collectNestedDefinitions(expanded)) { outer, _ in outer }
         return try parse(lines: lines, schema: schema,
                          definitions: inherited.merging(all) { outer, _ in outer }, depth: depth)
+    }
+
+    /// CommonMark's three line endings, as the one the parser splits on.
+    private static func normalizedLineEndings(_ markdown: String) -> String {
+        guard markdown.utf8.contains(UInt8(ascii: "\r")) else { return markdown }
+        return markdown.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+    }
+
+    /// Lines with their leading tabs expanded, except inside a code fence, where
+    /// a tab is the code's own. A fence can sit in a list item or a quote, whose
+    /// markers aren't parsed yet, so they're looked past to find it.
+    private static func expandingTabsOutsideFences(_ lines: [String]) -> [String] {
+        var fence: CodeFence?
+        return lines.map { line in
+            if let open = fence {
+                guard closesFence(contentPastContainers(line), open) else { return line }
+                fence = nil
+                return expandLeadingTabs(line)
+            }
+            let expanded = expandLeadingTabs(line)
+            fence = openingFence(contentPastContainers(expanded))
+            return expanded
+        }
+    }
+
+    /// A line without its indentation and any quote or list markers.
+    private static func contentPastContainers(_ line: String) -> String {
+        var rest = Substring(line)
+        while true {
+            rest = rest.drop(while: { $0 == " " || $0 == "\t" })
+            if rest.hasPrefix(">") {
+                rest = rest.dropFirst()
+            } else if let first = rest.first, "-+*".contains(first), rest.dropFirst().first == " " {
+                rest = rest.dropFirst(2)
+            } else {
+                let digits = rest.prefix(while: { $0.isASCII && $0.isNumber })
+                let after = rest.dropFirst(digits.count)
+                guard !digits.isEmpty, after.hasPrefix(". ") || after.hasPrefix(") ") else { return String(rest) }
+                rest = after.dropFirst(2)
+            }
+        }
     }
 
     /// Definitions found anywhere in a document, including inside quotes and
@@ -1442,17 +1483,22 @@ public enum MarkdownParser {
             // A `<details>` HTML block (what the serializer emits for a
             // collapsible section, and the GFM convention for one).
             if hasTagPrefix(trimmed, "<details") {
-                var inner: [String] = []
                 let open = detailsIsOpen(trimmed)
+                var (inner, nesting) = detailsOpeningLine(trimmed)
                 i += 1
-                var depth = 1
-                while i < lines.count {
-                    let t = lines[i].trimmingCharacters(in: markdownSpaces).lowercased()
-                    if indentWidth(lines[i]) < 4 {
-                        if t.hasPrefix("<details") { depth += 1 }
-                        if t.hasPrefix("</details>") {
-                            depth -= 1
-                            if depth == 0 { i += 1; break }
+                // A tag inside a code fence is the code's text.
+                var fence: CodeFence?
+                while nesting > 0, i < lines.count {
+                    if let current = fence {
+                        if closesFence(lines[i], current) { fence = nil }
+                    } else if let opened = openingFence(lines[i]) {
+                        fence = opened
+                    } else if indentWidth(lines[i]) < 4 {
+                        let t = lines[i].trimmingCharacters(in: markdownSpaces)
+                        if hasTagPrefix(t, "<details") { nesting += 1 }
+                        if hasTagPrefix(t, "</details>") {
+                            nesting -= 1
+                            if nesting == 0 { i += 1; break }
                         }
                     }
                     inner.append(lines[i]); i += 1
@@ -1709,8 +1755,30 @@ public enum MarkdownParser {
 
     /// Whether a `<details …>` opening line carries the `open` attribute.
     private static func detailsIsOpen(_ line: String) -> Bool {
-        let body = line.lowercased().dropFirst("<details".count)
-        return body.contains("open")
+        let tag = line.lowercased().dropFirst("<details".count).prefix(while: { $0 != ">" })
+        return tag.split(whereSeparator: { $0.isWhitespace || $0 == "/" })
+            .contains { $0 == "open" || $0.hasPrefix("open=") }
+    }
+
+    /// What a `<details>` opening line already holds, as lines for
+    /// `makeDetails`, and how many sections are still open after it. GitHub's
+    /// one-line form has the whole section here:
+    /// `<details><summary>x</summary>body</details>`.
+    private static func detailsOpeningLine(_ line: String) -> (lines: [String], nesting: Int) {
+        guard let close = line.firstIndex(of: ">") else { return ([], 1) }
+        var rest = String(line[line.index(after: close)...]).trimmingCharacters(in: markdownSpaces)
+        var nesting = 1
+        if let end = rest.range(of: "</details>", options: [.backwards, .caseInsensitive, .anchored]) {
+            rest = String(rest[..<end.lowerBound])
+            nesting = 0
+        }
+        guard !rest.isEmpty else { return ([], nesting) }
+        if hasTagPrefix(rest, "<summary>"),
+           let summaryEnd = rest.range(of: "</summary>", options: .caseInsensitive) {
+            let body = String(rest[summaryEnd.upperBound...]).trimmingCharacters(in: markdownSpaces)
+            return ([String(rest[..<summaryEnd.upperBound])] + (body.isEmpty ? [] : ["", body]), nesting)
+        }
+        return ([rest], nesting)
     }
 
     /// Build `details(detailsSummary, detailsContent)` from the lines inside a
@@ -2110,8 +2178,10 @@ public enum MarkdownParser {
     /// A pipe-table row's cells, split on the "|" that aren't escaped.
     ///
     /// The outer pipes are optional in GitHub's tables, so one at either end is
-    /// the row's edge rather than an empty cell. A "\|" stays as written: the
-    /// inline parser resolves the escape, the same as anywhere else.
+    /// the row's edge rather than an empty cell. A "\|" is a literal pipe and
+    /// loses its backslash here, before inline parsing, as GFM has it: code
+    /// spans and math don't resolve escapes, and the serializer writes it for
+    /// every pipe in a cell, whatever it's inside.
     static func pipeCells(_ line: String) -> [String] {
         var body = Substring(line.trimmingCharacters(in: markdownSpaces))
         if body.hasPrefix("|") { body = body.dropFirst() }
@@ -2119,11 +2189,17 @@ public enum MarkdownParser {
         if body.hasSuffix("|"), !body.dropLast().hasSuffix("\\") { body = body.dropLast() }
         var cells: [String] = []
         var current = ""
-        var escaped = false
         for c in body {
-            if escaped { current.append(c); escaped = false; continue }
-            if c == "\\" { current.append(c); escaped = true; continue }
-            if c == "|" { cells.append(current.trimmingCharacters(in: markdownSpaces)); current = ""; continue }
+            if c == "|" {
+                if current.hasSuffix("\\") {
+                    current.removeLast()
+                    current.append(c)
+                } else {
+                    cells.append(current.trimmingCharacters(in: markdownSpaces))
+                    current = ""
+                }
+                continue
+            }
             current.append(c)
         }
         cells.append(current.trimmingCharacters(in: markdownSpaces))
@@ -4094,7 +4170,11 @@ public enum MarkdownParser {
 /// tag's letters, so a byte comparison of the prefix is enough.
 private func hasTagPrefix(_ line: String, _ tag: String) -> Bool {
     guard line.utf8.count >= tag.utf8.count else { return false }
-    return zip(line.utf8, tag.utf8).allSatisfy { a, b in
+    let matches = zip(line.utf8, tag.utf8).allSatisfy { a, b in
         a == b || (a >= UInt8(ascii: "A") && a <= UInt8(ascii: "Z") && a | 0x20 == b)
     }
+    guard matches, tag.utf8.last != UInt8(ascii: ">") else { return matches }
+    // The tag's name has to end here: `<tablet` is not a `<table`.
+    guard let next = line.utf8.dropFirst(tag.utf8.count).first else { return true }
+    return next == UInt8(ascii: ">") || next == UInt8(ascii: "/") || next == UInt8(ascii: " ") || next == UInt8(ascii: "\t")
 }

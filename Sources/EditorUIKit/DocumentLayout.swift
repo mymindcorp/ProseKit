@@ -1520,14 +1520,17 @@ final class DocumentLayout {
     private func layoutTable(_ node: Node, docPos: Int, x: CGFloat, width: CGFloat, y: CGFloat) -> CGFloat {
         var y0 = y
         let rows = node.childCount
-        let cols = node.firstChild?.childCount ?? 1
-        let widths = columnWidths(for: node, cols: cols, available: width)
+        let (cols, placements) = Self.tableGrid(node)
+        let widths = columnWidths(for: node, cols: cols, firstRow: placements.first ?? [], available: width)
         // Left edge of each column, then the table's right edge.
         var edges: [CGFloat] = [x]
         for w in widths { edges.append(edges.last! + w) }
         let style = theme.table
         let padding = theme.points(style.cellPadding)
         var pos = docPos + 1 // inside the table, before the first row
+        // Cells spanning into a row below: their height is only known, and their
+        // border only drawn, at the row they end on.
+        var spanning: [(endRow: Int, top: CGFloat, x: CGFloat, width: CGFloat, bottom: CGFloat)] = []
         for r in 0..<rows {
             let row = node.child(r)
             var cellPos = pos + 1 // inside the row, before the first cell
@@ -1536,8 +1539,9 @@ final class DocumentLayout {
             // clickable, caret-able, and editable (top-aligned within the cell).
             for c in 0..<row.childCount {
                 let cell = row.child(c)
-                let cellX = edges[min(c, edges.count - 1)]
-                let cellW = c < widths.count ? widths[c] : (width / CGFloat(max(cols, 1)))
+                let place = placements[r][c]
+                let cellX = edges[place.column]
+                let cellW = edges[place.column + place.colspan] - cellX
                 let outerAlignment = inCellAlignment
                 inCellAlignment = cell.attrs["align"]?.stringValue
                 let bottom = layoutFragment(cell.content, docPos: cellPos + 1,
@@ -1545,16 +1549,30 @@ final class DocumentLayout {
                                             width: max(cellW - padding.left - padding.right, 1),
                                             y: y0 + padding.top)
                 inCellAlignment = outerAlignment
-                rowHeight = max(rowHeight, bottom - y0 + padding.bottom)
+                if place.rowspan > 1 {
+                    spanning.append((r + place.rowspan - 1, y0, cellX, cellW, bottom + padding.bottom))
+                } else {
+                    rowHeight = max(rowHeight, bottom - y0 + padding.bottom)
+                }
                 cellPos += cell.nodeSize
             }
+            for cell in spanning where cell.endRow == r {
+                rowHeight = max(rowHeight, cell.bottom - y0)
+            }
             // Cell borders, drawn under the text.
-            for c in 0..<row.childCount {
-                let cellX = edges[min(c, edges.count - 1)]
-                let cellW = c < widths.count ? widths[c] : (width / CGFloat(max(cols, 1)))
-                decorations.append(.stroke(CGRect(x: cellX, y: y0, width: cellW, height: rowHeight),
+            for c in 0..<row.childCount where placements[r][c].rowspan == 1 {
+                let place = placements[r][c]
+                let cellX = edges[place.column]
+                decorations.append(.stroke(CGRect(x: cellX, y: y0, width: edges[place.column + place.colspan] - cellX,
+                                                  height: rowHeight),
                                            style.borderColor ?? theme.hairlineColor, style.borderWidth))
             }
+            for cell in spanning where cell.endRow == r {
+                decorations.append(.stroke(CGRect(x: cell.x, y: cell.top, width: cell.width,
+                                                  height: y0 + rowHeight - cell.top),
+                                           style.borderColor ?? theme.hairlineColor, style.borderWidth))
+            }
+            spanning.removeAll { $0.endRow == r }
             y0 += rowHeight
             pos += row.nodeSize
         }
@@ -1570,14 +1588,51 @@ final class DocumentLayout {
         return attr?.doubleValue
     }
 
+    /// Where a table's cells sit: for each row, each cell's first column and
+    /// spans, stepping over columns taken by a `rowspan` from a row above.
+    /// A span is clamped to the rows that exist, and to a width worth laying out.
+    static func tableGrid(_ table: Node) -> (cols: Int, rows: [[(column: Int, colspan: Int, rowspan: Int)]]) {
+        var remaining: [Int] = []
+        var rows: [[(column: Int, colspan: Int, rowspan: Int)]] = []
+        for r in 0..<table.childCount {
+            let row = table.child(r)
+            var column = 0
+            var placed: [(column: Int, colspan: Int, rowspan: Int)] = []
+            for c in 0..<row.childCount {
+                let attrs = row.child(c).attrs
+                while column < remaining.count, remaining[column] > 0 { column += 1 }
+                let colspan = min(max(attrs["colspan"]?.intValue ?? 1, 1), 1000)
+                let rowspan = min(max(attrs["rowspan"]?.intValue ?? 1, 1), table.childCount - r)
+                if remaining.count < column + colspan {
+                    remaining += Array(repeating: 0, count: column + colspan - remaining.count)
+                }
+                for k in column..<(column + colspan) { remaining[k] = rowspan }
+                placed.append((column, colspan, rowspan))
+                column += colspan
+            }
+            rows.append(placed)
+            remaining = remaining.map { max($0 - 1, 0) }
+        }
+        let cols = rows.joined().map { $0.column + $0.colspan }.max() ?? 1
+        return (cols, rows)
+    }
+
     /// Column widths for a table: the first row's `colwidth` attributes
     /// normalized to the available width, or an equal split when unset.
-    private func columnWidths(for node: Node, cols: Int, available: CGFloat) -> [CGFloat] {
-        let firstRow = node.firstChild
-        let raw: [CGFloat?] = (0..<cols).map { c in
-            guard let row = firstRow, c < row.childCount,
-                  let w = Self.colwidthValue(row.child(c).attrs["colwidth"]), w > 0 else { return nil }
-            return CGFloat(w)
+    private func columnWidths(for node: Node, cols: Int, firstRow: [(column: Int, colspan: Int, rowspan: Int)],
+                              available: CGFloat) -> [CGFloat] {
+        var raw = [CGFloat?](repeating: nil, count: cols)
+        for (c, place) in firstRow.enumerated() {
+            let attr = node.child(0).child(c).attrs["colwidth"]
+            for k in 0..<place.colspan {
+                var w: Double?
+                if case let .array(arr)? = attr {
+                    w = k < arr.count ? arr[k].doubleValue : nil
+                } else if place.colspan == 1 {
+                    w = Self.colwidthValue(attr)
+                }
+                if let w, w > 0 { raw[place.column + k] = CGFloat(w) }
+            }
         }
         if raw.contains(where: { $0 == nil }) {
             return Array(repeating: available / CGFloat(max(cols, 1)), count: cols)

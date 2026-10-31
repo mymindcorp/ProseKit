@@ -196,6 +196,11 @@ doesn't have to rediscover them.
 
 ## Ported-fix log
 
+- **2026-10-30** — `prosemirror-transform`: `join` calls `clearIncompatible` when
+  the block before is a textblock, so a code block's newlines and marks don't
+  arrive in a paragraph unconverted. `linebreakReplacement` isn't ported, so
+  newlines always become spaces there. `Sources/DocumentTransform/Structure.swift`;
+  regression test in `Tests/SchemaKitTests/BugHuntRegressions.swift`.
 - **2026-10-30** — `prosemirror-transform` 1.12.3/1.12.4: inverting a mark
   step now undoes exactly what it did. `AddMarkStep.invert` removed the mark
   over the whole range, so undoing a link that *replaced* another link left no

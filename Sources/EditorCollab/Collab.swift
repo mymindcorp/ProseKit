@@ -154,8 +154,10 @@ public func rebaseSteps(_ steps: [Rebaseable], _ over: [any Step], _ transform: 
         mapFrom -= 1
         if let mapped, transform.maybeStep(mapped).failed == nil {
             transform.mapping.setMirror(mapFrom, transform.steps.count - 1)
-            result.append(Rebaseable(step: mapped,
-                                     inverted: mapped.invert(transform.docs[transform.docs.count - 1]),
+            // The transform's own copy: it may have widened `mapped` on applying it.
+            let applied = transform.steps[transform.steps.count - 1]
+            result.append(Rebaseable(step: applied,
+                                     inverted: applied.invert(transform.docs[transform.docs.count - 1]),
                                      origin: steps[j].origin))
         }
     }
