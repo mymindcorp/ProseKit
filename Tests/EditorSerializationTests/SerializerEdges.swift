@@ -68,6 +68,37 @@ private func schemaWithout(_ dropped: Set<String>) throws -> Schema {
 }
 
 func registerSerializerEdgeTests() {
+    // One walk settles every open tag it meets, so these all have to come out as
+    // if each tag had been asked about on its own.
+    test("Markdown: inline tags pair up with their own closers") {
+        func marked(_ line: String) throws -> (text: String, marked: [String]) {
+            let doc = try MarkdownParser.parse(line, schema: schema)
+            var runs: [String] = []
+            doc.descendants { node, _, _, _ in
+                if node.isText, !node.marks.isEmpty { runs.append(node.text ?? "") }
+                return true
+            }
+            return (doc.textContent, runs)
+        }
+        let cases: [(line: String, text: String, marked: [String])] = [
+            ("<b>a<b>c</b>d</b>", "acd", ["acd"]),
+            ("<b>a<b>c</b>d", "<b>acd", ["c"]),
+            ("<b>a<b>b<b>c</b>", "<b>a<b>bc", ["c"]),
+            ("<b>a</b> <b>c", "a <b>c", ["a"]),
+            ("<b>a</b><b>c</b>", "ac", ["ac"]),
+            ("<B>a</b>", "a", ["a"]),
+            ("<b/>a</b>", "<b/>a</b>", []),
+            ("</b><b>a</b>", "</b>a", ["a"]),
+            ("<b>a<i>c</b>d</i>", "a<i>cd</i>", ["a<i>c"]),
+            ("<!-- <b> --><b>a</b>", "<!-- <b> -->a", ["a"]),
+        ]
+        for item in cases {
+            let got = try marked(item.line)
+            try expectEqual(got.text, item.text, item.line)
+            try expectEqual(got.marked, item.marked, item.line)
+        }
+    }
+
     // A list nested inside another list belongs to itself. Every one of these
     // reads a sub-list's markup as the outer list's own, which is what the
     // three checks below pin down.

@@ -169,9 +169,19 @@ final class WikiLinkSuggestionSource: SuggestionSource {
 private func computeSuggestion(_ state: EditorState) -> WikiLinkSuggestion? {
     guard let cursor = (state.selection as? TextSelection)?.cursor,
           let type = state.schema.nodes["wikiLink"] else { return nil }
-    let parent = cursor.parent
-    guard isSuggestionContext(parent, state: state, cursor: cursor,
+    guard isSuggestionContext(cursor.parent, state: state, cursor: cursor,
                               excludingHeadings: true) else { return nil }
+    guard suggestionCanStart(before: cursor, trigger: UInt8(ascii: "["), closer: UInt8(ascii: "]")) else {
+        assert(wikiLinkSuggestion(cursor, type) == nil, "ruled out a live [[ query")
+        return nil
+    }
+    return wikiLinkSuggestion(cursor, type)
+}
+
+/// The `[[` query ending at `cursor`, from the text before it. That text costs a
+/// pass over the paragraph, so `suggestionCanStart` gets to decline first.
+private func wikiLinkSuggestion(_ cursor: ResolvedPos, _ type: NodeType) -> WikiLinkSuggestion? {
+    let parent = cursor.parent
     // Neutralize display labels so inline atoms cannot supply trigger text.
     let textBefore = parent.textBetween(0, cursor.parentOffset, blockSeparator: nil, leafText: "\u{fffc}")
     // Find the last unmatched "[[".

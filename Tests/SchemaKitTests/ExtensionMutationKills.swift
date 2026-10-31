@@ -407,6 +407,49 @@ func registerExtensionMutationKillTests() {
         try expectEqual(closed.state.selection.head, 12)
         try expectNil(closed.wikiLinkSuggestion)
     }
+
+    // `suggestionCanStart` declines without building the text, and debug builds
+    // check each decline against the real parse. So what's at stake here is every
+    // shape where a byte looks like the end of a query and the character isn't.
+    test("suggestions: a query's end is a character, not a byte") {
+        let queries: [(html: String, mention: String?, wiki: String?)] = [
+            ("<p>plain words</p>", nil, nil),
+            ("<p>hi @jo</p>", "jo", nil),
+            ("<p>mail a@b</p>", nil, nil),
+            ("<p>hi @jo there</p>", nil, nil),
+            ("<p>@jo</p>", "jo", nil),
+            ("<p>see [[Pa</p>", nil, "Pa"),
+            ("<p>see [[Pa and more</p>", nil, "Pa and more"),
+            ("<p>see [[Pa]ge</p>", nil, nil),
+            ("<p>x] see [[Pa</p>", nil, "Pa"),
+            // A combining mark makes these something other than a `]`.
+            ("<p>see [[Pa]\u{301}ge</p>", nil, "Pa]\u{301}ge"),
+            ("<p>see [[Pa<strong>]</strong>\u{301}ge</p>", nil, "Pa]\u{301}ge"),
+            // A prepended mark swallows the bracket's position the other way.
+            ("<p>see [[Pa\u{600}]ge</p>", nil, "Pa\u{600}]ge"),
+            // A leaf is a placeholder, not an end, unless it's a line break.
+            ("<p>hi @jo<br>next</p>", nil, nil),
+            ("<p>see [[Pa<br>next</p>", nil, nil),
+        ]
+        for query in queries {
+            let editor = try Editor(extensions: fullKit(wikiLinkSuggestions: { _ in [] }, mentionSuggestions: { _ in [] }))
+            try editor.setContent(html: query.html)
+            editor.dispatch(editor.state.tr.setSelection(Selection.atEnd(editor.doc)))
+            try expectEqual(editor.mentionSuggestion?.query, query.mention, query.html)
+            try expectEqual(editor.wikiLinkSuggestion?.query, query.wiki, query.html)
+        }
+    }
+
+    test("suggestions: the cursor in the middle of a text node reads only what's before it") {
+        let editor = try Editor(extensions: fullKit(wikiLinkSuggestions: { _ in [] }, mentionSuggestions: { _ in [] }))
+        try editor.setContent(html: "<p>héllo @jo more words</p>")
+        // Just after "@jo", with accented text before it and a space after.
+        editor.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.doc, 10)))
+        try expectEqual(editor.mentionSuggestion?.query, "jo")
+        // Past the space, the query has ended.
+        editor.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.doc, 11)))
+        try expectNil(editor.mentionSuggestion)
+    }
     // MARK: - Unique IDs
 
     test("mutation kills: a generated id keeps being redrawn while it collides") {

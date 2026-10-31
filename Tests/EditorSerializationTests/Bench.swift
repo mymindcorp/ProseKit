@@ -39,6 +39,20 @@ func registerBench() {
             return out
         }
 
+        // One line of inline tags that never close, or that all close at the end:
+        // each open asks for its closing tag, so these are the shapes that make
+        // that search quadratic if it isn't shared.
+        print("\n  --- one line of inline tags, 78 KB ---"); unsafe fflush(stdout)
+        let tagLines: [(String, String)] = [
+            ("unclosed <b>", String(repeating: "<b>a ", count: 16_000)),
+            ("<i> with a stray </b>", String(repeating: "<i>a</b> ", count: 8_800)),
+            ("unclosed <b>, one </b> at the end", String(repeating: "<b>a ", count: 16_000) + "</b>"),
+            ("comments holding an unclosed <b>", String(repeating: "<!-- <b> --> ", count: 6_000)),
+        ]
+        for (label, line) in tagLines {
+            try time(label, 1) { _ = try MarkdownParser.parse(line, schema: schema) }
+        }
+
         for n in [200, 1000] {
             let html = article(n)
             print("\n  --- \(n) paragraphs, \(html.count / 1024) KB of HTML ---"); unsafe fflush(stdout)
