@@ -44,7 +44,12 @@ enum LineBreaking {
         var count = CTTypesetterSuggestLineBreak(typesetter, start, Double(width))
         if count <= 0 { count = length - start }
         let br = string.rangeOfCharacter(from: hardBreaks, range: NSRange(location: start, length: count))
-        if br.location != NSNotFound { count = br.location - start + 1 }
+        if br.location != NSNotFound {
+            count = br.location - start + 1
+            // CRLF is one line ending, and one document position.
+            if string.character(at: br.location) == 0x0D, br.location + 1 < length,
+               string.character(at: br.location + 1) == 0x0A { count += 1 }
+        }
         return start + max(count, 1)
     }
 

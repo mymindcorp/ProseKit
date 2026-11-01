@@ -1013,6 +1013,14 @@ public enum MarkdownSerializer {
             guard node.marks.contains(where: { $0.type.name == "code" }) else {
                 // A delimiter character has to be escaped or it pairs with a
                 // later one and becomes markup.
+                //
+                // A digit can't follow a closing `$`, which is what keeps
+                // "$5 and $6" text, so one straight after math is an entity.
+                if out.hasSuffix("$"), let digit = text.first, digit.isASCII, digit.isNumber {
+                    out += "&#\(digit.asciiValue!);"
+                    escapeInline(String(text.dropFirst()), into: &out)
+                    return
+                }
                 escapeInline(text, into: &out)
                 return
             }
@@ -1049,7 +1057,7 @@ public enum MarkdownSerializer {
                 out += "![\(alt)](\(destination(src)))"
             }
         case "wikiLink":
-            out += "[[\(node.type.spec.leafText?(node) ?? "")]]"
+            out += "[[" + wikiLinkSource(node.type.spec.leafText?(node) ?? "") + "]]"
         case "mention":
             // Markdown has no mention, so this is lossy by nature — it comes
             // back as the text it looks like. Writing nothing was lossier
@@ -1162,7 +1170,24 @@ public enum MarkdownSerializer {
     /// spells its dollar correctly round-trips unchanged. Inline math is a single
     /// line by definition, and TeX treats a newline as whitespace, so folding one
     /// to a space keeps the formula's meaning.
+    /// A wiki link's text, with what would end it or read as its alias escaped.
+    static func wikiLinkSource(_ text: String) -> String {
+        var out = ""
+        for c in text {
+            if c == "\\" || c == "|" || c == "]" { out.append("\\") }
+            out.append(c)
+        }
+        return out
+    }
+
     static func inlineMathSource(_ latex: String) -> String {
+        // Spaces inside the delimiters would stop them pairing, and a backslash
+        // at the end would escape the closer. Neither means anything in LaTeX
+        // there, and keeping them costs the whole formula.
+        var latex = latex.trimmingCharacters(in: markdownSpacesAndNewlines)
+        if latex.reversed().prefix(while: { $0 == "\\" }).count % 2 == 1 {
+            latex = String(latex.dropLast()).trimmingCharacters(in: markdownSpacesAndNewlines)
+        }
         var out = ""
         var escaped = false
         for c in latex {
@@ -3021,8 +3046,11 @@ public enum MarkdownParser {
             // is the same call the `[[…]]` input rule makes.
             if c == UInt8(ascii: "[") && i + 1 < chars.count && chars[i + 1] == UInt8(ascii: "["),
                let type = schema.nodes["wikiLink"] {
-                let inner = findPair(chars, i + 2, UInt8(ascii: "]"), UInt8(ascii: "]"), lastBytes(), &pairExhausted)
-                    .map { (close: $0, parts: slice(chars, (i + 2)..<$0).split(separator: "|", maxSplits: 1).map(String.init)) }
+                var wikiClose = findPair(chars, i + 2, UInt8(ascii: "]"), UInt8(ascii: "]"), lastBytes(), &pairExhausted)
+                while let close = wikiClose, isBackslashEscaped(chars, close, from: i + 2) {
+                    wikiClose = findPair(chars, close + 1, UInt8(ascii: "]"), UInt8(ascii: "]"), lastBytes(), &pairExhausted)
+                }
+                let inner = wikiClose.map { (close: $0, parts: wikiLinkParts(slice(chars, (i + 2)..<$0))) }
                 // `[[Page|shown]]` reads as "shown".
                 if let inner, let target = inner.parts.count > 1 ? inner.parts[1] : inner.parts.first,
                    !target.trimmingCharacters(in: markdownSpaces).isEmpty,
@@ -4042,6 +4070,31 @@ public enum MarkdownParser {
     /// digit immediately to its right. Those two conditions are what stop
     /// "costs $5 and $6" from pairing its dollars into a formula. Returns nil at
     /// end of line — inline math never spans lines.
+    /// Whether an odd run of backslashes stands right before `index`.
+    private static func isBackslashEscaped(_ bytes: [UInt8], _ index: Int, from start: Int) -> Bool {
+        var i = index - 1, run = 0
+        while i >= start, bytes[i] == UInt8(ascii: "\\") { run += 1; i -= 1 }
+        return run % 2 == 1
+    }
+
+    /// A wiki link's target and alias, split on the first unescaped pipe, with
+    /// `wikiLinkSource`'s escapes resolved. Any other backslash is the text's.
+    private static func wikiLinkParts(_ source: String) -> [String] {
+        var parts = [""]
+        var pending = Array(source)[...]
+        while let c = pending.popFirst() {
+            if c == "\\", let next = pending.first, next == "\\" || next == "|" || next == "]" {
+                parts[parts.count - 1].append(next)
+                pending.removeFirst()
+            } else if c == "|", parts.count == 1 {
+                parts.append("")
+            } else {
+                parts[parts.count - 1].append(c)
+            }
+        }
+        return parts
+    }
+
     private static func findMathClose(_ bytes: [UInt8], _ from: Int) -> Int? {
         var i = from
         while i < bytes.count {

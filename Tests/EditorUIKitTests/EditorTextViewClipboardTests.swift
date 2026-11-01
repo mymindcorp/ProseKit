@@ -402,7 +402,7 @@ final class EditorTextViewClipboardTests: XCTestCase {
             let doc = view.editor.doc
             XCTAssertNoThrow(try doc.check(), context)
             let chars = Array(base)
-            let expectedText = String(chars[..<(from - 1)]) + string + String(chars[(to - 1)...])
+            let expectedText = String(chars[..<(from - 1)]) + EditorTextView.normalizingLineEndings(string) + String(chars[(to - 1)...])
             XCTAssertEqual(doc.textBetween(0, doc.content.size, blockSeparator: "\n"), expectedText, context)
             let expectedLinks = MarkdownParser.literalAutolinks(in: string).map { "\(string[$0.range])→\($0.href)" }
             XCTAssertEqual(links(view), expectedLinks, context)

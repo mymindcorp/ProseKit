@@ -17,14 +17,34 @@ private func doc(_ blocks: Node...) -> Node { node("doc", [:], blocks) }
 private func parse(_ markdown: String) throws -> Node { try MarkdownParser.parse(markdown, schema: schema) }
 private func roundTrip(_ d: Node) throws -> Node { try parse(MarkdownSerializer.serialize(d)) }
 
+/// `d`, in a new editor. `setContent` won't take another editor's schema's nodes.
+private func editor(with d: Node) throws -> Editor {
+    let e = try Editor(extensions: fullKit())
+    e.setContent(try Node.fromJSON(e.schema, d.toJSON()))
+    try expectEqual(e.doc.textContent, d.textContent)
+    return e
+}
+
+private func typing(_ blocks: Node, then text: String, setUp: (Editor) -> Void = { _ in }) throws -> Node {
+    let e = try editor(with: blocks)
+    e.dispatch(e.state.tr.setSelection(TextSelection.create(e.doc, e.doc.child(0).content.size + 1)))
+    setUp(e)
+    let sel = e.state.selection
+    for plugin in e.state.plugins {
+        if let handle = plugin.props?.handleTextInput,
+           handle(sel.from, sel.to, text, e.state, { e.dispatch($0) }) { return e.doc }
+    }
+    return e.doc
+}
+
 func registerBugHuntRegressionTests() {
     test("suggestions: Enter with a committed change that can't fold returns") {
-        let e = try Editor(extensions: fullKit())
-        e.setContent(doc(paragraph(schema.text("abcd"))))
+        let e = try editor(with: doc(paragraph(schema.text("abcd"))))
         _ = e.run(toggleSuggestionMode)
         _ = e.run("toggleBulletList")
         _ = e.run(toggleSuggestionMode)
         _ = e.run(splitListItem(e.schema.nodes["listItem"]!))
+        try expect(e.doc.textContent.contains("abcd"), e.doc.textContent)
     }
 
     test("join: a newline joining into a paragraph becomes a space") {
@@ -110,5 +130,42 @@ func registerBugHuntRegressionTests() {
             try expectEqual(d.textBetween(matches[0].from, matches[0].to), "needle")
             try expectEqual(SearchQuery(search: "ne+dle", regexp: true).findAll(state).count, 1)
         }
+    }
+
+    test("input rules: a stored code mark stops the rules firing") {
+        let d = try typing(doc(paragraph(schema.text("x -"))), then: "-") { e in _ = e.run("toggleCode") }
+        try expect(!d.textContent.contains("—"), d.textContent)
+    }
+
+    test("input rules: a grapheme split by marks doesn't shift what a rule deletes") {
+        let b = [schema.marks["bold"]!.create()]
+        let bolded = try typing(doc(paragraph(schema.text("**e", b), schema.text("\u{301}x*"))), then: "*")
+        try expect(bolded.textContent.contains("e\u{301}x"), bolded.textContent)
+        let italic = try typing(doc(paragraph(schema.text("a *e", b), schema.text("\u{301}x"))), then: "*")
+        try expect(italic.textContent.hasPrefix("a e\u{301}x"), italic.textContent)
+        try expect(!italic.textContent.contains("*"), italic.textContent)
+    }
+
+    test("markdown: inline math round-trips next to a digit and with awkward edges") {
+        let math = { (latex: String) in node("inlineMath", ["latex": .string(latex)]) }
+        let digit = doc(paragraph(math("x"), schema.text("5 apples")))
+        try expect(try roundTrip(digit) == digit, MarkdownSerializer.serialize(digit))
+        for (latex, expected) in [(" a ", "a"), ("a\\", "a"), ("a\\\\", "a\\\\"), ("a$b", "a\\$b"), ("a\\$b", "a\\$b")] {
+            let back = try roundTrip(doc(paragraph(math(latex))))
+            try expectEqual(back.child(0).child(0).attrs["latex"]?.stringValue, expected)
+            // And it stays put on the next cycle.
+            try expect(try roundTrip(back) == back, latex)
+        }
+        // Prices stay text.
+        try expectEqual(try parse("$5 and $6").child(0).child(0).isText, true)
+    }
+
+    test("markdown: wiki link text with its own syntax round-trips") {
+        for text in ["a|b", "a]]b", "a]", "a\\b", "a\\|b"] {
+            let d = doc(paragraph(node("wikiLink", ["text": .string(text)])))
+            try expect(try roundTrip(d) == d, MarkdownSerializer.serialize(d))
+        }
+        try expectEqual(try parse("[[Page|shown]]").child(0).child(0).attrs["text"]?.stringValue, "shown")
+        try expectEqual(try parse("[[C:\\dir]]").child(0).child(0).attrs["text"]?.stringValue, "C:\\dir")
     }
 }

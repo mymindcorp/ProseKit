@@ -279,7 +279,7 @@ open class EditorTextView: UIView, UIKeyInput {
     /// or explicit language), given the block's text and `language` attribute.
     /// Nil (the default), or a nil return, draws no badge.
     public var codeLanguageLabel: CodeLanguageLabelProvider? {
-        didSet { invalidateLayout() }
+        didSet { blockCache.clear(); invalidateLayout() }
     }
 
     /// Optional hook supplying the leading glyph on a wiki-link chip — the
@@ -798,6 +798,21 @@ open class EditorTextView: UIView, UIKeyInput {
         let head = editor.state.selection.head
         guard layout.isEstimated(pos: head),
               layout.realize(aroundPos: head, viewportHeight: bounds.height) else { return }
+        didRealize(layout)
+    }
+
+    /// Lay out the lines around `pos` before moving up or down from it. A
+    /// vertical move only sees laid-out blocks, so at the edge of them it would
+    /// find nothing, or a block far away, and take that for the document's edge.
+    /// Measured from the caret, not the block: the next block can be more than
+    /// a screen below the top of a long one.
+    func realizeForVerticalMove(from pos: Int) {
+        guard let layout, layout.hasEstimatedContent, let caret = layout.caretRect(at: pos) else { return }
+        let h = max(bounds.height, 1)
+        if layout.realize(window: (caret.minY - h) ... (caret.maxY + h)) { didRealize(layout) }
+    }
+
+    private func didRealize(_ layout: DocumentLayout) {
         layoutGeneration += 1
         loadPendingImages(layout.pendingImages)
         if layout.height != lastReportedHeight {
@@ -3006,12 +3021,18 @@ open class EditorTextView: UIView, UIKeyInput {
         editor.dispatch(editor.state.tr.replaceSelection(Slice.maxOpen(content)))
     }
 
+    /// Text from outside with its line endings as the document's own.
+    static func normalizingLineEndings(_ text: String) -> String {
+        text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+    }
+
     /// Insert `string` as text: one line inline, several as paragraphs.
     ///
     /// With `linkingURLs`, the bare URLs in it become links — the same ones the
     /// Markdown path links, so text doesn't have to look like Markdown for a
     /// pasted URL to be clickable. Paste and Match Style leaves them plain.
-    private func pastePlainText(_ string: String, linkingURLs: Bool = false) {
+    private func pastePlainText(_ pasted: String, linkingURLs: Bool = false) {
+        let string = Self.normalizingLineEndings(pasted)
         let linkType = linkingURLs ? editor.schema.marks["link"] : nil
         let lines = string.components(separatedBy: "\n")
         if lines.count <= 1 {
@@ -3393,6 +3414,7 @@ open class EditorTextView: UIView, UIKeyInput {
     private func moveCaretVertically(up: Bool, extend: Bool = false) {
         let sel = editor.state.selection
         let l = ensureLayout()
+        realizeForVerticalMove(from: sel.head)
         guard let caret = l.caretRect(at: sel.head) else { return }
         // Preserve the column across consecutive ↑/↓ presses. If the cursor
         // moved by any other means since our last vertical move, restart it.
@@ -3616,7 +3638,8 @@ extension EditorTextView: UIDragInteractionDelegate, UIDropInteractionDelegate {
     /// range can include inline atoms (so its document span differs from the
     /// text's character count), and the document can shift between drop capture
     /// and this call (async load / a collaborator's edit).
-    func dropText(_ text: String, at dropPos: Int, movingFrom moveFrom: (from: Int, to: Int)?) {
+    func dropText(_ dropped: String, at dropPos: Int, movingFrom moveFrom: (from: Int, to: Int)?) {
+        let text = Self.normalizingLineEndings(dropped)
         let tr = editor.state.tr
         func clamp(_ p: Int) -> Int { min(max(p, 0), tr.doc.content.size) }
         if let raw = moveFrom {

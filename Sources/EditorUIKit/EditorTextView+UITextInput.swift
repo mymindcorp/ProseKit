@@ -195,9 +195,13 @@ extension EditorTextView: UITextInput {
         let start = merged ? from - 1 : from
         markedRange = text.isEmpty ? nil : (start, newEnd)
         if !text.isEmpty { markedBase = newBase }
-        // Selection within the marked text (UTF-16 range approximated onto graphemes).
-        let selStart = start + min(max(selectedRange.location, 0), newEnd - start)
-        let selEnd = min(selStart + selectedRange.length, newEnd)
+        // `selectedRange` counts UTF-16 units of the marked text; positions count graphemes.
+        func graphemes(_ units: Int) -> Int {
+            let utf16 = text.utf16
+            return text[..<utf16.index(utf16.startIndex, offsetBy: min(max(units, 0), utf16.count))].count
+        }
+        let selStart = min(start + graphemes(selectedRange.location), newEnd)
+        let selEnd = min(start + graphemes(selectedRange.location + selectedRange.length), newEnd)
         let size = tr.doc.content.size
         tr.setSelection(TextSelection.between(
             tr.doc.resolve(min(max(selStart, 0), size)),
@@ -234,6 +238,7 @@ extension EditorTextView: UITextInput {
             var pos = p.offset
             let layout = ensureLayout()
             for _ in 0..<max(offset, 0) {
+                realizeForVerticalMove(from: pos)
                 guard let caret = layout.caretRect(at: pos),
                       let next = layout.verticalPosition(from: pos, up: direction == .up, preferredX: caret.midX) else { break }
                 pos = next
