@@ -185,6 +185,9 @@ open class EditorTextView: UIView, UIKeyInput {
     }
     /// Whether a menu is open, whichever way it's drawn.
     private var isSuggestionOpen: Bool { suggestionPopup != nil || presentedMenu != nil }
+    /// Whether an open menu has a row to choose. An empty one leaves the arrow
+    /// keys and Return to the document.
+    private var hasSuggestionChoices: Bool { suggestionPopup != nil || presentedMenu?.entries.isEmpty == false }
     /// Where the open popup is anchored, and the card size its current rows
     /// want — both fixed until the entries themselves change. Kept so a scroll
     /// can re-anchor the popup without re-pulling the source or re-solving the
@@ -288,6 +291,9 @@ open class EditorTextView: UIView, UIKeyInput {
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleMemoryWarning),
             name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(keyboardWillChangeFrame(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
     }
 
     /// The editor's document revision — bumped only when the document actually
@@ -1665,6 +1671,7 @@ open class EditorTextView: UIView, UIKeyInput {
     /// popup. Called on every state change and when an async source reports
     /// new results; a scroll only re-anchors (`repositionSuggestionPopup`).
     private func updateSuggestionPopup() {
+        var unmatched: SuggestionContext?
         for source in editor.suggestionSources {
             guard let context = source.context(editor) else { continue }
             let entries = source.entries(context.query, editor)
@@ -1672,6 +1679,11 @@ open class EditorTextView: UIView, UIKeyInput {
                 showSuggestion(entries, context: context)
                 return
             }
+            if unmatched == nil { unmatched = context }
+        }
+        if let unmatched, let presenter = suggestionPresenter, presenter.presentsEmptyMenus {
+            showSuggestion([], context: unmatched)
+            return
         }
         hideSuggestion()
     }
@@ -1689,7 +1701,13 @@ open class EditorTextView: UIView, UIKeyInput {
     /// host's bottom edge, and clamps horizontally. Re-parents the popup as needed.
     /// A `SuggestionMenuPresenter` can pass its view and `menu.caretRect` to
     /// sit where the built-in popup would.
-    public func placeOverlay(_ popup: UIView, viewportAnchor anchor: CGRect, size: CGSize, gap: CGFloat = 4) {
+    ///
+    /// The on-screen keyboard counts as the bottom edge. When `size` fits on
+    /// neither side of the anchor, the view takes the roomier side and comes out
+    /// shorter than asked, so give it a way to scroll. Returns the frame it was
+    /// given, in `overlayHost`'s coordinates.
+    @discardableResult
+    public func placeOverlay(_ popup: UIView, viewportAnchor anchor: CGRect, size: CGSize, gap: CGFloat = 4) -> CGRect {
         let host = overlayHost
         if popup.superview !== host {
             popup.removeFromSuperview()
@@ -1699,10 +1717,36 @@ open class EditorTextView: UIView, UIKeyInput {
         let b = host.bounds
         let x = min(max(a.minX, 4), max(4, b.width - size.width - 4))
         let below = a.maxY + gap
-        let y = (below + size.height > b.maxY - 4 && a.minY - size.height - gap > b.minY + 4)
-            ? a.minY - size.height - gap : below
-        popup.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
+        let roomBelow = max(0, min(b.maxY, keyboardTop(in: host)) - 4 - below)
+        let roomAbove = max(0, a.minY - gap - (b.minY + host.safeAreaInsets.top + 4))
+        let height: CGFloat, y: CGFloat
+        if size.height <= roomBelow || (size.height > roomAbove && roomBelow >= roomAbove) {
+            height = min(size.height, roomBelow)
+            y = below
+        } else {
+            height = min(size.height, roomAbove)
+            y = a.minY - gap - height
+        }
+        popup.frame = CGRect(x: x, y: y, width: size.width, height: height)
         host.bringSubviewToFront(popup)
+        return popup.frame
+    }
+
+    /// The keyboard's last reported frame, in screen coordinates.
+    private var keyboardScreenFrame: CGRect?
+
+    /// The top of a keyboard docked to the bottom of `host`, or infinity. A
+    /// hardware keyboard's bar and an iPad's floating keyboard take up no bottom
+    /// edge to stay clear of: the first sits off screen, the second is left alone.
+    private func keyboardTop(in host: UIView) -> CGFloat {
+        guard let screenFrame = keyboardScreenFrame else { return .infinity }
+        let frame = window?.windowScene.map { host.convert(screenFrame, from: $0.screen.coordinateSpace) } ?? screenFrame
+        return frame.height > 0 && frame.maxY >= host.bounds.maxY - 1 ? frame.minY : .infinity
+    }
+
+    @objc private func keyboardWillChangeFrame(_ note: Notification) {
+        keyboardScreenFrame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+        repositionSuggestionPopup()
     }
 
     private func showSuggestion(_ entries: [SuggestionEntry], context: SuggestionContext) {
@@ -1713,7 +1757,7 @@ open class EditorTextView: UIView, UIKeyInput {
             if let open = presentedMenu, open.trigger == context.trigger, open.from == context.from {
                 // The same menu, typed further: keep the highlight on the same
                 // row while the rows are the same ones.
-                if open.entries.map(\.title) != entries.map(\.title) { open.highlightedIndex = 0 }
+                if open.entries.map(\.id) != entries.map(\.id) { open.highlightedIndex = 0 }
                 open.query = context.query
                 open.entries = entries
                 open.caretRect = caret
@@ -1733,6 +1777,8 @@ open class EditorTextView: UIView, UIKeyInput {
                 presentedMenu = nil
                 presenter.dismissSuggestions(in: self)
             }
+            // The built-in popup has no empty state.
+            if entries.isEmpty { hideSuggestion(); return }
         }
         let popup = suggestionPopup ?? {
             let p = SuggestionPopupView(theme: theme)
@@ -2676,7 +2722,7 @@ open class EditorTextView: UIView, UIKeyInput {
         if text == "\n" {
             // Return arrives here (not via `handle`), so the suggestion popup
             // must be consulted on this path too: Enter chooses the item.
-            if isSuggestionOpen { acceptSuggestion(); return }
+            if hasSuggestionChoices { acceptSuggestion(); return }
             runKey("Enter"); return
         }
         let sel = editor.state.selection
@@ -3307,9 +3353,10 @@ open class EditorTextView: UIView, UIKeyInput {
         // While a suggestion popup is open, the arrow/enter/escape keys drive it.
         if isSuggestionOpen {
             switch key.keyCode {
-            case .keyboardUpArrow: moveSuggestionHighlight(by: -1); return true
-            case .keyboardDownArrow: moveSuggestionHighlight(by: 1); return true
-            case .keyboardReturnOrEnter, .keyboardTab: acceptSuggestion(); return true
+            case .keyboardUpArrow where hasSuggestionChoices: moveSuggestionHighlight(by: -1); return true
+            case .keyboardDownArrow where hasSuggestionChoices: moveSuggestionHighlight(by: 1); return true
+            case .keyboardReturnOrEnter where hasSuggestionChoices, .keyboardTab where hasSuggestionChoices:
+                acceptSuggestion(); return true
             case .keyboardEscape: hideSuggestion(); return true
             default: break
             }

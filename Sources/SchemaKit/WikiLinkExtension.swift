@@ -147,7 +147,7 @@ private func trimmedQuery(_ query: String) -> String {
 @MainActor
 private func wikiLinkEntries(_ targets: [String], from: Int, to: Int) -> [SuggestionEntry] {
     targets.map { target in
-        SuggestionEntry(title: target, icon: "doc.text") {
+        SuggestionEntry(title: target, icon: "doc.text", id: target) {
             $0.acceptWikiLinkSuggestion(text: target, from: from, to: to)
         }
     }

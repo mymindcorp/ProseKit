@@ -15,14 +15,16 @@ public final class SuggestionMenu {
     public let trigger: String
     /// The text typed after the trigger.
     public internal(set) var query: String
-    /// The rows, in order. Each carries its title, subtitle, icon and section.
+    /// The rows, in order. Each carries its id, title, subtitle, icon, section
+    /// and metadata. Empty only for a presenter whose `presentsEmptyMenus` is true.
     public internal(set) var entries: [SuggestionEntry]
     /// The row Return and Tab choose. The arrow keys move it and present the
     /// menu again; a presenter may move it too, following the pointer say.
     public var highlightedIndex: Int
     /// The caret at the end of the query, in the text view's coordinates.
     /// Pass it to `EditorTextView.placeOverlay` to sit a view where the
-    /// built-in popup would.
+    /// built-in popup would, clear of the keyboard; the frame it returns may be
+    /// shorter than you asked for, so be ready to scroll.
     public internal(set) var caretRect: CGRect
 
     /// Where the trigger starts: with `trigger`, what makes this the same menu.
@@ -70,14 +72,25 @@ public final class SuggestionMenu {
 public protocol SuggestionMenuPresenter: AnyObject {
     /// Show `menu`, or bring what's on screen up to date with it. Called when
     /// a menu opens, when its query, rows or highlight change, and on every
-    /// scroll tick while it's open (only `caretRect` changes then), so keep it
-    /// cheap.
+    /// scroll tick and keyboard move while it's open (only `caretRect` or the
+    /// room around it changes then), so keep it cheap.
     ///
     /// Return false to let the editor draw its built-in popup for this one —
     /// to take over only the slash menu, say, by checking `menu.trigger`.
     func present(_ menu: SuggestionMenu, in textView: EditorTextView) -> Bool
+    /// Whether to keep presenting a menu whose query matches nothing, with
+    /// empty `entries`, so it can say "No results". False (the default) closes
+    /// the menu instead, as the built-in popup does. With nothing to choose,
+    /// the arrow keys, Return and Tab go to the document as usual; Escape still
+    /// closes. A source fetching asynchronously looks the same until its results
+    /// arrive, so an empty menu can mean "still loading".
+    var presentsEmptyMenus: Bool { get }
     /// Take down the menu last presented. Called once when a menu this
     /// presenter accepted closes, however it closed.
     func dismissSuggestions(in textView: EditorTextView)
+}
+
+public extension SuggestionMenuPresenter {
+    var presentsEmptyMenus: Bool { false }
 }
 #endif

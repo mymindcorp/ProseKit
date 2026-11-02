@@ -86,7 +86,7 @@ private func mentionContext(_ editor: Editor) -> SuggestionContext? {
 @MainActor
 private func mentionEntries(_ ids: [String], from: Int, to: Int) -> [SuggestionEntry] {
     ids.map { id in
-        SuggestionEntry(title: "@" + id, icon: "person.circle") {
+        SuggestionEntry(title: "@" + id, icon: "person.circle", id: id) {
             $0.acceptMentionSuggestion(id: id, from: from, to: to)
         }
     }

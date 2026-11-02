@@ -148,6 +148,7 @@ final class SuggestionMenuTests: XCTestCase {
         // Fewer rows than the cap, so the card is sized to its content and the
         // only difference is the headers.
         let view = try makeView()
+        view.frame.size.height = 2000 // with nothing to clamp the card to
         view.theme.suggestionMenu.maxVisibleRows = 20
         type(view, "/")
         let headed = try XCTUnwrap(view.suggestionPopupView).frame.height
@@ -201,6 +202,91 @@ final class SuggestionMenuTests: XCTestCase {
         XCTAssertLessThan(compact, full, "dropping subtitles makes each row one line")
     }
 
+    // MARK: The keyboard
+
+    /// A view in a window, with the caret `lines` paragraphs down.
+    private func makeWindowedView(lines: Int, windowHeight: CGFloat = 844) throws -> (EditorTextView, UIWindow) {
+        let view = try makeView()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: windowHeight))
+        view.frame = window.bounds
+        window.addSubview(view)
+        window.makeKeyAndVisible()
+        view.layoutIfNeeded()
+        for _ in 0..<lines { view.insertText("\n") }
+        return (view, window)
+    }
+
+    private func showKeyboard(top: CGFloat, in window: UIWindow) {
+        NotificationCenter.default.post(name: UIResponder.keyboardWillChangeFrameNotification, object: nil, userInfo: [
+            UIResponder.keyboardFrameEndUserInfoKey:
+                CGRect(x: 0, y: top, width: window.bounds.width, height: window.bounds.height - top),
+        ])
+    }
+
+    func testThePopupStaysAboveTheKeyboard() throws {
+        let (view, window) = try makeWindowedView(lines: 0)
+        defer { window.isHidden = true; showKeyboard(top: window.bounds.height, in: window) }
+        showKeyboard(top: 300, in: window)
+        type(view, "/")
+        let popup = try XCTUnwrap(view.suggestionPopupView)
+        XCTAssertLessThanOrEqual(popup.frame.maxY, 300)
+        XCTAssertLessThan(popup.frame.height, popup.fittingSize().height, "shorter than it wanted: it scrolls")
+        XCTAssertGreaterThan(popup.frame.minY, 0)
+        XCTAssertFalse(popup.fullyVisibleTitles.isEmpty)
+    }
+
+    func testThePopupFlipsAboveTheCaretWhenThereIsRoom() throws {
+        let (view, window) = try makeWindowedView(lines: 8)
+        defer { window.isHidden = true; showKeyboard(top: window.bounds.height, in: window) }
+        showKeyboard(top: 500, in: window)
+        view.theme.suggestionMenu.maxVisibleRows = 2
+        type(view, "/")
+        let popup = try XCTUnwrap(view.suggestionPopupView)
+        let overlay = UIView()
+        let anchor = CGRect(x: 20, y: 440, width: 2, height: 20)
+        let frame = view.placeOverlay(overlay, viewportAnchor: anchor, size: CGSize(width: 200, height: 100))
+        XCTAssertEqual(frame.maxY, anchor.minY - 4, "no room below the anchor, so above it")
+        XCTAssertEqual(frame.height, 100, "at full height: it fits there")
+        XCTAssertLessThanOrEqual(popup.frame.maxY, 500)
+    }
+
+    func testAnOpenPopupMovesWhenTheKeyboardDoes() throws {
+        let (view, window) = try makeWindowedView(lines: 0)
+        defer { window.isHidden = true; showKeyboard(top: window.bounds.height, in: window) }
+        type(view, "/")
+        let popup = try XCTUnwrap(view.suggestionPopupView)
+        let tall = popup.frame.height
+        showKeyboard(top: 400, in: window)
+        XCTAssertLessThanOrEqual(popup.frame.maxY, 400)
+        showKeyboard(top: window.bounds.height, in: window) // it went away
+        XCTAssertEqual(popup.frame.height, tall, "and the room comes back")
+    }
+
+    func testAKeyboardThatIsntDockedIsLeftAlone() throws {
+        let (view, window) = try makeWindowedView(lines: 0)
+        defer { window.isHidden = true; showKeyboard(top: window.bounds.height, in: window) }
+        type(view, "/")
+        let popup = try XCTUnwrap(view.suggestionPopupView)
+        let tall = popup.frame.height
+        NotificationCenter.default.post(name: UIResponder.keyboardWillChangeFrameNotification, object: nil, userInfo: [
+            UIResponder.keyboardFrameEndUserInfoKey: CGRect(x: 40, y: 200, width: 300, height: 250), // floating
+        ])
+        XCTAssertEqual(popup.frame.height, tall)
+    }
+
+    func testPlaceOverlayReportsTheFrameItGave() throws {
+        let (view, window) = try makeWindowedView(lines: 0)
+        defer { window.isHidden = true; showKeyboard(top: window.bounds.height, in: window) }
+        showKeyboard(top: 300, in: window)
+        let overlay = UIView()
+        let frame = view.placeOverlay(overlay, viewportAnchor: CGRect(x: 20, y: 40, width: 2, height: 20),
+                                      size: CGSize(width: 200, height: 600))
+        XCTAssertEqual(frame, overlay.frame)
+        XCTAssertLessThanOrEqual(frame.maxY, 300)
+        XCTAssertLessThan(frame.height, 600)
+        XCTAssertGreaterThan(frame.minY, 60, "below the anchor, the roomier side")
+    }
+
     func testRowIconsResolveSymbolsAndFallBack() {
         XCTAssertNotNil(SuggestionPopupView.icon("list.bullet", pointSize: 15))
         let fallback = SuggestionPopupView.icon("no-such-image", pointSize: 15)
@@ -225,6 +311,7 @@ private final class RecordingPresenter: SuggestionMenuPresenter {
     var accepts: (SuggestionMenu) -> Bool = { _ in true }
     var presented: [SuggestionMenu] = []
     var dismissals = 0
+    var presentsEmptyMenus = false
     var current: SuggestionMenu? { presented.last }
 
     func present(_ menu: SuggestionMenu, in textView: EditorTextView) -> Bool {
@@ -395,6 +482,96 @@ final class SuggestionPresenterTests: XCTestCase {
         view.suggestionPresenter = presenter
         XCTAssertNil(view.suggestionTitles)
         XCTAssertEqual(presenter.current?.query, "head")
+    }
+
+    func testRowsCarryAStableIDAndMetadata() throws {
+        let item = SlashCommandItem(title: "Sign", keywords: ["sig"], id: "signature", metadata: ["hint": "⌘S"]) { _, _, _ in true }
+        let editor = try Editor(extensions: starterKit() + [SlashMenuExtension(commands: [item] + defaultSlashCommands())])
+        let view = EditorTextView(editor: editor, frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        view.layoutIfNeeded()
+        view.suggestionPresenter = presenter
+        type(view, "/")
+        let first = try XCTUnwrap(presenter.current?.entries.first)
+        XCTAssertEqual(first.id, "signature")
+        XCTAssertEqual(first.metadata, ["hint": "⌘S"])
+        XCTAssertEqual(presenter.current?.entries[1].id, "toggleHeading1", "a named command's id is its name")
+    }
+
+    func testWikiAndMentionRowsAreIdentifiedByWhatTheyInsert() throws {
+        let view = try makeView(wikiLinks: { _ in ["Home"] }, mentions: { _ in ["Ada"] })
+        type(view, "[[Ho")
+        XCTAssertEqual(presenter.current?.entries.first?.id, "Home")
+        XCTAssertTrue(key(view, .keyboardEscape))
+        let other = try makeView(mentions: { _ in ["Ada"] })
+        type(other, "@A")
+        XCTAssertEqual(presenter.current?.entries.first?.title, "@Ada")
+        XCTAssertEqual(presenter.current?.entries.first?.id, "Ada", "the name, without the @ it's drawn with")
+    }
+
+    func testTheHighlightFollowsTheRowsNotTheirTitles() throws {
+        // Same ids → same rows, so the highlight stays; a different set resets it.
+        let view = try makeView()
+        type(view, "/head")
+        let menu = try XCTUnwrap(presenter.current)
+        menu.highlightedIndex = 2
+        type(view, "i")
+        XCTAssertEqual(menu.highlightedIndex, 2, "still Heading 1–3")
+        view.deleteBackward(); view.deleteBackward(); view.deleteBackward(); view.deleteBackward()
+        XCTAssertEqual(menu.highlightedIndex, 0, "the list changed")
+    }
+
+    func testAnUnmatchedQueryClosesTheMenuByDefault() throws {
+        let view = try makeView()
+        type(view, "/h")
+        type(view, "zzz")
+        XCTAssertEqual(presenter.dismissals, 1)
+    }
+
+    func testAPresenterCanShowNoResults() throws {
+        presenter.presentsEmptyMenus = true
+        let view = try makeView()
+        type(view, "/h")
+        let menu = try XCTUnwrap(presenter.current)
+        type(view, "zzz")
+        XCTAssertTrue(presenter.current === menu, "the same menu, still open")
+        XCTAssertEqual(menu.entries.count, 0)
+        XCTAssertEqual(menu.query, "hzzz")
+        XCTAssertEqual(presenter.dismissals, 0)
+        view.deleteBackward(); view.deleteBackward(); view.deleteBackward()
+        XCTAssertEqual(menu.entries.first?.title, "Heading 1", "and it recovers as the query shortens")
+    }
+
+    func testAnEmptyMenuLeavesReturnToTheDocument() throws {
+        presenter.presentsEmptyMenus = true
+        let view = try makeView()
+        type(view, "/zzz")
+        view.insertText("\n")
+        XCTAssertEqual(view.editor.doc.childCount, 2, "the line broke: there's nothing to choose")
+        XCTAssertEqual(view.editor.doc.child(0).textContent, "/zzz")
+        XCTAssertEqual(presenter.dismissals, 1, "the caret left the trigger")
+
+        let other = try makeView()
+        type(other, "/zzz")
+        XCTAssertTrue(key(other, .keyboardReturnOrEnter))
+        XCTAssertEqual(other.editor.doc.childCount, 2, "from a hardware keyboard too")
+    }
+
+    func testEscapeClosesAnEmptyMenu() throws {
+        presenter.presentsEmptyMenus = true
+        let view = try makeView()
+        type(view, "/zzz")
+        XCTAssertTrue(key(view, .keyboardEscape))
+        XCTAssertEqual(presenter.dismissals, 1)
+    }
+
+    func testDecliningAnEmptyMenuDoesNotOpenThePopup() throws {
+        presenter.presentsEmptyMenus = true
+        presenter.accepts = { !$0.entries.isEmpty }
+        let view = try makeView()
+        type(view, "/h")
+        type(view, "zzz")
+        XCTAssertNil(view.suggestionTitles)
+        XCTAssertEqual(presenter.dismissals, 1)
     }
 
     func testScrollingRepresentsWithANewCaretOnly() throws {

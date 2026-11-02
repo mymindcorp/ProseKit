@@ -96,6 +96,9 @@ struct DemoFlags: Equatable {
     /// Swap the editable editor for the read-only `DocumentView` — the same
     /// `DocumentLayout` renderer, seeded from the current document.
     var readOnly = false
+    /// Draw the `/` menu with a host-owned SwiftUI palette instead of the
+    /// built-in popup (`EditorTextView.suggestionPresenter`).
+    var slashPalette = false
 
     /// How many differ from their defaults, for the menu's label. `spellCheck` is
     /// on by default, so counting the ones that are on would overcount.
@@ -106,7 +109,7 @@ struct DemoFlags: Equatable {
                        (dryingInk, defaults.dryingInk), (bubble, defaults.bubble),
                        (spellCheck, defaults.spellCheck), (linkClicks, defaults.linkClicks),
                        (wikiChips, defaults.wikiChips), (wikiBrackets, defaults.wikiBrackets),
-                       (readOnly, defaults.readOnly)] where a != b {
+                       (readOnly, defaults.readOnly), (slashPalette, defaults.slashPalette)] where a != b {
             count += 1
         }
         return count
@@ -256,6 +259,7 @@ struct FlagsMenu: View {
                 Toggle("🤖 Agent typing", isOn: $flags.agent)
                 Toggle("⠿ Block reordering", isOn: $flags.reorder)
                 Toggle("Spell check", isOn: $flags.spellCheck)
+                Toggle("🎛 Custom / palette", isOn: $flags.slashPalette)
             }
             Section("Selection") {
                 Toggle("🖍 Drying ink", isOn: $flags.dryingInk)
@@ -596,6 +600,8 @@ struct EditorContainer: UIViewRepresentable {
         /// Whether the wiki-link icon hook is currently installed, so it is only
         /// assigned when the flag changes (each assignment costs the block cache).
         var wikiIconsOn = false
+        /// Held here because the text view only holds its presenter weakly.
+        let slashPalette = SlashPalettePresenter()
         var onLoadError: ((String) -> Void)?
         /// The demo drying-ink controller (records fresh highlights, draws ink).
         var dryingInk: DryingInk?
@@ -761,7 +767,7 @@ struct EditorContainer: UIViewRepresentable {
                           "Margaret Hamilton", "Marijn Haverbeke", "Barbara Liskov", "Donald Knuth"]
             guard !query.isEmpty else { return people }
             return people.filter { $0.range(of: query, options: .caseInsensitive) != nil }
-        }))
+        }, slashMenuOptions: SlashMenuOptions(commands: slashPaletteCommands())))
         editor.setContent(demoDocuments[docIndex].build(editor.schema))
 
         let scroll = UIScrollView()
@@ -894,6 +900,7 @@ struct EditorContainer: UIViewRepresentable {
             coordinator.wikiIconsOn = flags.wikiChips
             textView.wikiLinkIcon = flags.wikiChips ? { WikiLinkIcons.icon($0) } : nil
         }
+        textView.suggestionPresenter = flags.slashPalette ? coordinator.slashPalette : nil
         textView.blockReorderingEnabled = flags.reorder
         textView.spellCheckingEnabled = flags.spellCheck
         // The editor opens nothing itself: a click is only a link click because
@@ -1708,5 +1715,129 @@ final class FormatBubble: UIView, FloatingBubble {
         onLink?(urlField.text ?? "")
         urlField.text = ""
         show(.buttons)
+    }
+}
+
+// MARK: - Custom slash palette
+
+/// The default slash commands, each with the Markdown you could have typed
+/// instead. The built-in popup ignores `metadata`; the palette draws it.
+func slashPaletteCommands() -> [SlashCommandItem] {
+    let hints = ["toggleHeading1": "#", "toggleHeading2": "##", "toggleHeading3": "###",
+                 "toggleBlockquote": ">", "toggleBulletList": "-", "toggleOrderedList": "1.",
+                 "toggleCodeBlock": "```", "setHorizontalRule": "---"]
+    return defaultSlashCommands().map { item in
+        SlashCommandItem(title: item.title, keywords: item.keywords, command: item.command, icon: item.icon,
+                         subtitle: item.subtitle, section: item.section,
+                         metadata: hints[item.command].map { ["hint": $0] } ?? [:])
+    }
+}
+
+/// A grid rather than a list: a layout the built-in popup's theme can't reach.
+struct SlashPaletteView: View {
+    struct Tile: Identifiable, Equatable {
+        let id: String
+        let index: Int
+        let title: String
+        let icon: String
+        let hint: String?
+    }
+    let tiles: [Tile]
+    let highlighted: Int
+    let query: String
+    /// Set when the keyboard leaves less room than the whole grid wants.
+    let scrolls: Bool
+    let choose: (Int) -> Void
+
+    static let width: CGFloat = 316
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 3)
+
+    var body: some View {
+        Group {
+            if tiles.isEmpty {
+                Text("No commands match “\(query)”")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            } else if scrolls {
+                ScrollViewReader { proxy in
+                    ScrollView { grid }
+                        .onChange(of: highlighted) { _, index in proxy.scrollTo(index) }
+                }
+            } else {
+                grid
+            }
+        }
+        .padding(8)
+        .frame(width: Self.width)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .shadow(radius: 12, y: 4)
+    }
+
+    private var grid: some View {
+                LazyVGrid(columns: columns, spacing: 6) {
+                    ForEach(tiles) { tile in
+                        Button { choose(tile.index) } label: {
+                            VStack(spacing: 3) {
+                                Image(systemName: tile.icon).font(.body)
+                                Text(tile.title).font(.caption2).lineLimit(1).minimumScaleFactor(0.7)
+                                Text(tile.hint ?? " ").font(.caption2.monospaced()).foregroundStyle(Color(.secondaryLabel))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 66)
+                            .background(tile.index == highlighted ? Color.accentColor.opacity(0.2) : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 10))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .id(tile.index)
+                        .accessibilityIdentifier("slash-tile-\(tile.id)")
+                    }
+                }
+    }
+}
+
+/// Takes over the `/` menu only; `[[` and `@` stay with the built-in popup.
+@MainActor final class SlashPalettePresenter: SuggestionMenuPresenter {
+    private var host: UIHostingController<SlashPaletteView>?
+    private var size = CGSize.zero
+
+    var presentsEmptyMenus: Bool { true }
+
+    func present(_ menu: SuggestionMenu, in textView: EditorTextView) -> Bool {
+        guard menu.trigger == "/" else { return false }
+        let tiles = menu.entries.enumerated().map { index, entry in
+            SlashPaletteView.Tile(id: entry.id, index: index, title: entry.title,
+                                  icon: entry.icon ?? "circle", hint: entry.metadata["hint"])
+        }
+        let choose: (Int) -> Void = { [weak menu] in menu?.choose($0) }
+        func view(scrolls: Bool) -> SlashPaletteView {
+            SlashPaletteView(tiles: tiles, highlighted: menu.highlightedIndex, query: menu.query,
+                             scrolls: scrolls, choose: choose)
+        }
+        // Measure the whole grid, then ask how much of it there's room for.
+        if host == nil || host?.rootView.tiles != tiles {
+            if let host {
+                host.rootView = view(scrolls: false)
+            } else {
+                let made = UIHostingController(rootView: view(scrolls: false))
+                made.view.backgroundColor = .clear
+                made.safeAreaRegions = []
+                host = made
+            }
+            size = host!.sizeThatFits(in: CGSize(width: SlashPaletteView.width, height: 2000))
+        }
+        let frame = textView.placeOverlay(host!.view, viewportAnchor: menu.caretRect, size: size)
+        let scrolls = frame.height < size.height - 0.5
+        // Called on every scroll tick: only touch SwiftUI when something changed.
+        let root = host!.rootView
+        if root.scrolls != scrolls || root.highlighted != menu.highlightedIndex || root.query != menu.query {
+            host!.rootView = view(scrolls: scrolls)
+        }
+        return true
+    }
+
+    func dismissSuggestions(in textView: EditorTextView) {
+        host?.view.removeFromSuperview()
+        host = nil
     }
 }

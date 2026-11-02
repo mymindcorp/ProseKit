@@ -28,13 +28,25 @@ public struct SuggestionEntry {
     /// The group the row belongs to. The renderer draws a header where the
     /// section changes, when the rows on screen span more than one.
     public let section: String?
+    /// What the row stands for, stable across queries: a slash item's command or
+    /// id, a wiki-link's target, a mention's name. A custom presenter uses it to
+    /// find the row's data in its own model, and to keep a row's identity while
+    /// the list changes around it.
+    public let id: String
+    /// Whatever else the host wants a custom presenter to draw: a badge, a
+    /// shortcut hint. The built-in popup ignores it. Slash items set it through
+    /// `SlashCommandItem.metadata`.
+    public let metadata: [String: String]
     public let apply: (Editor) -> Void
+    /// `id` defaults to the title.
     public init(title: String, subtitle: String? = nil, icon: String? = nil, section: String? = nil,
-                apply: @escaping (Editor) -> Void) {
+                id: String? = nil, metadata: [String: String] = [:], apply: @escaping (Editor) -> Void) {
         self.title = title
         self.subtitle = subtitle
         self.icon = icon
         self.section = section
+        self.id = id ?? title
+        self.metadata = metadata
         self.apply = apply
     }
 }
@@ -47,7 +59,8 @@ public struct SuggestionEntry {
 func guardSuggestionEntries(_ entries: [SuggestionEntry], in editor: Editor) -> [SuggestionEntry] {
     let doc = editor.doc
     return entries.map { entry in
-        SuggestionEntry(title: entry.title, subtitle: entry.subtitle, icon: entry.icon, section: entry.section) { current in
+        SuggestionEntry(title: entry.title, subtitle: entry.subtitle, icon: entry.icon, section: entry.section,
+                        id: entry.id, metadata: entry.metadata) { current in
             guard current.doc == doc else { return }
             entry.apply(current)
         }

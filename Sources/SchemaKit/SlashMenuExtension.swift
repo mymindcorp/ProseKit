@@ -18,44 +18,49 @@ public struct SlashCommandItem: Sendable, Equatable {
     /// The group the row is listed under ("Lists", "Math"…). Rows of one section
     /// should be adjacent: a header is drawn wherever the section changes.
     public let section: String?
+    /// Whatever else a custom presenter should draw for this row (a badge, a
+    /// shortcut hint). The built-in popup ignores it.
+    public let metadata: [String: String]
     /// A command run in place of the named one, for an action the host defines
     /// itself (insert a template, open a picker…). It runs after the `/query`
     /// is deleted; returning false leaves the query in place.
     public let run: Command?
     public init(title: String, keywords: [String] = [], command: String, icon: String? = nil, subtitle: String? = nil,
-                section: String? = nil) {
+                section: String? = nil, metadata: [String: String] = [:]) {
         self.init(title: title, keywords: keywords, command: command, icon: icon, subtitle: subtitle, section: section,
-                  run: nil)
+                  metadata: metadata, run: nil)
     }
 
     /// An item with its own action. `id` takes the place of a command name: it
     /// identifies the item, and is what `==` compares, since closures can't be.
     public init(title: String, keywords: [String] = [], id: String, icon: String? = nil, subtitle: String? = nil,
-                section: String? = nil, run: @escaping Command) {
+                section: String? = nil, metadata: [String: String] = [:], run: @escaping Command) {
         self.init(title: title, keywords: keywords, command: id, icon: icon, subtitle: subtitle, section: section,
-                  run: run)
+                  metadata: metadata, run: run)
     }
 
     private init(title: String, keywords: [String], command: String, icon: String?, subtitle: String?,
-                 section: String?, run: Command?) {
+                 section: String?, metadata: [String: String], run: Command?) {
         self.title = title
         self.keywords = keywords
         self.command = command
         self.icon = icon
         self.subtitle = subtitle
         self.section = section
+        self.metadata = metadata
         self.run = run
     }
 
     /// The same item filed under another section — for regrouping the defaults.
     public func inSection(_ section: String?) -> SlashCommandItem {
         SlashCommandItem(title: title, keywords: keywords, command: command, icon: icon, subtitle: subtitle,
-                         section: section, run: run)
+                         section: section, metadata: metadata, run: run)
     }
 
     public static func == (lhs: SlashCommandItem, rhs: SlashCommandItem) -> Bool {
         lhs.title == rhs.title && lhs.keywords == rhs.keywords && lhs.command == rhs.command
-            && lhs.icon == rhs.icon && lhs.subtitle == rhs.subtitle && lhs.section == rhs.section && (lhs.run == nil) == (rhs.run == nil)
+            && lhs.icon == rhs.icon && lhs.subtitle == rhs.subtitle && lhs.section == rhs.section
+            && lhs.metadata == rhs.metadata && (lhs.run == nil) == (rhs.run == nil)
     }
 
     /// Whether this item matches the typed query (over title + keywords).
@@ -154,7 +159,8 @@ final class SlashSuggestionSource: SuggestionSource {
             return !options.hidesUnavailable || editor.canApplySlashCommand(item, from: from, to: to)
         }
         let entries = offered.map { item in
-            SuggestionEntry(title: item.title, subtitle: item.subtitle, icon: item.icon, section: item.section) {
+            SuggestionEntry(title: item.title, subtitle: item.subtitle, icon: item.icon, section: item.section,
+                            id: item.command, metadata: item.metadata) {
                 $0.applySlashCommand(item, from: from, to: to)
             }
         }
