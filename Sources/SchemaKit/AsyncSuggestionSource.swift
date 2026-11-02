@@ -21,6 +21,7 @@ final class AsyncSuggestionSource: SuggestionSource {
     private var cachedQuery: String?
     private var pendingQuery: String?
     private var cached: [String] = []
+    var isLoading: Bool { pendingQuery != nil }
     private var task: Task<Void, Never>?
 
     nonisolated init(provider: @escaping @Sendable (String) async -> [String],

@@ -262,6 +262,41 @@ final class SuggestionMenuTests: XCTestCase {
         XCTAssertEqual(popup.frame.height, tall, "and the room comes back")
     }
 
+    func testThePopupMovesOnTheKeyboardsOwnAnimation() throws {
+        // Jumping to where the keyboard will end up, while it is still on its
+        // way, is a frame or more of the menu and keyboard out of step.
+        let (view, window) = try makeWindowedView(lines: 0)
+        defer { window.isHidden = true; showKeyboard(top: window.bounds.height, in: window) }
+        type(view, "/")
+        let popup = try XCTUnwrap(view.suggestionPopupView)
+        NotificationCenter.default.post(name: UIResponder.keyboardWillChangeFrameNotification, object: nil, userInfo: [
+            UIResponder.keyboardFrameEndUserInfoKey: CGRect(x: 0, y: 400, width: 390, height: 444),
+            UIResponder.keyboardAnimationDurationUserInfoKey: 0.25,
+            // Ease-in-out, whose duration UIKit reports as given; the keyboard's
+            // own private curve (7) becomes a spring that reports its own.
+            UIResponder.keyboardAnimationCurveUserInfoKey: UInt(UIView.AnimationCurve.easeInOut.rawValue),
+        ])
+        let animation = popup.layer.animation(forKey: "bounds.size") ?? popup.layer.animation(forKey: "position")
+        XCTAssertNotNil(animation, "the move rides an animation: \(popup.layer.animationKeys() ?? [])")
+        XCTAssertEqual(animation?.duration ?? 0, 0.25, accuracy: 0.001, "the keyboard's own duration")
+        XCTAssertLessThanOrEqual(popup.frame.maxY, 400, "and ends clear of it")
+    }
+
+    func testAPresentersViewRidesTheKeyboardAnimationToo() throws {
+        let presenter = PlacingPresenter()
+        let (view, window) = try makeWindowedView(lines: 0)
+        defer { window.isHidden = true; showKeyboard(top: window.bounds.height, in: window) }
+        view.suggestionPresenter = presenter
+        type(view, "/")
+        NotificationCenter.default.post(name: UIResponder.keyboardWillChangeFrameNotification, object: nil, userInfo: [
+            UIResponder.keyboardFrameEndUserInfoKey: CGRect(x: 0, y: 300, width: 390, height: 544),
+            UIResponder.keyboardAnimationDurationUserInfoKey: 0.25,
+            UIResponder.keyboardAnimationCurveUserInfoKey: UInt(7),
+        ])
+        XCTAssertFalse(presenter.card.layer.animationKeys()?.isEmpty ?? true)
+        XCTAssertLessThanOrEqual(presenter.card.frame.maxY, 300)
+    }
+
     func testAKeyboardThatIsntDockedIsLeftAlone() throws {
         let (view, window) = try makeWindowedView(lines: 0)
         defer { window.isHidden = true; showKeyboard(top: window.bounds.height, in: window) }
@@ -294,6 +329,32 @@ final class SuggestionMenuTests: XCTestCase {
         XCTAssertEqual(fallback?.pngData(), SuggestionPopupView.icon(nil, pointSize: 15)?.pngData())
     }
 
+    func testEscapeKeepsTheSlashMenuClosedWhileTyping() throws {
+        let view = try makeView()
+        type(view, "/head")
+        XCTAssertTrue(view.handle(EditorTextView.KeyEvent(.keyboardEscape)))
+        type(view, "ing")
+        XCTAssertNil(view.suggestionTitles, "still closed: Escape meant it")
+        XCTAssertEqual(view.editor.doc.textContent, "/heading", "the text is just text now")
+        // Leaving the trigger and coming back to a fresh one opens it again.
+        for _ in 0..<8 { view.deleteBackward() }
+        type(view, "/")
+        XCTAssertEqual(view.suggestionTitles?.first, "Heading 1")
+    }
+
+    func testEscapeKeepsTheWikiMenuClosedWhileTyping() throws {
+        let view = try makeView(wikiLinks: { q in
+            ["Home", "Architecture"].filter { q.isEmpty || $0.localizedCaseInsensitiveContains(q) }
+        })
+        type(view, "see [[A")
+        XCTAssertEqual(view.suggestionTitles, ["Architecture"])
+        XCTAssertTrue(view.handle(EditorTextView.KeyEvent(.keyboardEscape)))
+        type(view, "r")
+        XCTAssertNil(view.suggestionTitles)
+        type(view, " and [[Ho") // a second trigger is a new menu
+        XCTAssertEqual(view.suggestionTitles, ["Home"])
+    }
+
     func testEscapeDismissesSlashMenu() throws {
         let view = try makeView()
         type(view, "/head")
@@ -313,13 +374,91 @@ private final class RecordingPresenter: SuggestionMenuPresenter {
     var dismissals = 0
     var presentsEmptyMenus = false
     var current: SuggestionMenu? { presented.last }
+    /// What `menu.changes` said at each present.
+    var changes: [SuggestionMenu.Changes] = []
+    /// The keys offered, and which to take.
+    var keys: [SuggestionMenuKey] = []
+    var takes: (SuggestionMenuKey, SuggestionMenu) -> Bool = { _, _ in false }
+    /// What it shows, and how big that is.
+    let view = UIView()
+    var size = CGSize(width: 200, height: 100)
+    var anchor: SuggestionMenu.Anchor = .trigger
+    var position: SuggestionMenu.Position = .auto
+    /// Each `didPlace`: the frame, side and anchor rect at the time.
+    var placed: [(frame: CGRect, placement: SuggestionMenu.Placement, anchor: CGRect)] = []
 
-    func present(_ menu: SuggestionMenu, in textView: EditorTextView) -> Bool {
-        guard accepts(menu) else { return false }
+    func present(_ menu: SuggestionMenu, in textView: EditorTextView) -> UIView? {
+        guard accepts(menu) else { return nil }
+        menu.anchor = anchor
+        menu.position = position
         presented.append(menu)
-        return true
+        changes.append(menu.changes)
+        return view
     }
-    func dismissSuggestions(in textView: EditorTextView) { dismissals += 1 }
+    func preferredSize(for menu: SuggestionMenu, of view: UIView, maxWidth: CGFloat) -> CGSize { size }
+    func didPlace(_ menu: SuggestionMenu, in textView: EditorTextView) {
+        placed.append((menu.frame, menu.placement, menu.anchorRect))
+    }
+    func handleKey(_ key: SuggestionMenuKey, in menu: SuggestionMenu) -> Bool {
+        keys.append(key)
+        return takes(key, menu)
+    }
+    func close(_ menu: SuggestionMenu, in textView: EditorTextView) {
+        dismissals += 1
+        XCTAssertNil(view.superview, "the editor takes the view down before close")
+    }
+}
+
+/// Records which menu each close names.
+@MainActor
+private final class ClosingPresenter: SuggestionMenuPresenter {
+    var shown: SuggestionMenu?
+    var closed: [SuggestionMenu] = []
+    func present(_ menu: SuggestionMenu, in textView: EditorTextView) -> UIView? { shown = menu; return UIView() }
+    func close(_ menu: SuggestionMenu, in textView: EditorTextView) { closed.append(menu) }
+}
+
+/// Writes down, at every callback, what the menu said about its editor and the
+/// typed text: which callback, the editor, the text in `from..<to`, and the
+/// on-screen start and end of it.
+@MainActor
+private final class InspectingPresenter: SuggestionMenuPresenter {
+    struct Seen {
+        let callback: String
+        let editor: Editor?
+        let text: String
+        let from: Int
+        let to: Int
+        let origin: CGRect
+        let caret: CGRect
+    }
+    var seen: [Seen] = []
+    var onKey: (SuggestionMenuKey, SuggestionMenu) -> Bool = { _, _ in false }
+    var presentsEmptyMenus = false
+
+    private func note(_ callback: String, _ menu: SuggestionMenu) {
+        let text = menu.editor.map { $0.doc.textBetween(menu.from, min(menu.to, $0.doc.content.size)) } ?? ""
+        seen.append(Seen(callback: callback, editor: menu.editor, text: text, from: menu.from, to: menu.to,
+                         origin: menu.originRect, caret: menu.caretRect))
+    }
+    func present(_ menu: SuggestionMenu, in textView: EditorTextView) -> UIView? { note("present", menu); return UIView() }
+    func didPlace(_ menu: SuggestionMenu, in textView: EditorTextView) { note("place", menu) }
+    func handleKey(_ key: SuggestionMenuKey, in menu: SuggestionMenu) -> Bool {
+        note("key", menu)
+        return onKey(key, menu)
+    }
+    func close(_ menu: SuggestionMenu, in textView: EditorTextView) { note("close", menu) }
+}
+
+/// Hands over a tall plain view, for the editor to place.
+@MainActor
+private final class PlacingPresenter: SuggestionMenuPresenter {
+    let card = UIView()
+    func present(_ menu: SuggestionMenu, in textView: EditorTextView) -> UIView? { card }
+    func preferredSize(for menu: SuggestionMenu, of view: UIView, maxWidth: CGFloat) -> CGSize {
+        CGSize(width: 200, height: 600)
+    }
+    func close(_ menu: SuggestionMenu, in textView: EditorTextView) {}
 }
 
 /// A host drawing the whole menu itself through `suggestionPresenter`.
@@ -421,11 +560,23 @@ final class SuggestionPresenterTests: XCTestCase {
         let closed = try XCTUnwrap(presenter.current)
         closed.dismiss() // no longer open: nothing to take down
         XCTAssertEqual(presenter.dismissals, 1)
-        view.deleteBackward() // "/hea" — the menu opens again, as a new one
+        let count = presenter.presented.count
+        view.deleteBackward() // "/hea"
+        type(view, "d")
+        XCTAssertEqual(presenter.presented.count, count, "Escape meant it: still closed while typing on")
+        XCTAssertNil(view.presentedSuggestionView)
+        XCTAssertFalse(key(view, .keyboardEscape), "and Escape still goes to the host")
+
+        // A new trigger opens a new menu; dismissing it in code keeps it shut too.
+        for _ in 0..<5 { view.deleteBackward() } // the whole `/head`, still closed throughout
+        XCTAssertEqual(presenter.presented.count, count)
+        type(view, "/")
         let reopened = try XCTUnwrap(presenter.current)
         XCTAssertFalse(reopened === closed)
         reopened.dismiss()
         XCTAssertEqual(presenter.dismissals, 2)
+        type(view, "h")
+        XCTAssertTrue(presenter.current === reopened, "dismiss() keeps it shut the same way")
     }
 
     func testAChoiceStillLandsAfterATapMovedTheCaret() throws {
@@ -574,16 +725,424 @@ final class SuggestionPresenterTests: XCTestCase {
         XCTAssertEqual(presenter.dismissals, 1)
     }
 
-    func testScrollingRepresentsWithANewCaretOnly() throws {
+    // MARK: Full control
+
+    func testTheMenuKnowsItsRangeOriginAndEditor() throws {
         let view = try makeView()
         type(view, "/head")
         let menu = try XCTUnwrap(presenter.current)
-        let caret = menu.caretRect
+        XCTAssertTrue(menu.editor === view.editor)
+        XCTAssertTrue(menu.textView === view)
+        XCTAssertEqual(view.editor.doc.textBetween(menu.from, menu.to), "/head", "the trigger and its query")
+        XCTAssertLessThan(menu.originRect.minX, menu.caretRect.minX, "the origin is where the / is")
+        XCTAssertEqual(menu.originRect.minY, menu.caretRect.minY, accuracy: 0.5)
+    }
+
+    func testReplaceQueryRunsThePresentersOwnCommand() throws {
+        let view = try makeView(wikiLinks: { _ in ["Home"] })
+        type(view, "see [[Arch")
+        let menu = try XCTUnwrap(presenter.current)
+        XCTAssertTrue(menu.replaceQuery(with: insertWikiLink(text: "Architecture", targetId: "p-7", targetType: "page")))
+        var link: Node?
+        view.editor.doc.descendants { node, _, _, _ in
+            if node.type.name == "wikiLink" { link = node }
+            return link == nil
+        }
+        XCTAssertEqual(link?.attrs["text"]?.stringValue, "Architecture")
+        XCTAssertEqual(link?.attrs["targetId"]?.stringValue, "p-7")
+        XCTAssertEqual(link?.attrs["targetType"]?.stringValue, "page")
+        XCTAssertEqual(view.editor.doc.textContent.hasPrefix("see "), true)
+        XCTAssertFalse(view.editor.doc.textContent.contains("[["), "the query went with it")
+        XCTAssertEqual(presenter.dismissals, 1)
+    }
+
+    func testReplaceQueryWithAFailingCommandChangesNothing() throws {
+        let view = try makeView()
+        type(view, "/head")
+        let menu = try XCTUnwrap(presenter.current)
+        let before = view.editor.doc
+        XCTAssertFalse(menu.replaceQuery(with: { _, _, _ in false }))
+        XCTAssertEqual(view.editor.doc, before)
+        XCTAssertEqual(presenter.dismissals, 0, "still open")
+    }
+
+    func testReplaceQueryAfterAnEditIsRefused() throws {
+        let view = try makeView()
+        type(view, "/h1")
+        let menu = try XCTUnwrap(presenter.current)
+        try view.editor.setContent(html: "<p>other text</p>")
+        let before = view.editor.doc
+        XCTAssertFalse(menu.replaceQuery(with: insertWikiLink(text: "X")))
+        XCTAssertEqual(view.editor.doc, before)
+    }
+
+    func testEveryCallbackCarriesTheEditorAndTheTypedTextsPosition() throws {
+        // The slash menu, end to end: open, type, a key, and the close a
+        // choice brings, each told the editor and where `/hea` is.
+        let inspector = InspectingPresenter()
+        inspector.onKey = { key, menu in
+            guard key == .enter else { return false }
+            menu.choose(0) // Heading 1
+            return true
+        }
+        let view = try makeView()
+        view.suggestionPresenter = inspector
+        type(view, "/")
+        type(view, "hea")
+        XCTAssertTrue(key(view, .keyboardReturnOrEnter))
+
+        let callbacks = inspector.seen.map(\.callback)
+        XCTAssertEqual(callbacks.first, "present")
+        XCTAssertTrue(callbacks.contains("key"))
+        XCTAssertEqual(callbacks.last, "close")
+        for seen in inspector.seen {
+            XCTAssertTrue(seen.editor === view.editor, "\(seen.callback) is given the editor")
+            XCTAssertEqual(seen.from, 1, "\(seen.callback): the / is where the menu starts")
+            XCTAssertLessThanOrEqual(seen.origin.minX, seen.caret.minX, "\(seen.callback): the origin is the /")
+        }
+        // While the text is there to read, `from..<to` is exactly what was typed.
+        let open = inspector.seen.filter { $0.callback != "close" }
+        XCTAssertEqual(open.filter { $0.callback != "place" }.map(\.text), ["/", "/h", "/he", "/hea", "/hea"])
+        XCTAssertTrue(open.contains { $0.callback == "place" })
+        XCTAssertEqual(open.last?.to, 5)
+        XCTAssertGreaterThan(open.last!.caret.minX, open.first!.caret.minX, "the caret end follows the typing")
+        XCTAssertEqual(inspector.seen.last?.to, 5, "and close still says where it was")
+        XCTAssertTrue(view.editor.isActive(node: "heading", attrs: ["level": .int(1)]))
+        XCTAssertEqual(view.editor.doc.textContent, "")
+    }
+
+    func testASlashPresenterCanActOverTheQueryItself() throws {
+        // Not a row at all: the presenter's own command, over `/sig`.
+        let inspector = InspectingPresenter()
+        inspector.presentsEmptyMenus = true // `/sig` matches no command
+        inspector.onKey = { key, menu in
+            guard key == .enter, let editor = menu.editor else { return false }
+            XCTAssertEqual(editor.doc.textBetween(menu.from, menu.to), "/sig")
+            return menu.replaceQuery { state, dispatch, _ in
+                guard let tr = try? state.tr.insertText("— signed") else { return false }
+                dispatch?(tr)
+                return true
+            }
+        }
+        let view = try makeView()
+        view.suggestionPresenter = inspector
+        type(view, "/sig")
+        XCTAssertTrue(key(view, .keyboardReturnOrEnter))
+        XCTAssertEqual(view.editor.doc.textContent, "— signed")
+        XCTAssertEqual(inspector.seen.last?.callback, "close")
+    }
+
+    func testThePresenterHasFirstSayOverKeys() throws {
+        presenter.takes = { key, _ in key == .down || key == .left }
+        let view = try makeView()
+        type(view, "/head")
+        let menu = try XCTUnwrap(presenter.current)
+        XCTAssertTrue(key(view, .keyboardDownArrow))
+        XCTAssertEqual(menu.highlightedIndex, 0, "taken: the editor didn't move the highlight")
+        XCTAssertTrue(key(view, .keyboardUpArrow))
+        XCTAssertEqual(menu.highlightedIndex, 2, "left to the editor: it wrapped")
+        XCTAssertTrue(key(view, .keyboardLeftArrow))
+        XCTAssertEqual(view.editor.state.selection.from, menu.to, "taken: the caret stayed put")
+        XCTAssertEqual(presenter.keys, [.down, .up, .left])
+    }
+
+    func testAPresenterCanTakeReturnFromEitherKeyboard() throws {
+        presenter.presentsEmptyMenus = true
+        var entered = 0
+        presenter.takes = { key, menu in
+            guard key == .enter else { return false }
+            entered += 1
+            return menu.replaceQuery(with: insertWikiLink(text: menu.query))
+        }
+        let view = try makeView()
+        type(view, "x [[New page")
+        view.insertText("\n") // the on-screen keyboard
+        XCTAssertEqual(entered, 1)
+        XCTAssertEqual(view.editor.doc.childCount, 1, "no line break")
+        XCTAssertEqual(view.editor.doc.textContent, "x New page")
+
+        let other = try makeView()
+        type(other, "x [[Other")
+        XCTAssertTrue(key(other, .keyboardReturnOrEnter))
+        XCTAssertEqual(entered, 2)
+    }
+
+    func testKeysThePresenterDeclinesBehaveAsBefore() throws {
+        let view = try makeView()
+        type(view, "/h1")
+        XCTAssertTrue(key(view, .keyboardTab))
+        XCTAssertTrue(view.editor.isActive(node: "heading", attrs: ["level": .int(1)]))
+        XCTAssertEqual(presenter.keys, [.tab])
+    }
+
+    func testClosingNamesTheMenuThatClosed() throws {
+        let closing = ClosingPresenter()
+        let view = try makeView()
+        view.suggestionPresenter = closing
+        type(view, "/head")
+        let menu = try XCTUnwrap(closing.shown)
+        XCTAssertTrue(key(view, .keyboardEscape))
+        XCTAssertEqual(closing.closed.count, 1)
+        XCTAssertTrue(closing.closed.first === menu)
+    }
+
+    func testTheRawSourceOffersEverythingToSiftYourself() throws {
+        // A presenter that filters its own way: ask the source for every row,
+        // then rank by its own rule — here, titles that start with the query.
+        let view = try makeView()
+        type(view, "/list")
+        let menu = try XCTUnwrap(presenter.current)
+        XCTAssertEqual(menu.entries.map(\.title), ["Bullet List", "Numbered List", "Task List"],
+                       "the editor's filter: keywords match too")
+        let everything = menu.source.entries("", view.editor)
+        XCTAssertGreaterThan(everything.count, menu.entries.count)
+        let mine = everything.filter { $0.title.lowercased().hasPrefix("t") }
+        XCTAssertEqual(mine.map(\.title), ["Task List"])
+        mine[0].apply(view.editor)
+        XCTAssertTrue(view.editor.isActive(node: "taskList"), "a raw row still applies over the menu's range")
+        XCTAssertFalse(view.editor.doc.textContent.contains("/list"))
+    }
+
+    func testChangesSayWhatMoved() throws {
+        let view = try makeView()
+        type(view, "/")
+        XCTAssertEqual(presenter.changes.last, .opened)
+        type(view, "h")
+        XCTAssertTrue(presenter.changes.last!.contains(.query))
+        XCTAssertTrue(presenter.changes.last!.contains(.entries))
+        XCTAssertTrue(key(view, .keyboardDownArrow))
+        XCTAssertEqual(presenter.changes.last, .highlight)
         let count = presenter.presented.count
+        view.contentOffsetY += 10
+        XCTAssertEqual(presenter.presented.count, count, "a scroll re-places; nothing to present")
+    }
+
+    func testAPresenterHearsEveryQueryWithoutAProvider() throws {
+        // No `[[` suggestions configured: the built-in popup never opens, but a
+        // presenter searching for itself is still told what's typed.
+        presenter.presentsEmptyMenus = true
+        let view = try makeView()
+        type(view, "[[Ro")
+        XCTAssertEqual(presenter.current?.trigger, "[[")
+        XCTAssertEqual(presenter.current?.query, "Ro")
+        XCTAssertEqual(presenter.current?.entries.count, 0)
+        type(view, "ad")
+        XCTAssertEqual(presenter.current?.query, "Road")
+
+        let plain = try makeView()
+        plain.suggestionPresenter = nil
+        type(plain, "[[Ro")
+        XCTAssertNil(plain.suggestionTitles, "and without a presenter, still nothing")
+    }
+
+    func testLoadingIsReportedWhileAnAsyncSearchRuns() throws {
+        presenter.presentsEmptyMenus = true
+        let editor = try Editor(extensions: fullKit(wikiLinkAsyncSuggestions: { query in
+            try? await Task.sleep(for: .milliseconds(20))
+            return ["Roadmap"].filter { $0.localizedCaseInsensitiveContains(query) }
+        }))
+        let view = EditorTextView(editor: editor, frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        view.layoutIfNeeded()
+        view.suggestionPresenter = presenter
+        type(view, "[[Ro")
+        let menu = try XCTUnwrap(presenter.current)
+        XCTAssertTrue(menu.isLoading, "searching, not \"no results\"")
+        XCTAssertEqual(menu.entries.count, 0)
+        let done = expectation(description: "results arrive")
+        Task { @MainActor in
+            while menu.isLoading { try? await Task.sleep(for: .milliseconds(10)) }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 3)
+        XCTAssertEqual(menu.entries.map(\.title), ["Roadmap"])
+        XCTAssertTrue(presenter.changes.last!.contains(.loading))
+    }
+
+    func testScrollingMovesTheViewWithoutPresentingAgain() throws {
+        let view = try makeView()
+        type(view, "/head")
+        let menu = try XCTUnwrap(presenter.current)
+        let frame = presenter.view.frame
+        let count = presenter.presented.count, places = presenter.placed.count
         view.contentOffsetY += 30
-        XCTAssertEqual(presenter.presented.count, count + 1)
-        XCTAssertEqual(menu.caretRect.minY, caret.minY - 30, accuracy: 0.5)
-        XCTAssertEqual(menu.query, "head")
+        XCTAssertEqual(presenter.presented.count, count)
+        XCTAssertEqual(presenter.placed.count, places + 1, "didPlace says where it went")
+        XCTAssertEqual(presenter.view.frame.minY, frame.minY - 30, accuracy: 0.5)
+        XCTAssertEqual(menu.frame, presenter.view.frame)
+    }
+
+    // MARK: The editor places the presenter's view
+
+    /// A view in a window of its own, `lines` paragraphs down.
+    private func windowed(_ frame: CGRect = CGRect(x: 0, y: 0, width: 390, height: 844),
+                          lines: Int = 0) throws -> (EditorTextView, UIWindow) {
+        let view = try makeView()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        view.frame = frame
+        window.addSubview(view)
+        window.makeKeyAndVisible()
+        view.layoutIfNeeded()
+        for _ in 0..<lines { view.insertText("\n") }
+        return (view, window)
+    }
+
+    func testTheEditorShowsSizesAndPlacesTheView() throws {
+        let (view, window) = try windowed()
+        defer { window.isHidden = true }
+        type(view, "/")
+        let menu = try XCTUnwrap(presenter.current)
+        XCTAssertTrue(presenter.view.superview === view.overlayHost, "above everything, unclipped")
+        XCTAssertEqual(presenter.view.frame.size, CGSize(width: 200, height: 100), "the size it asked for")
+        let caret = view.convert(menu.caretRect, to: window), origin = view.convert(menu.originRect, to: window)
+        XCTAssertEqual(presenter.view.frame.minY, caret.maxY + 4, accuracy: 0.5, "just below the line")
+        XCTAssertEqual(presenter.view.frame.minX, max(origin.minX, 4), accuracy: 0.5, "under the /")
+        XCTAssertEqual(menu.placement, .below)
+        XCTAssertEqual(menu.anchorRect.minX, menu.originRect.minX)
+        XCTAssertEqual(menu.frame, presenter.view.frame)
+        XCTAssertTrue(key(view, .keyboardEscape))
+        XCTAssertNil(presenter.view.superview, "and takes it down")
+    }
+
+    func testEveryEventCarriesTheAnchor() throws {
+        // `present` sees where the menu will hang from; `didPlace` sees where it went.
+        let (view, window) = try windowed()
+        defer { window.isHidden = true }
+        type(view, "/he")
+        let menu = try XCTUnwrap(presenter.current)
+        XCTAssertEqual(menu.anchorRect.minX, menu.originRect.minX, "the / …")
+        XCTAssertEqual(menu.anchorRect.minY, menu.caretRect.minY, "… on the caret's line")
+        XCTAssertFalse(presenter.placed.isEmpty)
+        for place in presenter.placed { XCTAssertGreaterThan(place.anchor.height, 0) }
+        XCTAssertEqual(presenter.placed.last?.anchor, menu.anchorRect)
+    }
+
+    func testTheMenuStaysPutWhileTyping() throws {
+        // Hung from the trigger (the default), the menu doesn't slide along
+        // with every character; hung from the caret, it does.
+        let (view, window) = try windowed()
+        defer { window.isHidden = true }
+        type(view, "/")
+        let x = presenter.view.frame.minX
+        type(view, "hea")
+        XCTAssertEqual(presenter.view.frame.minX, x, "still under the /")
+
+        presenter.anchor = .caret
+        let (other, otherWindow) = try windowed()
+        defer { otherWindow.isHidden = true }
+        other.suggestionPresenter = presenter
+        type(other, "/")
+        let start = presenter.view.frame.minX
+        type(other, "hea")
+        XCTAssertGreaterThan(presenter.view.frame.minX, start, "with .caret, it follows")
+    }
+
+    func testAWrappedQueryHangsFromTheCaretsLine() throws {
+        // Once a `[[` query wraps, the trigger is a line up: a menu under it
+        // would sit on top of the text being typed.
+        presenter.presentsEmptyMenus = true
+        let (view, window) = try windowed(CGRect(x: 0, y: 0, width: 180, height: 844))
+        defer { window.isHidden = true }
+        type(view, "see [[")
+        var menu = try XCTUnwrap(presenter.current)
+        for word in ["alpha ", "bravo ", "charlie ", "delta ", "echo ", "foxtrot "] {
+            type(view, word)
+            menu = try XCTUnwrap(presenter.current)
+            if menu.caretRect.minY > menu.originRect.maxY { break }
+        }
+        XCTAssertGreaterThan(menu.caretRect.minY, menu.originRect.maxY, "the query wrapped")
+        XCTAssertEqual(menu.anchorRect, menu.caretRect)
+        XCTAssertGreaterThan(presenter.view.frame.minY, view.convert(menu.caretRect, to: window).maxY)
+    }
+
+    func testTheMenuCanHangFromTheTrigger() throws {
+        presenter.anchor = .trigger
+        presenter.presentsEmptyMenus = true // no `[[` provider: hear the query anyway
+        let (view, window) = try windowed()
+        defer { window.isHidden = true }
+        type(view, "x [[Arch")
+        let menu = try XCTUnwrap(presenter.current)
+        XCTAssertEqual(menu.anchorRect.minX, menu.originRect.minX)
+        let origin = view.convert(menu.originRect, to: window)
+        XCTAssertEqual(presenter.view.frame.minX, origin.minX, accuracy: 0.5, "under the [[, not the caret")
+        XCTAssertLessThan(menu.originRect.minX, menu.caretRect.minX)
+    }
+
+    func testAutoFlipsAboveWhenThereIsNoRoomBelow() throws {
+        presenter.size = CGSize(width: 200, height: 300)
+        let (view, window) = try windowed(lines: 18) // the caret low in the window
+        defer { window.isHidden = true }
+        type(view, "/")
+        let menu = try XCTUnwrap(presenter.current)
+        XCTAssertEqual(menu.placement, .above)
+        XCTAssertEqual(presenter.view.frame.maxY, view.convert(menu.caretRect, to: window).minY - 4, accuracy: 0.5)
+        XCTAssertEqual(presenter.view.frame.height, 300, "it fits there whole")
+    }
+
+    func testAutoPrefersTheTextViewsOwnVisibleArea() throws {
+        // A text view in the middle of the window, under the host's own bars,
+        // and a caret where the menu fits below only by hanging past the text
+        // view's bottom, but fits above inside it: above. Line heights vary by
+        // device, so walk the caret down to that spot rather than guess.
+        presenter.size = CGSize(width: 200, height: 300)
+        let (view, window) = try windowed(CGRect(x: 0, y: 100, width: 390, height: 600))
+        defer { window.isHidden = true }
+        var found: (menu: SuggestionMenu, caret: CGRect)?
+        for _ in 0..<40 {
+            type(view, "/")
+            let menu = try XCTUnwrap(presenter.current)
+            let caret = view.convert(menu.caretRect, to: window)
+            if caret.minY - 4 - 300 >= 104 { found = (menu, caret); break }
+            view.deleteBackward()
+            view.insertText("\n")
+        }
+        let (menu, caret) = try XCTUnwrap(found)
+        XCTAssertLessThanOrEqual(caret.maxY + 4 + 300, 840, "the case: room below in the window…")
+        XCTAssertGreaterThan(caret.maxY + 4 + 300, 696, "…but not inside the text view…")
+        XCTAssertGreaterThanOrEqual(caret.minY - 4 - 300, 104, "…and room above inside it")
+        XCTAssertEqual(menu.placement, .above)
+        XCTAssertGreaterThanOrEqual(presenter.view.frame.minY, 104, "inside the text view")
+    }
+
+    func testAutoLeavesTheVisibleAreaRatherThanBeCutShort() throws {
+        // A short text view: the menu fits nowhere inside it, so it uses the window.
+        presenter.size = CGSize(width: 200, height: 300)
+        let (view, window) = try windowed(CGRect(x: 0, y: 300, width: 390, height: 120))
+        defer { window.isHidden = true }
+        type(view, "/")
+        XCTAssertEqual(presenter.current?.placement, .below)
+        XCTAssertEqual(presenter.view.frame.height, 300, "whole, past the text view's bottom")
+        XCTAssertGreaterThan(presenter.view.frame.maxY, 420)
+    }
+
+    func testPositionCanBeForced() throws {
+        presenter.position = .above
+        let (view, window) = try windowed(lines: 2)
+        defer { window.isHidden = true }
+        type(view, "/")
+        let menu = try XCTUnwrap(presenter.current)
+        XCTAssertEqual(menu.placement, .above, "above, though there's room below")
+        XCTAssertLessThan(presenter.view.frame.height, 100, "shortened to the room up there")
+        XCTAssertGreaterThanOrEqual(presenter.view.frame.minY, window.safeAreaInsets.top + 4)
+
+        presenter.position = .below
+        let (low, other) = try windowed(lines: 18)
+        defer { other.isHidden = true }
+        presenter.size = CGSize(width: 200, height: 400)
+        low.suggestionPresenter = presenter
+        type(low, "/")
+        XCTAssertEqual(presenter.current?.placement, .below, "below, though there's room above")
+        XCTAssertLessThanOrEqual(presenter.view.frame.maxY, 840 + 0.5) // window-space rounding
+    }
+
+    func testInvalidateSizeMeasuresAgain() throws {
+        let (view, window) = try windowed()
+        defer { window.isHidden = true }
+        type(view, "/")
+        let menu = try XCTUnwrap(presenter.current)
+        presenter.size = CGSize(width: 240, height: 160)
+        XCTAssertEqual(presenter.view.frame.height, 100, "not until asked")
+        menu.invalidateSize()
+        XCTAssertEqual(presenter.view.frame.size, CGSize(width: 240, height: 160))
     }
 }
 #endif

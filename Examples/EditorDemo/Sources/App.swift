@@ -96,9 +96,10 @@ struct DemoFlags: Equatable {
     /// Swap the editable editor for the read-only `DocumentView` — the same
     /// `DocumentLayout` renderer, seeded from the current document.
     var readOnly = false
-    /// Draw the `/` menu with a host-owned SwiftUI palette instead of the
-    /// built-in popup (`EditorTextView.suggestionPresenter`).
-    var slashPalette = false
+    /// How the `/` and `[[` menus are drawn: the built-in popup, or one of the
+    /// demo's own presenters (`EditorTextView.suggestionPresenter`).
+    var slashMenu = SlashMenuStyle.builtIn
+    var wikiMenu = WikiMenuStyle.builtIn
 
     /// How many differ from their defaults, for the menu's label. `spellCheck` is
     /// on by default, so counting the ones that are on would overcount.
@@ -109,9 +110,11 @@ struct DemoFlags: Equatable {
                        (dryingInk, defaults.dryingInk), (bubble, defaults.bubble),
                        (spellCheck, defaults.spellCheck), (linkClicks, defaults.linkClicks),
                        (wikiChips, defaults.wikiChips), (wikiBrackets, defaults.wikiBrackets),
-                       (readOnly, defaults.readOnly), (slashPalette, defaults.slashPalette)] where a != b {
+                       (readOnly, defaults.readOnly)] where a != b {
             count += 1
         }
+        if slashMenu != defaults.slashMenu { count += 1 }
+        if wikiMenu != defaults.wikiMenu { count += 1 }
         return count
     }
 }
@@ -121,7 +124,7 @@ struct DemoFlags: Equatable {
 /// A real app would look the target up in its own database; this one keys a
 /// table of SF Symbols off the same page names the `[[` popup offers.
 enum WikiLinkIcons {
-    private static let symbols: [String: String] = [
+    static let symbols: [String: String] = [
         "Home": "house.fill",
         "Getting Started": "sparkles",
         "Architecture": "building.columns.fill",
@@ -259,7 +262,14 @@ struct FlagsMenu: View {
                 Toggle("🤖 Agent typing", isOn: $flags.agent)
                 Toggle("⠿ Block reordering", isOn: $flags.reorder)
                 Toggle("Spell check", isOn: $flags.spellCheck)
-                Toggle("🎛 Custom / palette", isOn: $flags.slashPalette)
+            }
+            Section("Menus") {
+                Picker("/ menu", selection: $flags.slashMenu) {
+                    ForEach(SlashMenuStyle.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                Picker("[[ menu", selection: $flags.wikiMenu) {
+                    ForEach(WikiMenuStyle.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
             }
             Section("Selection") {
                 Toggle("🖍 Drying ink", isOn: $flags.dryingInk)
@@ -601,7 +611,7 @@ struct EditorContainer: UIViewRepresentable {
         /// assigned when the flag changes (each assignment costs the block cache).
         var wikiIconsOn = false
         /// Held here because the text view only holds its presenter weakly.
-        let slashPalette = SlashPalettePresenter()
+        let customMenus = DemoMenuPresenter()
         var onLoadError: ((String) -> Void)?
         /// The demo drying-ink controller (records fresh highlights, draws ink).
         var dryingInk: DryingInk?
@@ -900,7 +910,10 @@ struct EditorContainer: UIViewRepresentable {
             coordinator.wikiIconsOn = flags.wikiChips
             textView.wikiLinkIcon = flags.wikiChips ? { WikiLinkIcons.icon($0) } : nil
         }
-        textView.suggestionPresenter = flags.slashPalette ? coordinator.slashPalette : nil
+        coordinator.customMenus.slashStyle = flags.slashMenu
+        coordinator.customMenus.wikiStyle = flags.wikiMenu
+        textView.suggestionPresenter = flags.slashMenu == .builtIn && flags.wikiMenu == .builtIn
+            ? nil : coordinator.customMenus
         textView.blockReorderingEnabled = flags.reorder
         textView.spellCheckingEnabled = flags.spellCheck
         // The editor opens nothing itself: a click is only a link click because
@@ -1733,6 +1746,58 @@ func slashPaletteCommands() -> [SlashCommandItem] {
     }
 }
 
+/// The card every custom menu sits in. It scrolls only when the editor gives
+/// it less height than its content asked for — near the keyboard, say — and
+/// keeps its vertical padding outside the scrolling, so rows never run to the
+/// card's edge while they scroll past it.
+struct MenuCard<Content: View>: View {
+    let width: CGFloat
+    let highlighted: Int
+    let content: Content
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView { content.padding(.horizontal, 8) }
+                .scrollBounceBehavior(.basedOnSize)
+                .onChange(of: highlighted) { _, index in proxy.scrollTo(index) }
+        }
+        .padding(.vertical, 8)
+        .frame(width: width)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .shadow(radius: 12, y: 4)
+    }
+}
+
+/// A SwiftUI menu in a form the editor can place: the view to show, and the
+/// height its content wants (measured without the scroll view, which would
+/// otherwise take whatever it's offered).
+@MainActor final class HostedMenu<Content: View> {
+    let width: CGFloat
+    private let display: UIHostingController<MenuCard<Content>>
+    private let sizer: UIHostingController<AnyView>
+
+    init(width: CGFloat, content: Content, highlighted: Int) {
+        self.width = width
+        display = UIHostingController(rootView: MenuCard(width: width, highlighted: highlighted, content: content))
+        display.view.backgroundColor = .clear
+        display.safeAreaRegions = []
+        sizer = UIHostingController(rootView: AnyView(content.padding(8).frame(width: width)))
+    }
+
+    var view: UIView { display.view }
+
+    func update(_ content: Content, highlighted: Int) {
+        display.rootView = MenuCard(width: width, highlighted: highlighted, content: content)
+        sizer.rootView = AnyView(content.padding(8).frame(width: width))
+    }
+
+    var size: CGSize {
+        let fitted = sizer.sizeThatFits(in: CGSize(width: width, height: 4000))
+        return CGSize(width: width, height: fitted.height)
+    }
+}
+
 /// A grid rather than a list: a layout the built-in popup's theme can't reach.
 struct SlashPaletteView: View {
     struct Tile: Identifiable, Equatable {
@@ -1745,99 +1810,590 @@ struct SlashPaletteView: View {
     let tiles: [Tile]
     let highlighted: Int
     let query: String
-    /// Set when the keyboard leaves less room than the whole grid wants.
-    let scrolls: Bool
     let choose: (Int) -> Void
 
     static let width: CGFloat = 316
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 3)
+    static let columns = 3
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: Self.columns)
 
     var body: some View {
-        Group {
-            if tiles.isEmpty {
-                Text("No commands match “\(query)”")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 44)
-            } else if scrolls {
-                ScrollViewReader { proxy in
-                    ScrollView { grid }
-                        .onChange(of: highlighted) { _, index in proxy.scrollTo(index) }
+        if tiles.isEmpty {
+            Text("No commands match “\(query)”")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 44)
+        } else {
+            LazyVGrid(columns: columns, spacing: 6) {
+                ForEach(tiles) { tile in
+                    Button { choose(tile.index) } label: {
+                        VStack(spacing: 3) {
+                            Image(systemName: tile.icon).font(.body)
+                            Text(tile.title).font(.caption2).lineLimit(1).minimumScaleFactor(0.7)
+                            Text(tile.hint ?? " ").font(.caption2.monospaced()).foregroundStyle(Color(.secondaryLabel))
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 66)
+                        .background(tile.index == highlighted ? Color.accentColor.opacity(0.2) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 10))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .id(tile.index)
+                    .accessibilityIdentifier("slash-tile-\(tile.id)")
                 }
-            } else {
-                grid
             }
         }
-        .padding(8)
-        .frame(width: Self.width)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-        .shadow(radius: 12, y: 4)
-    }
-
-    private var grid: some View {
-                LazyVGrid(columns: columns, spacing: 6) {
-                    ForEach(tiles) { tile in
-                        Button { choose(tile.index) } label: {
-                            VStack(spacing: 3) {
-                                Image(systemName: tile.icon).font(.body)
-                                Text(tile.title).font(.caption2).lineLimit(1).minimumScaleFactor(0.7)
-                                Text(tile.hint ?? " ").font(.caption2.monospaced()).foregroundStyle(Color(.secondaryLabel))
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 66)
-                            .background(tile.index == highlighted ? Color.accentColor.opacity(0.2) : Color.clear,
-                                        in: RoundedRectangle(cornerRadius: 10))
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .id(tile.index)
-                        .accessibilityIdentifier("slash-tile-\(tile.id)")
-                    }
-                }
     }
 }
 
-/// Takes over the `/` menu only; `[[` and `@` stay with the built-in popup.
-@MainActor final class SlashPalettePresenter: SuggestionMenuPresenter {
-    private var host: UIHostingController<SlashPaletteView>?
-    private var size = CGSize.zero
+/// The `[[` menu as a page picker: the host's own icons for each page, found by
+/// the row's id, a "Searching…" state while the async lookup runs, and a last
+/// row that creates the page — none of which the editor's rows know about.
+struct PagePickerView: View {
+    struct Row: Identifiable, Equatable {
+        let id: String
+        let title: String
+        let icon: String
+        let isCreate: Bool
+    }
+    let rows: [Row]
+    let highlighted: Int
+    let isLoading: Bool
+    let choose: (Int) -> Void
+
+    static let width: CGFloat = 280
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if isLoading {
+                Label("Searching…", systemImage: "magnifyingglass")
+                    .font(.footnote).foregroundStyle(Color(.secondaryLabel))
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+            }
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                Button { choose(index) } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: row.icon).frame(width: 22)
+                            .foregroundStyle(row.isCreate ? Color.accentColor : Color.primary)
+                        Text(row.title).lineLimit(1)
+                            .foregroundStyle(row.isCreate ? Color.accentColor : Color.primary)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10).frame(height: 40)
+                    .background(index == highlighted ? Color.accentColor.opacity(0.18) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 9))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .id(index)
+                .accessibilityIdentifier("page-row-\(row.id)")
+            }
+        }
+    }
+}
+
+/// The demo's `/` menus.
+enum SlashMenuStyle: String, CaseIterable {
+    case builtIn, grid, rankedList, strip
+    var label: String {
+        switch self {
+        case .builtIn: "Built-in popup"
+        case .grid: "🎛 Grid — 2D arrow keys"
+        case .rankedList: "📋 Ranked list — its own sifting, always below"
+        case .strip: "➖ Strip — always above, ←/→"
+        }
+    }
+}
+
+/// The demo's `[[` menus.
+enum WikiMenuStyle: String, CaseIterable {
+    case builtIn, picker, switcher, strip
+    var label: String {
+        switch self {
+        case .builtIn: "Built-in popup"
+        case .picker: "📄 Page picker — searching, create"
+        case .switcher: "🔎 Quick switcher — its own search"
+        case .strip: "➖ Strip — always above, ←/→"
+        }
+    }
+}
+
+/// The host's own page directory, for the quick switcher: what a real app's
+/// database would answer, with ids and kinds the editor never sees.
+struct DemoPage: Equatable {
+    let id: String
+    let title: String
+    let kind: String
+    let detail: String
+
+    var icon: String { WikiLinkIcons.symbols[title] ?? "doc.text" }
+
+    static let all: [DemoPage] = [
+        ("Home", "space", "Start here"), ("Getting Started", "guide", "Install, first document"),
+        ("Architecture", "doc", "Layers and how they talk"), ("ProseMirror", "reference", "Upstream"),
+        ("Tiptap", "reference", "Upstream"), ("Document Model", "doc", "Nodes, marks, schema"),
+        ("Commands", "doc", "Named commands and chains"), ("Keymap", "doc", "Keys to commands"),
+        ("Schema", "doc", "Content expressions"), ("Releases", "log", "What shipped"),
+        ("Roadmap", "plan", "What's next"),
+    ].map { DemoPage(id: "page-" + $0.0.lowercased().replacingOccurrences(of: " ", with: "-"),
+                     title: $0.0, kind: $0.1, detail: $0.2) }
+
+    /// Title prefix first, then a word's prefix, then anywhere, then the
+    /// letters in order — the ranking a switcher wants and a substring filter
+    /// can't give.
+    static func search(_ query: String) -> [DemoPage] {
+        let q = query.lowercased().trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return all }
+        func rank(_ page: DemoPage) -> Int? {
+            let t = page.title.lowercased()
+            if t.hasPrefix(q) { return 0 }
+            if t.split(separator: " ").contains(where: { $0.hasPrefix(q) }) { return 1 }
+            if t.contains(q) { return 2 }
+            var rest = Substring(q)
+            for c in t where c == rest.first { rest = rest.dropFirst() }
+            return rest.isEmpty ? 3 : nil
+        }
+        return all.compactMap { page in rank(page).map { (page, $0) } }
+            .sorted { $0.1 < $1.1 }.map(\.0)
+    }
+}
+
+/// A one-line list with section headers: the `/` menu sifted the presenter's
+/// own way, from every command the source has.
+struct RankedListView: View {
+    struct Row: Identifiable, Equatable {
+        let id: String
+        let index: Int
+        let title: String
+        let icon: String
+        let hint: String?
+        let header: String?
+    }
+    let rows: [Row]
+    let highlighted: Int
+    let query: String
+    let choose: (Int) -> Void
+
+    static let width: CGFloat = 250
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if rows.isEmpty {
+                Text("Nothing for “/\(query)”").font(.footnote).foregroundStyle(Color(.secondaryLabel))
+                    .padding(8)
+            }
+            ForEach(rows) { row in
+                if let header = row.header {
+                    Text(header.uppercased()).font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color(.secondaryLabel))
+                        .padding(.horizontal, 8).padding(.top, 8).padding(.bottom, 2)
+                }
+                Button { choose(row.index) } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: row.icon).font(.footnote).frame(width: 18)
+                        Text(row.title).font(.subheadline)
+                        Spacer(minLength: 4)
+                        if let hint = row.hint {
+                            Text(hint).font(.caption.monospaced()).foregroundStyle(Color(.secondaryLabel))
+                        }
+                    }
+                    .padding(.horizontal, 8).frame(height: 30)
+                    .background(row.index == highlighted ? Color.accentColor.opacity(0.18) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 7))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .id(row.index)
+            }
+        }
+    }
+}
+
+/// A horizontal strip of chips, for either menu.
+struct ChipStripView: View {
+    struct Chip: Identifiable, Equatable {
+        let id: String
+        let index: Int
+        let title: String
+        let icon: String
+    }
+    let chips: [Chip]
+    let highlighted: Int
+    let choose: (Int) -> Void
+
+    static let width: CGFloat = 340
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(chips) { chip in
+                        Button { choose(chip.index) } label: {
+                            Label(chip.title, systemImage: chip.icon)
+                                .font(.footnote).lineLimit(1)
+                                .padding(.horizontal, 10).frame(height: 32)
+                                .background(chip.index == highlighted ? Color.accentColor.opacity(0.22)
+                                                : Color(.tertiarySystemFill), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .id(chip.index)
+                    }
+                }
+            }
+            .onChange(of: highlighted) { _, index in proxy.scrollTo(index) }
+        }
+    }
+}
+
+/// The quick switcher: the presenter's own search over its own pages, with
+/// each page's kind and a line about it.
+struct SwitcherView: View {
+    let pages: [DemoPage]
+    let highlighted: Int
+    let query: String
+    let choose: (Int) -> Void
+
+    static let width: CGFloat = 320
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Image(systemName: "magnifyingglass")
+                Text(query.isEmpty ? "Jump to a page" : query).lineLimit(1)
+                Spacer()
+                Text("\(pages.count)").font(.caption.monospacedDigit()).foregroundStyle(Color(.secondaryLabel))
+            }
+            .font(.subheadline.weight(.medium)).padding(.horizontal, 8).padding(.bottom, 4)
+            if pages.isEmpty {
+                Text("No page matches").font(.footnote).foregroundStyle(Color(.secondaryLabel)).padding(8)
+            }
+            ForEach(Array(pages.enumerated()), id: \.element.id) { index, page in
+                Button { choose(index) } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: page.icon).frame(width: 24)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(page.title).font(.subheadline.weight(.medium))
+                            Text("\(page.kind) · \(page.detail)").font(.caption).foregroundStyle(Color(.secondaryLabel))
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 8).frame(height: 46)
+                    .background(index == highlighted ? Color.accentColor.opacity(0.18) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 9))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .id(index)
+            }
+        }
+    }
+}
+
+/// Takes full control of the `/` and `[[` menus; `@` stays with the built-in
+/// popup. It hands the editor its own views — the editor positions them — moves
+/// through them with its own keys, and acts through the menu's range and editor.
+@MainActor final class DemoMenuPresenter: SuggestionMenuPresenter {
+    var slashStyle = SlashMenuStyle.builtIn
+    var wikiStyle = WikiMenuStyle.builtIn
+
+    private var slash: HostedMenu<SlashPaletteView>?
+    private var pages: HostedMenu<PagePickerView>?
+    private var ranked: HostedMenu<RankedListView>?
+    private var strip: HostedMenu<ChipStripView>?
+    private var switcher: HostedMenu<SwitcherView>?
+    /// The presenter's own highlight, for the menus that list rows the
+    /// editor's entries don't (the ranked list, the switcher).
+    private var ownHighlight = 0
+    /// The rows those menus are showing now, for the keys to act on.
+    private var rankedEntries: [SuggestionEntry] = []
+    private var switcherPages: [DemoPage] = []
+    /// What each was last drawn from, so a present that changes nothing on
+    /// screen doesn't rebuild SwiftUI.
+    private var slashDrawn: (tiles: [SlashPaletteView.Tile], highlighted: Int, query: String)?
+    private var pagesDrawn: (rows: [PagePickerView.Row], highlighted: Int, loading: Bool)?
+    /// The `[[` picker's own highlight: it has a row the menu's entries don't.
+    private var pageHighlight = 0
 
     var presentsEmptyMenus: Bool { true }
 
-    func present(_ menu: SuggestionMenu, in textView: EditorTextView) -> Bool {
-        guard menu.trigger == "/" else { return false }
-        let tiles = menu.entries.enumerated().map { index, entry in
-            SlashPaletteView.Tile(id: entry.id, index: index, title: entry.title,
-                                  icon: entry.icon ?? "circle", hint: entry.metadata["hint"])
+    func present(_ menu: SuggestionMenu, in textView: EditorTextView) -> UIView? {
+        // A new query starts any highlight the presenter keeps itself over; a
+        // redraw after one of its own keys must not.
+        let fresh = !menu.changes.isDisjoint(with: [.opened, .query, .entries])
+        switch (menu.trigger, slashStyle, wikiStyle) {
+        case ("/", .grid, _):
+            return drawSlash(menu)
+        case ("/", .rankedList, _):
+            if fresh { ownHighlight = 0 }
+            menu.position = .below
+            return drawRanked(menu)
+        case ("/", .strip, _), ("[[", _, .strip):
+            menu.position = .above
+            return drawStrip(menu)
+        case ("[[", _, .picker):
+            if !menu.changes.isDisjoint(with: [.opened, .entries]) { pageHighlight = 0 }
+            return drawPages(menu)
+        case ("[[", _, .switcher):
+            if fresh { ownHighlight = 0 }
+            menu.position = .below
+            return drawSwitcher(menu)
+        default:
+            return nil // the built-in popup, and `@` always
         }
-        let choose: (Int) -> Void = { [weak menu] in menu?.choose($0) }
-        func view(scrolls: Bool) -> SlashPaletteView {
-            SlashPaletteView(tiles: tiles, highlighted: menu.highlightedIndex, query: menu.query,
-                             scrolls: scrolls, choose: choose)
+    }
+
+    func preferredSize(for menu: SuggestionMenu, of view: UIView, maxWidth: CGFloat) -> CGSize {
+        switch view {
+        case slash?.view: slash?.size ?? .zero
+        case pages?.view: pages?.size ?? .zero
+        case ranked?.view: ranked?.size ?? .zero
+        case strip?.view: strip?.size ?? .zero
+        case switcher?.view: switcher?.size ?? .zero
+        default: .zero
         }
-        // Measure the whole grid, then ask how much of it there's room for.
-        if host == nil || host?.rootView.tiles != tiles {
-            if let host {
-                host.rootView = view(scrolls: false)
-            } else {
-                let made = UIHostingController(rootView: view(scrolls: false))
-                made.view.backgroundColor = .clear
-                made.safeAreaRegions = []
-                host = made
-            }
-            size = host!.sizeThatFits(in: CGSize(width: SlashPaletteView.width, height: 2000))
+    }
+
+    func handleKey(_ key: SuggestionMenuKey, in menu: SuggestionMenu) -> Bool {
+        switch (menu.trigger, slashStyle, wikiStyle) {
+        case ("/", .grid, _): return slashKey(key, in: menu)
+        case ("/", .rankedList, _): return rankedKey(key, in: menu)
+        case ("/", .strip, _), ("[[", _, .strip): return stripKey(key, in: menu)
+        case ("[[", _, .picker): return pageKey(key, in: menu)
+        case ("[[", _, .switcher): return switcherKey(key, in: menu)
+        default: return false
         }
-        let frame = textView.placeOverlay(host!.view, viewportAnchor: menu.caretRect, size: size)
-        let scrolls = frame.height < size.height - 0.5
-        // Called on every scroll tick: only touch SwiftUI when something changed.
-        let root = host!.rootView
-        if root.scrolls != scrolls || root.highlighted != menu.highlightedIndex || root.query != menu.query {
-            host!.rootView = view(scrolls: scrolls)
+    }
+
+    func close(_ menu: SuggestionMenu, in textView: EditorTextView) {
+        slash = nil
+        pages = nil
+        ranked = nil
+        strip = nil
+        switcher = nil
+        slashDrawn = nil
+        pagesDrawn = nil
+        pageHighlight = 0
+        ownHighlight = 0
+    }
+
+    /// Show `content` in `host`, making it the first time.
+    private func show<C: View>(_ content: C, highlighted: Int, width: CGFloat,
+                               in host: inout HostedMenu<C>?) -> UIView {
+        if let host {
+            host.update(content, highlighted: highlighted)
+        } else {
+            host = HostedMenu(width: width, content: content, highlighted: highlighted)
+        }
+        return host!.view
+    }
+
+    /// Move a highlight the presenter keeps itself.
+    private func step(_ key: SuggestionMenuKey, count: Int) -> Bool {
+        guard count > 0 else { return false }
+        switch key {
+        case .up: ownHighlight = (ownHighlight - 1 + count) % count
+        case .down: ownHighlight = (ownHighlight + 1) % count
+        default: return false
         }
         return true
     }
 
-    func dismissSuggestions(in textView: EditorTextView) {
-        host?.view.removeFromSuperview()
-        host = nil
+    // MARK: `/` — a ranked list, sifted from the raw source
+
+    private func drawRanked(_ menu: SuggestionMenu) -> UIView {
+        // Every command the source has, ranked by the presenter's own rule:
+        // title prefix, then a word's prefix, then anywhere in the title, then
+        // what the editor's own filter found by keyword.
+        let all = menu.editor.map { menu.source.entries("", $0) } ?? []
+        let q = menu.query.lowercased()
+        let byKeyword = Set(menu.entries.map(\.id))
+        func rank(_ entry: SuggestionEntry) -> Int? {
+            let t = entry.title.lowercased()
+            if q.isEmpty { return 0 }
+            if t.hasPrefix(q) { return 0 }
+            if t.split(separator: " ").contains(where: { $0.hasPrefix(q) }) { return 1 }
+            if t.contains(q) { return 2 }
+            return byKeyword.contains(entry.id) ? 3 : nil
+        }
+        rankedEntries = all.enumerated().compactMap { i, e in rank(e).map { (e, $0, i) } }
+            .sorted { ($0.1, $0.2) < ($1.1, $1.2) }.map(\.0)
+        ownHighlight = min(ownHighlight, max(rankedEntries.count - 1, 0))
+        var lastSection: String?
+        let rows = rankedEntries.enumerated().map { index, entry -> RankedListView.Row in
+            // Sections only while nothing's typed; a ranking has no sections.
+            let header = q.isEmpty && entry.section != lastSection ? entry.section : nil
+            lastSection = entry.section
+            return RankedListView.Row(id: entry.id, index: index, title: entry.title, icon: entry.icon ?? "circle",
+                                      hint: entry.metadata["hint"], header: header)
+        }
+        let content = RankedListView(rows: rows, highlighted: ownHighlight, query: menu.query,
+                                     choose: { [weak self, weak menu] in self?.chooseRanked($0, in: menu) })
+        return show(content, highlighted: ownHighlight, width: RankedListView.width, in: &ranked)
+    }
+
+    private func chooseRanked(_ index: Int, in menu: SuggestionMenu?) {
+        guard let editor = menu?.editor, rankedEntries.indices.contains(index) else { return }
+        // A raw row applies over the open menu's range, like any other.
+        rankedEntries[index].apply(editor)
+    }
+
+    private func rankedKey(_ key: SuggestionMenuKey, in menu: SuggestionMenu) -> Bool {
+        if step(key, count: rankedEntries.count) { _ = drawRanked(menu); return true }
+        if key == .enter || key == .tab, !rankedEntries.isEmpty {
+            chooseRanked(ownHighlight, in: menu)
+            return true
+        }
+        return false
+    }
+
+    // MARK: Either menu — a strip of chips above the line
+
+    private func drawStrip(_ menu: SuggestionMenu) -> UIView {
+        let chips = menu.entries.enumerated().map { index, entry in
+            ChipStripView.Chip(id: entry.id, index: index, title: entry.title,
+                               icon: menu.trigger == "[[" ? (WikiLinkIcons.symbols[entry.id] ?? "doc.text")
+                                                          : (entry.icon ?? "circle"))
+        }
+        let content = ChipStripView(chips: chips, highlighted: menu.highlightedIndex,
+                                    choose: { [weak menu] in menu?.choose($0) })
+        return show(content, highlighted: menu.highlightedIndex, width: ChipStripView.width, in: &strip)
+    }
+
+    private func stripKey(_ key: SuggestionMenuKey, in menu: SuggestionMenu) -> Bool {
+        // ←/→ move along the strip; ↑/↓ are left to the editor, which moves
+        // the same highlight. Return chooses, as ever.
+        let count = menu.entries.count
+        guard count > 0, key == .left || key == .right else { return false }
+        menu.highlightedIndex = (menu.highlightedIndex + (key == .left ? -1 : 1) + count) % count
+        _ = drawStrip(menu)
+        return true
+    }
+
+    // MARK: `[[` — a quick switcher over the host's own pages
+
+    private func drawSwitcher(_ menu: SuggestionMenu) -> UIView {
+        switcherPages = DemoPage.search(menu.query)
+        ownHighlight = min(ownHighlight, max(switcherPages.count - 1, 0))
+        let content = SwitcherView(pages: switcherPages, highlighted: ownHighlight, query: menu.query,
+                                   choose: { [weak self, weak menu] in self?.chooseSwitcher($0, in: menu) })
+        return show(content, highlighted: ownHighlight, width: SwitcherView.width, in: &switcher)
+    }
+
+    private func chooseSwitcher(_ index: Int, in menu: SuggestionMenu?) {
+        guard let menu, switcherPages.indices.contains(index) else { return }
+        let page = switcherPages[index]
+        // Linked by the host's own id and kind, which the editor stores on the node.
+        menu.replaceQuery(with: insertWikiLink(text: page.title, targetId: page.id, targetType: page.kind))
+    }
+
+    private func switcherKey(_ key: SuggestionMenuKey, in menu: SuggestionMenu) -> Bool {
+        if step(key, count: switcherPages.count) { _ = drawSwitcher(menu); return true }
+        if key == .enter || key == .tab, !switcherPages.isEmpty {
+            chooseSwitcher(ownHighlight, in: menu)
+            return true
+        }
+        return false
+    }
+
+    // MARK: `/` — a grid, so the arrows move in two dimensions
+
+    private func slashKey(_ key: SuggestionMenuKey, in menu: SuggestionMenu) -> Bool {
+        let count = menu.entries.count
+        guard count > 0 else { return false }
+        let step: Int
+        switch key {
+        case .left: step = -1
+        case .right: step = 1
+        case .up: step = -SlashPaletteView.columns
+        case .down: step = SlashPaletteView.columns
+        default: return false // Return, Tab and Escape do what they always do
+        }
+        menu.highlightedIndex = min(max(menu.highlightedIndex + step, 0), count - 1)
+        _ = drawSlash(menu)
+        return true
+    }
+
+    private func drawSlash(_ menu: SuggestionMenu) -> UIView {
+        let tiles = menu.entries.enumerated().map { index, entry in
+            SlashPaletteView.Tile(id: entry.id, index: index, title: entry.title,
+                                  icon: entry.icon ?? "circle", hint: entry.metadata["hint"])
+        }
+        let content = SlashPaletteView(tiles: tiles, highlighted: menu.highlightedIndex, query: menu.query,
+                                       choose: { [weak menu] in menu?.choose($0) })
+        if let slash {
+            if slashDrawn?.tiles != tiles || slashDrawn?.highlighted != menu.highlightedIndex
+                || slashDrawn?.query != menu.query {
+                slash.update(content, highlighted: menu.highlightedIndex)
+            }
+        } else {
+            slash = HostedMenu(width: SlashPaletteView.width, content: content, highlighted: menu.highlightedIndex)
+        }
+        slashDrawn = (tiles, menu.highlightedIndex, menu.query)
+        return slash!.view
+    }
+
+    // MARK: `[[` — the editor's rows plus one of its own
+
+    private func pageRows(_ menu: SuggestionMenu) -> [PagePickerView.Row] {
+        var rows = menu.entries.map {
+            PagePickerView.Row(id: $0.id, title: $0.title, icon: WikiLinkIcons.symbols[$0.id] ?? "doc.text",
+                               isCreate: false)
+        }
+        let name = menu.query.trimmingCharacters(in: .whitespaces)
+        if !name.isEmpty, !menu.entries.contains(where: { $0.id.caseInsensitiveCompare(name) == .orderedSame }) {
+            rows.append(PagePickerView.Row(id: "create:" + name, title: "Create “\(name)”",
+                                           icon: "plus.circle.fill", isCreate: true))
+        }
+        return rows
+    }
+
+    private func pageKey(_ key: SuggestionMenuKey, in menu: SuggestionMenu) -> Bool {
+        let rows = pageRows(menu)
+        guard !rows.isEmpty else { return false }
+        switch key {
+        case .up, .down:
+            pageHighlight = (pageHighlight + (key == .up ? -1 : 1) + rows.count) % rows.count
+            _ = drawPages(menu)
+            return true
+        case .enter, .tab:
+            choosePage(min(pageHighlight, rows.count - 1), rows: rows, in: menu)
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func choosePage(_ index: Int, rows: [PagePickerView.Row], in menu: SuggestionMenu) {
+        let row = rows[index]
+        if row.isCreate {
+            // A page the host makes up on the spot: link to it by a new id.
+            let name = menu.query.trimmingCharacters(in: .whitespaces)
+            menu.replaceQuery(with: insertWikiLink(text: name, targetId: "page-\(UUID().uuidString.prefix(8))",
+                                                   targetType: "page"))
+        } else {
+            menu.choose(index)
+        }
+    }
+
+    private func drawPages(_ menu: SuggestionMenu) -> UIView {
+        let rows = pageRows(menu)
+        pageHighlight = min(pageHighlight, max(rows.count - 1, 0))
+        // "Searching…" only when there's nothing else to show: each keystroke
+        // starts a search, and toggling it over the previous results would make
+        // the card jump on every one.
+        let loading = menu.isLoading && menu.entries.isEmpty
+        let content = PagePickerView(rows: rows, highlighted: pageHighlight, isLoading: loading,
+                                     choose: { [weak self, weak menu] index in
+                                         guard let self, let menu else { return }
+                                         self.choosePage(index, rows: self.pageRows(menu), in: menu)
+                                     })
+        if let pages {
+            if pagesDrawn?.rows != rows || pagesDrawn?.highlighted != pageHighlight || pagesDrawn?.loading != loading {
+                pages.update(content, highlighted: pageHighlight)
+            }
+        } else {
+            pages = HostedMenu(width: PagePickerView.width, content: content, highlighted: pageHighlight)
+        }
+        pagesDrawn = (rows, pageHighlight, loading)
+        return pages!.view
     }
 }

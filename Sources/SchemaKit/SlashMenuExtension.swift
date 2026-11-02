@@ -226,7 +226,7 @@ public extension Editor {
     /// the range was captured before a tap could move the selection.
     @discardableResult
     func applySlashCommand(_ item: SlashCommandItem, from: Int, to: Int) -> Bool {
-        let prepare = removeSlashTrigger(from: from, to: to)
+        let prepare = removeSuggestionRange(from: from, to: to)
         if let run = item.run { return chain([prepare, run]) }
         return run(item.command, after: prepare)
     }
@@ -236,23 +236,8 @@ public extension Editor {
     func canApplySlashCommand(_ item: SlashCommandItem, from: Int, to: Int) -> Bool {
         guard let command = item.run ?? namedCommand(item.command) else { return false }
         var prepared: Transaction?
-        guard removeSlashTrigger(from: from, to: to)(state, { prepared = $0 }, nil),
+        guard removeSuggestionRange(from: from, to: to)(state, { prepared = $0 }, nil),
               let prepared else { return false }
         return command(state.apply(prepared), nil, host as? any CommandHost)
-    }
-}
-
-/// Delete the `/query` text and put the caret where it was.
-private func removeSlashTrigger(from: Int, to: Int) -> Command {
-    { state, dispatch, _ in
-        let start = min(from, to), end = max(from, to)
-        guard start >= 0, end <= state.doc.content.size else { return false }
-        let tr = state.tr
-        guard (try? tr.delete(start, end)) != nil else { return false }
-        // A menu tap may have moved the caret to another block. The command
-        // belongs to the block where its trigger was captured.
-        tr.setSelection(Selection.near(tr.doc.resolve(min(start, tr.doc.content.size))))
-        dispatch?(tr)
-        return true
     }
 }

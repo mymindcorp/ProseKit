@@ -1,6 +1,7 @@
 import DocumentModel
 import DocumentTransform
 import EditorStateKit
+public import EditorCommands
 
 /// The active query for a suggestion menu and the document range it replaces.
 public struct SuggestionContext: Equatable {
@@ -112,6 +113,10 @@ public protocol SuggestionSource: AnyObject {
     /// The entries to offer for the active query. Must return synchronously; an
     /// async source returns cached/empty results and refreshes via `onChange`.
     func entries(_ query: String, _ editor: Editor) -> [SuggestionEntry]
+    /// Whether a fetch for the current query is still in flight, so the entries
+    /// on offer are the previous query's (or none yet). Lets a renderer tell
+    /// "searching" from "no results". Sync sources are never loading.
+    var isLoading: Bool { get }
     /// Set by the renderer; a source calls it when asynchronously-loaded entries
     /// become available, so the open popup is re-pulled and repainted. Sync
     /// sources can ignore it (the default is a no-op).
@@ -120,6 +125,7 @@ public protocol SuggestionSource: AnyObject {
 
 public extension SuggestionSource {
     var onChange: (() -> Void)? { get { nil } set {} } // sync sources don't refresh
+    var isLoading: Bool { false }
 }
 
 /// Where a typed trigger may open a popup: running prose that can actually hold
@@ -173,4 +179,31 @@ func suggestionFits(_ parent: Node, from: Int, to: Int, type: NodeType) -> Bool 
     let after = parent.content.cut(to)
     return parent.type.contentMatch.matchFragment(before)?.matchType(type)?
         .matchFragment(after)?.validEnd == true
+}
+
+/// Delete a trigger and its query (`/head`, `[[Arch`) and leave the caret where
+/// it began, ready for a command that acts there.
+func removeSuggestionRange(from: Int, to: Int) -> Command {
+    { state, dispatch, _ in
+        let start = min(from, to), end = max(from, to)
+        guard start >= 0, end <= state.doc.content.size else { return false }
+        let tr = state.tr
+        guard (try? tr.delete(start, end)) != nil else { return false }
+        // A menu tap may have moved the caret to another block. The command
+        // belongs to the block where its trigger was captured.
+        tr.setSelection(Selection.near(tr.doc.resolve(min(start, tr.doc.content.size))))
+        dispatch?(tr)
+        return true
+    }
+}
+
+public extension Editor {
+    /// Remove a suggestion's trigger and query — `from` and `to` as a
+    /// `SuggestionContext` gives them — then run `command` where they were.
+    /// Neither happens unless the command can: a failing command leaves the
+    /// query as typed.
+    @discardableResult
+    func replaceSuggestion(from: Int, to: Int, with command: @escaping Command) -> Bool {
+        chain([removeSuggestionRange(from: from, to: to), command])
+    }
 }
