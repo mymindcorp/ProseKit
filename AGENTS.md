@@ -25,7 +25,7 @@ Notes for coding agents working in this repo.
     -derivedDataPath /tmp/editordemo-dd build
   ```
 
-- **Demo project is generated** from `Examples/EditorDemo/project.yml` via `xcodegen`. After editing `project.yml`, run `xcodegen generate` in `Examples/EditorDemo/` to refresh the `.xcodeproj`.
+- **Demo project is checked in** as `Examples/EditorDemo/EditorDemo.xcodeproj/project.xcproj`, Xcode's JSON project format (Xcode 27 or later). Edit it directly, in Xcode, or with `xcrun xcodeproj`; `xcrun xcprojformatter --update Examples/EditorDemo/EditorDemo.xcodeproj` restores its canonical formatting. Xcode generates its `EditorDemo` scheme, which runs the hosted tests, so none is checked in.
 
 ## Platforms
 
