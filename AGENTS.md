@@ -25,7 +25,7 @@ Notes for coding agents working in this repo.
     -derivedDataPath /tmp/editordemo-dd build
   ```
 
-- **Demo project is checked in** as `Examples/EditorDemo/EditorDemo.xcodeproj/project.xcproj`, Xcode's JSON project format (Xcode 27 or later). Edit it directly, in Xcode, or with `xcrun xcodeproj`; `xcrun xcprojformatter --update Examples/EditorDemo/EditorDemo.xcodeproj` restores its canonical formatting. The `EditorDemo` scheme is shared under `xcshareddata/xcschemes/`.
+- **Demo project is checked in** as `Examples/EditorDemo/EditorDemo.xcodeproj/project.xcproj`, Xcode's JSON project format (Xcode 27 or later). Edit it directly, in Xcode, or with `xcrun xcodeproj`; `xcrun xcprojformatter --update Examples/EditorDemo/EditorDemo.xcodeproj` restores its canonical formatting. Xcode generates its `EditorDemo` scheme, which runs the hosted tests, so none is checked in.
 
 ## Platforms
 
