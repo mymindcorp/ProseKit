@@ -67,10 +67,8 @@ jobs:
             -only-testing:EditorUIKitTests \
             CODE_SIGNING_ALLOWED=NO
 
-  # NOTE: building the example app (Examples/EditorDemo) in CI needs its
-  # "EditorDemo" scheme to be *shared* (Xcode › Product › Scheme › Manage
-  # Schemes › Shared). Once that scheme is committed under
-  # Examples/EditorDemo/EditorDemo.xcodeproj/xcshareddata/xcschemes/, add a job:
+  # NOTE: the example app (Examples/EditorDemo) isn't built in CI. Its
+  # "EditorDemo" scheme is shared, so a job could run:
   #   xcodebuild build -scheme EditorDemo \
   #     -destination 'platform=macOS,variant=Mac Catalyst' \
   #     -workspace Examples/EditorDemo/EditorDemo.xcodeproj/project.xcworkspace \

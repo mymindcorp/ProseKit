@@ -65,8 +65,8 @@ Claim a suite passes only from something that actually reports pass/fail.
 
   The same scheme supports an iOS simulator destination. The standalone package
   test runner has no `NSApplication` host on Catalyst and cannot create UIKit
-  windows there. After changing the hosted target, regenerate the project with
-  `xcodegen generate` in `Examples/EditorDemo/`.
+  windows there. The hosted target's sources are listed in the demo's
+  `project.xcproj`, so a new suite has to be added there to run in this target.
 
 ## Fuzzers
 
