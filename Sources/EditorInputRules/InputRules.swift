@@ -81,7 +81,10 @@ public func inputRules(_ rules: [InputRule]) -> Plugin {
 private func run(_ state: EditorState, _ from: Int, _ to: Int, _ text: String, _ rules: [InputRule], _ dispatch: ((Transaction) -> Void)?) -> Bool {
     let resolvedFrom = state.doc.resolve(from)
     let lo = max(0, resolvedFrom.parentOffset - MAX_MATCH)
-    let prefix = resolvedFrom.parent.textBetween(lo, resolvedFrom.parentOffset, blockSeparator: nil, leafText: "\u{fffc}")
+    var prefix = resolvedFrom.parent.textBetween(lo, resolvedFrom.parentOffset, blockSeparator: nil, leafText: "\u{fffc}")
+    if prefix.count != resolvedFrom.parentOffset - lo {
+        prefix = positionalText(resolvedFrom.parent.content.cut(lo, resolvedFrom.parentOffset))
+    }
     let textBefore = prefix + text
     // Bridged once and handed to every rule as the bridged string, so a rule
     // doesn't bridge it again; most keystrokes match no rule, so everything
@@ -90,7 +93,8 @@ private func run(_ state: EditorState, _ from: Int, _ to: Int, _ text: String, _
     let bridged = ns as String
     let length = ns.length
     let prefixUTF16 = prefix.utf16.count
-    let cursorInCodeMark = resolvedFrom.marks().contains { $0.type.spec.code }
+    // Stored marks are what the text being typed will actually carry.
+    let cursorInCodeMark = (state.storedMarks ?? resolvedFrom.marks()).contains { $0.type.spec.code }
     let parentIsCode = resolvedFrom.parent.type.spec.code
     // Regex offsets use UTF-16, but document positions count Characters. The
     // incoming text can also combine with the last Character in the prefix.
@@ -143,6 +147,26 @@ private func run(_ state: EditorState, _ from: Int, _ to: Int, _ text: String, _
         }
     }
     return false
+}
+
+/// Inline content as text with one character per position. Flattened, a
+/// grapheme split across a change of marks would merge and every offset after
+/// it would drift, so the second half keeps its position with a placeholder.
+private func positionalText(_ fragment: Fragment) -> String {
+    var out = ""
+    for i in 0..<fragment.childCount {
+        let child = fragment.child(i)
+        guard child.isText, let text = child.text, let first = text.first else {
+            out += String(repeating: "\u{fffc}", count: child.nodeSize)
+            continue
+        }
+        if let last = out.last, (String(last) + String(first)).count == 1 {
+            out += "\u{fffc}" + text.dropFirst()
+        } else {
+            out += text
+        }
+    }
+    return out
 }
 
 // MARK: - Rule builders

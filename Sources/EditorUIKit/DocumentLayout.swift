@@ -1800,18 +1800,18 @@ final class DocumentLayout {
         var lines: [LineLayout] = []
         var lineStart = 0
         var lineY: CGFloat = 0
+        // Lines are placed by hand, so alignment has to be applied here:
+        // flush 0.5 centres, 1 pushes to the trailing edge.
+        let flush: CGFloat? = centred ? 0.5
+            : cellAlignment == "right" || blockAlignment == .right ? 1
+            : cellAlignment == "left" || blockAlignment == .left ? nil
+            : (rtl ? 1 : nil)
         for end in ends {
             let count = end - lineStart
             let ctLine = CTTypesetterCreateLine(typesetter, CFRangeMake(lineStart, count))
             var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
             unsafe CTLineGetTypographicBounds(ctLine, &ascent, &descent, &leading)
             let lineHeight = theme.lineHeight(for: node, naturalHeight: ascent + descent + leading)
-            // Lines are placed by hand, so alignment has to be applied here:
-            // flush 0.5 centres, 1 pushes to the trailing edge.
-            let flush: CGFloat? = centred ? 0.5
-                : cellAlignment == "right" || blockAlignment == .right ? 1
-                : cellAlignment == "left" || blockAlignment == .left ? nil
-                : (rtl ? 1 : nil)
             let penOffset: CGFloat = flush
                 .map { CGFloat(CTLineGetPenOffsetForFlush(ctLine, $0, Double(width))) } ?? 0
             lines.append(LineLayout(ctLine: ctLine,
@@ -1829,7 +1829,9 @@ final class DocumentLayout {
             let ascent = font.ascender, descent = -font.descender
             let lineHeight = theme.lineHeight(for: node, naturalHeight: ascent + descent)
             let empty = CTLineCreateWithAttributedString(NSAttributedString(string: "", attributes: [.font: font]))
-            lines.append(LineLayout(ctLine: empty, baselineOrigin: CGPoint(x: 0, y: lineY + ascent),
+            let penOffset: CGFloat = flush
+                .map { CGFloat(CTLineGetPenOffsetForFlush(empty, $0, Double(width))) } ?? 0
+            lines.append(LineLayout(ctLine: empty, baselineOrigin: CGPoint(x: penOffset, y: lineY + ascent),
                                     stringRange: NSRange(location: length, length: 0), height: lineHeight, ascent: ascent))
             lineY += lineHeight
         }
@@ -2901,11 +2903,11 @@ private func isRightToLeft(_ text: String) -> Bool {
         let v = scalar.value
         // Hebrew, Arabic, Syriac, Thaana, and Arabic presentation forms.
         if (0x0590...0x05FF).contains(v) || (0x0600...0x07BF).contains(v)
-            || (0x08A0...0x08FF).contains(v) || (0xFB1D...0xFDFF).contains(v) || (0xFE70...0xFEFF).contains(v) {
+            || (0x08A0...0x08FF).contains(v) || (0xFB1D...0xFDFF).contains(v) || (0xFE70...0xFEFC).contains(v) {
             return true
         }
-        // A strong LTR letter ends the search.
-        if (0x0041...0x005A).contains(v) || (0x0061...0x007A).contains(v) || (0x00C0...0x024F).contains(v) {
+        // A letter of any other script is strong LTR and ends the search.
+        if scalar.properties.isAlphabetic {
             return false
         }
     }
