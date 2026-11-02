@@ -42,7 +42,17 @@ public struct HighlightRun {
 @MainActor
 open class EditorTextView: UIView, UIKeyInput {
     public let editor: Editor
-    public var theme: DocumentTheme { didSet { invalidateLayout() } }
+    public var theme: DocumentTheme {
+        didSet {
+            invalidateLayout()
+            // The popup reads the theme once, when it's built: rebuild an open one.
+            if suggestionPopup != nil, theme.suggestionMenu != oldValue.suggestionMenu
+                || theme.popupBackground != oldValue.popupBackground {
+                hideSuggestion()
+                updateSuggestionPopup()
+            }
+        }
+    }
     /// Text shown when the document is empty.
     public var placeholder: String? { didSet { setNeedsDisplay() } }
     /// Whether misspelled words are underlined.
@@ -157,6 +167,24 @@ open class EditorTextView: UIView, UIKeyInput {
 
     private var activeEntries: [SuggestionEntry] = []
     private var suggestionPopup: SuggestionPopupView?
+    /// The open menu, while `suggestionPresenter` is drawing it.
+    private var presentedMenu: SuggestionMenu?
+    /// Draws suggestion menus in place of the built-in popup — see
+    /// `SuggestionMenuPresenter`. Held weakly: it is usually whatever owns this
+    /// view. nil (the default) draws the built-in popup.
+    public weak var suggestionPresenter: (any SuggestionMenuPresenter)? {
+        didSet {
+            guard suggestionPresenter !== oldValue else { return }
+            if presentedMenu != nil {
+                presentedMenu = nil
+                oldValue?.dismissSuggestions(in: self)
+            }
+            removeSuggestionPopup()
+            updateSuggestionPopup()
+        }
+    }
+    /// Whether a menu is open, whichever way it's drawn.
+    private var isSuggestionOpen: Bool { suggestionPopup != nil || presentedMenu != nil }
     /// Where the open popup is anchored, and the card size its current rows
     /// want — both fixed until the entries themselves change. Kept so a scroll
     /// can re-anchor the popup without re-pulling the source or re-solving the
@@ -1617,7 +1645,13 @@ open class EditorTextView: UIView, UIKeyInput {
     /// cost of scrolling with no menu open. A source whose entries genuinely
     /// change on their own says so through `onChange`, which pulls properly.
     private func repositionSuggestionPopup() {
-        guard let popup = suggestionPopup, let anchor = activeSuggestionAnchor else { return }
+        guard let anchor = activeSuggestionAnchor else { return }
+        if let menu = presentedMenu {
+            menu.caretRect = caretAnchorRect(at: anchor.pos)
+            _ = suggestionPresenter?.present(menu, in: self)
+            return
+        }
+        guard let popup = suggestionPopup else { return }
         placeOverlay(popup, viewportAnchor: caretAnchorRect(at: anchor.pos), size: anchor.size)
     }
 
@@ -1635,7 +1669,7 @@ open class EditorTextView: UIView, UIKeyInput {
             guard let context = source.context(editor) else { continue }
             let entries = source.entries(context.query, editor)
             if !entries.isEmpty {
-                showSuggestion(entries, caretAt: context.to)
+                showSuggestion(entries, context: context)
                 return
             }
         }
@@ -1653,7 +1687,9 @@ open class EditorTextView: UIView, UIKeyInput {
     /// (in this view's coordinates), hosting it in `overlayHost` so it isn't
     /// clipped. Prefers below the anchor, flips above when it would overflow the
     /// host's bottom edge, and clamps horizontally. Re-parents the popup as needed.
-    func placeOverlay(_ popup: UIView, viewportAnchor anchor: CGRect, size: CGSize, gap: CGFloat = 4) {
+    /// A `SuggestionMenuPresenter` can pass its view and `menu.caretRect` to
+    /// sit where the built-in popup would.
+    public func placeOverlay(_ popup: UIView, viewportAnchor anchor: CGRect, size: CGSize, gap: CGFloat = 4) {
         let host = overlayHost
         if popup.superview !== host {
             popup.removeFromSuperview()
@@ -1669,7 +1705,35 @@ open class EditorTextView: UIView, UIKeyInput {
         host.bringSubviewToFront(popup)
     }
 
-    private func showSuggestion(_ entries: [SuggestionEntry], caretAt pos: Int) {
+    private func showSuggestion(_ entries: [SuggestionEntry], context: SuggestionContext) {
+        let pos = context.to
+        if let presenter = suggestionPresenter {
+            let caret = caretAnchorRect(at: pos)
+            let menu: SuggestionMenu
+            if let open = presentedMenu, open.trigger == context.trigger, open.from == context.from {
+                // The same menu, typed further: keep the highlight on the same
+                // row while the rows are the same ones.
+                if open.entries.map(\.title) != entries.map(\.title) { open.highlightedIndex = 0 }
+                open.query = context.query
+                open.entries = entries
+                open.caretRect = caret
+                menu = open
+            } else {
+                menu = SuggestionMenu(context: context, entries: entries, caretRect: caret, textView: self)
+            }
+            if presenter.present(menu, in: self) {
+                removeSuggestionPopup()
+                presentedMenu = menu
+                activeEntries = entries
+                activeSuggestionAnchor = (pos: pos, size: .zero)
+                return
+            }
+            // Declined: draw this one ourselves, after taking down any menu it was showing.
+            if presentedMenu != nil {
+                presentedMenu = nil
+                presenter.dismissSuggestions(in: self)
+            }
+        }
         let popup = suggestionPopup ?? {
             let p = SuggestionPopupView(theme: theme)
             p.onSelect = { [weak self] _ in self?.acceptSuggestion() }
@@ -1677,7 +1741,9 @@ open class EditorTextView: UIView, UIKeyInput {
             return p
         }()
         activeEntries = entries
-        popup.setItems(entries.map { SuggestionPopupView.Item(title: $0.title, subtitle: $0.subtitle, icon: $0.icon) })
+        popup.setItems(entries.map {
+            SuggestionPopupView.Item(title: $0.title, subtitle: $0.subtitle, icon: $0.icon, section: $0.section)
+        })
         // Anchor to the caret (viewport coords); the host keeps it un-clipped.
         // Both the position and the card size are held so a scroll can re-place
         // the popup without coming back through here — see
@@ -1688,18 +1754,45 @@ open class EditorTextView: UIView, UIKeyInput {
     }
 
     private func hideSuggestion() {
-        suggestionPopup?.removeFromSuperview()
-        suggestionPopup = nil
+        removeSuggestionPopup()
+        if presentedMenu != nil {
+            presentedMenu = nil
+            suggestionPresenter?.dismissSuggestions(in: self)
+        }
         activeEntries = []
         activeSuggestionAnchor = nil
+    }
+
+    private func removeSuggestionPopup() {
+        suggestionPopup?.removeFromSuperview()
+        suggestionPopup = nil
+    }
+
+    /// `SuggestionMenu.choose`: apply the row, then close the menu if it's still the open one.
+    func choose(_ index: Int, in menu: SuggestionMenu) {
+        menu.entries[index].apply(editor)
+        if menu === presentedMenu { hideSuggestion() }
+    }
+
+    /// `SuggestionMenu.dismiss`.
+    func dismissSuggestions(_ menu: SuggestionMenu) {
+        if menu === presentedMenu { hideSuggestion() }
     }
 
     /// The titles currently shown in the suggestion popup (nil when hidden).
     /// For tests/inspection.
     var suggestionTitles: [String]? { suggestionPopup?.items.map(\.title) }
+    /// The section headers the open popup draws, in order. For tests/inspection.
+    var suggestionSectionHeaders: [String]? { suggestionPopup?.sectionHeaders }
+    /// The open popup itself. For tests/inspection.
+    var suggestionPopupView: SuggestionPopupView? { suggestionPopup }
 
     /// Apply the highlighted suggestion (Enter / Tab / tap).
     private func acceptSuggestion() {
+        if let menu = presentedMenu {
+            if menu.entries.indices.contains(menu.highlightedIndex) { choose(menu.highlightedIndex, in: menu) }
+            return
+        }
         guard let index = suggestionPopup?.selected, activeEntries.indices.contains(index) else { return }
         activeEntries[index].apply(editor)
         hideSuggestion()
@@ -2583,7 +2676,7 @@ open class EditorTextView: UIView, UIKeyInput {
         if text == "\n" {
             // Return arrives here (not via `handle`), so the suggestion popup
             // must be consulted on this path too: Enter chooses the item.
-            if suggestionPopup != nil { acceptSuggestion(); return }
+            if isSuggestionOpen { acceptSuggestion(); return }
             runKey("Enter"); return
         }
         let sel = editor.state.selection
@@ -3182,6 +3275,14 @@ open class EditorTextView: UIView, UIKeyInput {
         keyRepeatEvent = nil
     }
 
+    private func moveSuggestionHighlight(by delta: Int) {
+        guard let menu = presentedMenu else { suggestionPopup?.moveSelection(by: delta); return }
+        guard !menu.entries.isEmpty else { return }
+        let count = menu.entries.count
+        menu.highlightedIndex = ((menu.highlightedIndex + delta) % count + count) % count
+        _ = suggestionPresenter?.present(menu, in: self)
+    }
+
     /// A key press, decoupled from `UIKey` so the key handler can be unit-tested
     /// (UIKey has no public initializer).
     struct KeyEvent {
@@ -3204,10 +3305,10 @@ open class EditorTextView: UIView, UIKeyInput {
     /// and directly by tests.
     func handle(_ key: KeyEvent) -> Bool {
         // While a suggestion popup is open, the arrow/enter/escape keys drive it.
-        if suggestionPopup != nil {
+        if isSuggestionOpen {
             switch key.keyCode {
-            case .keyboardUpArrow: suggestionPopup?.moveSelection(by: -1); return true
-            case .keyboardDownArrow: suggestionPopup?.moveSelection(by: 1); return true
+            case .keyboardUpArrow: moveSuggestionHighlight(by: -1); return true
+            case .keyboardDownArrow: moveSuggestionHighlight(by: 1); return true
             case .keyboardReturnOrEnter, .keyboardTab: acceptSuggestion(); return true
             case .keyboardEscape: hideSuggestion(); return true
             default: break

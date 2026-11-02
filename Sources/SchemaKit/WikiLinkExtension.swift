@@ -133,7 +133,7 @@ public final class WikiLinkExtension: NodeExtension {
 @MainActor
 private func wikiLinkContext(_ editor: Editor) -> SuggestionContext? {
     editor.wikiLinkSuggestion.map {
-        SuggestionContext(from: $0.from, to: $0.to, query: trimmedQuery($0.query))
+        SuggestionContext(from: $0.from, to: $0.to, query: trimmedQuery($0.query), trigger: "[[")
     }
 }
 

@@ -78,7 +78,7 @@ public final class MentionExtension: NodeExtension {
 /// The active `@` query for this editor as a generic SuggestionContext, or nil.
 @MainActor
 private func mentionContext(_ editor: Editor) -> SuggestionContext? {
-    editor.mentionSuggestion.map { SuggestionContext(from: $0.from, to: $0.to, query: $0.query) }
+    editor.mentionSuggestion.map { SuggestionContext(from: $0.from, to: $0.to, query: $0.query, trigger: "@") }
 }
 
 /// Maps a list of mention ids to popup entries for an `@` range. The range is

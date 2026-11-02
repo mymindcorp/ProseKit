@@ -7,10 +7,14 @@ public struct SuggestionContext: Equatable {
     public let from: Int
     public let to: Int
     public let query: String
-    public init(from: Int, to: Int, query: String) {
+    /// What opened the menu — `/`, `[[`, `@` — so a renderer can tell menus
+    /// apart without knowing which extension each came from.
+    public let trigger: String
+    public init(from: Int, to: Int, query: String, trigger: String = "") {
         self.from = from
         self.to = to
         self.query = query
+        self.trigger = trigger
     }
 }
 
@@ -18,14 +22,19 @@ public struct SuggestionContext: Equatable {
 public struct SuggestionEntry {
     public let title: String
     public let subtitle: String?
-    /// An optional SF Symbol name shown as a leading glyph (the renderer falls
-    /// back to a generic icon when nil).
+    /// An optional leading glyph: an SF Symbol name, or failing that an image in
+    /// the app's asset catalog (the renderer falls back to a generic icon when nil).
     public let icon: String?
+    /// The group the row belongs to. The renderer draws a header where the
+    /// section changes, when the rows on screen span more than one.
+    public let section: String?
     public let apply: (Editor) -> Void
-    public init(title: String, subtitle: String? = nil, icon: String? = nil, apply: @escaping (Editor) -> Void) {
+    public init(title: String, subtitle: String? = nil, icon: String? = nil, section: String? = nil,
+                apply: @escaping (Editor) -> Void) {
         self.title = title
         self.subtitle = subtitle
         self.icon = icon
+        self.section = section
         self.apply = apply
     }
 }
@@ -38,7 +47,7 @@ public struct SuggestionEntry {
 func guardSuggestionEntries(_ entries: [SuggestionEntry], in editor: Editor) -> [SuggestionEntry] {
     let doc = editor.doc
     return entries.map { entry in
-        SuggestionEntry(title: entry.title, subtitle: entry.subtitle, icon: entry.icon) { current in
+        SuggestionEntry(title: entry.title, subtitle: entry.subtitle, icon: entry.icon, section: entry.section) { current in
             guard current.doc == doc else { return }
             entry.apply(current)
         }

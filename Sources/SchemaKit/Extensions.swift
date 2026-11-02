@@ -656,13 +656,15 @@ public final class GapCursorExtension: Extension {
 /// mentions, search, the slash menu, collaborator cursors, the gap cursor, and
 /// suggestion mode.
 /// Pass the `*AsyncSuggestions` variants for a DB/index-backed `[[` or `@` lookup
-/// (each takes precedence over its synchronous counterpart).
+/// (each takes precedence over its synchronous counterpart), and
+/// `slashMenuOptions` to change what the `/` menu offers.
 public func fullKit(wikiLinkSuggestions: (@Sendable (String) -> [String])? = nil,
                     wikiLinkAsyncSuggestions: (@Sendable (String) async -> [String])? = nil,
                     mentionSuggestions: (@Sendable (String) -> [String])? = nil,
                     mentionAsyncSuggestions: (@Sendable (String) async -> [String])? = nil,
                     tableOptions: TableOptions = TableOptions(),
-                    taskListOptions: TaskListOptions = TaskListOptions()) -> [any Extension] {
+                    taskListOptions: TaskListOptions = TaskListOptions(),
+                    slashMenuOptions: SlashMenuOptions = SlashMenuOptions()) -> [any Extension] {
     starterKit() + tableExtensions(options: tableOptions) + taskListExtensions(options: taskListOptions)
         + detailsExtensions()
         + mathematicsExtensions()
@@ -670,6 +672,6 @@ public func fullKit(wikiLinkSuggestions: (@Sendable (String) -> [String])? = nil
                                                asyncSuggestions: wikiLinkAsyncSuggestions),
            MentionExtension(suggestions: mentionSuggestions,
                             asyncSuggestions: mentionAsyncSuggestions), SearchExtension(),
-           SlashMenuExtension(), CollabCursorExtension(), GapCursorExtension(),
+           SlashMenuExtension(options: slashMenuOptions), CollabCursorExtension(), GapCursorExtension(),
            SuggestionModeExtension()]
 }

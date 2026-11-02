@@ -2,23 +2,60 @@ import Foundation
 import DocumentModel
 import DocumentTransform
 public import EditorStateKit
+public import EditorCommands
 
 /// One entry in the slash (`/`) command menu: a display title, search keywords,
-/// and the named command to run when chosen.
+/// and what to run when chosen — a named command, or a `Command` of its own.
 public struct SlashCommandItem: Sendable, Equatable {
     public let title: String
     public let keywords: [String]
+    /// The named command to run, or — when `run` is given — the item's identifier.
     public let command: String
     /// An SF Symbol name shown as the row's leading glyph.
     public let icon: String?
     /// A short description shown under the title.
     public let subtitle: String?
-    public init(title: String, keywords: [String] = [], command: String, icon: String? = nil, subtitle: String? = nil) {
+    /// The group the row is listed under ("Lists", "Math"…). Rows of one section
+    /// should be adjacent: a header is drawn wherever the section changes.
+    public let section: String?
+    /// A command run in place of the named one, for an action the host defines
+    /// itself (insert a template, open a picker…). It runs after the `/query`
+    /// is deleted; returning false leaves the query in place.
+    public let run: Command?
+    public init(title: String, keywords: [String] = [], command: String, icon: String? = nil, subtitle: String? = nil,
+                section: String? = nil) {
+        self.init(title: title, keywords: keywords, command: command, icon: icon, subtitle: subtitle, section: section,
+                  run: nil)
+    }
+
+    /// An item with its own action. `id` takes the place of a command name: it
+    /// identifies the item, and is what `==` compares, since closures can't be.
+    public init(title: String, keywords: [String] = [], id: String, icon: String? = nil, subtitle: String? = nil,
+                section: String? = nil, run: @escaping Command) {
+        self.init(title: title, keywords: keywords, command: id, icon: icon, subtitle: subtitle, section: section,
+                  run: run)
+    }
+
+    private init(title: String, keywords: [String], command: String, icon: String?, subtitle: String?,
+                 section: String?, run: Command?) {
         self.title = title
         self.keywords = keywords
         self.command = command
         self.icon = icon
         self.subtitle = subtitle
+        self.section = section
+        self.run = run
+    }
+
+    /// The same item filed under another section — for regrouping the defaults.
+    public func inSection(_ section: String?) -> SlashCommandItem {
+        SlashCommandItem(title: title, keywords: keywords, command: command, icon: icon, subtitle: subtitle,
+                         section: section, run: run)
+    }
+
+    public static func == (lhs: SlashCommandItem, rhs: SlashCommandItem) -> Bool {
+        lhs.title == rhs.title && lhs.keywords == rhs.keywords && lhs.command == rhs.command
+            && lhs.icon == rhs.icon && lhs.subtitle == rhs.subtitle && lhs.section == rhs.section && (lhs.run == nil) == (rhs.run == nil)
     }
 
     /// Whether this item matches the typed query (over title + keywords).
@@ -38,24 +75,53 @@ public struct SlashMenuState: Equatable {
 
 public let slashMenuKey = PluginKey<SlashMenuState?>("slashMenu")
 
+/// How the slash menu behaves and what it offers. Start from
+/// `defaultSlashCommands()` to add to, remove from, or reorder the built-in rows.
+public struct SlashMenuOptions: Sendable {
+    /// The commands offered by the menu, in the order shown.
+    public var commands: [SlashCommandItem]
+    /// When true (default), `/` only opens the menu at the start of a line/block;
+    /// when false it also opens after whitespace (Notion-style).
+    public var atLineStart: Bool
+    /// Hide rows whose command couldn't run where the `/` was typed (a list
+    /// command inside a table cell that can't hold one, say). Off by default:
+    /// it dry-runs every matching row on each keystroke while the menu is open.
+    /// Rows naming a command the editor doesn't have are hidden either way.
+    public var hidesUnavailable: Bool
+    /// Whether an item matches the typed query; nil uses `SlashCommandItem.matches`.
+    public var matches: (@Sendable (_ item: SlashCommandItem, _ query: String) -> Bool)?
+
+    public init(commands: [SlashCommandItem] = defaultSlashCommands(), atLineStart: Bool = true,
+                hidesUnavailable: Bool = false,
+                matches: (@Sendable (_ item: SlashCommandItem, _ query: String) -> Bool)? = nil) {
+        self.commands = commands
+        self.atLineStart = atLineStart
+        self.hidesUnavailable = hidesUnavailable
+        self.matches = matches
+    }
+}
+
 /// Adds a `/` slash-command menu. Self-contained: it tracks the active query via
 /// a plugin and exposes a `SuggestionSource` so the renderer drives the popup
 /// generically.
 public final class SlashMenuExtension: Extension {
     public let name = "slashMenu"
+    public let options: SlashMenuOptions
     /// The commands offered by the menu.
-    public let commands: [SlashCommandItem]
-    /// When true (default), `/` only opens the menu at the start of a line/block;
-    /// when false it also opens after whitespace (Notion-style).
-    public let atLineStart: Bool
+    public var commands: [SlashCommandItem] { options.commands }
+    /// Whether `/` only opens the menu at the start of a block.
+    public var atLineStart: Bool { options.atLineStart }
 
-    public init(commands: [SlashCommandItem] = defaultSlashCommands(), atLineStart: Bool = true) {
-        self.commands = commands
-        self.atLineStart = atLineStart
+    public init(options: SlashMenuOptions) {
+        self.options = options
+    }
+
+    public convenience init(commands: [SlashCommandItem] = defaultSlashCommands(), atLineStart: Bool = true) {
+        self.init(options: SlashMenuOptions(commands: commands, atLineStart: atLineStart))
     }
 
     public func plugins(_ ctx: ExtensionContext) -> [Plugin] {
-        let atLineStart = self.atLineStart
+        let atLineStart = options.atLineStart
         return [Plugin(
             key: slashMenuKey.key,
             stateField: PluginStateField(
@@ -64,26 +130,31 @@ public final class SlashMenuExtension: Extension {
     }
 
     public func suggestionSources(_ ctx: ExtensionContext) -> [any SuggestionSource] {
-        [SlashSuggestionSource(commands: commands)]
+        [SlashSuggestionSource(options: options)]
     }
 }
 
 /// Drives the slash-menu popup from the tracked query + the configured commands.
 @MainActor
 final class SlashSuggestionSource: SuggestionSource {
-    let commands: [SlashCommandItem]
-    nonisolated init(commands: [SlashCommandItem]) { self.commands = commands }
+    let options: SlashMenuOptions
+    nonisolated init(options: SlashMenuOptions) { self.options = options }
 
     func context(_ editor: Editor) -> SuggestionContext? {
-        editor.slashMenu.map { SuggestionContext(from: $0.from, to: $0.to, query: $0.query) }
+        editor.slashMenu.map { SuggestionContext(from: $0.from, to: $0.to, query: $0.query, trigger: "/") }
     }
     func entries(_ query: String, _ editor: Editor) -> [SuggestionEntry] {
         guard let menu = editor.slashMenu else { return [] }
         // Capture the trigger range now: applying from a tap can move the caret
         // (and clear the live `slashMenu`) before the command runs.
         let from = menu.from, to = menu.to
-        let entries = commands.filter { $0.matches(query) }.map { item in
-            SuggestionEntry(title: item.title, subtitle: item.subtitle, icon: item.icon) {
+        let matches = options.matches ?? { $0.matches($1) }
+        let offered = options.commands.filter { item in
+            guard item.run != nil || editor.namedCommand(item.command) != nil, matches(item, query) else { return false }
+            return !options.hidesUnavailable || editor.canApplySlashCommand(item, from: from, to: to)
+        }
+        let entries = offered.map { item in
+            SuggestionEntry(title: item.title, subtitle: item.subtitle, icon: item.icon, section: item.section) {
                 $0.applySlashCommand(item, from: from, to: to)
             }
         }
@@ -115,22 +186,22 @@ private func computeSlashMenu(_ state: EditorState, atLineStart: Bool) -> SlashM
     return SlashMenuState(query: query, from: from, to: cursor.pos)
 }
 
-/// The default slash commands (block transforms). The renderer should keep only
-/// those whose command is registered for the active schema.
+/// The default slash commands (block transforms), grouped into sections. Rows
+/// whose command the editor doesn't have are left out of the menu.
 public func defaultSlashCommands() -> [SlashCommandItem] {
     [
-        SlashCommandItem(title: "Heading 1", keywords: ["h1", "title", "big"], command: "toggleHeading1", icon: "textformat.size.larger", subtitle: "Big section heading"),
-        SlashCommandItem(title: "Heading 2", keywords: ["h2"], command: "toggleHeading2", icon: "textformat.size", subtitle: "Medium heading"),
-        SlashCommandItem(title: "Heading 3", keywords: ["h3"], command: "toggleHeading3", icon: "textformat.size.smaller", subtitle: "Small heading"),
-        SlashCommandItem(title: "Bullet List", keywords: ["ul", "unordered", "bullet", "list"], command: "toggleBulletList", icon: "list.bullet", subtitle: "A simple bulleted list"),
-        SlashCommandItem(title: "Numbered List", keywords: ["ol", "ordered", "number", "list"], command: "toggleOrderedList", icon: "list.number", subtitle: "A numbered list"),
-        SlashCommandItem(title: "Task List", keywords: ["todo", "checkbox", "check"], command: "toggleTaskList", icon: "checklist", subtitle: "Track tasks with checkboxes"),
-        SlashCommandItem(title: "Quote", keywords: ["blockquote", "citation"], command: "toggleBlockquote", icon: "text.quote", subtitle: "Capture a quotation"),
-        SlashCommandItem(title: "Code Block", keywords: ["code", "pre", "snippet"], command: "toggleCodeBlock", icon: "chevron.left.forwardslash.chevron.right", subtitle: "A formatted code snippet"),
-        SlashCommandItem(title: "Divider", keywords: ["hr", "rule", "separator", "line"], command: "setHorizontalRule", icon: "minus", subtitle: "A horizontal rule"),
-        SlashCommandItem(title: "Details", keywords: ["toggle", "collapse", "accordion", "disclosure", "summary"], command: "toggleDetails", icon: "chevron.right.square", subtitle: "A collapsible section"),
-        SlashCommandItem(title: "Equation", keywords: ["math", "latex", "katex", "formula", "tex"], command: "insertBlockMath", icon: "function", subtitle: "A LaTeX formula on its own row"),
-        SlashCommandItem(title: "Inline Equation", keywords: ["math", "latex", "katex", "formula", "tex"], command: "insertInlineMath", icon: "x.squareroot", subtitle: "A LaTeX formula within the line"),
+        SlashCommandItem(title: "Heading 1", keywords: ["h1", "title", "big"], command: "toggleHeading1", icon: "textformat.size.larger", subtitle: "Big section heading", section: "Text"),
+        SlashCommandItem(title: "Heading 2", keywords: ["h2"], command: "toggleHeading2", icon: "textformat.size", subtitle: "Medium heading", section: "Text"),
+        SlashCommandItem(title: "Heading 3", keywords: ["h3"], command: "toggleHeading3", icon: "textformat.size.smaller", subtitle: "Small heading", section: "Text"),
+        SlashCommandItem(title: "Quote", keywords: ["blockquote", "citation"], command: "toggleBlockquote", icon: "text.quote", subtitle: "Capture a quotation", section: "Text"),
+        SlashCommandItem(title: "Bullet List", keywords: ["ul", "unordered", "bullet", "list"], command: "toggleBulletList", icon: "list.bullet", subtitle: "A simple bulleted list", section: "Lists"),
+        SlashCommandItem(title: "Numbered List", keywords: ["ol", "ordered", "number", "list"], command: "toggleOrderedList", icon: "list.number", subtitle: "A numbered list", section: "Lists"),
+        SlashCommandItem(title: "Task List", keywords: ["todo", "checkbox", "check"], command: "toggleTaskList", icon: "checklist", subtitle: "Track tasks with checkboxes", section: "Lists"),
+        SlashCommandItem(title: "Code Block", keywords: ["code", "pre", "snippet"], command: "toggleCodeBlock", icon: "chevron.left.forwardslash.chevron.right", subtitle: "A formatted code snippet", section: "Blocks"),
+        SlashCommandItem(title: "Divider", keywords: ["hr", "rule", "separator", "line"], command: "setHorizontalRule", icon: "minus", subtitle: "A horizontal rule", section: "Blocks"),
+        SlashCommandItem(title: "Details", keywords: ["toggle", "collapse", "accordion", "disclosure", "summary"], command: "toggleDetails", icon: "chevron.right.square", subtitle: "A collapsible section", section: "Blocks"),
+        SlashCommandItem(title: "Equation", keywords: ["math", "latex", "katex", "formula", "tex"], command: "insertBlockMath", icon: "function", subtitle: "A LaTeX formula on its own row", section: "Math"),
+        SlashCommandItem(title: "Inline Equation", keywords: ["math", "latex", "katex", "formula", "tex"], command: "insertInlineMath", icon: "x.squareroot", subtitle: "A LaTeX formula within the line", section: "Math"),
     ]
 }
 
@@ -149,16 +220,33 @@ public extension Editor {
     /// the range was captured before a tap could move the selection.
     @discardableResult
     func applySlashCommand(_ item: SlashCommandItem, from: Int, to: Int) -> Bool {
-        run(item.command, after: { state, dispatch, _ in
-            let start = min(from, to), end = max(from, to)
-            guard start >= 0, end <= state.doc.content.size else { return false }
-            let tr = state.tr
-            guard (try? tr.delete(start, end)) != nil else { return false }
-            // A menu tap may have moved the caret to another block. The command
-            // belongs to the block where its trigger was captured.
-            tr.setSelection(Selection.near(tr.doc.resolve(min(start, tr.doc.content.size))))
-            dispatch?(tr)
-            return true
-        })
+        let prepare = removeSlashTrigger(from: from, to: to)
+        if let run = item.run { return chain([prepare, run]) }
+        return run(item.command, after: prepare)
+    }
+
+    /// Whether the item would run if chosen now over the given trigger range —
+    /// a dry run against the document with the `/query` already removed.
+    func canApplySlashCommand(_ item: SlashCommandItem, from: Int, to: Int) -> Bool {
+        guard let command = item.run ?? namedCommand(item.command) else { return false }
+        var prepared: Transaction?
+        guard removeSlashTrigger(from: from, to: to)(state, { prepared = $0 }, nil),
+              let prepared else { return false }
+        return command(state.apply(prepared), nil, host as? any CommandHost)
+    }
+}
+
+/// Delete the `/query` text and put the caret where it was.
+private func removeSlashTrigger(from: Int, to: Int) -> Command {
+    { state, dispatch, _ in
+        let start = min(from, to), end = max(from, to)
+        guard start >= 0, end <= state.doc.content.size else { return false }
+        let tr = state.tr
+        guard (try? tr.delete(start, end)) != nil else { return false }
+        // A menu tap may have moved the caret to another block. The command
+        // belongs to the block where its trigger was captured.
+        tr.setSelection(Selection.near(tr.doc.resolve(min(start, tr.doc.content.size))))
+        dispatch?(tr)
+        return true
     }
 }
