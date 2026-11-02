@@ -111,6 +111,9 @@ public final class Editor {
         return run(command)
     }
 
+    /// The command registered under `name`, if any extension contributes it.
+    func namedCommand(_ name: String) -> Command? { namedCommands[name] }
+
     /// Commit preparation only if the named command can also run. Slash menus
     /// use this to remove their query without losing it when a command fails.
     func run(_ name: String, after prepare: @escaping Command) -> Bool {

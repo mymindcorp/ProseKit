@@ -552,6 +552,55 @@ public struct DocumentTheme: Sendable, Equatable {
 
     /// Background of the suggestion popup (slash menu / wiki-link menu).
     public var popupBackground: UIColor = .secondarySystemBackground
+
+    /// How the suggestion popup — the `/` slash menu, `[[` wiki links, `@`
+    /// mentions — is drawn. Every colour and font defaults to nil, which
+    /// borrows from the rest of the theme the way the popup always has.
+    public struct SuggestionMenu: Sendable, Equatable {
+        /// The card's width, and how many rows it shows before scrolling.
+        public var width: CGFloat = 280
+        public var maxVisibleRows = 7
+        public var cornerRadius: CGFloat = 12
+        /// The card's 0.5pt border. nil = `hairlineColor` at 35%.
+        public var borderColor: UIColor?
+        public var shadowOpacity: Float = 0.20
+        public var shadowRadius: CGFloat = 16
+
+        /// nil = the body size, medium weight.
+        public var titleFont: UIFont?
+        /// nil = `textColor`.
+        public var titleColor: UIColor?
+        /// nil = four points under the body size (never under 11).
+        public var subtitleFont: UIFont?
+        /// nil = `code.color`.
+        public var subtitleColor: UIColor?
+        /// Whether rows draw their subtitle. Off gives a compact one-line list.
+        public var showsSubtitles = true
+
+        /// Whether rows draw their leading glyph at all.
+        public var showsIcons = true
+        /// The glyph's point size (an SF Symbol's, or the box an asset image is fitted into).
+        public var iconSize: CGFloat = 15
+        /// nil = the caret colour.
+        public var iconColor: UIColor?
+
+        /// The highlighted row's fill. nil = the caret colour at 14%.
+        public var highlightColor: UIColor?
+        public var highlightCornerRadius: CGFloat = 7
+        /// The space above and below a row's text.
+        public var rowVerticalPadding: CGFloat = 7
+
+        /// Whether a header names each section, when the rows on screen span
+        /// more than one (a query that narrows to one section drops them).
+        public var showsSectionHeaders = true
+        /// nil = a small semibold caption.
+        public var sectionHeaderFont: UIFont?
+        /// nil = `secondaryLabel`.
+        public var sectionHeaderColor: UIColor?
+
+        public init() {}
+    }
+    public var suggestionMenu = SuggestionMenu()
     public var pageInsets = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
     /// Gap between blocks — a whole em, matching the margin every browser puts
     /// on a `<p>`.

@@ -174,6 +174,109 @@ func registerSlashMenuSourceTests() {
         }
     }
 
+    // MARK: Customizing it
+
+    test("slash menu source: a row naming a command the editor lacks isn't offered") {
+        // The defaults include task lists, details and math; the starter kit has
+        // none of them. Those rows used to be drawn and do nothing when tapped.
+        try onMain {
+            let editor = try Editor(extensions: starterKit() + [SlashMenuExtension()])
+            try type(editor, "/")
+            let titles = editor.suggestionSources.flatMap { $0.entries("", editor) }.map(\.title)
+            try expect(titles.contains("Heading 1"))
+            for missing in ["Task List", "Details", "Equation", "Inline Equation"] {
+                try expect(!titles.contains(missing), "\(missing) has no command in the starter kit")
+            }
+        }
+    }
+
+    test("slash menu: an item with its own action runs it in place of the /query") {
+        try onMain {
+            let item = SlashCommandItem(title: "Signature", keywords: ["sig"], id: "signature") { state, dispatch, _ in
+                guard let tr = try? state.tr.insertText("— Ada") else { return false }
+                dispatch?(tr)
+                return true
+            }
+            let editor = try Editor(extensions: starterKit()
+                + [SlashMenuExtension(commands: [item] + defaultSlashCommands())])
+            try type(editor, "/sig")
+            let entries = editor.suggestionSources.flatMap { $0.entries("sig", editor) }
+            try expectEqual(entries.map(\.title), ["Signature"])
+            entries[0].apply(editor)
+            try expectEqual(editor.doc.textContent, "— Ada")
+            try editor.doc.check()
+        }
+    }
+
+    test("slash menu: an action that declines leaves the /query where it was") {
+        let item = SlashCommandItem(title: "Nope", id: "nope") { _, _, _ in false }
+        let editor = try Editor(extensions: starterKit() + [SlashMenuExtension(commands: [item])])
+        try type(editor, "/no")
+        let before = editor.doc
+        try expect(!editor.applySlashCommand(item))
+        try expectEqual(editor.doc, before)
+        try expectEqual(editor.slashMenu?.query, "no")
+    }
+
+    test("slash menu source: hidesUnavailable drops rows that couldn't run here") {
+        try onMain {
+            let never = SlashCommandItem(title: "Never", id: "never") { _, _, _ in false }
+            let heading = defaultSlashCommands()[0]
+            // The dry run must see the document with the query gone: this one
+            // only runs in an empty block.
+            let emptyOnly = SlashCommandItem(title: "Empty Only", id: "emptyOnly") { state, _, _ in
+                (state.selection as? TextSelection)?.cursor?.parent.content.size == 0
+            }
+            let commands = [never, heading, emptyOnly]
+            let shown = try Editor(extensions: starterKit() + [SlashMenuExtension(commands: commands)])
+            try type(shown, "/")
+            try expectEqual(shown.suggestionSources.flatMap { $0.entries("", shown) }.map(\.title),
+                            ["Never", "Heading 1", "Empty Only"], "off by default")
+
+            let hidden = try Editor(extensions: starterKit()
+                + [SlashMenuExtension(options: SlashMenuOptions(commands: commands, hidesUnavailable: true))])
+            try type(hidden, "/")
+            try expectEqual(hidden.suggestionSources.flatMap { $0.entries("", hidden) }.map(\.title),
+                            ["Heading 1", "Empty Only"])
+            // The dry run changed nothing.
+            try expectEqual(hidden.doc.textContent, "/")
+        }
+    }
+
+    test("slash menu source: a custom matcher decides what a query finds") {
+        try onMain {
+            let prefixOnly = SlashMenuOptions(matches: { item, query in
+                query.isEmpty || item.title.lowercased().hasPrefix(query.lowercased())
+            })
+            let editor = try Editor(extensions: fullKit(slashMenuOptions: prefixOnly))
+            try type(editor, "/list")
+            // The default matcher finds every list by keyword; this one finds none.
+            try expect(editor.suggestionSources.flatMap { $0.entries("list", editor) }.isEmpty)
+            let other = try Editor(extensions: fullKit(slashMenuOptions: prefixOnly))
+            try type(other, "/bul")
+            try expectEqual(other.suggestionSources.flatMap { $0.entries("bul", other) }.map(\.title),
+                            ["Bullet List"])
+        }
+    }
+
+    test("slash menu: fullKit takes its slash menu options") {
+        try onMain {
+            let only = SlashMenuOptions(commands: [defaultSlashCommands()[1]], atLineStart: false)
+            let editor = try Editor(extensions: fullKit(slashMenuOptions: only))
+            try type(editor, "hello /")
+            try expectEqual(editor.slashMenu?.query, "", "atLineStart reached the extension")
+            try expectEqual(editor.suggestionSources.flatMap { $0.entries("", editor) }.map(\.title),
+                            ["Heading 2"])
+        }
+    }
+
+    test("slash menu: items with their own action compare by identity, not closure") {
+        let a = SlashCommandItem(title: "A", id: "a") { _, _, _ in true }
+        let b = SlashCommandItem(title: "A", id: "a") { _, _, _ in false }
+        try expectEqual(a, b)
+        try expect(a != SlashCommandItem(title: "A", command: "a"), "a named command isn't a custom one")
+    }
+
     // MARK: Where the trigger doesn't fire
 
     test("slash menu: atLineStart=false still won't trigger inside a word") {

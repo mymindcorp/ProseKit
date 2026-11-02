@@ -4,23 +4,24 @@ import UIKit
 /// A popup list shown near the caret for suggestions (the `/` slash menu, the
 /// `[[` wiki-link menu, `@` mentions). A rounded card of rich rows — leading
 /// icon, title, optional subtitle — with a highlighted index navigable by
-/// keyboard, scrolling when the list is long, and tap-to-choose.
+/// keyboard, scrolling when the list is long, and tap-to-choose. Its look is
+/// `DocumentTheme.suggestionMenu`; rows in more than one section get headers.
 final class SuggestionPopupView: UIView {
     struct Item: Equatable {
         let title: String
         let subtitle: String?
         let icon: String?
+        var section: String? = nil
     }
 
     private let scroll = UIScrollView()
     private let stack = UIStackView()
     private var rowViews: [RowView] = []
+    /// The section headers on screen, in order. (For tests/inspection.)
+    private(set) var sectionHeaders: [String] = []
     private(set) var items: [Item] = []
     private let theme: DocumentTheme
-
-    /// Card width and the maximum number of rows shown before scrolling.
-    private let width: CGFloat = 280
-    private let maxVisibleRows = 7
+    private var style: DocumentTheme.SuggestionMenu { theme.suggestionMenu }
 
     /// Invoked when a row is chosen (on touch-down; see `touchesBegan`).
     var onSelect: ((Int) -> Void)?
@@ -31,19 +32,23 @@ final class SuggestionPopupView: UIView {
     init(theme: DocumentTheme) {
         self.theme = theme
         super.init(frame: .zero)
+        let style = theme.suggestionMenu
         backgroundColor = theme.popupBackground
-        layer.cornerRadius = 12
+        layer.cornerRadius = style.cornerRadius
         layer.cornerCurve = .continuous
         layer.borderWidth = 0.5
-        layer.borderColor = theme.hairlineColor.withAlphaComponent(0.35).cgColor
+        layer.borderColor = (style.borderColor ?? theme.hairlineColor.withAlphaComponent(0.35)).cgColor
         layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.20
-        layer.shadowRadius = 16
+        layer.shadowOpacity = style.shadowOpacity
+        layer.shadowRadius = style.shadowRadius
         layer.shadowOffset = CGSize(width: 0, height: 6)
 
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.showsVerticalScrollIndicator = true
         scroll.alwaysBounceVertical = false
+        // The card floats over the window, often across its safe area; insetting
+        // for that would push the rows down out of the height measured for them.
+        scroll.contentInsetAdjustmentBehavior = .never
         addSubview(scroll)
         stack.axis = .vertical
         stack.spacing = 1
@@ -67,11 +72,20 @@ final class SuggestionPopupView: UIView {
     func setItems(_ items: [Item]) {
         guard items != self.items else { return }
         self.items = items
-        rowViews.forEach { $0.removeFromSuperview() }
-        rowViews = items.map { item in
+        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        rowViews = []
+        sectionHeaders = []
+        let headed = style.showsSectionHeaders && Set(items.map(\.section)).count > 1
+        var section: String?? = .none
+        for item in items {
+            if headed, item.section != section, let title = item.section {
+                sectionHeaders.append(title)
+                stack.addArrangedSubview(SectionHeaderView(title: title, theme: theme))
+            }
+            section = item.section
             let row = RowView(item: item, theme: theme)
             stack.addArrangedSubview(row)
-            return row
+            rowViews.append(row)
         }
         selectedIndex = 0
         updateHighlight()
@@ -82,14 +96,33 @@ final class SuggestionPopupView: UIView {
         selectedIndex = (selectedIndex + delta + items.count) % items.count
     }
 
-    /// The card size for the current items (height capped to `maxVisibleRows`).
+    /// The card size for the current items: tall enough for `maxVisibleRows`
+    /// rows and the headers among them, then scrolling.
     func fittingSize() -> CGSize {
-        let rowHeight = rowViews.first?.systemLayoutSizeFitting(
-            CGSize(width: width, height: 0),
-            withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel).height ?? 36
-        let rows = CGFloat(min(max(items.count, 1), maxVisibleRows))
-        let spacing = max(0, rows - 1) * stack.spacing
-        return CGSize(width: width, height: rows * rowHeight + spacing + 10)
+        let width = style.width
+        var height: CGFloat = 0, rows = 0, views = 0
+        for view in stack.arrangedSubviews {
+            // Stop at the first row past the cap — or the header that leads it.
+            guard rows < max(1, style.maxVisibleRows) else { break }
+            if view is RowView { rows += 1 }
+            height += view.systemLayoutSizeFitting(
+                CGSize(width: width, height: 0),
+                withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel).height
+            views += 1
+        }
+        if views == 0 { height = 36; views = 1 }
+        return CGSize(width: width, height: height + CGFloat(views - 1) * stack.spacing + 10)
+    }
+
+    /// The rows wholly inside the card's visible area. For tests/inspection.
+    var fullyVisibleTitles: [String] {
+        layoutIfNeeded()
+        let visible = CGRect(origin: scroll.contentOffset, size: scroll.bounds.size)
+            .insetBy(dx: 0, dy: -0.5) // allow for rounding
+        return zip(items, rowViews).compactMap { item, row in
+            let frame = row.convert(row.bounds, to: scroll)
+            return visible.contains(frame) ? item.title : nil
+        }
     }
 
     private func updateHighlight() {
@@ -99,7 +132,14 @@ final class SuggestionPopupView: UIView {
     private func scrollToSelection() {
         guard rowViews.indices.contains(selectedIndex) else { return }
         layoutIfNeeded()
-        scroll.scrollRectToVisible(rowViews[selectedIndex].frame, animated: false)
+        // Bring a section's header into view along with its first row.
+        let row = rowViews[selectedIndex]
+        var frame = row.frame
+        if let index = stack.arrangedSubviews.firstIndex(of: row), index > 0,
+           let header = stack.arrangedSubviews[index - 1] as? SectionHeaderView {
+            frame = frame.union(header.frame)
+        }
+        scroll.scrollRectToVisible(frame, animated: false)
     }
 
     // Select on touch-DOWN, not a tap recognizer: the editor's UITextInteraction
@@ -114,7 +154,47 @@ final class SuggestionPopupView: UIView {
         }
     }
 
-    override var intrinsicContentSize: CGSize { CGSize(width: width, height: UIView.noIntrinsicMetric) }
+    /// An SF Symbol by name, else an image from the app's asset catalog
+    /// fitted to the same box, else a plain dot.
+    static func icon(_ name: String?, pointSize: CGFloat) -> UIImage? {
+        let symbol = UIImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
+        if let name, let image = UIImage(systemName: name) { return image.withConfiguration(symbol) }
+        if let name, let image = UIImage(named: name) {
+            let side = pointSize * 1.2
+            let scale = min(side / max(image.size.width, 1), side / max(image.size.height, 1))
+            let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+            return UIGraphicsImageRenderer(size: size).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+                .withRenderingMode(image.renderingMode)
+        }
+        return UIImage(systemName: "circle.fill")?.withConfiguration(symbol)
+    }
+
+    override var intrinsicContentSize: CGSize { CGSize(width: style.width, height: UIView.noIntrinsicMetric) }
+
+    // MARK: - Section header
+
+    private final class SectionHeaderView: UIView {
+        init(title: String, theme: DocumentTheme) {
+            super.init(frame: .zero)
+            let style = theme.suggestionMenu
+            let label = UILabel()
+            label.text = title
+            label.font = style.sectionHeaderFont ?? .systemFont(ofSize: max(11, theme.bodyFont.pointSize - 5), weight: .semibold)
+            label.textColor = style.sectionHeaderColor ?? .secondaryLabel
+            label.translatesAutoresizingMaskIntoConstraints = false
+            accessibilityTraits = .header
+            isAccessibilityElement = true
+            accessibilityLabel = title
+            addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+                label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+                label.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+                label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
+            ])
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    }
 
     // MARK: - Row
 
@@ -128,38 +208,44 @@ final class SuggestionPopupView: UIView {
         init(item: Item, theme: DocumentTheme) {
             self.theme = theme
             super.init(frame: .zero)
+            let style = theme.suggestionMenu
 
-            highlight.backgroundColor = theme.selection.caret.withAlphaComponent(0.14)
-            highlight.layer.cornerRadius = 7
+            highlight.backgroundColor = style.highlightColor ?? theme.selection.caret.withAlphaComponent(0.14)
+            highlight.layer.cornerRadius = style.highlightCornerRadius
             highlight.layer.cornerCurve = .continuous
             highlight.isHidden = true
             highlight.translatesAutoresizingMaskIntoConstraints = false
             addSubview(highlight)
 
             iconView.contentMode = .scaleAspectFit
-            iconView.tintColor = theme.selection.caret
+            iconView.tintColor = style.iconColor ?? theme.selection.caret
             iconView.translatesAutoresizingMaskIntoConstraints = false
-            iconView.image = UIImage(systemName: item.icon ?? "circle.fill")?
-                .withConfiguration(UIImage.SymbolConfiguration(pointSize: 15, weight: .regular))
+            iconView.image = SuggestionPopupView.icon(item.icon, pointSize: style.iconSize)
             iconView.setContentHuggingPriority(.required, for: .horizontal)
+            iconView.isHidden = !style.showsIcons
 
             titleLabel.text = item.title
-            titleLabel.font = .systemFont(ofSize: theme.bodyFont.pointSize, weight: .medium)
-            titleLabel.textColor = theme.textColor
+            titleLabel.font = style.titleFont ?? .systemFont(ofSize: theme.bodyFont.pointSize, weight: .medium)
+            titleLabel.textColor = style.titleColor ?? theme.textColor
             titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
             subtitleLabel.text = item.subtitle
-            subtitleLabel.font = .systemFont(ofSize: max(11, theme.bodyFont.pointSize - 4))
-            subtitleLabel.textColor = theme.code.color
+            subtitleLabel.font = style.subtitleFont ?? .systemFont(ofSize: max(11, theme.bodyFont.pointSize - 4))
+            subtitleLabel.textColor = style.subtitleColor ?? theme.code.color
             subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-            let text = UIStackView(arrangedSubviews: item.subtitle == nil ? [titleLabel] : [titleLabel, subtitleLabel])
+            let showsSubtitle = style.showsSubtitles && item.subtitle != nil
+            let text = UIStackView(arrangedSubviews: showsSubtitle ? [titleLabel, subtitleLabel] : [titleLabel])
             text.axis = .vertical
             text.spacing = 1
             text.translatesAutoresizingMaskIntoConstraints = false
 
             addSubview(iconView)
             addSubview(text)
+            // Without an icon, the text takes the icon's place at the leading edge.
+            let textLeading = style.showsIcons
+                ? text.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10)
+                : text.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14)
             NSLayoutConstraint.activate([
                 highlight.topAnchor.constraint(equalTo: topAnchor, constant: 1),
                 highlight.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1),
@@ -168,15 +254,17 @@ final class SuggestionPopupView: UIView {
 
                 iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
                 iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
-                iconView.widthAnchor.constraint(equalToConstant: 20),
+                iconView.widthAnchor.constraint(equalToConstant: max(20, style.iconSize + 5)),
+                iconView.heightAnchor.constraint(lessThanOrEqualTo: heightAnchor),
 
-                text.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
+                textLeading,
                 text.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-                text.topAnchor.constraint(equalTo: topAnchor, constant: 7),
-                text.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -7),
+                text.topAnchor.constraint(equalTo: topAnchor, constant: style.rowVerticalPadding),
+                text.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -style.rowVerticalPadding),
             ])
         }
         required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
 
         func setHighlighted(_ on: Bool) { highlight.isHidden = !on }
     }

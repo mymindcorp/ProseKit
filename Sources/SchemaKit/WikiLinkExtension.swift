@@ -25,8 +25,9 @@ public let wikiLinkSuggestionKey = PluginKey<WikiLinkSuggestion?>("wikiLinkSugge
 public final class WikiLinkExtension: NodeExtension {
     public let name = "wikiLink"
     /// Provides `[[` autocomplete candidates for a typed query (synchronous, for
-    /// in-memory lists). When nil, no popup is shown (the `[[…]]` input rule still
-    /// works).
+    /// in-memory lists). When nil, the built-in popup isn't shown (the `[[…]]`
+    /// input rule still works), though a `SuggestionMenuPresenter` that presents
+    /// empty menus still hears each query and can search for itself.
     public let suggestions: (@Sendable (String) -> [String])?
     /// Async `[[` candidates — e.g. a DB / search-index lookup. The popup shows
     /// the latest cached results immediately and repaints when fresh ones arrive
@@ -117,8 +118,10 @@ public final class WikiLinkExtension: NodeExtension {
             return [AsyncSuggestionSource(provider: asyncSuggestions, locate: wikiLinkContext,
                                           build: { wikiLinkEntries($0, from: $1.from, to: $1.to) })]
         }
-        guard let suggestions else { return [] }
-        return [WikiLinkSuggestionSource(provider: suggestions)]
+        // Without a provider the source offers nothing, so the built-in popup
+        // stays shut — but the `[[` query is still tracked, for a presenter
+        // that searches for itself.
+        return [WikiLinkSuggestionSource(provider: suggestions ?? { _ in [] })]
     }
 }
 
@@ -133,7 +136,7 @@ public final class WikiLinkExtension: NodeExtension {
 @MainActor
 private func wikiLinkContext(_ editor: Editor) -> SuggestionContext? {
     editor.wikiLinkSuggestion.map {
-        SuggestionContext(from: $0.from, to: $0.to, query: trimmedQuery($0.query))
+        SuggestionContext(from: $0.from, to: $0.to, query: trimmedQuery($0.query), trigger: "[[")
     }
 }
 
@@ -147,7 +150,7 @@ private func trimmedQuery(_ query: String) -> String {
 @MainActor
 private func wikiLinkEntries(_ targets: [String], from: Int, to: Int) -> [SuggestionEntry] {
     targets.map { target in
-        SuggestionEntry(title: target, icon: "doc.text") {
+        SuggestionEntry(title: target, icon: "doc.text", id: target) {
             $0.acceptWikiLinkSuggestion(text: target, from: from, to: to)
         }
     }
@@ -211,6 +214,16 @@ func wikiLinkAttrs(text: String, targetId: String?, targetType: String?) -> Attr
     if let targetId { attrs["targetId"] = .string(targetId) }
     if let targetType { attrs["targetType"] = .string(targetType) }
     return attrs
+}
+
+/// Insert a wiki-link node at the current selection, as a command — for a
+/// suggestion presenter that links to a target of its own choosing
+/// (`SuggestionMenu.replaceQuery(with:)`).
+public func insertWikiLink(text: String, targetId: String? = nil, targetType: String? = nil) -> Command {
+    { state, dispatch, host in
+        guard let type = state.schema.nodes["wikiLink"] else { return false }
+        return insertWikiLink(type, text: text, targetId: targetId, targetType: targetType)(state, dispatch, host)
+    }
 }
 
 /// Insert a wiki-link node at the current selection.

@@ -1,16 +1,21 @@
 import DocumentModel
 import DocumentTransform
 import EditorStateKit
+public import EditorCommands
 
 /// The active query for a suggestion menu and the document range it replaces.
 public struct SuggestionContext: Equatable {
     public let from: Int
     public let to: Int
     public let query: String
-    public init(from: Int, to: Int, query: String) {
+    /// What opened the menu — `/`, `[[`, `@` — so a renderer can tell menus
+    /// apart without knowing which extension each came from.
+    public let trigger: String
+    public init(from: Int, to: Int, query: String, trigger: String = "") {
         self.from = from
         self.to = to
         self.query = query
+        self.trigger = trigger
     }
 }
 
@@ -18,14 +23,31 @@ public struct SuggestionContext: Equatable {
 public struct SuggestionEntry {
     public let title: String
     public let subtitle: String?
-    /// An optional SF Symbol name shown as a leading glyph (the renderer falls
-    /// back to a generic icon when nil).
+    /// An optional leading glyph: an SF Symbol name, or failing that an image in
+    /// the app's asset catalog (the renderer falls back to a generic icon when nil).
     public let icon: String?
+    /// The group the row belongs to. The renderer draws a header where the
+    /// section changes, when the rows on screen span more than one.
+    public let section: String?
+    /// What the row stands for, stable across queries: a slash item's command or
+    /// id, a wiki-link's target, a mention's name. A custom presenter uses it to
+    /// find the row's data in its own model, and to keep a row's identity while
+    /// the list changes around it.
+    public let id: String
+    /// Whatever else the host wants a custom presenter to draw: a badge, a
+    /// shortcut hint. The built-in popup ignores it. Slash items set it through
+    /// `SlashCommandItem.metadata`.
+    public let metadata: [String: String]
     public let apply: (Editor) -> Void
-    public init(title: String, subtitle: String? = nil, icon: String? = nil, apply: @escaping (Editor) -> Void) {
+    /// `id` defaults to the title.
+    public init(title: String, subtitle: String? = nil, icon: String? = nil, section: String? = nil,
+                id: String? = nil, metadata: [String: String] = [:], apply: @escaping (Editor) -> Void) {
         self.title = title
         self.subtitle = subtitle
         self.icon = icon
+        self.section = section
+        self.id = id ?? title
+        self.metadata = metadata
         self.apply = apply
     }
 }
@@ -38,7 +60,8 @@ public struct SuggestionEntry {
 func guardSuggestionEntries(_ entries: [SuggestionEntry], in editor: Editor) -> [SuggestionEntry] {
     let doc = editor.doc
     return entries.map { entry in
-        SuggestionEntry(title: entry.title, subtitle: entry.subtitle, icon: entry.icon) { current in
+        SuggestionEntry(title: entry.title, subtitle: entry.subtitle, icon: entry.icon, section: entry.section,
+                        id: entry.id, metadata: entry.metadata) { current in
             guard current.doc == doc else { return }
             entry.apply(current)
         }
@@ -90,6 +113,10 @@ public protocol SuggestionSource: AnyObject {
     /// The entries to offer for the active query. Must return synchronously; an
     /// async source returns cached/empty results and refreshes via `onChange`.
     func entries(_ query: String, _ editor: Editor) -> [SuggestionEntry]
+    /// Whether a fetch for the current query is still in flight, so the entries
+    /// on offer are the previous query's (or none yet). Lets a renderer tell
+    /// "searching" from "no results". Sync sources are never loading.
+    var isLoading: Bool { get }
     /// Set by the renderer; a source calls it when asynchronously-loaded entries
     /// become available, so the open popup is re-pulled and repainted. Sync
     /// sources can ignore it (the default is a no-op).
@@ -98,6 +125,7 @@ public protocol SuggestionSource: AnyObject {
 
 public extension SuggestionSource {
     var onChange: (() -> Void)? { get { nil } set {} } // sync sources don't refresh
+    var isLoading: Bool { false }
 }
 
 /// Whether `tr` leaves everything a suggestion trigger is computed from — the
@@ -209,4 +237,31 @@ func suggestionFits(_ parent: Node, from: Int, to: Int, type: NodeType) -> Bool 
     let after = parent.content.cut(to)
     return parent.type.contentMatch.matchFragment(before)?.matchType(type)?
         .matchFragment(after)?.validEnd == true
+}
+
+/// Delete a trigger and its query (`/head`, `[[Arch`) and leave the caret where
+/// it began, ready for a command that acts there.
+func removeSuggestionRange(from: Int, to: Int) -> Command {
+    { state, dispatch, _ in
+        let start = min(from, to), end = max(from, to)
+        guard start >= 0, end <= state.doc.content.size else { return false }
+        let tr = state.tr
+        guard (try? tr.delete(start, end)) != nil else { return false }
+        // A menu tap may have moved the caret to another block. The command
+        // belongs to the block where its trigger was captured.
+        tr.setSelection(Selection.near(tr.doc.resolve(min(start, tr.doc.content.size))))
+        dispatch?(tr)
+        return true
+    }
+}
+
+public extension Editor {
+    /// Remove a suggestion's trigger and query — `from` and `to` as a
+    /// `SuggestionContext` gives them — then run `command` where they were.
+    /// Neither happens unless the command can: a failing command leaves the
+    /// query as typed.
+    @discardableResult
+    func replaceSuggestion(from: Int, to: Int, with command: @escaping Command) -> Bool {
+        chain([removeSuggestionRange(from: from, to: to), command])
+    }
 }
