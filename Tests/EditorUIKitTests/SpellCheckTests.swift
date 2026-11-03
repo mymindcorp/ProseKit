@@ -253,6 +253,69 @@ final class SpellCheckTests: XCTestCase {
         XCTAssertEqual(result.checked, [3...11])
         XCTAssertEqual(result.decorations.map { ($0.from, $0.to) }.map { "\($0)-\($1)" }, ["3-11"])
     }
+
+    // MARK: - Languages other than English
+
+    private func flagged(_ doc: Node) -> [String] {
+        SpellCheck.decorations(for: doc).map { deco in
+            doc.textBetween(deco.from, deco.to)
+        }
+    }
+
+    func testSpanishIsCheckedAsSpanish() throws {
+        try XCTSkipUnless(SpellCheck.checkerLanguage(for: "es") != nil, "no Spanish dictionary on this device")
+        let doc = try paragraphs(["Mañana tengo que llamar a mi hermana para preguntarle cómo está su familia."])
+        XCTAssertEqual(flagged(doc), [], "correct Spanish must not be underlined")
+    }
+
+    func testSpanishMisspellingsAreStillFlagged() throws {
+        try XCTSkipUnless(SpellCheck.checkerLanguage(for: "es") != nil, "no Spanish dictionary on this device")
+        let doc = try paragraphs(["Mañana tengo que llamar a mi hermana para preguntrle cómo está su familia."])
+        XCTAssertEqual(flagged(doc), ["preguntrle"])
+    }
+
+    func testEachParagraphIsCheckedInItsOwnLanguage() throws {
+        try XCTSkipUnless(SpellCheck.checkerLanguage(for: "es") != nil, "no Spanish dictionary on this device")
+        let doc = try paragraphs([
+            "The meeting with the design team went well and we agreed on the next steps.",
+            "La reunión con el equipo de diseño salió bien y acordamos los próximos pasos.",
+        ])
+        XCTAssertEqual(flagged(doc), [])
+    }
+
+    func testRecheckUsesTheParagraphsLanguage() throws {
+        try XCTSkipUnless(SpellCheck.checkerLanguage(for: "es") != nil, "no Spanish dictionary on this device")
+        // Typing "próximos" alone is too short to recognise; the paragraph isn't.
+        let doc = try paragraphs(["La reunión con el equipo de diseño salió bien y acordamos los próximos pasos."])
+        let start = 1 + "La reunión con el equipo de diseño salió bien y acordamos los ".count
+        let result = SpellCheck.recheck(doc, around: start...start + 2)
+        XCTAssertFalse(result.checked.isEmpty)
+        XCTAssertTrue(result.decorations.isEmpty, "got \(result.decorations)")
+    }
+
+    func testCorrectionsComeFromTheParagraphsLanguage() throws {
+        try XCTSkipUnless(SpellCheck.checkerLanguage(for: "es") != nil, "no Spanish dictionary on this device")
+        let guesses = SpellCheck.guesses(
+            for: "famila",
+            context: "Mañana tengo que llamar a mi hermana para preguntarle cómo está su famila.")
+        XCTAssertEqual(guesses.first, "familia", "got \(guesses)")
+    }
+
+    func testTextInALanguageWithNoDictionaryIsLeftAlone() throws {
+        // Confidently recognised, but there's nothing to check it against.
+        let samples = [
+            "th": "นี่คือบันทึกยาวที่เขียนเป็นภาษาไทยและไม่มีพจนานุกรมสำหรับตรวจสอบ",
+            "ja": "これは日本語で書かれた長いメモで、辞書がない言語の文章です。",
+            "zh": "这是一段用中文写的很长的笔记，没有可以用来检查的词典。",
+            "el": "Αυτή είναι μια μεγάλη σημείωση γραμμένη στα ελληνικά για τη δοκιμή.",
+        ]
+        let unchecked = samples.keys.sorted().first { SpellCheck.checkerLanguage(for: $0) == nil }
+        guard let text = unchecked.flatMap({ samples[$0] }) else {
+            throw XCTSkip("this device can check every sample language")
+        }
+        XCTAssertEqual(SpellCheck.languages(for: Array(text)[...]), [])
+        XCTAssertEqual(flagged(try paragraphs([text])), [])
+    }
 }
 private final class AppendSpellingPrefix: Extension {
     let name = "appendSpellingPrefix"
