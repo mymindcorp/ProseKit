@@ -986,7 +986,20 @@ public enum MarkdownSerializer {
             // so whitespace at the front of the text moves out ahead of it.
             var body = node
             var leading = ""
-            if wanted[shared...].contains(where: expelsWhitespace), node.isText, let text = node.text {
+            if node.isText, let text = node.text, text.allSatisfy({ $0 == " " || $0 == "\t" }),
+               wanted.contains(where: expelsWhitespace) {
+                // Whitespace alone that has to keep another mark — a highlight,
+                // a link, a code span; the case above takes the rest. Asterisks
+                // can't wrap it, and moving it out of them leaves nothing: no
+                // text at all if they open here, and if they're already open,
+                // the closing run pulls the whitespace back out of the other
+                // mark too, writing `**a====**`. So they end before it, and
+                // only the marks that hold whitespace wrap it.
+                wanted.removeAll(where: expelsWhitespace)
+                shared = 0
+                while shared < active.count, shared < wanted.count,
+                      same(active[shared], wanted[shared]) { shared += 1 }
+            } else if wanted[shared...].contains(where: expelsWhitespace), node.isText, let text = node.text {
                 let lead = text.prefix { $0 == " " || $0 == "\t" }
                 if !lead.isEmpty {
                     leading = String(lead)
