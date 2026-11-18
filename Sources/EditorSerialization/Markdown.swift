@@ -2782,14 +2782,32 @@ public enum MarkdownParser {
     private static func closingTag(_ bytes: [UInt8], _ from: Int, _ name: String,
                                    _ known: inout ClosingTags) -> InlineTag? {
         if let answer = known[name]?[from] { return answer }
-        var settled = known[name] ?? [:]
+        // Taken out rather than copied, so adding to it doesn't copy it.
+        var settled = known.removeValue(forKey: name) ?? [:]
         var open = [from]
+        // Where the walk stood with only `from` open. A walk asked about an
+        // element starting at one of these is this walk from there on, so it
+        // closes at the same tag. The scanner asks from inside spans the walk
+        // jumps over whole — `<!-- <b> -->` — and those questions would
+        // otherwise each walk the rest of the line.
+        var passed: [Int] = []
         var i = from
         while i < bytes.count, !open.isEmpty {
             guard bytes[i] == UInt8(ascii: "<"), let tag = inlineTag(bytes, i) else { i += 1; continue }
+            if open.count == 1 {
+                if let answer = settled[i] {
+                    for start in passed { settled[start] = .some(answer) }
+                    settled[from] = .some(answer)
+                    known[name] = settled
+                    return answer
+                }
+                passed.append(i)
+            }
             if tag.name == name, !tag.selfClosing {
                 if tag.isClosing {
-                    settled[open.removeLast()] = .some(tag)
+                    let start = open.removeLast()
+                    settled[start] = .some(tag)
+                    if open.isEmpty { for start in passed { settled[start] = .some(tag) } }
                 } else {
                     open.append(tag.end)
                 }
@@ -2797,6 +2815,7 @@ public enum MarkdownParser {
             i = tag.end
         }
         for start in open { settled[start] = .some(nil) }
+        if !open.isEmpty { for start in passed { settled[start] = .some(nil) } }
         known[name] = settled
         return settled[from] ?? nil
     }
