@@ -635,14 +635,22 @@ public enum MarkdownSerializer {
     /// names of the marks on it — what has to survive a trip through Markdown.
     /// Whitespace is left out because moving it across a delimiter is exactly
     /// what the writer is allowed to do.
-    private static func markSignature(_ nodes: [Node]) -> String {
-        var out = ""
+    ///
+    /// Kept as runs of characters sharing one set of marks rather than as each
+    /// character with its marks spelled after it: every paragraph holding both
+    /// bold and italic is signed twice, and spelling the marks per character
+    /// was most of what writing such a paragraph cost.
+    private static func markSignature(_ nodes: [Node]) -> [MarkRun] {
+        var out: [MarkRun] = []
         func walk(_ node: Node) {
             if node.isText {
-                let marks = "[" + node.marks.map(\.type.name).sorted().joined(separator: ",") + "]"
-                for ch in node.text ?? "" where !ch.isWhitespace {
-                    out.append(ch)
-                    out += marks
+                let marks = node.marks.map(\.type.name).sorted()
+                for ch in node.text ?? "" where !isWhitespace(ch) {
+                    if out.last?.marks == marks {
+                        out[out.count - 1].text.append(ch)
+                    } else {
+                        out.append(MarkRun(marks: marks, text: String(ch)))
+                    }
                 }
             } else {
                 for i in 0..<node.childCount { walk(node.child(i)) }
@@ -650,6 +658,22 @@ public enum MarkdownSerializer {
         }
         for node in nodes { walk(node) }
         return out
+    }
+
+    /// Characters that carry the same marks, consecutive once whitespace is
+    /// left out. Runs are as long as they can be, so two signatures are equal
+    /// exactly when every character and its marks are.
+    private struct MarkRun: Equatable {
+        let marks: [String]
+        var text: String
+    }
+
+    /// `Character.isWhitespace`, without the Unicode property lookup for the
+    /// ASCII that prose is nearly all made of. ("\r\n" is one Character, and
+    /// reports the "\n" as its ASCII value.)
+    private static func isWhitespace(_ ch: Character) -> Bool {
+        if let ascii = ch.asciiValue { return ascii == 32 || (9...13).contains(ascii) }
+        return ch.isWhitespace
     }
 
     /// `tagged` names the marks to write as HTML tags whether or not their
@@ -806,7 +830,10 @@ public enum MarkdownSerializer {
                 }
                 if carries(child, mark) {
                     if crossedBreak { return false }
-                    if child.isText, child.text?.contains("\n") ?? false { return false }
+                    // A Character, not a substring search: the same answer
+                    // ("\r\n" is one Character, and isn't "\n"), without the
+                    // search's setup on every child.
+                    if child.isText, child.text?.contains(Character("\n")) ?? false { return false }
                     breakBeforeClose = false
                 } else if !cannotCarry(child, mark) {
                     break
