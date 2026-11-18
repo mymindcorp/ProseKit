@@ -14,6 +14,10 @@ fileprivate struct InputRuleMatch: Sendable {
 /// handler runs.
 public struct InputRule: Sendable {
     let regex: NSRegularExpression
+    /// What the last character of any match must be, when the pattern says.
+    /// A match has to end at the cursor, so a keystroke that can't end one
+    /// skips the regex — which is nearly every keystroke.
+    let lastCharacter: LastCharacter?
     fileprivate let handler: @Sendable (_ state: EditorState, _ match: InputRuleMatch, _ start: Int, _ end: Int, _ from: Int, _ text: String) -> Transaction?
     /// By default rules don't apply inside nodes whose spec is marked as
     /// `code`; set this to true to change that.
@@ -32,6 +36,7 @@ public struct InputRule: Sendable {
         // The pattern is an authored constant; a malformed one is a programmer
         // error (fail fast here rather than silently disabling the rule).
         self.regex = try! NSRegularExpression(pattern: pattern)
+        self.lastCharacter = LastCharacter(endOf: pattern)
         self.handler = textHandler
         self.inCode = inCode
         self.inCodeMark = inCodeMark
@@ -110,9 +115,11 @@ private func run(_ state: EditorState, _ from: Int, _ to: Int, _ text: String, _
         measured = boundaries
         return boundaries
     }
+    let last = textBefore.unicodeScalars.last
     for rule in rules {
         if !rule.inCodeMark, cursorInCodeMark { continue }
         if parentIsCode, !rule.inCode { continue }
+        if let required = rule.lastCharacter, !(last.map(required.admits) ?? false) { continue }
         guard let m = rule.regex.firstMatch(in: bridged, range: NSRange(location: 0, length: length)) else { continue }
         guard NSMaxRange(m.range) == length, m.range.location <= prefixUTF16 else { continue }
         let boundaries = boundaries()
