@@ -123,6 +123,11 @@ func registerMarkdownScalingTests() {
         ("doubled runs", { String(repeating: "~~a", count: $0) }, 16_666),
         ("unclosed angle brackets", { String(repeating: "<", count: $0) }, 50_000),        //  5.1s
         ("tag-shaped angle brackets", { String(repeating: "<a ", count: $0) }, 16_666),    //  1.7s
+        // A tag inside a comment is asked about by the scanner, which reads a
+        // comment's text, but jumped over by the search for its closing tag,
+        // which skips the comment whole — so no search ever answered for it.
+        ("tags inside comments", { String(repeating: "<!-- <b> --> ", count: $0) }, 3_846), // 11.1s
+        ("tags inside comments, one closer", { String(repeating: "<!-- <b> --> ", count: $0) + "</b>" }, 3_846),
     ]
     for (name, build, n) in hostile {
         test("markdown scaling: \(name)") { try expectLinearGrowth(build, n) }

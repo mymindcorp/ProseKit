@@ -48,6 +48,7 @@ func registerBench() {
             ("<i> with a stray </b>", String(repeating: "<i>a</b> ", count: 8_800)),
             ("unclosed <b>, one </b> at the end", String(repeating: "<b>a ", count: 16_000) + "</b>"),
             ("comments holding an unclosed <b>", String(repeating: "<!-- <b> --> ", count: 6_000)),
+            ("comments holding a <b>, one </b> at the end", String(repeating: "<!-- <b> --> ", count: 6_000) + "</b>"),
         ]
         for (label, line) in tagLines {
             try time(label, 1) { _ = try MarkdownParser.parse(line, schema: schema) }
