@@ -74,7 +74,14 @@ enum SpellCheck {
             checked.append(contentStart + a ... contentStart + b)
             // The language comes from the whole block: the few words around
             // an edit are too little text to tell one language from another.
-            let langs = languages ?? Self.languages(for: chars[...])
+            // All of it *except* the words being checked, though. Those are
+            // the part a keystroke changes — leave them in and every keystroke
+            // is a new text to recognize, which was nearly all of what a
+            // keystroke spent here — and a half-typed word says nothing about
+            // the language yet. Without them the text is the same from one
+            // keystroke to the next, so `languages(for:)` answers from its
+            // cache until a word is finished.
+            let langs = languages ?? Self.languages(for: Self.context(chars, excluding: a ..< b))
             decorations.append(contentsOf: check(chars[a ..< b], at: contentStart + a, languages: langs))
             return false
         }
@@ -122,24 +129,75 @@ enum SpellCheck {
         var result: [String] = []
         // The opening of a long block says what it's written in as well as
         // the whole of it, at a fraction of the cost on every keystroke.
-        let sample = String(chars.prefix(1_000))
-        let preferred = preferredLanguages
+        let sample = String(chars.prefix(sampleLength))
+        switch detection(for: sample) {
+        case .unchecked: return []
+        case let .checker(lang): result.append(lang)
+        case .undetermined: break
+        }
+        for lang in preferredLanguages where !result.contains(lang) {
+            result.append(lang)
+        }
+        return result
+    }
+
+    /// How much of a block its language is recognized from.
+    static let sampleLength = 1_000
+
+    /// What recognizing a sample came to.
+    private enum Detection {
+        /// Too little text, or no language confidently enough: check in the
+        /// user's own languages.
+        case undetermined
+        /// Written in a language the checker has a dictionary for.
+        case checker(String)
+        /// Confidently written in a language the checker can't check.
+        case unchecked
+    }
+
+    /// Recognitions already made, by the exact sample. The recognizer answers
+    /// the same text the same way, so a hit changes nothing but the cost —
+    /// 0.3 ms for a short paragraph, over a millisecond for a long one, against
+    /// a few microseconds for checking the word that was typed. Only the
+    /// recognition is kept: the preferred languages are read fresh each time,
+    /// since the user can change them while the app runs.
+    @MainActor private static var detections: [String: Detection] = [:]
+    private static let detectionCacheLimit = 128
+    /// Test hook: how many samples were actually run through the recognizer,
+    /// so a test can say a keystroke was answered from the cache rather than
+    /// infer it from a timing.
+    @MainActor private(set) static var debugRecognitions = 0
+
+    @MainActor
+    private static func detection(for sample: String) -> Detection {
+        if let known = detections[sample] { return known }
+        var result = Detection.undetermined
         let words = sample.split { $0.isWhitespace || $0 == "\u{fffc}" }.count
         // Unspaced scripts (Japanese, Chinese, Thai) have no words to count;
         // a run of letters long enough to be a sentence is enough there.
         if words >= detectionMinimumWords || sample.count >= 12 * detectionMinimumWords {
+            debugRecognitions += 1
             recognizer.reset()
             recognizer.processString(sample)
             if let (detected, confidence) = recognizer.languageHypotheses(withMaximum: 1).first,
                confidence >= detectionConfidence {
-                guard let lang = checkerLanguage(for: detected.rawValue) else { return [] }
-                result.append(lang)
+                result = checkerLanguage(for: detected.rawValue).map(Detection.checker) ?? .unchecked
             }
         }
-        for lang in preferred where !result.contains(lang) {
-            result.append(lang)
-        }
+        // Wholesale rather than least-recently-used: a full cache means the
+        // reader has moved on through the document, and what it held is cold.
+        if detections.count >= detectionCacheLimit { detections.removeAll(keepingCapacity: true) }
+        detections[sample] = result
         return result
+    }
+
+    /// The opening of a block's text with `excluded` cut out — as much as
+    /// `languages(for:)` reads, built without copying any more of a long block
+    /// than that.
+    private static func context(_ chars: [Character], excluding excluded: Range<Int>) -> ArraySlice<Character> {
+        if excluded.lowerBound >= sampleLength { return chars.prefix(sampleLength) }
+        let after = chars[excluded.upperBound...].prefix(sampleLength - excluded.lowerBound)
+        return (chars[..<excluded.lowerBound] + after)[...]
     }
 
 

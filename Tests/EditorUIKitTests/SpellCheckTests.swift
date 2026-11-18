@@ -293,6 +293,31 @@ final class SpellCheckTests: XCTestCase {
         XCTAssertTrue(result.decorations.isEmpty, "got \(result.decorations)")
     }
 
+    /// Typing inside a word doesn't change what the paragraph is written in,
+    /// so it mustn't pay to recognize the language again: the recognizer is
+    /// most of what a keystroke's recheck costs. The edited word is left out
+    /// of what's recognized, which leaves the same text every keystroke until
+    /// the word is finished.
+    func testTypingInsideAWordDoesNotRecognizeTheLanguageAgain() throws {
+        let prefix = "The meeting with the design team went well and we agreed on the "
+        let suffix = " steps for the launch."
+        let caret = 1 + prefix.count + 2
+        // Warm the cache with the paragraph as the first keystroke leaves it.
+        _ = SpellCheck.recheck(try paragraphs([prefix + "nex" + suffix]), around: caret ... caret + 1)
+        let before = SpellCheck.debugRecognitions
+        for word in ["next", "nexts", "nextst"] {
+            let result = SpellCheck.recheck(try paragraphs([prefix + word + suffix]), around: caret ... caret + 1)
+            XCTAssertEqual(result.checked.count, 1, "the word was still checked")
+        }
+        XCTAssertEqual(SpellCheck.debugRecognitions, before, "each keystroke recognized the paragraph again")
+
+        // Finishing the word and starting another changes the rest of the
+        // paragraph, which is recognized once.
+        let next = 1 + prefix.count + "next ".count
+        _ = SpellCheck.recheck(try paragraphs([prefix + "next s" + suffix]), around: next ... next + 1)
+        XCTAssertEqual(SpellCheck.debugRecognitions, before + 1)
+    }
+
     func testCorrectionsComeFromTheParagraphsLanguage() throws {
         try XCTSkipUnless(SpellCheck.checkerLanguage(for: "es") != nil, "no Spanish dictionary on this device")
         let guesses = SpellCheck.guesses(
