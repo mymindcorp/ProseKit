@@ -1345,7 +1345,10 @@ open class EditorTextView: UIView, UIKeyInput {
     func spellingMenu(for from: Int, _ to: Int) -> UIMenu? {
         guard isEditable, let range = misspelling(at: from, to) else { return nil }
         let word = projectedText(from: range.from, to: range.to)
-        let guesses = SpellCheck.guesses(for: word)
+        // Corrections in the language the paragraph is written in.
+        let block = editor.doc.resolve(range.from).parent
+        let context = String(TextNavigation.inlineCharacters(of: block))
+        let guesses = SpellCheck.guesses(for: word, context: context)
         let items: [UIMenuElement] = guesses.isEmpty
             ? [UIAction(title: "No Guesses Found", attributes: .disabled) { _ in }]
             : guesses.prefix(5).map { guess in
