@@ -285,6 +285,26 @@ func registerMarkdownDelimiterWhitespaceTests() {
                                           strike("f "), strike("f"),
                                           t("x"), t(" x"), t("x "), t(" "), boldBrk()])
 
+    // Whitespace and nothing else, under bold or italic together with a mark
+    // that keeps its whitespace. The whitespace moves out ahead of the
+    // asterisks, which left the writer holding a text node with no text — a
+    // trap on copy or export, for something as ordinary as bolding and
+    // highlighting a selection that ends in a space.
+    let link = schema.mark("link", ["href": .string("/u")])
+    var whitespaceOnly: [Node] = [t("x"), t(" "), strong("a"), em("b")]
+    for star in [schema.mark("bold"), schema.mark("italic")] {
+        for other in [schema.mark("highlight"), schema.mark("strike"), schema.mark("code"), link] {
+            let marks = other.addToSet(star.addToSet([]))
+            whitespaceOnly.append(schema.text(" ", marks))
+            whitespaceOnly.append(schema.text("\t ", marks))
+            whitespaceOnly.append(schema.text("c", marks))
+        }
+    }
+    sweep("whitespace alone under a star mark and another", whitespaceOnly)
+    writes("whitespace under bold and a highlight leaves the bold first",
+           doc(p(strong("a"), boldHighlight(" "))), "**a**== ==",
+           reads: doc(p(strong("a"), highlight(" "))))
+
     // The shapes prosemirror-markdown 1.13.6 and 1.13.7 are about — a bold run
     // broken up by an italic one beside whitespace — read back as delimiters.
     writes("bold broken by italic after whitespace",
