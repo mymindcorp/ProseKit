@@ -10,6 +10,37 @@ struct LineLayout {
     let stringRange: NSRange      // range into the block's attributed string
     let height: CGFloat
     let ascent: CGFloat
+    /// Whether any glyph run on the line reads right to left. Read from the
+    /// runs once, when the line is typeset, because `forEachVisualSpan` needs
+    /// it for every selection, highlight, search-match and spelling rect it
+    /// cuts — bridging the line's run array on each of those, every frame, to
+    /// learn what nearly always reads "no".
+    let hasRightToLeftRuns: Bool
+
+    init(ctLine: CTLine, baselineOrigin: CGPoint, stringRange: NSRange, height: CGFloat, ascent: CGFloat) {
+        self.ctLine = ctLine
+        self.baselineOrigin = baselineOrigin
+        self.stringRange = stringRange
+        self.height = height
+        self.ascent = ascent
+        hasRightToLeftRuns = (CTLineGetGlyphRuns(ctLine) as? [CTRun])?
+            .contains { CTRunGetStatus($0).contains(.rightToLeft) } ?? false
+    }
+
+    private init(_ line: LineLayout, baselineOrigin: CGPoint) {
+        ctLine = line.ctLine
+        self.baselineOrigin = baselineOrigin
+        stringRange = line.stringRange
+        height = line.height
+        ascent = line.ascent
+        hasRightToLeftRuns = line.hasRightToLeftRuns
+    }
+
+    /// The same line drawn `dx`, `dy` away — without asking CoreText again
+    /// about anything it already answered.
+    func offsetBy(dx: CGFloat, dy: CGFloat) -> LineLayout {
+        LineLayout(self, baselineOrigin: CGPoint(x: baselineOrigin.x + dx, y: baselineOrigin.y + dy))
+    }
 
     /// How far along the line a string index sits, measured from the line's
     /// own origin. `CTLineGetOffsetForStringIndex` with one correction.
@@ -49,8 +80,7 @@ struct LineLayout {
     /// offset says where the range starts: both ends of a Hebrew word in Latin
     /// text sit at the same x, one of them being the run's trailing edge.
     func forEachVisualSpan(from: Int, to: Int, _ body: (CGFloat, CGFloat, Int, Int) -> Void) {
-        guard let runs = CTLineGetGlyphRuns(ctLine) as? [CTRun],
-              runs.contains(where: { CTRunGetStatus($0).contains(.rightToLeft) }) else {
+        guard hasRightToLeftRuns, let runs = CTLineGetGlyphRuns(ctLine) as? [CTRun] else {
             body(offset(forStringIndex: from), offset(forStringIndex: to), from, to)
             return
         }
@@ -584,7 +614,11 @@ final class DocumentLayout {
         /// scrolls near the viewport.
         var estimated: Bool = false
     }
-    private(set) var entries: [TopEntry] = []
+    private(set) var entries: [TopEntry] = [] { didSet { cachedImageRects = nil } }
+    /// `imageRects`, kept until `entries` next changes. The editable view
+    /// draws resize handles from it on every frame, and building it walks
+    /// every top-level child.
+    private var cachedImageRects: [(pos: Int, rect: CGRect)]?
     /// Below this child count, the whole document is always laid out eagerly
     /// (estimation only pays off for very large documents).
     private static let lazyThreshold = 60
@@ -872,26 +906,50 @@ final class DocumentLayout {
     /// changed (the caller should redraw and re-report the height). O(children)
     /// plus the cost of the few children actually typeset.
     func realize(window: ClosedRange<CGFloat>) -> Bool {
-        guard entries.contains(where: { $0.estimated }) else { return false }
-        // Anything to do?
+        // Anything to do? Indexed rather than iterated: these run on every
+        // scroll tick that realizes nothing, and read one field per entry.
         var probe = theme.pageInsets.top
-        var hit = false
-        for e in entries {
-            if e.estimated, probe + e.height >= window.lowerBound, probe <= window.upperBound { hit = true; break }
-            probe = e.topY + e.height
+        var first: Int?
+        for i in entries.indices {
+            if entries[i].estimated, probe + entries[i].height >= window.lowerBound, probe <= window.upperBound {
+                first = i
+                break
+            }
+            probe = entries[i].topY + entries[i].height
         }
-        guard hit else { return false }
+        guard let first else { return false }
 
-        let old = entries
-        entries = []; blocks = []; decorations = []; checkboxes = []; disclosures = []; mathTargets = []
-        highlights = []; codeBackgrounds = []; tables = []; pendingImages = []
+        // Nothing above the first child to typeset moves, so the children
+        // before it — and their share of the flat arrays, which are their
+        // arrays laid end to end — stay exactly as they are, and only the rest
+        // is rebuilt. Rebuilding all of it, as this once did, made every
+        // realize cost as much as everything realized so far: scrolling down
+        // through a long document re-appended the whole read part of it once
+        // per viewport, quadratically. Only the tail is copied out, so the
+        // trim below happens in place rather than copying the kept prefix.
+        let tail = Array(entries[first...])
+        entries.removeSubrange(first...)
+        var kept = (blocks: 0, decorations: 0, checkboxes: 0, disclosures: 0,
+                    mathTargets: 0, highlights: 0, codeBackgrounds: 0, tables: 0)
+        for i in entries.indices where !entries[i].estimated {
+            kept.blocks += entries[i].blocks.count; kept.decorations += entries[i].decorations.count
+            kept.checkboxes += entries[i].checkboxes.count; kept.disclosures += entries[i].disclosures.count
+            kept.mathTargets += entries[i].mathTargets.count; kept.highlights += entries[i].highlights.count
+            kept.codeBackgrounds += entries[i].codeBackgrounds.count; kept.tables += entries[i].tables.count
+        }
+        blocks.removeSubrange(kept.blocks...); decorations.removeSubrange(kept.decorations...)
+        checkboxes.removeSubrange(kept.checkboxes...); disclosures.removeSubrange(kept.disclosures...)
+        mathTargets.removeSubrange(kept.mathTargets...); highlights.removeSubrange(kept.highlights...)
+        codeBackgrounds.removeSubrange(kept.codeBackgrounds...); tables.removeSubrange(kept.tables...)
+        pendingImages = []
         let x = theme.pageInsets.left
         let contentWidth = width - theme.pageInsets.left - theme.pageInsets.right
-        var y = theme.pageInsets.top
-        for (i, e) in old.enumerated() {
+        var y = entries.last.map { $0.topY + $0.height } ?? theme.pageInsets.top
+        var previous = entries.last?.node
+        for e in tail {
             if e.estimated, y + e.height >= window.lowerBound, y <= window.upperBound {
                 entries.append(layoutTopChild(e.node, docPos: e.docStart, x: x, width: contentWidth, y: &y,
-                                              previous: i == 0 ? nil : old[i - 1].node))
+                                              previous: previous))
             } else if e.estimated {
                 entries.append(TopEntry(node: e.node, docStart: e.docStart, topY: y, height: e.height,
                                         blocks: [], decorations: [], checkboxes: [], highlights: [], tables: [], estimated: true))
@@ -901,6 +959,7 @@ final class DocumentLayout {
                 append(shifted); entries.append(shifted)
                 y = shifted.topY + shifted.height
             }
+            previous = e.node
         }
         height = y + theme.pageInsets.bottom
         return true
@@ -987,10 +1046,7 @@ final class DocumentLayout {
     private func shiftBlock(_ b: TextBlock, dPos: Int, dy: CGFloat) -> TextBlock {
         TextBlock(contentStart: b.contentStart + dPos, contentEnd: b.contentEnd + dPos,
                   frame: b.frame.offsetBy(dx: 0, dy: dy),
-                  lines: dy == 0 ? b.lines : b.lines.map {
-                      LineLayout(ctLine: $0.ctLine, baselineOrigin: CGPoint(x: $0.baselineOrigin.x, y: $0.baselineOrigin.y + dy),
-                                 stringRange: $0.stringRange, height: $0.height, ascent: $0.ascent)
-                  },
+                  lines: dy == 0 ? b.lines : b.lines.map { $0.offsetBy(dx: 0, dy: dy) },
                   segments: dPos == 0 ? b.segments : b.segments.map {
                       Segment(docStart: $0.docStart + dPos, docLen: $0.docLen, attrStart: $0.attrStart, attrLen: $0.attrLen, text: $0.text)
                   },
@@ -1703,11 +1759,7 @@ final class DocumentLayout {
         }()
 
         // Shift the cached local lines to this block's absolute (x, y).
-        let lines = local.lines.map {
-            LineLayout(ctLine: $0.ctLine,
-                       baselineOrigin: CGPoint(x: $0.baselineOrigin.x + x, y: $0.baselineOrigin.y + y),
-                       stringRange: $0.stringRange, height: $0.height, ascent: $0.ascent)
-        }
+        let lines = local.lines.map { $0.offsetBy(dx: x, dy: y) }
         for atom in local.imageAtoms {
             guard let line = lines.first(where: { NSLocationInRange(atom.attrIndex, $0.stringRange) }) else { continue }
             let xOffset = CTLineGetOffsetForStringIndex(line.ctLine, atom.attrIndex, nil)
@@ -2531,9 +2583,12 @@ final class DocumentLayout {
     /// Block image draw rects paired with their document positions — for drawing
     /// and hit-testing resize handles.
     var imageRects: [(pos: Int, rect: CGRect)] {
-        entries.compactMap { e in
+        if let cachedImageRects { return cachedImageRects }
+        let rects = entries.compactMap { e in
             e.node.isImage ? blockImageRect(e).map { (e.docStart, $0) } : nil
         }
+        cachedImageRects = rects
+        return rects
     }
 
     /// The document position of a block-level `image` whose drawn rect (the image

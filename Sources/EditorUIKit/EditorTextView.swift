@@ -1004,7 +1004,17 @@ open class EditorTextView: UIView, UIKeyInput {
             ctx.setFillColor(color.cgColor)
             if deco.kind == .node {
                 // Fill the decorated node's full block frames, not just text.
-                for b in l.blocks where b.contentStart >= deco.from && b.contentEnd <= deco.to {
+                // `blocks` is in document order, so the ones inside the node
+                // are a contiguous run starting at the first that doesn't
+                // begin before it — found by search, not by walking every
+                // block in the document once per decoration, per frame.
+                let blocks = l.blocks
+                var i = 0, hi = blocks.count
+                while i < hi { let mid = (i + hi) / 2; if blocks[mid].contentStart < deco.from { i = mid + 1 } else { hi = mid } }
+                while i < blocks.count, blocks[i].contentStart <= deco.to {
+                    let b = blocks[i]
+                    i += 1
+                    guard b.contentEnd <= deco.to else { continue }
                     let r = b.frame.insetBy(dx: -2, dy: -1)
                     if onScreen(r) { ctx.fill(r) }
                 }

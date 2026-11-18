@@ -50,6 +50,51 @@ final class EditorTextViewDrawTests: XCTestCase {
         XCTAssertNotEqual(before, after, message, file: file, line: line)
     }
 
+    // MARK: - Node decorations
+
+    /// A plugin's node decoration fills the frame of every block inside the
+    /// node — and only those. The blocks are found by searching the layout's
+    /// position-ordered list for where the node starts, so this puts blocks on
+    /// both sides of it: one that starts before it and one after, which a
+    /// search that started or stopped in the wrong place would also fill, or
+    /// whose own blocks it would skip.
+    func testANodeDecorationFillsTheBlocksInsideTheNodeAndNoOthers() throws {
+        let editor = try Editor(extensions: fullKit() + [DecorateBlockquotes()])
+        let s = editor.schema
+        func p(_ t: String) -> Node { try! s.node("paragraph", [:], content: Fragment.from([s.text(t)])) }
+        editor.setContent(try s.node("doc", [:], content: Fragment.from([
+            p("before"),
+            try s.node("blockquote", [:], content: Fragment.from([p("inside one"), p("inside two")])),
+            p("after"),
+        ])))
+        let view = EditorTextView(editor: editor)
+        view.frame = CGRect(x: 0, y: 0, width: 320, height: 400)
+        view.layoutIfNeeded()
+        let layout = view.ensureLayout()
+        XCTAssertEqual(layout.blocks.count, 4)
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let image = UIGraphicsImageRenderer(bounds: view.bounds, format: format).image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(view.bounds)
+            view.draw(view.bounds)
+        }.cgImage!
+        func red(_ block: TextBlock) -> Bool {
+            // The block's right edge, mid-height: inside its frame, past its text.
+            let point = CGPoint(x: block.frame.maxX - 3, y: block.frame.midY - view.contentOffsetY)
+            var bytes = [UInt8](repeating: 0, count: 4)
+            let ctx = unsafe CGContext(data: &bytes, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                       space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            ctx.draw(image, in: CGRect(x: -floor(point.x), y: floor(point.y) - CGFloat(image.height) + 1,
+                                       width: CGFloat(image.width), height: CGFloat(image.height)))
+            return bytes[0] > 200 && bytes[1] < 80 && bytes[2] < 80
+        }
+        XCTAssertEqual(layout.blocks.map(red), [false, true, true, false])
+    }
+
     // MARK: - Placeholder
 
     func testThePlaceholderIsPaintedOnlyForAnEmptyDocument() throws {
@@ -262,6 +307,22 @@ private final class DrawFakePan: UIPanGestureRecognizer {
     override var state: UIGestureRecognizer.State {
         get { fakeState }
         set { fakeState = newValue }
+    }
+}
+/// Paints every blockquote with a red node decoration.
+private final class DecorateBlockquotes: Extension {
+    let name = "decorateBlockquotes"
+    func plugins(_ ctx: ExtensionContext) -> [Plugin] {
+        [Plugin(key: name, props: PluginProps(decorations: { state in
+            var decorations: [Decoration] = []
+            state.doc.descendants { node, pos, _, _ in
+                if node.type.name == "blockquote" {
+                    decorations.append(.node(pos, pos + node.nodeSize, ["background": "#FF0000"]))
+                }
+                return true
+            }
+            return DecorationSet(decorations)
+        }))]
     }
 }
 #endif

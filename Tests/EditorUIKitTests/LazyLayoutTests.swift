@@ -66,6 +66,75 @@ final class LazyLayoutTests: XCTestCase {
         XCTAssertGreaterThan(caret.minY, 800, "realized caret is far down, not the near-top fallback")
     }
 
+    /// Realizing a viewport at a time keeps everything above the first child
+    /// it typesets — those entries and their stretch of every flat array — and
+    /// rebuilds only what follows. Scrolled down, then jumped far ahead, then
+    /// back up into the gap, a layout must still end up as a full one would:
+    /// each flat output in the same order with the same geometry, not just the
+    /// blocks. Every kind of output is in the document, so a flat array that
+    /// is trimmed wrong (or not at all) shows up as a duplicate or a gap.
+    func testRealizingAViewportAtATimeConvergesToTheFullLayout() throws {
+        let s = try Editor(extensions: fullKit()).schema
+        func p(_ nodes: [Node]) -> Node { try! s.node("paragraph", [:], content: Fragment.from(nodes)) }
+        var top: [Node] = []
+        for i in 0 ..< 90 {
+            switch i % 5 {
+            case 0:
+                top.append(p([s.text("plain \(i) "), s.text("highlighted", [s.mark("highlight")]),
+                              s.text(" and "), s.text("code()", [s.mark("code")]),
+                              s.text(" with words enough to wrap onto a second line of the column")]))
+            case 1:
+                top.append(try s.node("bulletList", [:], content: Fragment.from((0 ..< 3).map { j in
+                    try! s.node("listItem", [:], content: Fragment.from([p([s.text("item \(i).\(j)")])]))
+                })))
+            case 2:
+                top.append(try s.node("taskList", [:], content: Fragment.from((0 ..< 2).map { j in
+                    try! s.node("taskItem", ["checked": .bool(j == 0)],
+                                content: Fragment.from([p([s.text("task \(i).\(j)")])]))
+                })))
+            case 3:
+                top.append(try s.node("blockquote", [:], content: Fragment.from([p([s.text("quoted \(i)")])])))
+            default:
+                top.append(try s.node("heading", ["level": .int(2)], content: Fragment.from([s.text("Heading \(i)")])))
+            }
+        }
+        let doc = try s.node("doc", [:], content: Fragment.from(top))
+        let reference = full(doc)
+        let l = lazy(doc, window: 0 ... 800)
+        XCTAssertTrue(l.hasEstimatedContent)
+
+        var y: CGFloat = 0
+        for _ in 0 ..< 5 { _ = l.realize(window: y ... (y + 800)); y += 800 }
+        let far = l.height * 0.75
+        _ = l.realize(window: far ... (far + 800))
+        _ = l.realize(window: (far - 1600) ... (far - 800))
+        XCTAssertTrue(l.hasEstimatedContent, "the walk should leave gaps, or it tests nothing a single realize doesn't")
+        _ = l.realize(window: 0 ... .greatestFiniteMagnitude)
+        XCTAssertFalse(l.hasEstimatedContent)
+
+        XCTAssertEqual(l.height, reference.height, accuracy: 0.5)
+        XCTAssertEqual(l.blocks.map(\.contentStart), reference.blocks.map(\.contentStart))
+        for (a, b) in zip(l.blocks, reference.blocks) {
+            XCTAssertEqual(a.frame.minY, b.frame.minY, accuracy: 0.5)
+        }
+        func ys(_ items: [DecorationItem]) -> [CGFloat] {
+            items.map { d -> CGFloat in
+                switch d {
+                case let .fill(r, _), let .stroke(r, _, _), let .image(_, r), let .icon(_, r), let .math(_, r),
+                     let .roundedFill(r, _, _), let .roundedStroke(r, _, _, _): r.minY
+                case let .text(_, point, _): point.y
+                }
+            }
+        }
+        XCTAssertEqual(l.decorations.count, reference.decorations.count, "decorations")
+        for (a, b) in zip(ys(l.decorations), ys(reference.decorations)) { XCTAssertEqual(a, b, accuracy: 0.5) }
+        XCTAssertEqual(l.checkboxes.map(\.pos), reference.checkboxes.map(\.pos), "checkboxes")
+        XCTAssertEqual(l.highlights.map(\.from), reference.highlights.map(\.from), "highlights")
+        XCTAssertEqual(l.codeBackgrounds.map(\.from), reference.codeBackgrounds.map(\.from), "code backgrounds")
+        XCTAssertFalse(reference.checkboxes.isEmpty || reference.highlights.isEmpty
+                       || reference.codeBackgrounds.isEmpty, "the document should exercise every flat array")
+    }
+
     func testSmallDocsAreNotEstimatedEvenWithAWindow() {
         let (_, doc) = bigDoc(5) // below the lazy threshold
         let l = lazy(doc, window: 0 ... 100)
