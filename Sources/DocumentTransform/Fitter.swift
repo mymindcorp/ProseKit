@@ -246,18 +246,27 @@ final class Fitter {
             closeFrontierNode()
         }
 
+        // Walk the nodes just placed, not the source fragment: placing them
+        // closes their start (`closeNodeStart`), so their open end can differ
+        // from the source's (prosemirror-transform 1.12.5).
         var i = 0
-        var curFrag = fragment
-        while i < openEndCount {
-            let node = curFrag.lastChild!
+        var cur = add.last
+        while let node = cur, i < openEndCount {
             frontier.append(Frontier(type: node.type, match: node.contentMatchAt(node.childCount)))
-            curFrag = node.content
+            cur = node.lastChild
             i += 1
         }
 
         if !toEnd {
+            // Once a child is dropped, what remains at `sliceDepth` starts
+            // with a sibling that was never open, so the slice is open no
+            // deeper than that (prosemirror-transform 1.12.5). Upstream resets
+            // the depth unconditionally. But a wrapping round places nothing
+            // (`taken == 0`): the first child is still the open one, and
+            // closing it would insert an empty open node as a finished one
+            // (an empty table row or list item).
             unplaced = Slice(content: dropFromFragment(slice.content, fit.sliceDepth, taken),
-                             openStart: slice.openStart, openEnd: slice.openEnd)
+                             openStart: taken > 0 ? fit.sliceDepth : slice.openStart, openEnd: slice.openEnd)
         } else if fit.sliceDepth == 0 {
             unplaced = .empty
         } else {

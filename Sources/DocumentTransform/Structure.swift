@@ -607,7 +607,8 @@ public func canSplit(_ doc: Node, _ pos: Int, _ depth: Int = 1, _ typesAfter: [N
     let resolved = doc.resolve(pos)
     let base = resolved.depth - depth
     let innerType = (typesAfter?.last ?? nil)?.type ?? resolved.parent.type
-    if base < 0 || resolved.parent.type.spec.isolating ||
+    // Depth 0 splits nothing, and would read `node(base + 1)` past the end.
+    if depth < 1 || base < 0 || resolved.parent.type.spec.isolating ||
         !resolved.parent.canReplace(resolved.index(), resolved.parent.childCount) ||
         !innerType.validContent(resolved.parent.content.cutByIndex(resolved.index(), resolved.parent.childCount)) {
         return false

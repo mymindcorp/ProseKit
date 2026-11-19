@@ -78,7 +78,9 @@ private func doWrapInList(_ tr: Transaction, _ range: NodeRange, _ wrappers: [No
     let end = range.endIndex
     var first = true
     while idx < end {
-        if !first && canSplit(tr.doc, splitPos, splitDepth) {
+        // A list item that can hold a list directly needs no split: the
+        // depth is zero (prosemirror-schema-list 1.6.0).
+        if !first && splitDepth > 0 && canSplit(tr.doc, splitPos, splitDepth) {
             guard (try? tr.split(splitPos, splitDepth)) != nil else { return nil }
             splitPos += 2 * splitDepth
         }

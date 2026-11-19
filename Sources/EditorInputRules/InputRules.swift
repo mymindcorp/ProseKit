@@ -98,8 +98,13 @@ private func run(_ state: EditorState, _ from: Int, _ to: Int, _ text: String, _
     let bridged = ns as String
     let length = ns.length
     let prefixUTF16 = prefix.utf16.count
-    // Stored marks are what the text being typed will actually carry.
-    let cursorInCodeMark = (state.storedMarks ?? resolvedFrom.marks()).contains { $0.type.spec.code }
+    // The marks the typed text will carry: the stored marks when it replaces
+    // the selection, else the marks across the range it replaces, as
+    // `insertText` picks them (prosemirror-inputrules 1.6.0).
+    let selection = state.selection
+    let typedMarks = (from == selection.from && to == selection.to ? state.storedMarks : nil)
+        ?? (from == to ? resolvedFrom.marks() : resolvedFrom.marksAcross(state.doc.resolve(to)) ?? [])
+    let cursorInCodeMark = typedMarks.contains { $0.type.spec.code }
     let parentIsCode = resolvedFrom.parent.type.spec.code
     // Regex offsets use UTF-16, but document positions count Characters. The
     // incoming text can also combine with the last Character in the prefix.

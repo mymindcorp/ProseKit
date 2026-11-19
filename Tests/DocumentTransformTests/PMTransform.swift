@@ -286,6 +286,51 @@ func registerPMTransformTests() {
         try expectEqual(tr.doc, d)
     }
 
+    // prosemirror-transform 1.12.5. When the placed content ends in nodes open
+    // at both sides, the fitter pushed frontier entries for the open end by
+    // walking the *source* fragment's last children, not the nodes it had just
+    // placed, which could differ, or run out (a force-unwrap here).
+    test("PM replace: can extend the fitting frontier with nodes open at both sides") {
+        let s = try Schema(nodes: [
+            ("doc", NodeSpec(content: "header+")),
+            ("header", NodeSpec(content: "title summary?")),
+            ("title", NodeSpec(content: "inline*")),
+            ("summary", NodeSpec(content: "inline*")),
+            ("text", NodeSpec(group: "inline")),
+        ], marks: [], topNode: "doc")
+        let header = try s.node("header", content: Fragment.from([try s.node("title"), try s.node("summary")]))
+        let d = try s.node("doc", content: Fragment.from([header]))
+        let tr = Transform(d)
+        try tr.replace(4, 4, d.slice(2, 4, includeParents: true))
+        try expectEqual(tr.doc, try s.node("doc", content: Fragment.from([header, header])))
+    }
+
+    // Not upstream's. 1.12.5 also resets the leftover slice's `openStart` to
+    // the depth placed at, and does so even when the round placed nothing,
+    // which a wrapping round does. Here the slice opens into an empty row,
+    // the round wraps it in a table, and a reset depth would then place that
+    // row as a finished, empty, invalid row instead of dropping it.
+    test("replace: a wrapping round keeps the slice's open start") {
+        let s = try Schema(nodes: [
+            ("doc", NodeSpec(content: "block+")),
+            ("paragraph", NodeSpec(content: "text*", group: "block")),
+            ("table", NodeSpec(content: "row+", group: "block")),
+            ("row", NodeSpec(content: "cell+")),
+            ("cell", NodeSpec(content: "block+")),
+            ("text", NodeSpec()),
+        ], marks: [], topNode: "doc")
+        func para(_ text: String) throws -> Node { try s.node("paragraph", content: .from(s.text(text))) }
+        let full = try s.node("row", content: .from(s.node("cell", content: .from(para("x")))))
+        let slice = Slice(content: Fragment.from([try s.node("row"), full]), openStart: 1, openEnd: 0)
+        let d = try s.node("doc", content: Fragment.from([try para("a"), try para("b")]))
+        let tr = Transform(d)
+        try tr.replace(3, 3, slice)
+        try tr.doc.check()
+        try expectEqual(tr.doc, try s.node("doc", content: Fragment.from([
+            try para("a"), try s.node("table", content: .from(full)), try para("b"),
+        ])))
+    }
+
     // Upstream's test for its issue #1574: a step mapped over a block-type
     // change that would leave a node the new type cannot hold is refused by
     // `maybeStep`, not applied to produce an invalid document.
