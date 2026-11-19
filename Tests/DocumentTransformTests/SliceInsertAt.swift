@@ -100,6 +100,22 @@ func registerSliceInsertAtTests() {
                             { try $0.insert(2, basicSchema.text("x")) },
                             doc(p("xa")))
     }
+
+    // prosemirror-transform 1.12.5 (upstream #30). A collapsed step mapped over
+    // an insertion at its position maps `gapFrom` forward and `gapTo` back,
+    // inverting the gap. The step must be dropped rather than rebuilt.
+    for pos in [0, 5] {
+        test("PM ReplaceAroundStep.map: drops a collapsed range mapped over an insertion at \(pos)") {
+            let step = ReplaceAroundStep(pos, pos, pos, pos, .empty, 0, structure: true)
+            let before = doc(p("abcd")).node
+            let applied = step.apply(before)
+            try expect(applied.failed == nil, "expected the collapsed step to apply")
+            try expectEqual(applied.doc!, before)
+            try expectEqual(step.invert(before).apply(applied.doc!).doc!, before)
+            let mapped = step.map(Mapping(maps: [StepMap([pos, 0, 10])]))
+            try expect(mapped == nil, "expected the mapped step to be dropped")
+        }
+    }
 }
 
 /// Apply `change`'s first step after mapping it over `other`, and check the

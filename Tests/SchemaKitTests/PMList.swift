@@ -224,6 +224,26 @@ func registerPMListTests() {
                 doc(ul(li(p("foo"), ol(li(p("bar")), li(p("baz")))))))
     }
     c("wrapInList: only splits items where valid") { try run(doc(p("<a>one"), ol(li(p("two"))), p("three<b>")), wrapInList(lt("ordered_list")), doc(ol(li(p("one"), ol(li(p("two")))), li(p("three"))))) }
+    // prosemirror-schema-list 1.6.0. With `list_item` holding `block+`, the
+    // wrap needs no list item of its own, so the split depth is zero, and
+    // splitting at depth zero failed the whole command.
+    c("wrapInList: can wrap lists that may start with lists") {
+        let s = try Schema(nodes: [
+            ("doc", NodeSpec(content: "block+")),
+            ("paragraph", NodeSpec(content: "text*", group: "block")),
+            ("bullet_list", NodeSpec(content: "list_item+", group: "block")),
+            ("list_item", NodeSpec(content: "block+")),
+            ("text", NodeSpec()),
+        ])
+        func para(_ text: String) throws -> Node { try s.node("paragraph", content: .from(s.text(text))) }
+        func item(_ child: Node) throws -> Node { try s.node("list_item", content: .from(child)) }
+        func list(_ items: [Node]) throws -> Node { try s.node("bullet_list", content: Fragment.from(items)) }
+        let inner = try list([item(para("one")), item(para("two"))])
+        let d = try s.node("doc", content: .from(inner))
+        var state = EditorState.create(EditorStateConfig(schema: s, doc: d, selection: TextSelection.create(d, 6, 13)))
+        try expect(wrapInList(s.nodes["bullet_list"]!)(state, { state = state.apply($0) }, nil))
+        try expectEqual(state.doc, try s.node("doc", content: .from(list([item(inner)]))))
+    }
 
     // MARK: splitListItem
     c("splitListItem: has no effect outside of a list") { try run(doc(p("foo<a>bar")), splitListItem(lt("list_item")), nil) }

@@ -227,6 +227,31 @@ func registerPMInputRulesTests() {
         try expect(out == nil)
     }
 
+    // Upstream 1.6.0: the marks checked are the ones the typed text will carry.
+    // Typing over a selected range carries the marks across that range — here
+    // the code mark on "xy" — not the plain marks at the cursor before it.
+    test("PM input rule: inCodeMark=false rule does not fire when typing over code-marked text") {
+        let plugin = inputRules([emDashRule])
+        let state = B.state(B.doc(B.p(B.t("a-"), B.code("xy"))), anchor: 3, head: 5, plugins: [plugin])
+        var fired = false
+        _ = plugin.props?.handleTextInput?(3, 5, "-", state) { _ in fired = true }
+        try expect(!fired)
+    }
+
+    // Upstream 1.6.0: stored marks describe text typed at the selection, so
+    // they only apply when the input range is the selection.
+    test("PM input rule: stored marks don't apply to input away from the selection") {
+        let plugin = inputRules([emDashRule])
+        var state = B.state(B.doc(B.p("a-b-")), anchor: 5, plugins: [plugin])
+        state = state.apply(state.tr.setStoredMarks([B.schema.mark("code")]))
+        var atSelection = false
+        _ = plugin.props?.handleTextInput?(5, 5, "-", state) { _ in atSelection = true }
+        try expect(!atSelection, "the stored code mark should apply at the selection")
+        var elsewhere = false
+        _ = plugin.props?.handleTextInput?(3, 3, "-", state) { _ in elsewhere = true }
+        try expect(elsewhere, "the stored code mark should not apply away from the selection")
+    }
+
     // Upstream 1.4.0 semantics: inCode: true lets a rule apply inside a code
     // block (the default remains skipping them).
     test("PM input rule: inCode rule fires inside a code block") {

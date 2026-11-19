@@ -164,7 +164,7 @@ public struct ReplaceAroundStep: Step {
         let to = mapping.mapResult(self.to, -1)
         let gapFrom = self.from == self.gapFrom ? from.pos : mapping.map(self.gapFrom, -1)
         let gapTo = self.to == self.gapTo ? to.pos : mapping.map(self.gapTo, 1)
-        if (from.deletedAcross && to.deletedAcross) || gapFrom < from.pos || gapTo > to.pos { return nil }
+        if (from.deletedAcross && to.deletedAcross) || gapFrom < from.pos || gapTo > to.pos || gapFrom > gapTo { return nil }
         return ReplaceAroundStep(from.pos, to.pos, gapFrom, gapTo, slice, insert, structure: structure)
     }
 
